@@ -15,6 +15,77 @@ const app = express();
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json());
 
+const MIN_REQUEST_INTERVAL_MS = 50;
+const requestQueue = [];
+let isProcessingQueue = false;
+let nextAvailableTime = Date.now();
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function updateRateLimitFromHeaders(headers) {
+  if (!headers) {
+    return;
+  }
+  const remaining = parseInt(headers['x-ratelimit-remaining'], 10);
+  const reset = parseInt(headers['x-ratelimit-reset'], 10);
+  if (!Number.isNaN(remaining) && remaining <= 1 && !Number.isNaN(reset)) {
+    const resetMs = reset * 1000;
+    if (resetMs > nextAvailableTime) {
+      nextAvailableTime = resetMs;
+    }
+  }
+}
+
+function enqueueRequest(executor) {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({ executor, resolve, reject, attempt: 0 });
+    processQueue();
+  });
+}
+
+function processQueue() {
+  if (isProcessingQueue) {
+    return;
+  }
+  const job = requestQueue.shift();
+  if (!job) {
+    return;
+  }
+  isProcessingQueue = true;
+  const now = Date.now();
+  const wait = Math.max(0, nextAvailableTime - now);
+  setTimeout(async () => {
+    try {
+      const response = await job.executor();
+      updateRateLimitFromHeaders(response.headers);
+      nextAvailableTime = Math.max(Date.now() + MIN_REQUEST_INTERVAL_MS, nextAvailableTime + MIN_REQUEST_INTERVAL_MS);
+      job.resolve(response);
+      isProcessingQueue = false;
+      processQueue();
+    } catch (error) {
+      updateRateLimitFromHeaders(error.response && error.response.headers);
+      nextAvailableTime = Math.max(Date.now() + MIN_REQUEST_INTERVAL_MS, nextAvailableTime + MIN_REQUEST_INTERVAL_MS);
+      const status = error.response && error.response.status;
+      const code = error.response && error.response.data && error.response.data.code;
+      if ((status === 429 || code === 1011 || code === 1006) && job.attempt < 3) {
+        job.attempt += 1;
+        const backoff = 200 * Math.pow(2, job.attempt);
+        setTimeout(() => {
+          requestQueue.unshift(job);
+          isProcessingQueue = false;
+          processQueue();
+        }, backoff);
+        return;
+      }
+      job.reject(error);
+      isProcessingQueue = false;
+      processQueue();
+    }
+  }, wait);
+}
+
 function readPersistedRefreshToken() {
   try {
     if (!fs.existsSync(tokenFilePath)) {
@@ -44,10 +115,10 @@ function persistRefreshToken(nextRefreshToken) {
   }
 }
 
-let refreshToken = process.env.QUESTRADE_REFRESH_TOKEN || readPersistedRefreshToken();
+let refreshToken = readPersistedRefreshToken();
 
 if (!refreshToken) {
-  console.error('Missing Questrade refresh token. Set QUESTRADE_REFRESH_TOKEN or create token-store.json');
+  console.error('Missing Questrade refresh token. Run npm run seed-token -- <refreshToken> to initialize token-store.json.');
   process.exit(1);
 }
 
@@ -58,7 +129,16 @@ async function refreshAccessToken() {
     refresh_token: refreshToken,
   };
 
-  const response = await axios.get(tokenUrl, { params });
+  let response;
+  try {
+    response = await axios.get(tokenUrl, { params });
+  } catch (error) {
+    const status = error.response ? error.response.status : 'NO_RESPONSE';
+    const payload = error.response ? error.response.data : error.message;
+    console.error('Failed to refresh Questrade token', status, payload);
+    throw error;
+  }
+
   const tokenData = response.data;
   const cacheTtl = Math.max((tokenData.expires_in || 1800) - 60, 60);
   const tokenContext = {
@@ -86,35 +166,33 @@ async function getTokenContext() {
 }
 
 async function questradeRequest(pathSegment, options = {}) {
-  const method = options.method || 'GET';
-  const params = options.params;
-  const data = options.data;
-  const headers = options.headers || {};
+  const { method = 'GET', params, data, headers = {} } = options;
   const tokenContext = await getTokenContext();
   const url = new URL(pathSegment, tokenContext.apiServer).toString();
 
+  const baseConfig = {
+    method,
+    url,
+    params,
+    data,
+    headers: Object.assign(
+      {
+        Authorization: 'Bearer ' + tokenContext.accessToken,
+      },
+      headers
+    ),
+  };
+
   try {
-    const response = await axios({
-      method,
-      url,
-      params,
-      data,
-      headers: Object.assign(
-        {
-          Authorization: 'Bearer ' + tokenContext.accessToken,
-        },
-        headers
-      ),
-    });
+    const response = await enqueueRequest(() => axios(baseConfig));
     return response.data;
   } catch (error) {
     if (error.response && error.response.status === 401) {
       tokenCache.del('tokenContext');
       const freshContext = await refreshAccessToken();
-      const retryUrl = new URL(pathSegment, freshContext.apiServer).toString();
-      const retryResponse = await axios({
+      const retryConfig = {
         method,
-        url: retryUrl,
+        url: new URL(pathSegment, freshContext.apiServer).toString(),
         params,
         data,
         headers: Object.assign(
@@ -123,7 +201,8 @@ async function questradeRequest(pathSegment, options = {}) {
           },
           headers
         ),
-      });
+      };
+      const retryResponse = await enqueueRequest(() => axios(retryConfig));
       return retryResponse.data;
     }
     console.error('Questrade API error:', error.response ? error.response.data : error.message);
@@ -234,10 +313,10 @@ function mergePnL(positions) {
 function decoratePositions(positions, symbolsMap, accountsMap) {
   return positions.map(function (position) {
     const symbolInfo = symbolsMap[position.symbolId];
-    const accountInfo = accountsMap[position.accountId];
+    const accountInfo = accountsMap[position.accountNumber || position.accountId];
     return {
-      accountId: position.accountId,
-      accountNumber: accountInfo ? accountInfo.number : null,
+      accountId: position.accountNumber || position.accountId,
+      accountNumber: position.accountNumber || (accountInfo ? accountInfo.number : null),
       accountType: accountInfo ? accountInfo.type : null,
       accountPrimary: accountInfo ? accountInfo.isPrimary : null,
       symbol: position.symbol,
@@ -261,9 +340,11 @@ app.get('/api/summary', async function (req, res) {
 
   try {
     const accounts = await fetchAccounts();
-    const accountsToUse = accountIdFilter
+    const accountNumberFilter = req.query.accountId && req.query.accountId !== 'all' ? String(req.query.accountId) : null;
+
+    const accountsToUse = accountNumberFilter
       ? accounts.filter(function (acct) {
-          return acct.accountId === accountIdFilter || acct.number === req.query.accountId;
+          return acct.number === accountNumberFilter;
         })
       : accounts;
 
@@ -273,24 +354,23 @@ app.get('/api/summary', async function (req, res) {
 
     const accountsMap = {};
     accounts.forEach(function (account) {
-      accountsMap[account.accountId] = account;
+      accountsMap[account.number] = account;
     });
 
-    const positionsResults = await Promise.all(
-      accountsToUse.map(function (account) {
-        return fetchPositions(account.accountId);
-      })
-    );
-    const balancesResults = await Promise.all(
-      accountsToUse.map(function (account) {
-        return fetchBalances(account.accountId);
-      })
-    );
+    const positionsResults = [];
+    const balancesResults = [];
+    for (const account of accountsToUse) {
+      positionsResults.push(await fetchPositions(account.number));
+      balancesResults.push(await fetchBalances(account.number));
+    }
 
     const flattenedPositions = positionsResults
       .map(function (positions, index) {
         return positions.map(function (position) {
-          return Object.assign({}, position, { accountId: accountsToUse[index].accountId });
+          return Object.assign({}, position, {
+            accountId: accountsToUse[index].number,
+            accountNumber: accountsToUse[index].number,
+          });
         });
       })
       .flat();
@@ -313,7 +393,7 @@ app.get('/api/summary', async function (req, res) {
     res.json({
       accounts: accounts.map(function (account) {
         return {
-          id: account.accountId,
+          id: account.number,
           number: account.number,
           type: account.type,
           status: account.status,
@@ -323,7 +403,7 @@ app.get('/api/summary', async function (req, res) {
         };
       }),
       filteredAccountIds: accountsToUse.map(function (acct) {
-        return acct.accountId;
+        return acct.number;
       }),
       positions: decoratedPositions,
       pnl: pnl,
@@ -345,3 +425,25 @@ app.get('/health', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on port ' + PORT);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
