@@ -1,5 +1,4 @@
-const currencyFormatters = new Map();
-const numberFormatters = new Map();
+const decimalFormatters = new Map();
 const torontoTimeZone = 'America/Toronto';
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -13,60 +12,90 @@ const timeFormatter = new Intl.DateTimeFormat('en-US', {
   hour12: true,
   timeZone: torontoTimeZone,
 });
+const timeWithSecondsFormatter = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: true,
+  timeZone: torontoTimeZone,
+});
 
-export function formatCurrency(value, currency = 'CAD', options = {}) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return '\u2014';
+function resolveDigitOptions(input, defaults) {
+  if (typeof input === 'number') {
+    return {
+      minimumFractionDigits: input,
+      maximumFractionDigits: input,
+    };
   }
-  const key = `${currency}:${options.minimumFractionDigits ?? 2}:${options.maximumFractionDigits ?? 2}`;
-  if (!currencyFormatters.has(key)) {
-    currencyFormatters.set(
+  return {
+    minimumFractionDigits: input?.minimumFractionDigits ?? defaults.minimumFractionDigits,
+    maximumFractionDigits: input?.maximumFractionDigits ?? defaults.maximumFractionDigits,
+  };
+}
+
+function getDecimalFormatter(minimumFractionDigits, maximumFractionDigits) {
+  const key = `${minimumFractionDigits}:${maximumFractionDigits}`;
+  if (!decimalFormatters.has(key)) {
+    decimalFormatters.set(
       key,
       new Intl.NumberFormat('en-CA', {
-        style: 'currency',
-        currency,
-        minimumFractionDigits: options.minimumFractionDigits ?? 2,
-        maximumFractionDigits: options.maximumFractionDigits ?? 2,
+        minimumFractionDigits,
+        maximumFractionDigits,
       })
     );
   }
-  return currencyFormatters.get(key).format(value);
+  return decimalFormatters.get(key);
 }
 
-export function formatNumber(value, fractionDigits = 2) {
+export function formatNumber(value, fractionDigitsOrOptions = { minimumFractionDigits: 0, maximumFractionDigits: 2 }) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '\u2014';
   }
-  const key = `${fractionDigits}`;
-  if (!numberFormatters.has(key)) {
-    numberFormatters.set(
-      key,
-      new Intl.NumberFormat('en-CA', {
-        minimumFractionDigits: fractionDigits,
-        maximumFractionDigits: fractionDigits,
-      })
-    );
-  }
-  return numberFormatters.get(key).format(Number(value));
+  const digits = resolveDigitOptions(fractionDigitsOrOptions, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const formatter = getDecimalFormatter(digits.minimumFractionDigits, digits.maximumFractionDigits);
+  return formatter.format(Number(value));
 }
 
-export function formatCurrencyWithCode(value, currency = 'CAD', options = {}) {
-  return formatCurrency(value, currency, options);
+function formatMoneyMagnitude(value, digitOptions) {
+  const digits = resolveDigitOptions(digitOptions, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatter = getDecimalFormatter(digits.minimumFractionDigits, digits.maximumFractionDigits);
+  return `$${formatter.format(Number(value))}`;
 }
 
-export function formatSignedCurrency(value, currency = 'CAD', options = {}) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
+export function formatMoney(value, digitOptions) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '\u2014';
   }
-  const magnitude = Math.abs(Number(value));
-  const formattedMagnitude = formatCurrency(magnitude, currency, options);
-  if (value > 0) {
+  const numericValue = Number(value);
+  const formattedMagnitude = formatMoneyMagnitude(Math.abs(numericValue), digitOptions);
+  return numericValue < 0 ? `-${formattedMagnitude}` : formattedMagnitude;
+}
+
+export function formatSignedMoney(value, digitOptions) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return '\u2014';
+  }
+  const numericValue = Number(value);
+  const formattedMagnitude = formatMoneyMagnitude(Math.abs(numericValue), digitOptions);
+  if (numericValue > 0) {
     return `+${formattedMagnitude}`;
   }
-  if (value < 0) {
+  if (numericValue < 0) {
     return `-${formattedMagnitude}`;
   }
   return formattedMagnitude;
+}
+
+export function formatCurrency(value, currency = 'CAD', options) {
+  return formatMoney(value, options);
+}
+
+export function formatCurrencyWithCode(value, currency = 'CAD', options) {
+  return formatMoney(value, options);
+}
+
+export function formatSignedCurrency(value, currency = 'CAD', options) {
+  return formatSignedMoney(value, options);
 }
 
 export function classifyPnL(value) {
@@ -75,18 +104,35 @@ export function classifyPnL(value) {
   return 'neutral';
 }
 
-export function formatPnL(value, currency) {
+export function formatPnL(value, currency, options) {
   return {
-    formatted: formatSignedCurrency(value, currency),
+    formatted: formatSignedMoney(value, options),
     tone: classifyPnL(value),
   };
 }
 
-export function formatPercent(value, fractionDigits = 2) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
+export function formatPercent(value, fractionDigitsOrOptions = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '\u2014';
   }
-  return `${formatNumber(value, fractionDigits)}%`;
+  const digits = resolveDigitOptions(fractionDigitsOrOptions, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const formatter = getDecimalFormatter(digits.minimumFractionDigits, digits.maximumFractionDigits);
+  return `${formatter.format(Number(value))}%`;
+}
+
+export function formatSignedPercent(value, fractionDigitsOrOptions = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return '\u2014';
+  }
+  const magnitude = Math.abs(Number(value));
+  const formattedMagnitude = formatPercent(magnitude, fractionDigitsOrOptions);
+  if (value > 0) {
+    return `+${formattedMagnitude}`;
+  }
+  if (value < 0) {
+    return `-${formattedMagnitude}`;
+  }
+  return formattedMagnitude;
 }
 
 export function formatDateTime(dateInput) {
@@ -100,4 +146,16 @@ export function formatDateTime(dateInput) {
   const datePart = dateFormatter.format(date);
   const timePart = timeFormatter.format(date);
   return `${datePart}, ${timePart} ET`;
+}
+
+export function formatTimeOfDay(dateInput) {
+  if (!dateInput) {
+    return '\u2014';
+  }
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) {
+    return '\u2014';
+  }
+  const formatted = timeWithSecondsFormatter.format(date).toLowerCase();
+  return `${formatted} ET`;
 }

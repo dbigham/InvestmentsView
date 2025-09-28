@@ -1,23 +1,18 @@
 import PropTypes from 'prop-types';
-import {
-  formatCurrencyWithCode,
-  formatNumber,
-  classifyPnL,
-  formatSignedCurrency,
-} from '../utils/formatters';
+import TimePill from './TimePill';
+import { classifyPnL, formatMoney, formatNumber, formatSignedMoney } from '../utils/formatters';
 
-function PnlBadge({ value, currency }) {
+function PnlBadge({ value }) {
   const tone = classifyPnL(value);
   return (
     <span className={`positions-table__pnl ${tone}`}>
-      <span className="positions-table__pnl-value">{formatSignedCurrency(value, currency)}</span>
+      {formatSignedMoney(value)}
     </span>
   );
 }
 
 PnlBadge.propTypes = {
   value: PropTypes.number,
-  currency: PropTypes.string.isRequired,
 };
 
 PnlBadge.defaultProps = {
@@ -25,98 +20,104 @@ PnlBadge.defaultProps = {
 };
 
 const TABLE_HEADERS = [
-  { label: 'Symbol', className: 'positions-table__head--symbol' },
-  { label: "Today's P&L", className: 'positions-table__head--numeric' },
-  { label: 'Open P&L', className: 'positions-table__head--numeric' },
-  { label: 'Open qty', className: 'positions-table__head--numeric' },
-  { label: 'Avg price', className: 'positions-table__head--numeric' },
-  { label: 'Symbol price', className: 'positions-table__head--numeric' },
-  { label: 'Market value', className: 'positions-table__head--numeric' },
-  { label: 'Currency', className: 'positions-table__head--currency' },
-  { label: '% of portfolio', className: 'positions-table__head--numeric' },
+  { key: 'symbol', label: 'Symbol', className: 'positions-table__head--symbol' },
+  { key: 'dayPnl', label: "Today's P&L", className: 'positions-table__head--numeric' },
+  { key: 'openPnl', label: 'Open P&L', className: 'positions-table__head--numeric' },
+  { key: 'openQuantity', label: 'Open qty', className: 'positions-table__head--numeric' },
+  { key: 'averageEntryPrice', label: 'Avg price', className: 'positions-table__head--numeric' },
+  { key: 'currentPrice', label: 'Symbol price', className: 'positions-table__head--numeric' },
+  { key: 'currentMarketValue', label: 'Market value', className: 'positions-table__head--numeric' },
+  { key: 'currency', label: 'Currency', className: 'positions-table__head--currency' },
+  { key: 'portfolioShare', label: '% of portfolio', className: 'positions-table__head--numeric' },
 ];
 
-function normalizeLabel(value) {
-  if (!value) return '';
-  return String(value)
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function toTitle(value) {
-  const normalized = normalizeLabel(value);
-  if (!normalized) return '';
-  return normalized
-    .split(' ')
-    .map((word) => {
-      if (word.length <= 3 && word === word.toUpperCase()) {
-        return word.toUpperCase();
-      }
-      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-    })
-    .join(' ');
-}
-
-function buildAccountDescriptor(position) {
-  const fragments = [];
-  const primaryDescriptor = toTitle(position.accountType);
-  if (primaryDescriptor) {
-    fragments.push(primaryDescriptor);
+function formatQuantity(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return '\u2014';
   }
-  const accountId = position.accountNumber || position.accountId;
-  if (accountId) {
-    fragments.push(`#${accountId}`);
-  }
-  return fragments.join(' \\u2022 ');
+  const numeric = Number(value);
+  const hasFraction = Math.abs(numeric % 1) > 0.0000001;
+  return formatNumber(numeric, {
+    minimumFractionDigits: hasFraction ? 4 : 0,
+    maximumFractionDigits: hasFraction ? 4 : 0,
+  });
 }
 
-export default function PositionsTable({ positions, totalMarketValue }) {
-  const header = (
-    <header className="positions-card__header">
-      <div className="positions-card__tabs" role="tablist" aria-label="Positions data views">
-        <button type="button" role="tab" aria-selected="true" className="active">
-          Positions
-        </button>
-      </div>
-      <span className="positions-card__count">{positions.length} holdings</span>
-    </header>
-  );
+function formatShare(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return '\u2014';
+  }
+  const numeric = Number(value);
+  return `${formatNumber(numeric, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+}
+
+export default function PositionsTable({
+  positions,
+  totalMarketValue,
+  asOf,
+  onRefresh,
+  sortColumn,
+  sortDirection,
+}) {
+  const aggregateMarketValue =
+    typeof totalMarketValue === 'number' && totalMarketValue > 0
+      ? totalMarketValue
+      : positions.reduce((acc, position) => acc + (position.currentMarketValue || 0), 0);
 
   if (!positions.length) {
     return (
       <section className="positions-card">
-        {header}
+        <header className="positions-card__header">
+          <div className="positions-card__tabs" role="tablist" aria-label="Positions data views">
+            <button type="button" role="tab" aria-selected="true" className="active">
+              Positions
+            </button>
+          </div>
+          <TimePill asOf={asOf} onRefresh={onRefresh} />
+        </header>
         <div className="empty-state">No positions to display.</div>
       </section>
     );
   }
 
-  const aggregateMarketValue =
-    totalMarketValue ?? positions.reduce((acc, position) => acc + (position.currentMarketValue || 0), 0);
-
   return (
     <section className="positions-card">
-      {header}
+      <header className="positions-card__header">
+        <div className="positions-card__tabs" role="tablist" aria-label="Positions data views">
+          <button type="button" role="tab" aria-selected="true" className="active">
+            Positions
+          </button>
+        </div>
+        <TimePill asOf={asOf} onRefresh={onRefresh} />
+      </header>
 
       <div className="positions-table" role="table">
         <div className="positions-table__row positions-table__row--head" role="row">
-          {TABLE_HEADERS.map((column) => (
-            <div
-              key={column.label}
-              role="columnheader"
-              className={`positions-table__head ${column.className}`}
-            >
-              {column.label}
-            </div>
-          ))}
+          {TABLE_HEADERS.map((column) => {
+            const isSorted = column.key === sortColumn;
+            return (
+              <div
+                key={column.key}
+                role="columnheader"
+                className={`positions-table__head ${column.className}${isSorted ? ' sorted' : ''}`}
+              >
+                <span>{column.label}</span>
+                {isSorted && (
+                  <span className={`positions-table__sort-indicator ${sortDirection}`} aria-hidden="true" />
+                )}
+              </div>
+            );
+          })}
         </div>
 
         <div className="positions-table__body">
           {positions.map((position) => {
-            const currency = position.currency || 'CAD';
-            const share = aggregateMarketValue > 0 ? (position.currentMarketValue / aggregateMarketValue) * 100 : null;
-            const accountDescriptor = buildAccountDescriptor(position);
+            const share =
+              typeof position.portfolioShare === 'number'
+                ? position.portfolioShare
+                : aggregateMarketValue > 0
+                ? ((position.currentMarketValue || 0) / aggregateMarketValue) * 100
+                : null;
 
             return (
               <div
@@ -127,31 +128,30 @@ export default function PositionsTable({ positions, totalMarketValue }) {
                 <div className="positions-table__cell positions-table__cell--symbol" role="cell">
                   <div className="positions-table__symbol-ticker">{position.symbol}</div>
                   <div className="positions-table__symbol-name">{position.description || '—'}</div>
-                  <div className="positions-table__symbol-account">{accountDescriptor}</div>
-                </div>
-                <div className="positions-table__cell positions-table__cell--pnl" role="cell">
-                  <PnlBadge value={position.dayPnl} currency={currency} />
-                </div>
-                <div className="positions-table__cell positions-table__cell--pnl" role="cell">
-                  <PnlBadge value={position.openPnl} currency={currency} />
                 </div>
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatNumber(position.openQuantity, 2)}
+                  <PnlBadge value={position.dayPnl} />
                 </div>
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatCurrencyWithCode(position.averageEntryPrice, currency)}
+                  <PnlBadge value={position.openPnl} />
                 </div>
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatCurrencyWithCode(position.currentPrice, currency)}
+                  {formatQuantity(position.openQuantity)}
                 </div>
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatCurrencyWithCode(position.currentMarketValue, currency)}
+                  {formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+                </div>
+                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                  {formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                  {formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <div className="positions-table__cell positions-table__cell--currency" role="cell">
-                  <span>{currency}</span>
+                  <span>{position.currency || '—'}</span>
                 </div>
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {share === null ? '—' : `${formatNumber(share, 2)}%`}
+                  {formatShare(share)}
                 </div>
               </div>
             );
@@ -167,7 +167,6 @@ PositionsTable.propTypes = {
     PropTypes.shape({
       accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
       accountNumber: PropTypes.string,
-      accountType: PropTypes.string,
       symbol: PropTypes.string.isRequired,
       symbolId: PropTypes.number.isRequired,
       description: PropTypes.string,
@@ -178,12 +177,20 @@ PositionsTable.propTypes = {
       currentPrice: PropTypes.number,
       currentMarketValue: PropTypes.number,
       currency: PropTypes.string,
+      portfolioShare: PropTypes.number,
     })
   ).isRequired,
   totalMarketValue: PropTypes.number,
+  asOf: PropTypes.string,
+  onRefresh: PropTypes.func,
+  sortColumn: PropTypes.string,
+  sortDirection: PropTypes.oneOf(['asc', 'desc']),
 };
 
 PositionsTable.defaultProps = {
   totalMarketValue: null,
+  asOf: null,
+  onRefresh: null,
+  sortColumn: 'portfolioShare',
+  sortDirection: 'desc',
 };
-
