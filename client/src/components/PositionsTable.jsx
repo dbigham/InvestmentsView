@@ -123,6 +123,21 @@ function truncateDescription(value) {
   return `${normalized.slice(0, 21).trimEnd()}...`;
 }
 
+function buildQuoteUrl(symbol, provider) {
+  if (!symbol) {
+    return null;
+  }
+  const normalized = String(symbol).trim().toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+  const encoded = encodeURIComponent(normalized);
+  if (provider === 'yahoo') {
+    return `https://ca.finance.yahoo.com/quote/${encoded}/`;
+  }
+  return `https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=${encoded}%20chart`;
+}
+
 function compareRows(header, direction) {
   const multiplier = direction === 'asc' ? 1 : -1;
   return (a, b) => {
@@ -189,7 +204,6 @@ function PositionsTable({
   positions,
   totalMarketValue,
   asOf,
-  onRefresh,
   sortColumn,
   sortDirection,
 }) {
@@ -253,6 +267,27 @@ function PositionsTable({
     setPnlMode((mode) => (mode === 'currency' ? 'percent' : 'currency'));
   }, []);
 
+  const handleRowNavigation = useCallback(
+    (event, symbol) => {
+      if (!symbol) {
+        return;
+      }
+      const element = event.target;
+      if (element && typeof element.closest === 'function' && element.closest('button, a')) {
+        return;
+      }
+      const url = buildQuoteUrl(symbol, event.altKey ? 'yahoo' : 'google');
+      if (!url) {
+        return;
+      }
+      event.stopPropagation();
+      if (typeof window !== 'undefined' && typeof window.open === 'function') {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    },
+    []
+  );
+
   if (!positions.length) {
     return (
       <section className="positions-card">
@@ -262,7 +297,7 @@ function PositionsTable({
               Positions
             </button>
           </div>
-          <TimePill asOf={asOf} onRefresh={onRefresh} />
+          <TimePill asOf={asOf} />
         </header>
         <div className="empty-state">No positions to display.</div>
       </section>
@@ -277,7 +312,7 @@ function PositionsTable({
             Positions
           </button>
         </div>
-        <TimePill asOf={asOf} onRefresh={onRefresh} />
+        <TimePill asOf={asOf} />
       </header>
 
       <div className="positions-table" role="table">
@@ -314,8 +349,9 @@ function PositionsTable({
             return (
               <div
                 key={`${position.accountNumber || position.accountId}:${position.symbolId}`}
-                className="positions-table__row"
+                className="positions-table__row positions-table__row--clickable"
                 role="row"
+                onClick={(event) => handleRowNavigation(event, position.symbol)}
               >
                 <div className="positions-table__cell positions-table__cell--symbol" role="cell">
                   <div className="positions-table__symbol-ticker">{position.symbol}</div>
@@ -387,7 +423,6 @@ PositionsTable.propTypes = {
   ).isRequired,
   totalMarketValue: PropTypes.number,
   asOf: PropTypes.string,
-  onRefresh: PropTypes.func,
   sortColumn: PropTypes.string,
   sortDirection: PropTypes.oneOf(['asc', 'desc']),
 };
@@ -395,7 +430,6 @@ PositionsTable.propTypes = {
 PositionsTable.defaultProps = {
   totalMarketValue: null,
   asOf: null,
-  onRefresh: null,
   sortColumn: 'portfolioShare',
   sortDirection: 'desc',
 };

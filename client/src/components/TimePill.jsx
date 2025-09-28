@@ -4,15 +4,16 @@ import { formatTimeOfDay } from '../utils/formatters';
 export default function TimePill({ asOf, onRefresh, className }) {
   const label = formatTimeOfDay(asOf);
   const pillClassName = className ? `time-pill ${className}` : 'time-pill';
+  const isInteractive = typeof onRefresh === 'function';
 
   const contents = (
     <>
-      <span className="time-pill__icon" aria-hidden="true" />
+      {isInteractive && <span className="time-pill__icon" aria-hidden="true" />}
       <span className="time-pill__text">{label}</span>
     </>
   );
 
-  if (onRefresh) {
+  if (isInteractive) {
     return (
       <button
         type="button"

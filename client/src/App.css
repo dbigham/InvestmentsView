@@ -421,6 +421,10 @@ textarea {
   border-bottom: 1px solid var(--color-divider);
 }
 
+.positions-table__row--clickable {
+  cursor: pointer;
+}
+
 .positions-table__cell {
   font-size: 13px;
   color: var(--color-text-primary);
