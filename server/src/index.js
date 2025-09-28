@@ -86,47 +86,146 @@ function processQueue() {
   }, wait);
 }
 
-function readPersistedRefreshToken() {
+function normalizeLogin(login, fallbackId) {
+  if (!login || typeof login !== 'object') {
+    return null;
+  }
+  const normalized = Object.assign({}, login);
+  if (normalized.refresh_token && !normalized.refreshToken) {
+    normalized.refreshToken = normalized.refresh_token;
+  }
+  if (normalized.ownerLabel && !normalized.label) {
+    normalized.label = normalized.ownerLabel;
+  }
+  if (normalized.ownerEmail && !normalized.email) {
+    normalized.email = normalized.ownerEmail;
+  }
+  const resolvedId = normalized.id || fallbackId;
+  if (!resolvedId) {
+    return null;
+  }
+  normalized.id = String(resolvedId);
+  if (!normalized.refreshToken) {
+    return null;
+  }
+  delete normalized.refresh_token;
+  delete normalized.ownerLabel;
+  delete normalized.ownerEmail;
+  return normalized;
+}
+
+function loadTokenStore() {
   try {
     if (!fs.existsSync(tokenFilePath)) {
-      return null;
+      return { logins: [] };
     }
-    const content = fs.readFileSync(tokenFilePath, 'utf-8');
+    const content = fs.readFileSync(tokenFilePath, 'utf-8').replace(/^\uFEFF/, '');
     if (!content.trim()) {
-      return null;
+      return { logins: [] };
     }
     const parsed = JSON.parse(content);
-    return parsed.refreshToken || null;
+    if (Array.isArray(parsed.logins)) {
+      const logins = parsed.logins
+        .map((login, index) => normalizeLogin(login, 'login-' + (index + 1)))
+        .filter(Boolean);
+      return Object.assign({}, parsed, { logins });
+    }
+    if (parsed.refreshToken) {
+      const legacyLogin = normalizeLogin(
+        {
+          id: parsed.id || parsed.loginId || 'primary',
+          label: parsed.label || parsed.ownerLabel || null,
+          email: parsed.email || parsed.ownerEmail || null,
+          refreshToken: parsed.refreshToken,
+          updatedAt: parsed.updatedAt || null,
+        },
+        'primary'
+      );
+      return { logins: legacyLogin ? [legacyLogin] : [], __migratedFromLegacy: true };
+    }
+    return { logins: [] };
   } catch (error) {
     console.warn('Failed to read token store:', error.message);
-    return null;
+    return { logins: [] };
   }
 }
 
-function persistRefreshToken(nextRefreshToken) {
+function persistTokenStore(store) {
   try {
-    fs.writeFileSync(
-      tokenFilePath,
-      JSON.stringify({ refreshToken: nextRefreshToken, updatedAt: new Date().toISOString() }, null, 2),
-      'utf-8'
-    );
+    const sanitizedLogins = (store.logins || []).map((login) => {
+      const base = {
+        id: login.id,
+        label: login.label || null,
+        email: login.email || null,
+        refreshToken: login.refreshToken,
+        updatedAt: login.updatedAt || null,
+      };
+      Object.keys(login).forEach((key) => {
+        if (['id', 'label', 'email', 'refreshToken', 'updatedAt'].includes(key)) {
+          return;
+        }
+        base[key] = login[key];
+      });
+      return base;
+    });
+    const payload = {
+      logins: sanitizedLogins,
+      updatedAt: new Date().toISOString(),
+    };
+    store.updatedAt = payload.updatedAt;
+    fs.writeFileSync(tokenFilePath, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (error) {
     console.warn('Failed to persist token store:', error.message);
   }
 }
 
-let refreshToken = readPersistedRefreshToken();
+const tokenStoreState = loadTokenStore();
+const allLogins = tokenStoreState.logins || [];
 
-if (!refreshToken) {
-  console.error('Missing Questrade refresh token. Run npm run seed-token -- <refreshToken> to initialize token-store.json.');
+if (!allLogins.length) {
+  console.error('Missing Questrade refresh token(s). Seed token-store.json with at least one login.');
   process.exit(1);
 }
 
-async function refreshAccessToken() {
+const loginsById = {};
+allLogins.forEach((login) => {
+  loginsById[login.id] = login;
+});
+
+function resolveLoginDisplay(login) {
+  if (!login) {
+    return null;
+  }
+  return login.label || login.email || login.id;
+}
+
+if (tokenStoreState.__migratedFromLegacy) {
+  delete tokenStoreState.__migratedFromLegacy;
+  persistTokenStore(tokenStoreState);
+}
+
+function getTokenCacheKey(loginId) {
+  return 'tokenContext:' + loginId;
+}
+
+function updateLoginRefreshToken(login, nextRefreshToken) {
+  if (!login || !nextRefreshToken || nextRefreshToken === login.refreshToken) {
+    return;
+  }
+  login.refreshToken = nextRefreshToken;
+  login.updatedAt = new Date().toISOString();
+  persistTokenStore(tokenStoreState);
+}
+
+async function refreshAccessToken(login) {
+  if (!login || !login.refreshToken) {
+    throw new Error('Missing refresh token for Questrade login');
+  }
+
   const tokenUrl = 'https://login.questrade.com/oauth2/token';
   const params = {
     grant_type: 'refresh_token',
-    refresh_token: refreshToken,
+    refresh_token: login.refreshToken,
   };
 
   let response;
@@ -135,7 +234,7 @@ async function refreshAccessToken() {
   } catch (error) {
     const status = error.response ? error.response.status : 'NO_RESPONSE';
     const payload = error.response ? error.response.data : error.message;
-    console.error('Failed to refresh Questrade token', status, payload);
+    console.error('Failed to refresh Questrade token for login ' + resolveLoginDisplay(login), status, payload);
     throw error;
   }
 
@@ -146,28 +245,32 @@ async function refreshAccessToken() {
     apiServer: tokenData.api_server,
     expiresIn: tokenData.expires_in,
     acquiredAt: Date.now(),
+    loginId: login.id,
   };
-  tokenCache.set('tokenContext', tokenContext, cacheTtl);
+  tokenCache.set(getTokenCacheKey(login.id), tokenContext, cacheTtl);
 
-  if (tokenData.refresh_token && tokenData.refresh_token !== refreshToken) {
-    refreshToken = tokenData.refresh_token;
-    persistRefreshToken(refreshToken);
+  if (tokenData.refresh_token && tokenData.refresh_token !== login.refreshToken) {
+    updateLoginRefreshToken(login, tokenData.refresh_token);
   }
 
   return tokenContext;
 }
 
-async function getTokenContext() {
-  const cached = tokenCache.get('tokenContext');
+async function getTokenContext(login) {
+  const cacheKey = getTokenCacheKey(login.id);
+  const cached = tokenCache.get(cacheKey);
   if (cached) {
     return cached;
   }
-  return refreshAccessToken();
+  return refreshAccessToken(login);
 }
 
-async function questradeRequest(pathSegment, options = {}) {
+async function questradeRequest(login, pathSegment, options = {}) {
+  if (!login) {
+    throw new Error('Questrade login context is required for API requests');
+  }
   const { method = 'GET', params, data, headers = {} } = options;
-  const tokenContext = await getTokenContext();
+  const tokenContext = await getTokenContext(login);
   const url = new URL(pathSegment, tokenContext.apiServer).toString();
 
   const baseConfig = {
@@ -188,8 +291,8 @@ async function questradeRequest(pathSegment, options = {}) {
     return response.data;
   } catch (error) {
     if (error.response && error.response.status === 401) {
-      tokenCache.del('tokenContext');
-      const freshContext = await refreshAccessToken();
+      tokenCache.del(getTokenCacheKey(login.id));
+      const freshContext = await refreshAccessToken(login);
       const retryConfig = {
         method,
         url: new URL(pathSegment, freshContext.apiServer).toString(),
@@ -205,32 +308,42 @@ async function questradeRequest(pathSegment, options = {}) {
       const retryResponse = await enqueueRequest(() => axios(retryConfig));
       return retryResponse.data;
     }
-    console.error('Questrade API error:', error.response ? error.response.data : error.message);
+    console.error(
+      'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
+      error.response ? error.response.data : error.message
+    );
     throw error;
   }
 }
 
-async function fetchAccounts() {
-  const data = await questradeRequest('/v1/accounts');
+async function fetchAccounts(login) {
+  const data = await questradeRequest(login, '/v1/accounts');
   return data.accounts || [];
 }
 
-async function fetchPositions(accountId) {
-  const data = await questradeRequest('/v1/accounts/' + accountId + '/positions');
+async function fetchPositions(login, accountId) {
+  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/positions');
   return data.positions || [];
 }
 
-async function fetchBalances(accountId) {
-  const data = await questradeRequest('/v1/accounts/' + accountId + '/balances');
+async function fetchBalances(login, accountId) {
+  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/balances');
   return data || {};
 }
 
-async function fetchNetDeposits(accountId) {
+async function fetchNetDeposits(login, accountId) {
   try {
-    const data = await questradeRequest('/v1/accounts/' + accountId + '/netDeposits');
+    const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/netDeposits');
     return data || null;
   } catch (error) {
-    console.warn('Failed to fetch net deposits for account ' + accountId + ':', error.response ? error.response.status : error.message);
+    console.warn(
+      'Failed to fetch net deposits for account ' +
+        accountId +
+        ' (login ' +
+        resolveLoginDisplay(login) +
+        '):',
+      error.response ? error.response.status : error.message
+    );
     return null;
   }
 }
@@ -317,7 +430,7 @@ function extractNetDepositEntries(response) {
   return [];
 }
 
-async function fetchSymbolsDetails(symbolIds) {
+async function fetchSymbolsDetails(login, symbolIds) {
   if (!symbolIds.length) {
     return {};
   }
@@ -331,7 +444,7 @@ async function fetchSymbolsDetails(symbolIds) {
   const results = {};
   for (const batch of batches) {
     const idsParam = batch.join(',');
-    const data = await questradeRequest('/v1/symbols', { params: { ids: idsParam } });
+    const data = await questradeRequest(login, '/v1/symbols', { params: { ids: idsParam } });
     (data.symbols || []).forEach(function (symbol) {
       results[symbol.symbolId] = symbol;
     });
@@ -431,12 +544,16 @@ function mergePnL(positions) {
 function decoratePositions(positions, symbolsMap, accountsMap) {
   return positions.map(function (position) {
     const symbolInfo = symbolsMap[position.symbolId];
-    const accountInfo = accountsMap[position.accountNumber || position.accountId];
+    const accountInfo = accountsMap[position.accountId] || accountsMap[position.accountNumber] || null;
     return {
-      accountId: position.accountNumber || position.accountId,
+      accountId: position.accountId,
       accountNumber: position.accountNumber || (accountInfo ? accountInfo.number : null),
       accountType: accountInfo ? accountInfo.type : null,
       accountPrimary: accountInfo ? accountInfo.isPrimary : null,
+      accountOwnerId: accountInfo ? accountInfo.loginId || accountInfo.ownerId || null : null,
+      accountOwnerLabel: accountInfo ? accountInfo.ownerLabel || accountInfo.loginLabel || null : null,
+      accountOwnerEmail: accountInfo ? accountInfo.ownerEmail || accountInfo.loginEmail || null : null,
+      loginId: position.loginId || (accountInfo ? accountInfo.loginId : null),
       symbol: position.symbol,
       symbolId: position.symbolId,
       description: symbolInfo ? symbolInfo.description : null,
@@ -454,77 +571,139 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
 }
 
 app.get('/api/summary', async function (req, res) {
-  const accountIdFilter = req.query.accountId && req.query.accountId !== 'all' ? Number(req.query.accountId) : null;
+  const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
+  const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
 
   try {
-    const accounts = await fetchAccounts();
-    const accountNumberFilter = req.query.accountId && req.query.accountId !== 'all' ? String(req.query.accountId) : null;
-
-    const accountsToUse = accountNumberFilter
-      ? accounts.filter(function (acct) {
-          return acct.number === accountNumberFilter;
-        })
-      : accounts;
-
-    if (!accountsToUse.length) {
-      return res.status(404).json({ message: 'No accounts found for the provided filter.' });
+    const accountCollections = [];
+    for (const login of allLogins) {
+      const fetchedAccounts = await fetchAccounts(login);
+      const normalized = fetchedAccounts.map(function (account, index) {
+        const rawNumber = account.number || account.accountNumber || account.id || index;
+        const number = String(rawNumber);
+        const compositeId = login.id + ':' + number;
+        const ownerLabel = resolveLoginDisplay(login);
+        return Object.assign({}, account, {
+          id: compositeId,
+          number,
+          accountNumber: number,
+          loginId: login.id,
+          ownerId: login.id,
+          ownerLabel,
+          ownerEmail: login.email || null,
+          loginLabel: ownerLabel,
+          loginEmail: login.email || null,
+        });
+      });
+      accountCollections.push({ login, accounts: normalized });
     }
 
-    const accountsMap = {};
-    accounts.forEach(function (account) {
-      accountsMap[account.number] = account;
+    const allAccounts = accountCollections.flatMap(function (entry) {
+      return entry.accounts;
     });
 
-    const positionsResults = [];
-    const balancesResults = [];
-    const netDepositsResults = [];
-    for (const account of accountsToUse) {
-      positionsResults.push(await fetchPositions(account.number));
-      balancesResults.push(await fetchBalances(account.number));
-      netDepositsResults.push(await fetchNetDeposits(account.number));
+    const accountsById = {};
+    allAccounts.forEach(function (account) {
+      accountsById[account.id] = account;
+    });
+
+    let selectedAccounts = allAccounts;
+    if (!includeAllAccounts) {
+      selectedAccounts = allAccounts.filter(function (account) {
+        return account.id === requestedAccountId || account.number === requestedAccountId;
+      });
+      if (!selectedAccounts.length) {
+        return res.status(404).json({ message: 'No accounts found for the provided filter.' });
+      }
     }
+
+    const selectedContexts = selectedAccounts.map(function (account) {
+      const login = loginsById[account.loginId];
+      if (!login) {
+        throw new Error('Unknown login ' + account.loginId + ' for account ' + account.id);
+      }
+      return { login, account };
+    });
+
+    const positionsResults = await Promise.all(
+      selectedContexts.map(function (context) {
+        return fetchPositions(context.login, context.account.number);
+      })
+    );
+    const balancesResults = await Promise.all(
+      selectedContexts.map(function (context) {
+        return fetchBalances(context.login, context.account.number);
+      })
+    );
+    const netDepositsResults = await Promise.all(
+      selectedContexts.map(function (context) {
+        return fetchNetDeposits(context.login, context.account.number);
+      })
+    );
 
     const flattenedPositions = positionsResults
       .map(function (positions, index) {
+        const context = selectedContexts[index];
         return positions.map(function (position) {
           return Object.assign({}, position, {
-            accountId: accountsToUse[index].number,
-            accountNumber: accountsToUse[index].number,
+            accountId: context.account.id,
+            accountNumber: context.account.number,
+            loginId: context.login.id,
           });
         });
       })
       .flat();
 
-    const symbolIds = Array.from(
-      new Set(
-        flattenedPositions
-          .map(function (position) {
-            return position.symbolId;
-          })
-          .filter(Boolean)
-      )
-    );
-    const symbolsMap = await fetchSymbolsDetails(symbolIds);
+    const symbolIdsByLogin = new Map();
+    flattenedPositions.forEach(function (position) {
+      if (!position.symbolId) {
+        return;
+      }
+      const loginBucket = symbolIdsByLogin.get(position.loginId) || new Set();
+      loginBucket.add(position.symbolId);
+      symbolIdsByLogin.set(position.loginId, loginBucket);
+    });
+
+    const symbolsMap = {};
+    for (const [loginId, symbolSet] of symbolIdsByLogin.entries()) {
+      const login = loginsById[loginId];
+      if (!login) {
+        continue;
+      }
+      const ids = Array.from(symbolSet);
+      const details = await fetchSymbolsDetails(login, ids);
+      Object.assign(symbolsMap, details);
+    }
+
+    const accountsMap = {};
+    allAccounts.forEach(function (account) {
+      accountsMap[account.id] = account;
+    });
 
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
     applyNetDeposits(balancesSummary, netDepositsResults);
 
+    const responseAccounts = allAccounts.map(function (account) {
+      return {
+        id: account.id,
+        number: account.number,
+        type: account.type,
+        status: account.status,
+        isPrimary: account.isPrimary,
+        isBilling: account.isBilling,
+        clientAccountType: account.clientAccountType,
+        ownerLabel: account.ownerLabel,
+        ownerEmail: account.ownerEmail,
+        loginId: account.loginId,
+      };
+    });
+
     res.json({
-      accounts: accounts.map(function (account) {
-        return {
-          id: account.number,
-          number: account.number,
-          type: account.type,
-          status: account.status,
-          isPrimary: account.isPrimary,
-          isBilling: account.isBilling,
-          clientAccountType: account.clientAccountType,
-        };
-      }),
-      filteredAccountIds: accountsToUse.map(function (acct) {
-        return acct.number;
+      accounts: responseAccounts,
+      filteredAccountIds: selectedContexts.map(function (context) {
+        return context.account.id;
       }),
       positions: decoratedPositions,
       pnl: pnl,
@@ -546,11 +725,6 @@ app.get('/health', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on port ' + PORT);
 });
-
-
-
-
-
 
 
 

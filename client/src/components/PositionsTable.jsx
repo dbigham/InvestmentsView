@@ -185,7 +185,7 @@ PnlBadge.defaultProps = {
   percent: null,
 };
 
-export default function PositionsTable({
+function PositionsTable({
   positions,
   totalMarketValue,
   asOf,
@@ -400,3 +400,4 @@ PositionsTable.defaultProps = {
   sortDirection: 'desc',
 };
 
+export default PositionsTable;

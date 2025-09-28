@@ -4,19 +4,23 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 
 ## Project layout
 
-- `server/` – Node/Express proxy that refreshes OAuth tokens, calls Questrade endpoints, and exposes a single `/api/summary` endpoint to the frontend.
-- `client/` – React single-page app (Vite) that recreates the Summary dashboard UI with account selector, currency toggle, metrics, and holdings table.
+- `server/` - Node/Express proxy that refreshes OAuth tokens, calls Questrade endpoints, and exposes a single `/api/summary` endpoint to the frontend.
+- `client/` - React single-page app (Vite) that recreates the Summary dashboard UI with account selector, currency toggle, metrics, and holdings table.
 
 ## Prerequisites
 
 - Node.js 20.19 or later (the UI still builds on 20.11 but Vite prints a warning).
-- A valid Questrade API refresh token (used once to seed the app).
+- One or more valid Questrade API refresh tokens (one per Questrade login you want to include).
 
 ## Getting started
 
-1. Clone credentials
+1. Configure credentials
    - Copy `server/.env.example` to `server/.env` (no refresh token needed).
-   - Seed the initial refresh token by running `npm run seed-token -- <refreshTokenFromQuestrade>` inside the `server` directory.
+   - Seed refresh tokens for each login by running
+
+        npm run seed-token -- <refreshTokenFromQuestrade> [--id=<loginId>] [--label="Display name"] [--email=<email>]
+
+     inside the `server` directory. Repeat for every login you want to mirror (for example, `--id=daniel` and `--id=meredith`). When omitted, `--id` defaults to `primary` and updates that entry.
    - Optionally adjust `CLIENT_ORIGIN` or `PORT` if you change the frontend host.
    - Copy `client/.env.example` to `client/.env` if you want to point the UI at a non-default proxy URL.
 
@@ -44,7 +48,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 
 ## Features
 
-- Account drop-down with "All accounts" aggregate view.
+- Account drop-down with "All accounts" aggregate view across every configured login.
 - Currency toggle that surfaces combined and per-currency balances if Questrade returns them.
 - Total equity card with today's and open P&L badges, cash, market value, and buying power.
 - Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
@@ -66,4 +70,4 @@ The compiled frontend lives under `client/dist/`. Serve it with any static host 
 
 ## Rotating tokens
 
-Use `npm run seed-token -- <refreshToken>` any time you generate a fresh token in the Questrade portal; the script exchanges it and updates `server/token-store.json`, which the server uses on every restart.
+Use `npm run seed-token -- <refreshToken> --id=<loginId>` any time you generate a fresh token in the Questrade portal. The script exchanges it, updates the matching login inside `server/token-store.json`, and preserves the other stored logins. Add `--label` and `--email` to refresh the display metadata when needed.

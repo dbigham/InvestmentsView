@@ -36,10 +36,23 @@ function buildPrimaryLabel(account, totalAccounts) {
     return totalAccounts === 1 ? 'Account' : 'Accounts';
   }
   const typeLabel = toFriendlyLabel(account.clientAccountType || account.type);
-  if (account.isPrimary && typeLabel) {
-    return `Main ${typeLabel}`;
+  const ownerLabel = account.ownerLabel || '';
+  const parts = [];
+  if (ownerLabel) {
+    parts.push(ownerLabel);
   }
-  return typeLabel || 'Account';
+  if (account.isPrimary && typeLabel) {
+    parts.push(`Main ${typeLabel}`);
+  } else if (typeLabel) {
+    parts.push(typeLabel);
+  }
+  if (!parts.length && ownerLabel) {
+    parts.push(ownerLabel);
+  }
+  if (!parts.length) {
+    parts.push('Account');
+  }
+  return parts.join(' • ');
 }
 
 function buildSecondaryLabel(account, totalAccounts) {
@@ -50,19 +63,22 @@ function buildSecondaryLabel(account, totalAccounts) {
     return null;
   }
   const pieces = [];
+  if (account.number) {
+    pieces.push(account.number);
+  }
   const typeLabel = toFriendlyLabel(account.type);
   if (typeLabel) {
     pieces.push(`Self-directed ${typeLabel}`);
   }
-  if (account.number) {
-    pieces.push(account.number);
-  }
-  return pieces.join(' - ') || null;
+  return pieces.join(' • ') || null;
 }
 
 function resolveLabel(account) {
   if (!account) return 'All accounts';
   const labelParts = [];
+  if (account.ownerLabel) {
+    labelParts.push(account.ownerLabel);
+  }
   if (account.number) {
     labelParts.push(account.number);
   }
@@ -70,7 +86,7 @@ function resolveLabel(account) {
   if (descriptor) {
     labelParts.push(descriptor);
   }
-  return labelParts.join(' ');
+  return labelParts.join(' • ');
 }
 
 export default function AccountSelector({ accounts, selected, onChange, disabled }) {
@@ -79,7 +95,8 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
   };
 
   const totalAccounts = accounts.length;
-  const selectedAccount = selected === 'all' ? null : accounts.find((account) => String(account.number) === selected) || null;
+  const selectedAccount =
+    selected === 'all' ? null : accounts.find((account) => account.id === selected) || null;
 
   let primaryLabel = buildPrimaryLabel(selectedAccount, totalAccounts);
   let secondaryLabel = buildSecondaryLabel(selectedAccount, totalAccounts);
@@ -107,7 +124,7 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
       >
         <option value="all">All accounts</option>
         {accounts.map((account) => (
-          <option key={account.number} value={String(account.number)}>
+          <option key={account.id} value={account.id}>
             {resolveLabel(account)}
           </option>
         ))}
@@ -119,10 +136,14 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
 AccountSelector.propTypes = {
   accounts: PropTypes.arrayOf(
     PropTypes.shape({
+      id: PropTypes.string.isRequired,
       number: PropTypes.string.isRequired,
       clientAccountType: PropTypes.string,
       type: PropTypes.string,
       isPrimary: PropTypes.bool,
+      ownerLabel: PropTypes.string,
+      ownerEmail: PropTypes.string,
+      loginId: PropTypes.string,
     })
   ).isRequired,
   selected: PropTypes.string.isRequired,
@@ -133,4 +154,3 @@ AccountSelector.propTypes = {
 AccountSelector.defaultProps = {
   disabled: false,
 };
-
