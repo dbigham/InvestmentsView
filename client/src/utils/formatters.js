@@ -1,9 +1,17 @@
 const currencyFormatters = new Map();
 const numberFormatters = new Map();
-const dateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  timeZone: 'America/Toronto',
+const torontoTimeZone = 'America/Toronto';
+const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: torontoTimeZone,
+});
+const timeFormatter = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+  timeZone: torontoTimeZone,
 });
 
 export function formatCurrency(value, currency = 'CAD', options = {}) {
@@ -89,6 +97,7 @@ export function formatDateTime(dateInput) {
   if (Number.isNaN(date.getTime())) {
     return '\u2014';
   }
-  return dateTimeFormatter.format(date);
+  const datePart = dateFormatter.format(date);
+  const timePart = timeFormatter.format(date);
+  return `${datePart}, ${timePart} ET`;
 }
-

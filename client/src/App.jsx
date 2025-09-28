@@ -82,11 +82,16 @@ function toFriendlyCase(value) {
   return normalized
     .split(' ')
     .map((word) => {
-      if (word.length <= 3 && word === word.toUpperCase()) {
+      if (!word) {
+        return '';
+      }
+      const allUpper = word === word.toUpperCase();
+      if (allUpper || word.length <= 3) {
         return word.toUpperCase();
       }
       return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
     })
+    .filter(Boolean)
     .join(' ');
 }
 
@@ -111,9 +116,9 @@ function formatAccountSubtitle(account) {
     segments.push(descriptor);
   }
   if (account.number) {
-    segments.push(`#${account.number}`);
+    segments.push(account.number);
   }
-  return segments.join(' \\u2022 ');
+  return segments.join(' \\\\u203A ');
 }
 
 export default function App() {

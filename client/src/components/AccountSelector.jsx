@@ -1,14 +1,43 @@
 import PropTypes from 'prop-types';
 
+function normalizeLabel(value) {
+  if (!value) return '';
+  return String(value)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function toFriendlyLabel(value) {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return '';
+  return normalized
+    .split(' ')
+    .map((word) => {
+      if (!word) {
+        return '';
+      }
+      const allUpper = word === word.toUpperCase();
+      if (allUpper || word.length <= 3) {
+        return word.toUpperCase();
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .filter(Boolean)
+    .join(' ');
+}
+
 function resolveLabel(account) {
   if (!account) return 'All accounts';
-  const pieces = [account.number];
-  if (account.clientAccountType) {
-    pieces.push(account.clientAccountType.replace(/_/g, ' '));
-  } else if (account.type) {
-    pieces.push(account.type);
+  const labelParts = [];
+  if (account.number) {
+    labelParts.push(account.number);
   }
-  return pieces.filter(Boolean).join(' • ');
+  const descriptor = toFriendlyLabel(account.clientAccountType || account.type);
+  if (descriptor) {
+    labelParts.push(descriptor);
+  }
+  return labelParts.join(' ');
 }
 
 export default function AccountSelector({ accounts, selected, onChange }) {
