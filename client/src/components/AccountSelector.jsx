@@ -57,7 +57,7 @@ function buildSecondaryLabel(account, totalAccounts) {
   if (account.number) {
     pieces.push(account.number);
   }
-  return pieces.join(' · ') || null;
+  return pieces.join(' - ') || null;
 }
 
 function resolveLabel(account) {
@@ -133,3 +133,4 @@ AccountSelector.propTypes = {
 AccountSelector.defaultProps = {
   disabled: false,
 };
+

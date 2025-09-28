@@ -2,9 +2,10 @@ import PropTypes from 'prop-types';
 import TimePill from './TimePill';
 import { classifyPnL, formatMoney, formatSignedMoney, formatSignedPercent } from '../utils/formatters';
 
-function MetricRow({ label, value, extra, tone }) {
+function MetricRow({ label, value, extra, tone, className }) {
+  const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   return (
-    <div className="equity-card__metric-row">
+    <div className={rowClass}>
       <dt>{label}</dt>
       <dd>
         <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
@@ -19,10 +20,12 @@ MetricRow.propTypes = {
   value: PropTypes.string.isRequired,
   extra: PropTypes.node,
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
+  className: PropTypes.string,
 };
 
 MetricRow.defaultProps = {
   extra: null,
+  className: '',
 };
 
 export default function SummaryMetrics({
@@ -38,6 +41,8 @@ export default function SummaryMetrics({
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
+  const netDeposits = balances?.netDeposits ?? null;
+  const buyingPower = balances?.buyingPower ?? null;
 
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
@@ -64,10 +69,6 @@ export default function SummaryMetrics({
         <TimePill asOf={asOf} onRefresh={onRefresh} />
       </header>
 
-      <div className="equity-card__chart" aria-hidden="true">
-        <div className="equity-card__chart-placeholder" />
-      </div>
-
       {currencyOptions.length > 0 && (
         <div className="equity-card__chip-row" role="group" aria-label="Currency views">
           {currencyOptions.map((option) => {
@@ -89,7 +90,12 @@ export default function SummaryMetrics({
 
       <div className="equity-card__metrics">
         <dl className="equity-card__metric-column">
-          <MetricRow label="Today's P&L" value={formattedToday} extra={dayPercent ? `(${dayPercent})` : null} tone={todayTone} />
+          <MetricRow
+            label="Today's P&L"
+            value={formattedToday}
+            extra={dayPercent ? `(${dayPercent})` : null}
+            tone={todayTone}
+          />
           <MetricRow label="Open P&L" value={formattedOpen} tone={openTone} />
           <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
         </dl>
@@ -97,6 +103,15 @@ export default function SummaryMetrics({
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
           <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
           <MetricRow label="Cash" value={formatMoney(cash)} tone="neutral" />
+        </dl>
+      </div>
+
+      <div className="equity-card__metrics-footer">
+        <dl className="equity-card__metric-column">
+          <MetricRow label="Net deposits" value={formatMoney(netDeposits)} tone="neutral" className="no-divider" />
+        </dl>
+        <dl className="equity-card__metric-column">
+          <MetricRow label="Buying power" value={formatMoney(buyingPower)} tone="neutral" className="no-divider" />
         </dl>
       </div>
     </section>
@@ -125,6 +140,8 @@ SummaryMetrics.propTypes = {
     totalEquity: PropTypes.number,
     marketValue: PropTypes.number,
     cash: PropTypes.number,
+    netDeposits: PropTypes.number,
+    buyingPower: PropTypes.number,
   }),
   pnl: PropTypes.shape({
     dayPnl: PropTypes.number,

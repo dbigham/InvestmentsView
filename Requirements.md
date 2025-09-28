@@ -3,11 +3,18 @@
 ## UI Scope
 - Reproduce Questrade web Summary tab visuals as closely as possible.
 - Exclude the following elements:
+  - The mail icon and account icon top right.
   - "To access your Authorized Trader accounts, trade in Edge Web" banner.
-  - "Add funds" button.
-  - Performance chart (visual placeholder acceptable).
-  - Watchlists, Trending, News tabs (only Positions tab active).
   - "Looking for a symbol or investment type?" search bar.
+  - "Add funds" button.
+  - Performance chart (visual placeholder acceptable), along with the associated bar for "15D 1M 3M 6M 1Y Since inception".
+  - The "+ New account" button.
+  - The "eye" icon to the right of "Total equity (Combined in CAD)" for hiding details.
+  - The "See all balances" button.
+  - Watchlists, Trending, News tabs (only Positions tab active).
+  - The "View disclosures" link at the bottom.
+  - The little (?) icon bottom right for getting help.
+  - The navbar along the left side of the page.
 - Ensure spacing, typography, colors, borders, icons, and hover/active states align with Questrade styling.
 
 ## Data Behaviour

@@ -266,6 +266,7 @@ function mergeBalances(allBalances) {
           cash: 0,
           buyingPower: 0,
           maintenanceExcess: 0,
+          netDeposits: 0,
         };
       }
       const target = summary.combined[currency];
@@ -274,6 +275,7 @@ function mergeBalances(allBalances) {
       target.cash += balance.cash || 0;
       target.buyingPower += balance.buyingPower || 0;
       target.maintenanceExcess += balance.maintenanceExcess || 0;
+      target.netDeposits += balance.netDeposits || 0;
     });
 
     perCurrencyBalances.forEach(function (balance) {
@@ -285,6 +287,7 @@ function mergeBalances(allBalances) {
           cash: 0,
           buyingPower: 0,
           maintenanceExcess: 0,
+          netDeposits: 0,
         };
       }
       const target = summary.perCurrency[currency];
@@ -293,6 +296,7 @@ function mergeBalances(allBalances) {
       target.cash += balance.cash || 0;
       target.buyingPower += balance.buyingPower || 0;
       target.maintenanceExcess += balance.maintenanceExcess || 0;
+      target.netDeposits += balance.netDeposits || 0;
     });
   });
 
@@ -425,6 +429,9 @@ app.get('/health', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on port ' + PORT);
 });
+
+
+
 
 
 

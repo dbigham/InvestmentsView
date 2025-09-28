@@ -79,24 +79,42 @@ function buildCurrencyOptions(balances) {
   return options;
 }
 
-function groupPnlByCurrency(positions) {
-  return positions.reduce((acc, position) => {
-    const currency = position.currency || 'CAD';
-    if (!acc[currency]) {
-      acc[currency] = { dayPnl: 0, openPnl: 0, totalPnl: 0 };
-    }
-    acc[currency].dayPnl += position.dayPnl || 0;
-    acc[currency].openPnl += position.openPnl || 0;
-
-    const marketValue = position.currentMarketValue || 0;
-    const totalCost =
-      position.totalCost !== undefined && position.totalCost !== null
-        ? position.totalCost
-        : marketValue - (position.openPnl || 0) - (position.dayPnl || 0);
-    acc[currency].totalPnl += marketValue - (totalCost || 0);
-    return acc;
-  }, {});
+function resolveTotalPnl(position) {
+  const marketValue = position.currentMarketValue || 0;
+  const totalCost =
+    position.totalCost !== undefined && position.totalCost !== null
+      ? position.totalCost
+      : marketValue - (position.openPnl || 0) - (position.dayPnl || 0);
+  return marketValue - (totalCost || 0);
 }
+
+function buildPnlSummaries(positions) {
+  return positions.reduce(
+    (acc, position) => {
+      const currency = position.currency || 'CAD';
+      if (!acc.perCurrency[currency]) {
+        acc.perCurrency[currency] = { dayPnl: 0, openPnl: 0, totalPnl: 0 };
+      }
+
+      const day = position.dayPnl || 0;
+      const open = position.openPnl || 0;
+      const total = resolveTotalPnl(position);
+
+      acc.perCurrency[currency].dayPnl += day;
+      acc.perCurrency[currency].openPnl += open;
+      acc.perCurrency[currency].totalPnl += total;
+
+      acc.combined.dayPnl += day;
+      acc.combined.openPnl += open;
+      acc.combined.totalPnl += total;
+
+      return acc;
+    },
+    { combined: { dayPnl: 0, openPnl: 0, totalPnl: 0 }, perCurrency: {} }
+  );
+}
+
+const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
 
 export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
@@ -151,11 +169,19 @@ export default function App() {
     }
   }, [currencyOptions, currencyView]);
 
-  const pnlByCurrency = useMemo(() => groupPnlByCurrency(positions), [positions]);
+  const pnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
-  const activePnl = activeCurrency ? pnlByCurrency[activeCurrency.currency] || { dayPnl: 0, openPnl: 0, totalPnl: 0 } : null;
+  const activePnl = useMemo(() => {
+    if (!activeCurrency) {
+      return ZERO_PNL;
+    }
+    if (activeCurrency.scope === 'combined') {
+      return pnlSummaries.combined;
+    }
+    return pnlSummaries.perCurrency[activeCurrency.currency] || ZERO_PNL;
+  }, [activeCurrency, pnlSummaries]);
 
   const showContent = !loading && !error && data;
 
@@ -189,7 +215,7 @@ export default function App() {
             currencyOptions={currencyOptions}
             onCurrencyChange={setCurrencyView}
             balances={activeBalances}
-            pnl={activePnl || { dayPnl: 0, openPnl: 0, totalPnl: 0 }}
+            pnl={activePnl}
             asOf={asOf}
             onRefresh={handleRefresh}
           />
@@ -209,3 +235,9 @@ export default function App() {
     </div>
   );
 }
+
+
+
+
+
+

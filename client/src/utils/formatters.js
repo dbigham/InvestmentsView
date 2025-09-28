@@ -47,6 +47,16 @@ function getDecimalFormatter(minimumFractionDigits, maximumFractionDigits) {
   return decimalFormatters.get(key);
 }
 
+function normalizeSignedZero(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return value;
+  }
+  if (Object.is(value, -0) || Math.abs(value) < 1e-8) {
+    return 0;
+  }
+  return value;
+}
+
 export function formatNumber(value, fractionDigitsOrOptions = { minimumFractionDigits: 0, maximumFractionDigits: 2 }) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '\u2014';
@@ -66,7 +76,7 @@ export function formatMoney(value, digitOptions) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '\u2014';
   }
-  const numericValue = Number(value);
+  const numericValue = normalizeSignedZero(Number(value));
   const formattedMagnitude = formatMoneyMagnitude(Math.abs(numericValue), digitOptions);
   return numericValue < 0 ? `-${formattedMagnitude}` : formattedMagnitude;
 }
@@ -75,7 +85,7 @@ export function formatSignedMoney(value, digitOptions) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '\u2014';
   }
-  const numericValue = Number(value);
+  const numericValue = normalizeSignedZero(Number(value));
   const formattedMagnitude = formatMoneyMagnitude(Math.abs(numericValue), digitOptions);
   if (numericValue > 0) {
     return `+${formattedMagnitude}`;
@@ -86,15 +96,18 @@ export function formatSignedMoney(value, digitOptions) {
   return formattedMagnitude;
 }
 
-export function formatCurrency(value, currency = 'CAD', options) {
+export function formatCurrency(value, _currency = 'CAD', options) {
+  void _currency;
   return formatMoney(value, options);
 }
 
-export function formatCurrencyWithCode(value, currency = 'CAD', options) {
+export function formatCurrencyWithCode(value, _currency = 'CAD', options) {
+  void _currency;
   return formatMoney(value, options);
 }
 
-export function formatSignedCurrency(value, currency = 'CAD', options) {
+export function formatSignedCurrency(value, _currency = 'CAD', options) {
+  void _currency;
   return formatSignedMoney(value, options);
 }
 
@@ -159,3 +172,7 @@ export function formatTimeOfDay(dateInput) {
   const formatted = timeWithSecondsFormatter.format(date).toLowerCase();
   return `${formatted} ET`;
 }
+
+
+
+
