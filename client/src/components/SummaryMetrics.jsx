@@ -36,8 +36,8 @@ export default function SummaryMetrics({
 
   return (
     <section className="equity-card">
-      <div className="equity-card__top">
-        <div>
+      <header className="equity-card__header">
+        <div className="equity-card__heading">
           <div className="equity-card__subtitle">
             Total equity
             {currencyOption ? ` (${currencyOption.label})` : ''}
@@ -59,7 +59,7 @@ export default function SummaryMetrics({
             ))}
           </div>
         )}
-      </div>
+      </header>
 
       <div className="equity-card__timeframes" role="group" aria-label="Performance timeframe">
         {TIMEFRAMES.map((label) => (
@@ -69,20 +69,26 @@ export default function SummaryMetrics({
         ))}
       </div>
 
-      <div className="equity-card__metrics">
+      <div className="equity-card__summary-row">
         <div className="equity-card__pnl">
           <span className={`equity-card__pill ${dayPnl.tone}`}>
-            Today&apos;s P&amp;L <strong>{dayPnl.formatted}</strong>
+            <span className="equity-card__pill-label">Today&apos;s P&amp;L</span>
+            <strong>{dayPnl.formatted}</strong>
           </span>
           <span className={`equity-card__pill subtle ${openPnl.tone}`}>
-            Open P&amp;L <strong>{openPnl.formatted}</strong>
+            <span className="equity-card__pill-label">Open P&amp;L</span>
+            <strong>{openPnl.formatted}</strong>
           </span>
         </div>
-        <div className="equity-card__metric-grid">
-          <MetricItem label="Market value" value={formatCurrency(marketValue, currencyCode)} />
-          <MetricItem label="Cash" value={formatCurrency(cash, currencyCode)} />
-          <MetricItem label="Buying power" value={formatCurrency(buyingPower, currencyCode)} />
-        </div>
+        <button type="button" className="equity-card__balances">
+          See all balances
+        </button>
+      </div>
+
+      <div className="equity-card__metric-grid">
+        <MetricItem label="Market value" value={formatCurrency(marketValue, currencyCode)} />
+        <MetricItem label="Cash" value={formatCurrency(cash, currencyCode)} />
+        <MetricItem label="Buying power" value={formatCurrency(buyingPower, currencyCode)} />
       </div>
     </section>
   );
@@ -120,3 +126,4 @@ SummaryMetrics.defaultProps = {
   balances: {},
   pnl: { dayPnl: 0, openPnl: 0 },
 };
+

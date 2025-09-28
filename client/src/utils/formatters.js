@@ -50,8 +50,15 @@ export function formatSignedCurrency(value, currency = 'CAD', options = {}) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return '\u2014';
   }
-  const formatted = formatCurrency(Math.abs(value), currency, options);
-  return value < 0 ? `-${formatted}` : formatted;
+  const magnitude = Math.abs(Number(value));
+  const formattedMagnitude = formatCurrency(magnitude, currency, options);
+  if (value > 0) {
+    return `+${formattedMagnitude}`;
+  }
+  if (value < 0) {
+    return `-${formattedMagnitude}`;
+  }
+  return formattedMagnitude;
 }
 
 export function classifyPnL(value) {
@@ -61,9 +68,10 @@ export function classifyPnL(value) {
 }
 
 export function formatPnL(value, currency) {
-  const formatted = formatCurrency(value, currency);
-  const tone = classifyPnL(value);
-  return { formatted, tone };
+  return {
+    formatted: formatSignedCurrency(value, currency),
+    tone: classifyPnL(value),
+  };
 }
 
 export function formatPercent(value, fractionDigits = 2) {
@@ -83,3 +91,4 @@ export function formatDateTime(dateInput) {
   }
   return dateTimeFormatter.format(date);
 }
+

@@ -68,14 +68,62 @@ function groupPnlByCurrency(positions) {
   }, {});
 }
 
+function normalizeLabel(value) {
+  if (!value) return '';
+  return String(value)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function toFriendlyCase(value) {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return '';
+  return normalized
+    .split(' ')
+    .map((word) => {
+      if (word.length <= 3 && word === word.toUpperCase()) {
+        return word.toUpperCase();
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
+function formatAccountChip(account) {
+  if (!account) return '';
+  const pieces = [];
+  if (account.isPrimary) {
+    pieces.push('Main');
+  }
+  const typeLabel = toFriendlyCase(account.clientAccountType || account.type);
+  if (typeLabel) {
+    pieces.push(typeLabel);
+  }
+  return pieces.join(' ');
+}
+
+function formatAccountSubtitle(account) {
+  if (!account) return '';
+  const segments = [];
+  const descriptor = toFriendlyCase(account.type) || toFriendlyCase(account.clientAccountType);
+  if (descriptor) {
+    segments.push(descriptor);
+  }
+  if (account.number) {
+    segments.push(`#${account.number}`);
+  }
+  return segments.join(' \\u2022 ');
+}
+
 export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
-  const accounts = data?.accounts || [];
-  const positions = data?.positions || [];
+  const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const positions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances;
   const pnlByCurrency = useMemo(() => groupPnlByCurrency(positions), [positions]);
   const currencyOptions = useMemo(() => buildCurrencyOptions(balances), [balances]);
@@ -112,19 +160,38 @@ export default function App() {
     return accounts.find((account) => account.number === selectedAccount) || null;
   }, [accounts, selectedAccount]);
 
+  const accountChipLabel = useMemo(() => {
+    const label = formatAccountChip(selectedAccountMeta);
+    return label || null;
+  }, [selectedAccountMeta]);
+
+  const headerMeta = useMemo(() => {
+    if (selectedAccountMeta) {
+      const subtitle = formatAccountSubtitle(selectedAccountMeta);
+      return subtitle || null;
+    }
+    if (accounts.length > 1) {
+      return `Combined across ${accounts.length} accounts`;
+    }
+    if (accounts.length === 1) {
+      const subtitle = formatAccountSubtitle(accounts[0]);
+      return subtitle || 'Account overview';
+    }
+    return loading ? 'Loading accounts...' : 'Account overview';
+  }, [accounts, loading, selectedAccountMeta]);
+
   const showContent = !loading && !error && data;
 
   return (
     <div className="summary-page">
       <main className="summary-main">
         <header className="summary-header">
-          <div className="summary-header__titles">
-            <h1>Summary</h1>
-            <p>
-              {selectedAccountMeta
-                ? `${selectedAccountMeta.type || ''} · ${selectedAccountMeta.number}`
-                : `${accounts.length} accounts`}
-            </p>
+          <div className="summary-header__left">
+            <div className="summary-header__title-row">
+              <h1>Summary</h1>
+              {accountChipLabel && <span className="summary-header__chip">{accountChipLabel}</span>}
+            </div>
+            {headerMeta && <p className="summary-header__meta">{headerMeta}</p>}
           </div>
           <button
             type="button"
@@ -163,3 +230,4 @@ export default function App() {
     </div>
   );
 }
+
