@@ -36,6 +36,7 @@ export default function SummaryMetrics({
   pnl,
   asOf,
   onRefresh,
+  displayTotalEquity,
 }) {
   const title = currencyOption?.title || 'Total equity';
   const totalEquity = balances?.totalEquity ?? null;
@@ -64,7 +65,7 @@ export default function SummaryMetrics({
       <header className="equity-card__header">
         <div className="equity-card__heading">
           <h2 className="equity-card__title">{title}</h2>
-          <p className="equity-card__value">{formatMoney(totalEquity)}</p>
+          <p className="equity-card__value">{formatMoney(displayTotalEquity ?? totalEquity)}</p>
         </div>
         <TimePill asOf={asOf} onRefresh={onRefresh} />
       </header>
@@ -98,22 +99,16 @@ export default function SummaryMetrics({
           />
           <MetricRow label="Open P&L" value={formattedOpen} tone={openTone} />
           <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          <MetricRow label="Net deposits" value={formatMoney(netDeposits)} tone="neutral" />
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
           <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
           <MetricRow label="Cash" value={formatMoney(cash)} tone="neutral" />
+          <MetricRow label="Buying power" value={formatMoney(buyingPower)} tone="neutral" />
         </dl>
       </div>
 
-      <div className="equity-card__metrics-footer">
-        <dl className="equity-card__metric-column">
-          <MetricRow label="Net deposits" value={formatMoney(netDeposits)} tone="neutral" className="no-divider" />
-        </dl>
-        <dl className="equity-card__metric-column">
-          <MetricRow label="Buying power" value={formatMoney(buyingPower)} tone="neutral" className="no-divider" />
-        </dl>
-      </div>
     </section>
   );
 }
@@ -150,6 +145,7 @@ SummaryMetrics.propTypes = {
   }).isRequired,
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
+  displayTotalEquity: PropTypes.number,
 };
 
 SummaryMetrics.defaultProps = {
@@ -157,4 +153,5 @@ SummaryMetrics.defaultProps = {
   balances: null,
   asOf: null,
   onRefresh: null,
+  displayTotalEquity: null,
 };

@@ -47,11 +47,13 @@ function getDecimalFormatter(minimumFractionDigits, maximumFractionDigits) {
   return decimalFormatters.get(key);
 }
 
-function normalizeSignedZero(value) {
+function normalizeSignedZero(value, maximumFractionDigits = 2) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
     return value;
   }
-  if (Object.is(value, -0) || Math.abs(value) < 1e-8) {
+  const precision = Number.isFinite(maximumFractionDigits) ? Math.max(0, Math.min(10, maximumFractionDigits)) : 2;
+  const threshold = 0.5 * Math.pow(10, -precision);
+  if (Object.is(value, -0) || Math.abs(value) < threshold) {
     return 0;
   }
   return value;
@@ -67,34 +69,56 @@ export function formatNumber(value, fractionDigitsOrOptions = { minimumFractionD
 }
 
 function formatMoneyMagnitude(value, digitOptions) {
-  const digits = resolveDigitOptions(digitOptions, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const digits =
+    digitOptions && typeof digitOptions.minimumFractionDigits === 'number' && typeof digitOptions.maximumFractionDigits === 'number'
+      ? digitOptions
+      : resolveDigitOptions(digitOptions, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const formatter = getDecimalFormatter(digits.minimumFractionDigits, digits.maximumFractionDigits);
-  return `$${formatter.format(Number(value))}`;
+  return '$' + formatter.format(Number(value));
 }
+
+
 
 export function formatMoney(value, digitOptions) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '\u2014';
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+    return '—';
   }
-  const numericValue = normalizeSignedZero(Number(value));
-  const formattedMagnitude = formatMoneyMagnitude(Math.abs(numericValue), digitOptions);
-  return numericValue < 0 ? `-${formattedMagnitude}` : formattedMagnitude;
-}
-
-export function formatSignedMoney(value, digitOptions) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '\u2014';
+  const numericValue = Number(value);
+  if (Number.isNaN(numericValue)) {
+    return '—';
   }
-  const numericValue = normalizeSignedZero(Number(value));
-  const formattedMagnitude = formatMoneyMagnitude(Math.abs(numericValue), digitOptions);
-  if (numericValue > 0) {
-    return `+${formattedMagnitude}`;
-  }
-  if (numericValue < 0) {
-    return `-${formattedMagnitude}`;
+  const digits = resolveDigitOptions(digitOptions, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const normalizedValue = normalizeSignedZero(numericValue, digits.maximumFractionDigits);
+  const formattedMagnitude = formatMoneyMagnitude(Math.abs(normalizedValue), digits);
+  if (normalizedValue < 0) {
+    return '-' + formattedMagnitude;
   }
   return formattedMagnitude;
 }
+
+
+
+export function formatSignedMoney(value, digitOptions) {
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+    return '—';
+  }
+  const numericValue = Number(value);
+  if (Number.isNaN(numericValue)) {
+    return '—';
+  }
+  const digits = resolveDigitOptions(digitOptions, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const normalizedValue = normalizeSignedZero(numericValue, digits.maximumFractionDigits);
+  const formattedMagnitude = formatMoneyMagnitude(Math.abs(normalizedValue), digits);
+  if (normalizedValue > 0) {
+    return '+' + formattedMagnitude;
+  }
+  if (normalizedValue < 0) {
+    return '-' + formattedMagnitude;
+  }
+  return formattedMagnitude;
+}
+
+
 
 export function formatCurrency(value, _currency = 'CAD', options) {
   void _currency;

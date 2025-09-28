@@ -114,6 +114,75 @@ function buildPnlSummaries(positions) {
   );
 }
 
+
+function coerceNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.replace(/,/g, '').trim();
+    if (!normalized) {
+      return null;
+    }
+    const numeric = Number(normalized);
+    if (!Number.isNaN(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function buildBalancePnlMap(balances) {
+  const result = { combined: {}, perCurrency: {} };
+  if (!balances) {
+    return result;
+  }
+  ['combined', 'perCurrency'].forEach((scope) => {
+    const scopeBalances = balances[scope];
+    if (!scopeBalances) {
+      return;
+    }
+    Object.entries(scopeBalances).forEach(([currency, data]) => {
+      if (!data) {
+        return;
+      }
+      const day = coerceNumber(data.dayPnl ?? data.dayPnL);
+      const open = coerceNumber(data.openPnl ?? data.openPnL);
+      const total = coerceNumber(
+        data.totalPnl ?? data.totalPnL ?? data.unrealizedPnl ?? data.totalReturn ?? data.totalGain
+      );
+      if (day === null && open === null && total === null) {
+        return;
+      }
+      result[scope][currency] = {
+        dayPnl: day,
+        openPnl: open,
+        totalPnl: total,
+      };
+    });
+  });
+  return result;
+}
+
+function resolveDisplayTotalEquity(balances) {
+  if (!balances || !balances.combined) {
+    return null;
+  }
+  const cadBucket = balances.combined.CAD;
+  const cadValue = coerceNumber(cadBucket?.totalEquity);
+  if (cadValue !== null) {
+    return cadValue;
+  }
+  const combinedEntries = Object.values(balances.combined);
+  for (const entry of combinedEntries) {
+    const totalEquity = coerceNumber(entry?.totalEquity);
+    if (totalEquity !== null) {
+      return totalEquity;
+    }
+  }
+  return null;
+}
+
 const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
 
 export default function App() {
@@ -169,19 +238,44 @@ export default function App() {
     }
   }, [currencyOptions, currencyView]);
 
-  const pnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
+  const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
+  const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
+
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
-  const activePnl = useMemo(() => {
+  const displayTotalEquity = useMemo(() => {
+    const canonical = resolveDisplayTotalEquity(balances);
+    if (canonical !== null) {
+      return canonical;
+    }
+    return coerceNumber(activeBalances?.totalEquity);
+  }, [balances, activeBalances]);
+
+  const fallbackPnl = useMemo(() => {
     if (!activeCurrency) {
       return ZERO_PNL;
     }
     if (activeCurrency.scope === 'combined') {
-      return pnlSummaries.combined;
+      return positionPnlSummaries.combined;
     }
-    return pnlSummaries.perCurrency[activeCurrency.currency] || ZERO_PNL;
-  }, [activeCurrency, pnlSummaries]);
+    return positionPnlSummaries.perCurrency[activeCurrency.currency] || ZERO_PNL;
+  }, [activeCurrency, positionPnlSummaries]);
+
+  const activePnl = useMemo(() => {
+    if (!activeCurrency) {
+      return ZERO_PNL;
+    }
+    const balanceEntry = balancePnlSummaries[activeCurrency.scope]?.[activeCurrency.currency] || null;
+    if (!balanceEntry) {
+      return fallbackPnl;
+    }
+    return {
+      dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
+      openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
+      totalPnl: balanceEntry.totalPnl ?? fallbackPnl.totalPnl,
+    };
+  }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
   const showContent = !loading && !error && data;
 
@@ -218,6 +312,7 @@ export default function App() {
             pnl={activePnl}
             asOf={asOf}
             onRefresh={handleRefresh}
+            displayTotalEquity={displayTotalEquity}
           />
         )}
 
@@ -226,7 +321,6 @@ export default function App() {
             positions={orderedPositions}
             totalMarketValue={totalMarketValue}
             asOf={asOf}
-            onRefresh={handleRefresh}
             sortColumn="portfolioShare"
             sortDirection="desc"
           />

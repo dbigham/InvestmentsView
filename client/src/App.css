@@ -167,7 +167,7 @@ textarea {
 .equity-card__value {
   margin: 0;
   font-size: 32px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--color-text-primary);
   letter-spacing: -0.01em;
 }
@@ -225,10 +225,10 @@ textarea {
 
 .equity-card__metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 240px));
-  column-gap: 40px;
+  grid-template-columns: repeat(2, minmax(0, 280px));
+  column-gap: 48px;
   row-gap: 0;
-  width: min(520px, 100%);
+  width: min(680px, 100%);
 }
 
 .equity-card__metric-column {
@@ -250,7 +250,7 @@ textarea {
   padding-top: 0;
 }
 
-.equity-card__metric-column .equity-card__metric-row:last-child:not(.no-divider) {
+.equity-card__metric-column .equity-card__metric-row:last-child {
   border-bottom: none;
   padding-bottom: 0;
 }
@@ -272,7 +272,7 @@ textarea {
 
 .equity-card__metric-value {
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--color-text-primary);
 }
 
@@ -293,20 +293,6 @@ textarea {
   color: var(--color-text-muted);
 }
 
-.equity-card__metrics-footer {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 240px));
-  column-gap: 40px;
-  row-gap: 0;
-  width: min(520px, 100%);
-  padding-top: 12px;
-  border-top: 1px dotted var(--color-border-strong);
-}
-
-.equity-card__metric-row.no-divider {
-  border-bottom: none;
-  padding-bottom: 0;
-}
 .positions-card {
   background: var(--color-surface);
   border-radius: var(--radius-card);
@@ -471,18 +457,20 @@ textarea {
 .positions-table__pnl {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  padding: 6px 14px;
+  justify-content: flex-end;
+  padding: 6px 18px 6px 12px;
   border-radius: var(--radius-pill);
-  font-weight: 600;
+  font-weight: 500;
   font-size: 13px;
   background: var(--color-neutral-soft);
   color: var(--color-text-secondary);
-  min-width: 110px;
+  min-width: 120px;
   border: none;
   cursor: pointer;
   transition: background-color 0.2s ease, color 0.2s ease;
   appearance: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .positions-table__pnl:focus-visible {
@@ -524,8 +512,7 @@ textarea {
 }
 
 @media (max-width: 960px) {
-  .equity-card__metrics,
-  .equity-card__metrics-footer {
+  .equity-card__metrics {
     grid-template-columns: 1fr;
     column-gap: 0;
     row-gap: 12px;

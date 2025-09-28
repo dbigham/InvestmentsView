@@ -225,6 +225,98 @@ async function fetchBalances(accountId) {
   return data || {};
 }
 
+async function fetchNetDeposits(accountId) {
+  try {
+    const data = await questradeRequest('/v1/accounts/' + accountId + '/netDeposits');
+    return data || null;
+  } catch (error) {
+    console.warn('Failed to fetch net deposits for account ' + accountId + ':', error.response ? error.response.status : error.message);
+    return null;
+  }
+}
+
+
+const BALANCE_NUMERIC_FIELDS = [
+  'totalEquity',
+  'marketValue',
+  'cash',
+  'buyingPower',
+  'maintenanceExcess',
+  'netDeposits',
+  'dayPnl',
+  'openPnl',
+  'totalPnl',
+  'totalCost',
+  'realizedPnl',
+  'unrealizedPnl',
+];
+
+const BALANCE_FIELD_ALIASES = {
+  dayPnl: ['dayPnL'],
+  openPnl: ['openPnL'],
+  totalPnl: ['totalPnL', 'totalPnLInBase', 'totalReturn'],
+  netDeposits: ['netDeposit', 'netDepositsValue', 'netDepositsAmount'],
+  realizedPnl: ['realizedPnL'],
+  unrealizedPnl: ['unrealizedPnL'],
+};
+
+const NET_DEPOSIT_VALUE_KEYS = ['netDeposits', 'netDeposit', 'value', 'amount', 'total', 'totalNetDeposits'];
+
+function createEmptyBalanceAccumulator(currency) {
+  const base = { currency: currency || null, isRealTime: false };
+  BALANCE_NUMERIC_FIELDS.forEach(function (field) {
+    base[field] = 0;
+  });
+  return base;
+}
+
+function pickNumericValue(source, key) {
+  if (!source) {
+    return null;
+  }
+  const direct = source[key];
+  if (typeof direct === 'number' && Number.isFinite(direct)) {
+    return direct;
+  }
+  const aliases = BALANCE_FIELD_ALIASES[key] || [];
+  for (const alias of aliases) {
+    const value = source[alias];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function accumulateBalance(target, source) {
+  BALANCE_NUMERIC_FIELDS.forEach(function (field) {
+    const value = pickNumericValue(source, field);
+    if (value !== null) {
+      target[field] += value;
+    }
+  });
+  if (source && typeof source.isRealTime === 'boolean') {
+    target.isRealTime = target.isRealTime || source.isRealTime;
+  }
+}
+
+function extractNetDepositEntries(response) {
+  if (!response || typeof response !== 'object') {
+    return [];
+  }
+  const candidateKeys = ['netDeposits', 'netDeposit', 'totalNetDeposits', 'entries', 'values', 'items'];
+  for (const key of candidateKeys) {
+    const value = response[key];
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+  if (response.currency) {
+    return [response];
+  }
+  return [];
+}
+
 async function fetchSymbolsDetails(symbolIds) {
   if (!symbolIds.length) {
     return {};
@@ -254,53 +346,75 @@ function mergeBalances(allBalances) {
   };
 
   allBalances.forEach(function (balanceEntry) {
-    const combinedBalances = balanceEntry.combinedBalances || [];
-    const perCurrencyBalances = balanceEntry.perCurrencyBalances || [];
+    const combinedBalances = balanceEntry && (balanceEntry.combinedBalances || []);
+    const perCurrencyBalances = balanceEntry && (balanceEntry.perCurrencyBalances || []);
 
     combinedBalances.forEach(function (balance) {
-      const currency = balance.currency;
-      if (!summary.combined[currency]) {
-        summary.combined[currency] = {
-          totalEquity: 0,
-          marketValue: 0,
-          cash: 0,
-          buyingPower: 0,
-          maintenanceExcess: 0,
-          netDeposits: 0,
-        };
+      const currency = balance && balance.currency;
+      if (!currency) {
+        return;
       }
-      const target = summary.combined[currency];
-      target.totalEquity += balance.totalEquity || 0;
-      target.marketValue += balance.marketValue || 0;
-      target.cash += balance.cash || 0;
-      target.buyingPower += balance.buyingPower || 0;
-      target.maintenanceExcess += balance.maintenanceExcess || 0;
-      target.netDeposits += balance.netDeposits || 0;
+      if (!summary.combined[currency]) {
+        summary.combined[currency] = createEmptyBalanceAccumulator(currency);
+      }
+      accumulateBalance(summary.combined[currency], balance);
     });
 
     perCurrencyBalances.forEach(function (balance) {
-      const currency = balance.currency;
-      if (!summary.perCurrency[currency]) {
-        summary.perCurrency[currency] = {
-          totalEquity: 0,
-          marketValue: 0,
-          cash: 0,
-          buyingPower: 0,
-          maintenanceExcess: 0,
-          netDeposits: 0,
-        };
+      const currency = balance && balance.currency;
+      if (!currency) {
+        return;
       }
-      const target = summary.perCurrency[currency];
-      target.totalEquity += balance.totalEquity || 0;
-      target.marketValue += balance.marketValue || 0;
-      target.cash += balance.cash || 0;
-      target.buyingPower += balance.buyingPower || 0;
-      target.maintenanceExcess += balance.maintenanceExcess || 0;
-      target.netDeposits += balance.netDeposits || 0;
+      if (!summary.perCurrency[currency]) {
+        summary.perCurrency[currency] = createEmptyBalanceAccumulator(currency);
+      }
+      accumulateBalance(summary.perCurrency[currency], balance);
     });
   });
 
   return summary;
+}
+
+function applyNetDeposits(summary, netDepositsResponses) {
+  if (!summary || !netDepositsResponses) {
+    return;
+  }
+  netDepositsResponses.forEach(function (response) {
+    const entries = extractNetDepositEntries(response);
+    entries.forEach(function (entry) {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const currency = entry.currency;
+      if (!currency) {
+        return;
+      }
+      let amount = null;
+      for (const key of NET_DEPOSIT_VALUE_KEYS) {
+        const candidate = entry[key];
+        if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+          amount = candidate;
+          break;
+        }
+      }
+      if (amount === null) {
+        return;
+      }
+      if (!summary.combined[currency]) {
+        summary.combined[currency] = createEmptyBalanceAccumulator(currency);
+      }
+      if (Math.abs(summary.combined[currency].netDeposits) < 1e-9) {
+        summary.combined[currency].netDeposits = amount;
+      }
+
+      if (!summary.perCurrency[currency]) {
+        summary.perCurrency[currency] = createEmptyBalanceAccumulator(currency);
+      }
+      if (Math.abs(summary.perCurrency[currency].netDeposits) < 1e-9) {
+        summary.perCurrency[currency].netDeposits = amount;
+      }
+    });
+  });
 }
 
 function mergePnL(positions) {
@@ -363,9 +477,11 @@ app.get('/api/summary', async function (req, res) {
 
     const positionsResults = [];
     const balancesResults = [];
+    const netDepositsResults = [];
     for (const account of accountsToUse) {
       positionsResults.push(await fetchPositions(account.number));
       balancesResults.push(await fetchBalances(account.number));
+      netDepositsResults.push(await fetchNetDeposits(account.number));
     }
 
     const flattenedPositions = positionsResults
@@ -393,6 +509,7 @@ app.get('/api/summary', async function (req, res) {
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
+    applyNetDeposits(balancesSummary, netDepositsResults);
 
     res.json({
       accounts: accounts.map(function (account) {
