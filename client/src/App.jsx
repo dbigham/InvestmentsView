@@ -136,13 +136,18 @@ function coerceNumber(value) {
     return value;
   }
   if (typeof value === 'string') {
-    const normalized = value.replace(/,/g, '').trim();
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const isParenthesized = /^\(.*\)$/.test(trimmed);
+    const normalized = trimmed.replace(/[^0-9.-]/g, '');
     if (!normalized) {
       return null;
     }
     const numeric = Number(normalized);
     if (!Number.isNaN(numeric)) {
-      return numeric;
+      return isParenthesized ? -numeric : numeric;
     }
   }
   return null;
@@ -672,6 +677,14 @@ function resolveNormalizedMarketValue(position, currencyRates, baseCurrency = 'C
   return normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency);
 }
 
+function resolveNormalizedPnl(position, field, currencyRates, baseCurrency = 'CAD') {
+  if (!position || !isFiniteNumber(position?.[field])) {
+    return 0;
+  }
+  const currency = position?.currency || baseCurrency;
+  return normalizeCurrencyAmount(position[field], currency, currencyRates, baseCurrency);
+}
+
 export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [currencyView, setCurrencyView] = useState(null);
@@ -722,7 +735,15 @@ export default function App() {
     return positions.map((position) => {
       const normalizedValue = resolveNormalizedMarketValue(position, currencyRates, baseCurrency);
       const share = totalMarketValue > 0 ? (normalizedValue / totalMarketValue) * 100 : 0;
-      return { ...position, portfolioShare: share, normalizedMarketValue: normalizedValue };
+      const normalizedDayPnl = resolveNormalizedPnl(position, 'dayPnl', currencyRates, baseCurrency);
+      const normalizedOpenPnl = resolveNormalizedPnl(position, 'openPnl', currencyRates, baseCurrency);
+      return {
+        ...position,
+        portfolioShare: share,
+        normalizedMarketValue: normalizedValue,
+        normalizedDayPnl,
+        normalizedOpenPnl,
+      };
     });
   }, [positions, totalMarketValue, currencyRates, baseCurrency]);
 
@@ -946,6 +967,30 @@ export default function App() {
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
+  const heatmapMarketValue = useMemo(() => {
+    if (activeBalances && typeof activeBalances === 'object') {
+      const balanceTotalEquity = coerceNumber(activeBalances.totalEquity);
+      const balanceMarketValue = coerceNumber(activeBalances.marketValue);
+      const resolvedBalanceValue =
+        balanceTotalEquity !== null ? balanceTotalEquity : balanceMarketValue !== null ? balanceMarketValue : null;
+
+      if (resolvedBalanceValue !== null) {
+        const balanceCurrency =
+          (activeCurrency && typeof activeCurrency.currency === 'string'
+            ? activeCurrency.currency
+            : baseCurrency) || baseCurrency;
+        return normalizeCurrencyAmount(resolvedBalanceValue, balanceCurrency, currencyRates, baseCurrency);
+      }
+    }
+    return totalMarketValue;
+  }, [
+    activeBalances,
+    activeCurrency,
+    currencyRates,
+    baseCurrency,
+    totalMarketValue,
+  ]);
+
   const beneficiariesTotals = beneficiarySummary.totals;
   const beneficiariesMissingAccounts = beneficiarySummary.missingAccounts;
   const beneficiariesDisabled = !beneficiarySummary.hasBalances;
@@ -1079,6 +1124,7 @@ export default function App() {
           onClose={handleClosePnlBreakdown}
           baseCurrency={baseCurrency}
           asOf={asOf}
+          totalMarketValue={heatmapMarketValue}
         />
       )}
     </div>
