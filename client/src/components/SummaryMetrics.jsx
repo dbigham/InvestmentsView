@@ -45,7 +45,7 @@ export default function SummaryMetrics({
   displayTotalEquity,
   usdToCadRate,
 }) {
-  const title = currencyOption?.title || 'Total equity';
+  const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
@@ -132,7 +132,6 @@ SummaryMetrics.propTypes = {
     label: PropTypes.string.isRequired,
     scope: PropTypes.string.isRequired,
     currency: PropTypes.string.isRequired,
-    title: PropTypes.string.isRequired,
   }),
   currencyOptions: PropTypes.arrayOf(
     PropTypes.shape({
@@ -140,7 +139,6 @@ SummaryMetrics.propTypes = {
       label: PropTypes.string.isRequired,
       scope: PropTypes.string.isRequired,
       currency: PropTypes.string.isRequired,
-      title: PropTypes.string.isRequired,
     })
   ).isRequired,
   onCurrencyChange: PropTypes.func.isRequired,
