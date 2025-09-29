@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import {
   formatDateTime,
@@ -7,6 +7,7 @@ import {
   formatSignedMoney,
   formatSignedPercent,
 } from '../utils/formatters';
+import { buildQuoteUrl, openQuote } from '../utils/quotes';
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -374,6 +375,18 @@ export default function PnlHeatmapDialog({
 
   const nodes = useMemo(() => buildHeatmapNodes(positions, metricKey), [positions, metricKey]);
   const [colorMode, setColorMode] = useState('percent');
+  const handleTileClick = useCallback((event, symbol) => {
+    if (!symbol) {
+      return;
+    }
+    const provider = event.altKey ? 'yahoo' : 'google';
+    const url = buildQuoteUrl(symbol, provider);
+    if (!url) {
+      return;
+    }
+    event.stopPropagation();
+    openQuote(symbol, provider);
+  }, []);
 
   const totals = useMemo(() => {
     if (!positions.length) {
@@ -504,7 +517,8 @@ export default function PnlHeatmapDialog({
                   .join('\n');
 
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={node.id}
                     className="pnl-heatmap-board__tile"
                     style={{
@@ -525,6 +539,7 @@ export default function PnlHeatmapDialog({
                       gap: `${formatPx(contentGapPx)}px`,
                     }}
                     title={tooltipLines}
+                    onClick={(event) => handleTileClick(event, node.symbol)}
                   >
                     <span
                       className="pnl-heatmap-board__symbol"
@@ -538,7 +553,7 @@ export default function PnlHeatmapDialog({
                     >
                       {detailDisplay}
                     </span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
