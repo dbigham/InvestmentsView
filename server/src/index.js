@@ -10,6 +10,7 @@ const {
   getAccountPortalOverrides,
   getAccountChatOverrides,
   getAccountOrdering,
+  getDefaultAccountId,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 
@@ -725,6 +726,7 @@ app.get('/api/summary', async function (req, res) {
     const accountPortalOverrides = getAccountPortalOverrides();
     const accountChatOverrides = getAccountChatOverrides();
     const configuredOrdering = getAccountOrdering();
+    const configuredDefaultAccountId = getDefaultAccountId();
     const accountBeneficiaries = getAccountBeneficiaries();
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
@@ -914,7 +916,15 @@ app.get('/api/summary', async function (req, res) {
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
 
+    const normalizedDefaultAccountId =
+      configuredDefaultAccountId == null ? null : String(configuredDefaultAccountId).trim() || null;
+
     const responseAccounts = allAccounts.map(function (account) {
+      const accountNumber = account.number == null ? null : String(account.number).trim();
+      const accountId = account.id == null ? null : String(account.id).trim();
+      const isDefault = normalizedDefaultAccountId
+        ? normalizedDefaultAccountId === accountNumber || normalizedDefaultAccountId === accountId
+        : false;
       return {
         id: account.id,
         number: account.number,
@@ -930,11 +940,13 @@ app.get('/api/summary', async function (req, res) {
         beneficiary: account.beneficiary || null,
         portalAccountId: account.portalAccountId || null,
         chatURL: account.chatURL || null,
+        isDefault,
       };
     });
 
     res.json({
       accounts: responseAccounts,
+      defaultAccountId: normalizedDefaultAccountId,
       filteredAccountIds: selectedContexts.map(function (context) {
         return context.account.id;
       }),
