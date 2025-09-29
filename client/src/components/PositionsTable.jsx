@@ -137,11 +137,12 @@ function buildQuoteUrl(symbol, provider) {
   return `https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=${encoded}%20chart`;
 }
 
-function compareRows(header, direction) {
+function compareRows(header, direction, accessorOverride) {
   const multiplier = direction === 'asc' ? 1 : -1;
+  const accessor = typeof accessorOverride === 'function' ? accessorOverride : header.accessor;
   return (a, b) => {
-    const valueA = header.accessor(a);
-    const valueB = header.accessor(b);
+    const valueA = accessor(a);
+    const valueB = accessor(b);
 
     if (header.sortType === 'text') {
       const textA = (valueA ?? '').toString().toUpperCase();
@@ -248,9 +249,17 @@ function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection
     if (!header) {
       return decoratedPositions.slice();
     }
-    const sorter = compareRows(header, sortState.direction);
+    let accessorOverride = null;
+    if (pnlMode === 'percent') {
+      if (header.key === 'dayPnl') {
+        accessorOverride = (row) => row.dayPnlPercent ?? 0;
+      } else if (header.key === 'openPnl') {
+        accessorOverride = (row) => row.openPnlPercent ?? 0;
+      }
+    }
+    const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
-  }, [decoratedPositions, sortState]);
+  }, [decoratedPositions, sortState, pnlMode]);
 
   const handleSort = useCallback((columnKey) => {
     const header = TABLE_HEADERS.find((column) => column.key === columnKey);
