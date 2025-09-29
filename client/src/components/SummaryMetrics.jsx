@@ -71,6 +71,7 @@ export default function SummaryMetrics({
   onShowBeneficiaries,
   beneficiariesDisabled,
   onShowPnlBreakdown,
+  isRefreshing,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -119,7 +120,7 @@ export default function SummaryMetrics({
               Beneficiaries
             </button>
           )}
-          <TimePill asOf={asOf} onRefresh={onRefresh} />
+          <TimePill asOf={asOf} onRefresh={onRefresh} refreshing={isRefreshing} />
         </div>
       </header>
 
@@ -205,6 +206,7 @@ SummaryMetrics.propTypes = {
   onShowBeneficiaries: PropTypes.func,
   beneficiariesDisabled: PropTypes.bool,
   onShowPnlBreakdown: PropTypes.func,
+  isRefreshing: PropTypes.bool,
 };
 
 SummaryMetrics.defaultProps = {
@@ -217,4 +219,5 @@ SummaryMetrics.defaultProps = {
   onShowBeneficiaries: null,
   beneficiariesDisabled: false,
   onShowPnlBreakdown: null,
+  isRefreshing: false,
 };

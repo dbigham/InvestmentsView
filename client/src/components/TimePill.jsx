@@ -1,14 +1,20 @@
 import PropTypes from 'prop-types';
 import { formatTimeOfDay } from '../utils/formatters';
 
-export default function TimePill({ asOf, onRefresh, className }) {
+export default function TimePill({ asOf, onRefresh, className, refreshing }) {
   const label = formatTimeOfDay(asOf);
   const pillClassName = className ? `time-pill ${className}` : 'time-pill';
   const isInteractive = typeof onRefresh === 'function';
+  const showIcon = isInteractive || refreshing;
+  const resolvedClassName = refreshing ? `${pillClassName} time-pill--refreshing` : pillClassName;
+  const refreshLabel = label ? `Refresh data (last updated ${label})` : 'Refresh data';
+  const refreshingLabel = label ? `Refreshing data (last updated ${label})` : 'Refreshing data';
 
-  const contents = (
+  const contents = refreshing ? (
+    <span className="time-pill__icon" aria-hidden="true" />
+  ) : (
     <>
-      {isInteractive && <span className="time-pill__icon" aria-hidden="true" />}
+      {showIcon && <span className="time-pill__icon" aria-hidden="true" />}
       <span className="time-pill__text">{label}</span>
     </>
   );
@@ -17,9 +23,9 @@ export default function TimePill({ asOf, onRefresh, className }) {
     return (
       <button
         type="button"
-        className={pillClassName}
+        className={resolvedClassName}
         onClick={onRefresh}
-        aria-label={`Refresh data (last updated ${label})`}
+        aria-label={refreshing ? refreshingLabel : refreshLabel}
       >
         {contents}
       </button>
@@ -27,7 +33,11 @@ export default function TimePill({ asOf, onRefresh, className }) {
   }
 
   return (
-    <div className={pillClassName} role="text" aria-label={`Last updated ${label}`}>
+    <div
+      className={resolvedClassName}
+      role="text"
+      aria-label={label ? `Last updated ${label}` : 'Last updated'}
+    >
       {contents}
     </div>
   );
@@ -37,10 +47,12 @@ TimePill.propTypes = {
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   className: PropTypes.string,
+  refreshing: PropTypes.bool,
 };
 
 TimePill.defaultProps = {
   asOf: null,
   onRefresh: null,
   className: '',
+  refreshing: false,
 };
