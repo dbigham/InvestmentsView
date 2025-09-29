@@ -103,7 +103,7 @@ function resolveTotalPnl(position) {
 function buildPnlSummaries(positions) {
   return positions.reduce(
     (acc, position) => {
-      const currency = position.currency || 'CAD';
+      const currency = (position.currency || 'CAD').toUpperCase();
       if (!acc.perCurrency[currency]) {
         acc.perCurrency[currency] = { dayPnl: 0, openPnl: 0, totalPnl: 0 };
       }
@@ -199,6 +199,76 @@ const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function convertAmountToCurrency(value, sourceCurrency, targetCurrency, currencyRates, baseCurrency = 'CAD') {
+  if (!isFiniteNumber(value)) {
+    return 0;
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const normalizedSource = (sourceCurrency || normalizedBase).toUpperCase();
+  const normalizedTarget = (targetCurrency || normalizedBase).toUpperCase();
+
+  const sourceRate = currencyRates?.get(normalizedSource);
+  let baseValue = null;
+  if (isFiniteNumber(sourceRate) && sourceRate > 0) {
+    baseValue = value * sourceRate;
+  } else if (normalizedSource === normalizedBase) {
+    baseValue = value;
+  }
+
+  if (baseValue === null) {
+    return 0;
+  }
+
+  if (normalizedTarget === normalizedBase) {
+    return baseValue;
+  }
+
+  const targetRate = currencyRates?.get(normalizedTarget);
+  if (isFiniteNumber(targetRate) && targetRate > 0) {
+    return baseValue / targetRate;
+  }
+
+  return baseValue;
+}
+
+function convertCombinedPnl(perCurrencySummary, currencyRates, targetCurrency, baseCurrency = 'CAD') {
+  const result = { dayPnl: 0, openPnl: 0, totalPnl: 0 };
+  if (!perCurrencySummary) {
+    return result;
+  }
+
+  Object.entries(perCurrencySummary).forEach(([currency, summary]) => {
+    if (!summary) {
+      return;
+    }
+    const normalizedCurrency = (currency || baseCurrency).toUpperCase();
+    result.dayPnl += convertAmountToCurrency(
+      summary.dayPnl ?? 0,
+      normalizedCurrency,
+      targetCurrency,
+      currencyRates,
+      baseCurrency
+    );
+    result.openPnl += convertAmountToCurrency(
+      summary.openPnl ?? 0,
+      normalizedCurrency,
+      targetCurrency,
+      currencyRates,
+      baseCurrency
+    );
+    result.totalPnl += convertAmountToCurrency(
+      summary.totalPnl ?? 0,
+      normalizedCurrency,
+      targetCurrency,
+      currencyRates,
+      baseCurrency
+    );
+  });
+
+  return result;
 }
 
 function pickBalanceEntry(bucket, currency) {
@@ -598,23 +668,35 @@ export default function App() {
       return ZERO_PNL;
     }
     if (activeCurrency.scope === 'combined') {
-      return positionPnlSummaries.combined;
+      return convertCombinedPnl(
+        positionPnlSummaries.perCurrency,
+        currencyRates,
+        activeCurrency.currency,
+        baseCurrency
+      );
     }
     return positionPnlSummaries.perCurrency[activeCurrency.currency] || ZERO_PNL;
-  }, [activeCurrency, positionPnlSummaries]);
+  }, [activeCurrency, positionPnlSummaries, currencyRates, baseCurrency]);
 
   const activePnl = useMemo(() => {
     if (!activeCurrency) {
       return ZERO_PNL;
     }
     const balanceEntry = balancePnlSummaries[activeCurrency.scope]?.[activeCurrency.currency] || null;
+    const totalFromBalance = balanceEntry ? balanceEntry.totalPnl : null;
+    const hasBalanceTotal = isFiniteNumber(totalFromBalance);
+
     if (!balanceEntry) {
-      return fallbackPnl;
+      return {
+        dayPnl: fallbackPnl.dayPnl,
+        openPnl: fallbackPnl.openPnl,
+        totalPnl: null,
+      };
     }
     return {
       dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
       openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
-      totalPnl: balanceEntry.totalPnl ?? fallbackPnl.totalPnl,
+      totalPnl: hasBalanceTotal ? totalFromBalance : null,
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
