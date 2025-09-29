@@ -308,6 +308,65 @@ textarea {
   box-shadow: none;
 }
 
+.equity-card__action-button--menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 12px;
+  position: relative;
+}
+
+.equity-card__action-caret {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  margin-left: 2px;
+}
+
+.equity-card__action-menu {
+  position: relative;
+}
+
+.equity-card__action-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+  list-style: none;
+  margin: 0;
+  padding: 8px 0;
+  min-width: 180px;
+  z-index: 10;
+}
+
+.equity-card__action-menu-item {
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.equity-card__action-menu-item:hover:not(:disabled),
+.equity-card__action-menu-item:focus-visible {
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.equity-card__action-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .equity-card__action-button:focus-visible {
   border-color: #1b2733;
   background: var(--color-surface-alt);
