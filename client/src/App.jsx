@@ -927,12 +927,19 @@ export default function App() {
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
-  const selectedAccountEntry = useMemo(() => {
+  const selectedAccountInfo = useMemo(() => {
     if (!selectedAccount || selectedAccount === 'all') {
       return null;
     }
     return (
-      accounts.find((account) => account.id === selectedAccount || account.number === selectedAccount) || null
+      accounts.find((account) => {
+        if (!account) {
+          return false;
+        }
+        const accountId = typeof account.id === 'string' ? account.id : null;
+        const accountNumber = typeof account.number === 'string' ? account.number : null;
+        return accountId === selectedAccount || accountNumber === selectedAccount;
+      }) || null
     );
   }, [accounts, selectedAccount]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
@@ -1232,7 +1239,7 @@ export default function App() {
 
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
-  const shouldShowQqqDetails = Boolean(selectedAccountEntry?.showQQQDetails);
+  const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
 
   const fetchQqqTemperature = useCallback(() => {
     if (qqqLoading) {
@@ -1264,6 +1271,13 @@ export default function App() {
   }, [shouldShowQqqDetails, qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
   const peopleDisabled = !peopleSummary.hasBalances;
   const showingAllAccounts = selectedAccount === 'all';
+  const selectedAccountChatUrl = useMemo(() => {
+    if (!selectedAccountInfo || typeof selectedAccountInfo.chatURL !== 'string') {
+      return null;
+    }
+    const trimmed = selectedAccountInfo.chatURL.trim();
+    return trimmed || null;
+  }, [selectedAccountInfo]);
 
   const resolvedSortColumn =
     positionsSort && typeof positionsSort.column === 'string' && positionsSort.column.trim()
@@ -1444,6 +1458,7 @@ export default function App() {
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
+            chatUrl={selectedAccountChatUrl}
           />
         )}
 
