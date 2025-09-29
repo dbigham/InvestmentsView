@@ -5,6 +5,7 @@ import PositionsTable from './components/PositionsTable';
 import { getSummary } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import BeneficiariesDialog from './components/BeneficiariesDialog';
+import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -649,6 +650,7 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showBeneficiaries, setShowBeneficiaries] = useState(false);
+  const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -878,8 +880,28 @@ export default function App() {
 
   const showContent = Boolean(data) && !loading;
 
+  useEffect(() => {
+    if (!showContent && pnlBreakdownMode) {
+      setPnlBreakdownMode(null);
+    }
+  }, [showContent, pnlBreakdownMode]);
+
   const handleRefresh = () => {
     setRefreshKey((value) => value + 1);
+  };
+
+  const handleShowPnlBreakdown = (mode) => {
+    if (!showContent || !orderedPositions.length) {
+      return;
+    }
+    if (mode !== 'day' && mode !== 'open') {
+      return;
+    }
+    setPnlBreakdownMode(mode);
+  };
+
+  const handleClosePnlBreakdown = () => {
+    setPnlBreakdownMode(null);
   };
 
   const handleOpenBeneficiaries = () => {
@@ -936,6 +958,7 @@ export default function App() {
             usdToCadRate={usdToCadRate}
             onShowBeneficiaries={handleOpenBeneficiaries}
             beneficiariesDisabled={beneficiariesDisabled}
+            onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
           />
         )}
 
@@ -958,6 +981,15 @@ export default function App() {
           baseCurrency={baseCurrency}
           isFilteredView={!showingAllAccounts}
           missingAccounts={beneficiariesMissingAccounts}
+          asOf={asOf}
+        />
+      )}
+      {pnlBreakdownMode && (
+        <PnlHeatmapDialog
+          positions={orderedPositions}
+          mode={pnlBreakdownMode}
+          onClose={handleClosePnlBreakdown}
+          baseCurrency={baseCurrency}
           asOf={asOf}
         />
       )}
