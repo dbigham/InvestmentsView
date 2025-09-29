@@ -82,7 +82,6 @@ textarea {
   border: 6px solid rgba(24, 163, 122, 0.18);
   border-top-color: var(--color-accent);
   animation: initial-loading-spin 0.9s linear infinite;
-  box-shadow: inset 0 0 0 6px rgba(24, 163, 122, 0.08);
 }
 
 @keyframes initial-loading-spin {
