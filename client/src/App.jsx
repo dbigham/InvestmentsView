@@ -237,9 +237,10 @@ function buildClipboardSummary({
   return lines.join('\n');
 }
 
-function useSummaryData(accountNumber, refreshKey) {
+function useSummaryData(accountNumber, refreshKey, options = {}) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const lastAccountRef = useRef();
+  const preferDefaultAccount = Boolean(options.preferDefaultAccount);
 
   useEffect(() => {
     let cancelled = false;
@@ -252,7 +253,7 @@ function useSummaryData(accountNumber, refreshKey) {
       return { loading: true, data: nextData, error: null };
     });
 
-    getSummary(accountNumber)
+    getSummary(accountNumber, { preferDefaultAccount })
       .then((summary) => {
         if (!cancelled) {
           setState({ loading: false, data: summary, error: null });
@@ -271,7 +272,7 @@ function useSummaryData(accountNumber, refreshKey) {
     return () => {
       cancelled = true;
     };
-  }, [accountNumber, refreshKey]);
+  }, [accountNumber, refreshKey, preferDefaultAccount]);
 
   return state;
 }
@@ -920,9 +921,9 @@ export default function App() {
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
-  const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
-
   const userSelectedAccountRef = useRef(false);
+  const preferDefaultAccount = !userSelectedAccountRef.current && selectedAccount === 'all';
+  const { loading, data, error } = useSummaryData(selectedAccount, refreshKey, { preferDefaultAccount });
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
   const defaultAccountId = data?.defaultAccountId ?? null;
@@ -941,7 +942,7 @@ export default function App() {
     if (!normalizedDefault) {
       return;
     }
-    const hasMatchingAccount = accounts.some((account) => {
+    const matchingAccount = accounts.find((account) => {
       if (!account) {
         return false;
       }
@@ -949,10 +950,14 @@ export default function App() {
       const accountId = account.id == null ? null : String(account.id).trim();
       return normalizedDefault === accountNumber || normalizedDefault === accountId;
     });
-    if (!hasMatchingAccount) {
+    if (!matchingAccount) {
       return;
     }
-    setSelectedAccount(normalizedDefault);
+    const resolvedId = matchingAccount.id == null ? null : String(matchingAccount.id).trim();
+    if (!resolvedId) {
+      return;
+    }
+    setSelectedAccount(resolvedId);
   }, [defaultAccountId, accounts, selectedAccount, setSelectedAccount]);
 
   const handleAccountChange = useCallback((nextAccount) => {
