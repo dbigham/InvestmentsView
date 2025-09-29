@@ -212,15 +212,24 @@ function deriveExchangeRate(perEntry, combinedEntry) {
     }
   }
 
-  const candidateFields = ['marketValue', 'totalEquity', 'cash', 'buyingPower', 'totalCost'];
-  for (const field of candidateFields) {
-    const perValue = perEntry ? perEntry[field] : null;
-    const combinedValue = combinedEntry ? combinedEntry[field] : null;
-    if (isFiniteNumber(perValue) && Math.abs(perValue) > 1e-9 && isFiniteNumber(combinedValue)) {
-      const ratio = combinedValue / perValue;
-      if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
-        return Math.abs(ratio);
-      }
+  const ratioSources = [
+    ['totalEquity', 'totalEquity'],
+    ['marketValue', 'marketValue'],
+  ];
+
+  for (const [perField, combinedField] of ratioSources) {
+    const perValue = perEntry ? perEntry[perField] : null;
+    const combinedValue = combinedEntry ? combinedEntry[combinedField] : null;
+    if (!isFiniteNumber(perValue) || !isFiniteNumber(combinedValue)) {
+      continue;
+    }
+    if (Math.abs(perValue) <= 1e-9 || Math.abs(combinedValue) <= 1e-9) {
+      continue;
+    }
+
+    const ratio = combinedValue / perValue;
+    if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
+      return Math.abs(ratio);
     }
   }
 
