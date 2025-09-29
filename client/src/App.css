@@ -176,7 +176,7 @@ textarea {
 }
 
 .account-selector__list {
-  max-height: 320px;
+  max-height: 512px;
   overflow-y: auto;
   margin: 0;
   padding: 0;
