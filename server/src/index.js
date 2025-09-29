@@ -8,6 +8,7 @@ require('dotenv').config();
 const {
   getAccountNameOverrides,
   getAccountPortalOverrides,
+  getAccountChatOverrides,
   getAccountOrdering,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
@@ -286,6 +287,10 @@ function resolveAccountDisplayName(overrides, account, login) {
 }
 
 function resolveAccountPortalId(overrides, account, login) {
+  return resolveAccountOverrideValue(overrides, account, login);
+}
+
+function resolveAccountChatUrl(overrides, account, login) {
   return resolveAccountOverrideValue(overrides, account, login);
 }
 
@@ -718,6 +723,7 @@ app.get('/api/summary', async function (req, res) {
     const accountCollections = [];
     const accountNameOverrides = getAccountNameOverrides();
     const accountPortalOverrides = getAccountPortalOverrides();
+    const accountChatOverrides = getAccountChatOverrides();
     const configuredOrdering = getAccountOrdering();
     const accountBeneficiaries = getAccountBeneficiaries();
     for (const login of allLogins) {
@@ -745,6 +751,12 @@ app.get('/api/summary', async function (req, res) {
         const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
         if (overridePortalId) {
           normalizedAccount.portalAccountId = overridePortalId;
+        }
+        const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
+        if (overrideChatUrl) {
+          normalizedAccount.chatURL = overrideChatUrl;
+        } else if (normalizedAccount.chatURL === undefined) {
+          normalizedAccount.chatURL = null;
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
         if (defaultBeneficiary) {
@@ -917,6 +929,7 @@ app.get('/api/summary', async function (req, res) {
         loginId: account.loginId,
         beneficiary: account.beneficiary || null,
         portalAccountId: account.portalAccountId || null,
+        chatURL: account.chatURL || null,
       };
     });
 
