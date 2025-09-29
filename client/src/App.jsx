@@ -3,7 +3,10 @@ import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
 import { getSummary } from './api/questrade';
+import usePersistentState from './hooks/usePersistentState';
 import './App.css';
+
+const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
@@ -584,6 +587,7 @@ export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -700,6 +704,21 @@ export default function App() {
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
+  const resolvedSortColumn =
+    positionsSort && typeof positionsSort.column === 'string' && positionsSort.column.trim()
+      ? positionsSort.column
+      : DEFAULT_POSITIONS_SORT.column;
+  const resolvedSortDirection = (() => {
+    if (!positionsSort || typeof positionsSort.direction !== 'string') {
+      return DEFAULT_POSITIONS_SORT.direction;
+    }
+    const normalized = positionsSort.direction.toLowerCase();
+    if (normalized === 'asc' || normalized === 'desc') {
+      return normalized;
+    }
+    return DEFAULT_POSITIONS_SORT.direction;
+  })();
+
   const showContent = Boolean(data) && !loading;
 
   const handleRefresh = () => {
@@ -753,8 +772,9 @@ export default function App() {
           <PositionsTable
             positions={orderedPositions}
             totalMarketValue={totalMarketValue}
-            sortColumn="portfolioShare"
-            sortDirection="desc"
+            sortColumn={resolvedSortColumn}
+            sortDirection={resolvedSortDirection}
+            onSortChange={setPositionsSort}
           />
         )}
       </main>
