@@ -333,7 +333,7 @@ textarea {
 .equity-card__action-menu-list {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  left: 0;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
