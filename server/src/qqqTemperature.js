@@ -8,6 +8,9 @@ try {
   // yahoo-finance2 is distributed as an ESM module with a default export.
   // eslint-disable-next-line global-require
   yahooFinance = require('yahoo-finance2').default;
+  if (yahooFinance && typeof yahooFinance.suppressNotices === 'function') {
+    yahooFinance.suppressNotices(['ripHistorical']);
+  }
 } catch (error) {
   yahooFinanceLoadError = error instanceof Error ? error : new Error(String(error));
   yahooFinance = null;
@@ -170,25 +173,71 @@ function writeCachedSeries(cachePath, ticker, series) {
   }
 }
 
-function sanitizeHistoricalRows(rows) {
-  if (!Array.isArray(rows)) {
+function sanitizeChartQuotes(quotes) {
+  if (!Array.isArray(quotes)) {
     return [];
   }
-  return rows
-    .map((row) => {
-      const date = formatDate(row && row.date);
-      const adjClose = Number(row && (row.adjClose ?? row.close));
-      if (!date || !Number.isFinite(adjClose) || adjClose <= 0) {
+  return quotes
+    .map((entry) => {
+      const date = formatDate(entry && entry.date);
+      const close = Number(entry && (entry.adjclose ?? entry.close));
+      if (!date || !Number.isFinite(close) || close <= 0) {
         return null;
       }
-      return { date, close: adjClose };
+      return { date, close };
     })
     .filter(Boolean)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
-async function loadTickerSeries(ticker) {
+function describeYahooError(error) {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+  if (error.errors && Array.isArray(error.errors) && error.errors.length) {
+    const nested = error.errors.find((item) => item && item.message);
+    if (nested && nested.message) {
+      return nested.message;
+    }
+  }
+  if (error.cause && error.cause instanceof Error) {
+    return error.cause.message || null;
+  }
+  if (typeof error.message === 'string' && error.message.trim()) {
+    return error.message.trim();
+  }
+  return null;
+}
+
+async function downloadTickerSlice(ticker, fetchStart, today) {
   const finance = ensureYahooFinance();
+  const options = {
+    interval: '1d',
+    events: 'history',
+    includePrePost: false,
+    return: 'array',
+  };
+
+  if (fetchStart) {
+    options.period1 = fetchStart;
+  }
+  if (today) {
+    options.period2 = today;
+  }
+
+  try {
+    const result = await finance.chart(ticker, options);
+    const container = Array.isArray(result) ? result[0] : result;
+    const quotes = container && Array.isArray(container.quotes) ? container.quotes : [];
+    return sanitizeChartQuotes(quotes);
+  } catch (error) {
+    const message = describeYahooError(error);
+    logErrorOnce(`Failed to download historical data for ${ticker}`, message ? new Error(message) : error);
+    return [];
+  }
+}
+
+async function loadTickerSeries(ticker) {
   ensureCacheDir();
   const cachePath = path.join(CACHE_DIR, `${sanitizeTickerForCache(ticker)}.json`);
   const cachedSeries = readCachedSeries(cachePath);
@@ -213,29 +262,28 @@ async function loadTickerSeries(ticker) {
   let mergedSeries = cachedSeries.slice();
 
   if (fetchStart && fetchStart <= today) {
-    try {
-      const results = await finance.historical(ticker, {
-        period1: fetchStart,
-        interval: '1d',
-      });
-      const fresh = sanitizeHistoricalRows(results);
-      if (fresh.length) {
-        const map = new Map();
-        for (const entry of mergedSeries) {
-          map.set(entry.date, entry.close);
-        }
-        for (const entry of fresh) {
-          if (!startDate || parseDate(entry.date) >= startDate) {
-            map.set(entry.date, entry.close);
-          }
-        }
-        mergedSeries = Array.from(map.entries())
-          .map(([date, close]) => ({ date, close }))
-          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const fresh = await downloadTickerSlice(ticker, fetchStart, today);
+    if (!fresh.length && !mergedSeries.length && fetchStart && fetchStart > startDate) {
+      const fullHistory = await downloadTickerSlice(ticker, startDate, today);
+      if (fullHistory.length) {
+        mergedSeries = fullHistory;
         writeCachedSeries(cachePath, ticker, mergedSeries);
       }
-    } catch (error) {
-      logErrorOnce(`Failed to download historical data for ${ticker}`, error);
+    }
+    if (fresh.length) {
+      const map = new Map();
+      for (const entry of mergedSeries) {
+        map.set(entry.date, entry.close);
+      }
+      for (const entry of fresh) {
+        if (!startDate || parseDate(entry.date) >= startDate) {
+          map.set(entry.date, entry.close);
+        }
+      }
+      mergedSeries = Array.from(map.entries())
+        .map(([date, close]) => ({ date, close }))
+        .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      writeCachedSeries(cachePath, ticker, mergedSeries);
     }
   }
 
