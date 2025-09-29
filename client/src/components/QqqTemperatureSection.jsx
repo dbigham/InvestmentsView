@@ -226,6 +226,7 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
       {!loading && error && (
         <div className="qqq-section__status qqq-section__status--error" role="alert">
           <span>Unable to load QQQ temperature details.</span>
+          {error.message && <span className="qqq-section__status-detail">{error.message}</span>}
           {onRetry && (
             <button type="button" className="qqq-section__retry" onClick={onRetry}>
               Retry

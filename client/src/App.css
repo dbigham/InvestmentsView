@@ -1413,6 +1413,11 @@ button.time-pill:hover .time-pill__icon {
   color: var(--color-negative);
 }
 
+.qqq-section__status-detail {
+  display: block;
+  font-weight: 500;
+}
+
 .qqq-section__retry {
   appearance: none;
   border: none;

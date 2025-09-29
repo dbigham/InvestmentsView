@@ -720,6 +720,9 @@ app.get('/api/qqq-temperature', async function (req, res) {
     }
     res.json(summary);
   } catch (error) {
+    if (error && error.code === 'MISSING_DEPENDENCY') {
+      return res.status(503).send(error.message);
+    }
     const message = error && error.message ? error.message : 'Unknown error';
     res.status(500).json({ message: 'Failed to load QQQ temperature data', details: message });
   }
