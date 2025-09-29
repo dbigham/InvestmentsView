@@ -320,7 +320,6 @@ export default function App() {
           <PositionsTable
             positions={orderedPositions}
             totalMarketValue={totalMarketValue}
-            asOf={asOf}
             sortColumn="portfolioShare"
             sortDirection="desc"
           />
