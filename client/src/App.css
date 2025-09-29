@@ -413,7 +413,13 @@ textarea {
 
 .beneficiaries-list__item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.beneficiaries-list__header {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
@@ -422,6 +428,8 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .beneficiaries-list__name {
@@ -442,24 +450,17 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-.beneficiaries-list__metrics {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
-
 .beneficiaries-list__pnl-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  align-items: flex-end;
+  align-items: flex-start;
 }
 
 .beneficiaries-list__pnl-row {
   display: flex;
   align-items: baseline;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
   font-variant-numeric: tabular-nums;
 }
