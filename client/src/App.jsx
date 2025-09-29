@@ -185,6 +185,282 @@ function resolveDisplayTotalEquity(balances) {
 
 const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
 
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function resolvePositionTotalCost(position) {
+  if (position && position.totalCost !== undefined && position.totalCost !== null) {
+    return position.totalCost;
+  }
+  if (position && isFiniteNumber(position.averageEntryPrice) && isFiniteNumber(position.openQuantity)) {
+    return position.averageEntryPrice * position.openQuantity;
+  }
+  return null;
+}
+
+function deriveExchangeRate(perEntry, combinedEntry) {
+  if (!perEntry && !combinedEntry) {
+    return null;
+  }
+
+  const directFields = ['exchangeRate', 'fxRate', 'conversionRate', 'rate'];
+  for (const field of directFields) {
+    const candidate = (perEntry && perEntry[field]) ?? (combinedEntry && combinedEntry[field]) ?? null;
+    if (isFiniteNumber(candidate) && candidate > 0) {
+      return candidate;
+    }
+  }
+
+  const candidateFields = ['marketValue', 'totalEquity', 'cash', 'buyingPower', 'totalCost'];
+  for (const field of candidateFields) {
+    const perValue = perEntry ? perEntry[field] : null;
+    const combinedValue = combinedEntry ? combinedEntry[field] : null;
+    if (isFiniteNumber(perValue) && Math.abs(perValue) > 1e-9 && isFiniteNumber(combinedValue)) {
+      const ratio = combinedValue / perValue;
+      if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
+        return Math.abs(ratio);
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildCurrencyRateMap(balances, baseCurrency = 'CAD') {
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const rates = new Map();
+  rates.set(normalizedBase, 1);
+
+  if (!balances) {
+    return rates;
+  }
+
+  const combined = balances.combined || {};
+  const perCurrency = balances.perCurrency || {};
+  const allKeys = new Set([
+    ...Object.keys(combined || {}),
+    ...Object.keys(perCurrency || {}),
+  ]);
+
+  allKeys.forEach((key) => {
+    if (!key) {
+      return;
+    }
+    const normalizedKey = key.toUpperCase();
+    if (rates.has(normalizedKey)) {
+      return;
+    }
+
+    const perEntry = perCurrency[key] || perCurrency[normalizedKey] || null;
+    const combinedEntry = combined[key] || combined[normalizedKey] || null;
+
+    const derived = deriveExchangeRate(perEntry, combinedEntry);
+    if (derived && derived > 0) {
+      rates.set(normalizedKey, derived);
+      return;
+    }
+
+    if (normalizedKey === normalizedBase) {
+      rates.set(normalizedKey, 1);
+    }
+  });
+
+  return rates;
+}
+
+function normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency = 'CAD') {
+  if (!isFiniteNumber(value)) {
+    return 0;
+  }
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const normalizedCurrency = (currency || normalizedBase).toUpperCase();
+  const rate = currencyRates.get(normalizedCurrency);
+  if (isFiniteNumber(rate) && rate > 0) {
+    return value * rate;
+  }
+  if (normalizedCurrency === normalizedBase) {
+    return value;
+  }
+  return value;
+}
+
+function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = 'CAD' }) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return [];
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const convert = (amount, currency) => normalizeCurrencyAmount(amount, currency, currencyRates, normalizedBase);
+
+  const groups = new Map();
+  const passthrough = [];
+
+  positions.forEach((position) => {
+    const symbolKey = position && position.symbol ? String(position.symbol).trim().toUpperCase() : '';
+    if (!symbolKey) {
+      if (position) {
+        passthrough.push(position);
+      }
+      return;
+    }
+
+    let group = groups.get(symbolKey);
+    if (!group) {
+      group = {
+        symbol: position.symbol,
+        symbolId: position.symbolId ?? null,
+        description: position.description || null,
+        currencyBuckets: new Map(),
+        openQuantity: 0,
+        marketValueBase: 0,
+        dayPnlBase: 0,
+        openPnlBase: 0,
+        totalCostBase: 0,
+        totalCostBaseWeight: 0,
+        currentPriceAccumulator: 0,
+        currentPriceWeight: 0,
+        isRealTime: Boolean(position?.isRealTime),
+        rowId: `all:${symbolKey}`,
+        key: symbolKey,
+      };
+      groups.set(symbolKey, group);
+    }
+
+    if (!group.symbol && position.symbol) {
+      group.symbol = position.symbol;
+    }
+    if (!group.symbolId && position.symbolId) {
+      group.symbolId = position.symbolId;
+    }
+    if (!group.description && position.description) {
+      group.description = position.description;
+    }
+
+    const quantity = isFiniteNumber(position.openQuantity) ? position.openQuantity : 0;
+    const marketValue = isFiniteNumber(position.currentMarketValue) ? position.currentMarketValue : 0;
+    const dayPnl = isFiniteNumber(position.dayPnl) ? position.dayPnl : 0;
+    const openPnl = isFiniteNumber(position.openPnl) ? position.openPnl : 0;
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    const totalCost = resolvePositionTotalCost(position);
+    const currentPrice = isFiniteNumber(position.currentPrice) ? position.currentPrice : null;
+
+    group.openQuantity += quantity;
+    group.marketValueBase += convert(marketValue, currency);
+    group.dayPnlBase += convert(dayPnl, currency);
+    group.openPnlBase += convert(openPnl, currency);
+    if (totalCost !== null) {
+      group.totalCostBase += convert(totalCost, currency);
+      group.totalCostBaseWeight += quantity;
+    }
+    group.isRealTime = group.isRealTime || Boolean(position.isRealTime);
+
+    if (currentPrice !== null && Math.abs(quantity) > 1e-9) {
+      const weight = Math.abs(quantity);
+      group.currentPriceAccumulator += currentPrice * weight;
+      group.currentPriceWeight += weight;
+    }
+
+    let bucket = group.currencyBuckets.get(currency);
+    if (!bucket) {
+      bucket = { marketValue: 0, dayPnl: 0, openPnl: 0, totalCost: 0, costWeight: 0 };
+      group.currencyBuckets.set(currency, bucket);
+    }
+    bucket.marketValue += marketValue;
+    bucket.dayPnl += dayPnl;
+    bucket.openPnl += openPnl;
+    if (totalCost !== null) {
+      bucket.totalCost += totalCost;
+      bucket.costWeight += quantity;
+    }
+  });
+
+  const aggregated = Array.from(groups.values()).map((group) => {
+    const currencies = Array.from(group.currencyBuckets.keys());
+    const hasSingleCurrency = currencies.length === 1;
+    const displayCurrency = hasSingleCurrency ? currencies[0] : normalizedBase;
+    const bucket = hasSingleCurrency ? group.currencyBuckets.get(displayCurrency) : null;
+
+    let currentMarketValue = hasSingleCurrency && bucket ? bucket.marketValue : group.marketValueBase;
+    if (!isFiniteNumber(currentMarketValue)) {
+      currentMarketValue = 0;
+    }
+
+    let dayPnl = hasSingleCurrency && bucket ? bucket.dayPnl : group.dayPnlBase;
+    if (!isFiniteNumber(dayPnl)) {
+      dayPnl = 0;
+    }
+
+    let openPnl = hasSingleCurrency && bucket ? bucket.openPnl : group.openPnlBase;
+    if (!isFiniteNumber(openPnl)) {
+      openPnl = 0;
+    }
+
+    let totalCost = null;
+    let averageEntryPrice = null;
+    if (hasSingleCurrency && bucket) {
+      if (isFiniteNumber(bucket.totalCost) && Math.abs(bucket.costWeight) > 1e-9) {
+        totalCost = bucket.totalCost;
+        averageEntryPrice = bucket.totalCost / bucket.costWeight;
+      }
+    }
+    if (totalCost === null && Math.abs(group.totalCostBaseWeight) > 1e-9) {
+      totalCost = group.totalCostBase;
+      averageEntryPrice = group.totalCostBase / group.totalCostBaseWeight;
+      if (!hasSingleCurrency) {
+        currentMarketValue = group.marketValueBase;
+        dayPnl = group.dayPnlBase;
+        openPnl = group.openPnlBase;
+      }
+    }
+
+    if (!isFiniteNumber(averageEntryPrice)) {
+      averageEntryPrice = null;
+    }
+
+    const currentPrice =
+      group.currentPriceWeight > 0
+        ? group.currentPriceAccumulator / group.currentPriceWeight
+        : null;
+
+    const resolvedSymbolId = group.symbolId ?? group.key;
+
+    return {
+      symbol: group.symbol ?? group.key,
+      symbolId: resolvedSymbolId,
+      description: group.description ?? null,
+      dayPnl,
+      openPnl,
+      openQuantity: group.openQuantity,
+      averageEntryPrice,
+      currentPrice,
+      currentMarketValue,
+      currency: displayCurrency,
+      totalCost: totalCost ?? null,
+      accountId: 'all',
+      accountNumber: 'all',
+      isRealTime: group.isRealTime,
+      rowId: group.rowId,
+      normalizedMarketValue: group.marketValueBase,
+    };
+  });
+
+  if (!passthrough.length) {
+    return aggregated;
+  }
+
+  return aggregated.concat(passthrough);
+}
+
+function resolveNormalizedMarketValue(position, currencyRates, baseCurrency = 'CAD') {
+  if (position && isFiniteNumber(position.normalizedMarketValue)) {
+    return position.normalizedMarketValue;
+  }
+  const value = position?.currentMarketValue ?? 0;
+  const currency = position?.currency;
+  return normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency);
+}
+
 export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [currencyView, setCurrencyView] = useState(null);
@@ -192,23 +468,39 @@ export default function App() {
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
-  const positions = useMemo(() => data?.positions ?? [], [data?.positions]);
+  const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const asOf = data?.asOf || null;
 
+  const baseCurrency = 'CAD';
+  const currencyRates = useMemo(() => buildCurrencyRateMap(balances, baseCurrency), [balances]);
+
+  const positions = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return aggregatePositionsBySymbol(rawPositions, { currencyRates, baseCurrency });
+    }
+    return rawPositions;
+  }, [rawPositions, selectedAccount, currencyRates, baseCurrency]);
+
   const totalMarketValue = useMemo(() => {
-    return positions.reduce((acc, position) => acc + (position.currentMarketValue || 0), 0);
-  }, [positions]);
+    if (!positions.length) {
+      return 0;
+    }
+    return positions.reduce((acc, position) => {
+      return acc + resolveNormalizedMarketValue(position, currencyRates, baseCurrency);
+    }, 0);
+  }, [positions, currencyRates, baseCurrency]);
 
   const positionsWithShare = useMemo(() => {
     if (!positions.length) {
       return [];
     }
     return positions.map((position) => {
-      const share = totalMarketValue > 0 ? ((position.currentMarketValue || 0) / totalMarketValue) * 100 : 0;
-      return { ...position, portfolioShare: share };
+      const normalizedValue = resolveNormalizedMarketValue(position, currencyRates, baseCurrency);
+      const share = totalMarketValue > 0 ? (normalizedValue / totalMarketValue) * 100 : 0;
+      return { ...position, portfolioShare: share, normalizedMarketValue: normalizedValue };
     });
-  }, [positions, totalMarketValue]);
+  }, [positions, totalMarketValue, currencyRates, baseCurrency]);
 
   const orderedPositions = useMemo(() => {
     const list = positionsWithShare.slice();
