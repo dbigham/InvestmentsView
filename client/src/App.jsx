@@ -683,13 +683,20 @@ export default function App() {
       return ZERO_PNL;
     }
     const balanceEntry = balancePnlSummaries[activeCurrency.scope]?.[activeCurrency.currency] || null;
+    const totalFromBalance = balanceEntry ? balanceEntry.totalPnl : null;
+    const hasBalanceTotal = isFiniteNumber(totalFromBalance);
+
     if (!balanceEntry) {
-      return fallbackPnl;
+      return {
+        dayPnl: fallbackPnl.dayPnl,
+        openPnl: fallbackPnl.openPnl,
+        totalPnl: null,
+      };
     }
     return {
       dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
       openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
-      totalPnl: balanceEntry.totalPnl ?? fallbackPnl.totalPnl,
+      totalPnl: hasBalanceTotal ? totalFromBalance : null,
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
