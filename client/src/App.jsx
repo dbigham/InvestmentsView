@@ -201,6 +201,14 @@ function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function pickBalanceEntry(bucket, currency) {
+  if (!bucket || !currency) {
+    return null;
+  }
+  const normalized = currency.toUpperCase();
+  return bucket[normalized] || bucket[currency] || bucket[normalized.toLowerCase()] || null;
+}
+
 function resolvePositionTotalCost(position) {
   if (position && position.totalCost !== undefined && position.totalCost !== null) {
     return position.totalCost;
@@ -211,7 +219,7 @@ function resolvePositionTotalCost(position) {
   return null;
 }
 
-function deriveExchangeRate(perEntry, combinedEntry) {
+function deriveExchangeRate(perEntry, combinedEntry, baseCombinedEntry) {
   if (!perEntry && !combinedEntry) {
     return null;
   }
@@ -224,15 +232,43 @@ function deriveExchangeRate(perEntry, combinedEntry) {
     }
   }
 
-  const candidateFields = ['marketValue', 'totalEquity', 'cash', 'buyingPower', 'totalCost'];
-  for (const field of candidateFields) {
-    const perValue = perEntry ? perEntry[field] : null;
-    const combinedValue = combinedEntry ? combinedEntry[field] : null;
-    if (isFiniteNumber(perValue) && Math.abs(perValue) > 1e-9 && isFiniteNumber(combinedValue)) {
-      const ratio = combinedValue / perValue;
+  if (baseCombinedEntry && combinedEntry) {
+    const baseFields = ['totalEquity', 'marketValue', 'cash', 'buyingPower'];
+    for (const field of baseFields) {
+      const baseValue = baseCombinedEntry[field];
+      const currencyValue = combinedEntry[field];
+      if (!isFiniteNumber(baseValue) || !isFiniteNumber(currencyValue)) {
+        continue;
+      }
+      if (Math.abs(currencyValue) <= 1e-9) {
+        continue;
+      }
+
+      const ratio = baseValue / currencyValue;
       if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
         return Math.abs(ratio);
       }
+    }
+  }
+
+  const ratioSources = [
+    ['totalEquity', 'totalEquity'],
+    ['marketValue', 'marketValue'],
+  ];
+
+  for (const [perField, combinedField] of ratioSources) {
+    const perValue = perEntry ? perEntry[perField] : null;
+    const combinedValue = combinedEntry ? combinedEntry[combinedField] : null;
+    if (!isFiniteNumber(perValue) || !isFiniteNumber(combinedValue)) {
+      continue;
+    }
+    if (Math.abs(perValue) <= 1e-9 || Math.abs(combinedValue) <= 1e-9) {
+      continue;
+    }
+
+    const ratio = combinedValue / perValue;
+    if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
+      return Math.abs(ratio);
     }
   }
 
@@ -250,6 +286,7 @@ function buildCurrencyRateMap(balances, baseCurrency = 'CAD') {
 
   const combined = balances.combined || {};
   const perCurrency = balances.perCurrency || {};
+  const baseCombinedEntry = pickBalanceEntry(combined, normalizedBase);
   const allKeys = new Set([
     ...Object.keys(combined || {}),
     ...Object.keys(perCurrency || {}),
@@ -264,10 +301,10 @@ function buildCurrencyRateMap(balances, baseCurrency = 'CAD') {
       return;
     }
 
-    const perEntry = perCurrency[key] || perCurrency[normalizedKey] || null;
-    const combinedEntry = combined[key] || combined[normalizedKey] || null;
+    const perEntry = pickBalanceEntry(perCurrency, key) || pickBalanceEntry(perCurrency, normalizedKey);
+    const combinedEntry = pickBalanceEntry(combined, key) || pickBalanceEntry(combined, normalizedKey);
 
-    const derived = deriveExchangeRate(perEntry, combinedEntry);
+    const derived = deriveExchangeRate(perEntry, combinedEntry, baseCombinedEntry);
     if (derived && derived > 0) {
       rates.set(normalizedKey, derived);
       return;
