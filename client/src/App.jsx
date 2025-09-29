@@ -406,6 +406,66 @@ function normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency = 
   return value;
 }
 
+
+function resolveAccountTotalInBase(combined, currencyRates, baseCurrency = 'CAD') {
+  if (!combined || typeof combined !== 'object') {
+    return 0;
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+
+  const pickBaseTotal = (entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return null;
+    }
+    if (isFiniteNumber(entry.totalEquityCad)) {
+      return entry.totalEquityCad;
+    }
+    const entryCurrency =
+      typeof entry.currency === 'string' && entry.currency.trim()
+        ? entry.currency.toUpperCase()
+        : null;
+    const reference =
+      entry.totalEquity ?? entry.marketValue ?? entry.cash ?? entry.buyingPower ?? null;
+    if (isFiniteNumber(reference) && entryCurrency === normalizedBase) {
+      return reference;
+    }
+    return null;
+  };
+
+  const baseKey = Object.keys(combined).find((key) => key && key.toUpperCase() === normalizedBase);
+  if (baseKey) {
+    const resolved = pickBaseTotal(combined[baseKey]);
+    if (resolved !== null) {
+      return resolved;
+    }
+  }
+
+  for (const entryKey of Object.keys(combined)) {
+    const resolved = pickBaseTotal(combined[entryKey]);
+    if (resolved !== null) {
+      return resolved;
+    }
+  }
+
+  let fallbackTotal = 0;
+
+  Object.entries(combined).forEach(([currency, values]) => {
+    if (!values || typeof values !== 'object') {
+      return;
+    }
+    const reference =
+      values.totalEquity ?? values.marketValue ?? values.cash ?? values.buyingPower ?? null;
+    if (!isFiniteNumber(reference)) {
+      return;
+    }
+    fallbackTotal += normalizeCurrencyAmount(reference, currency, currencyRates, baseCurrency);
+  });
+
+  return fallbackTotal;
+}
+
+
 function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = 'CAD' }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return [];
@@ -706,20 +766,7 @@ export default function App() {
       }
       hasBalanceEntries = true;
       const beneficiary = account.beneficiary || 'Unassigned';
-      let accountTotal = 0;
-      if (combined && typeof combined === 'object') {
-        Object.entries(combined).forEach(([currency, values]) => {
-          if (!values || typeof values !== 'object') {
-            return;
-          }
-          const totalEquity =
-            values.totalEquity ?? values.marketValue ?? values.cash ?? values.buyingPower ?? null;
-          if (!isFiniteNumber(totalEquity)) {
-            return;
-          }
-          accountTotal += normalizeCurrencyAmount(totalEquity, currency, currencyRates, baseCurrency);
-        });
-      }
+      const accountTotal = resolveAccountTotalInBase(combined, currencyRates, baseCurrency);
       totalsMap.set(beneficiary, (totalsMap.get(beneficiary) || 0) + accountTotal);
       const coveredSet = coveredAccountBuckets.get(beneficiary) || new Set();
       coveredSet.add(accountId);
