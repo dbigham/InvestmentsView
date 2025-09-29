@@ -719,6 +719,10 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
 app.get('/api/summary', async function (req, res) {
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
+  const preferDefaultAccount =
+    typeof req.query.preferDefaultAccount === 'string'
+      ? ['1', 'true', 'yes'].includes(req.query.preferDefaultAccount.toLowerCase())
+      : false;
 
   try {
     const accountCollections = [];
@@ -837,13 +841,27 @@ app.get('/api/summary', async function (req, res) {
       accountsById[account.id] = account;
     });
 
+    const normalizedDefaultAccountId =
+      configuredDefaultAccountId == null ? null : String(configuredDefaultAccountId).trim() || null;
+
     let selectedAccounts = allAccounts;
+    let defaultSelectionApplied = false;
     if (!includeAllAccounts) {
       selectedAccounts = allAccounts.filter(function (account) {
         return account.id === requestedAccountId || account.number === requestedAccountId;
       });
       if (!selectedAccounts.length) {
         return res.status(404).json({ message: 'No accounts found for the provided filter.' });
+      }
+    } else if (preferDefaultAccount && normalizedDefaultAccountId) {
+      const defaultAccount = allAccounts.find(function (account) {
+        const accountNumber = account.number == null ? null : String(account.number).trim();
+        const accountId = account.id == null ? null : String(account.id).trim();
+        return normalizedDefaultAccountId === accountNumber || normalizedDefaultAccountId === accountId;
+      });
+      if (defaultAccount) {
+        selectedAccounts = [defaultAccount];
+        defaultSelectionApplied = true;
       }
     }
 
@@ -916,9 +934,6 @@ app.get('/api/summary', async function (req, res) {
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
 
-    const normalizedDefaultAccountId =
-      configuredDefaultAccountId == null ? null : String(configuredDefaultAccountId).trim() || null;
-
     const responseAccounts = allAccounts.map(function (account) {
       const accountNumber = account.number == null ? null : String(account.number).trim();
       const accountId = account.id == null ? null : String(account.id).trim();
@@ -950,6 +965,7 @@ app.get('/api/summary', async function (req, res) {
       filteredAccountIds: selectedContexts.map(function (context) {
         return context.account.id;
       }),
+      defaultAccountApplied: defaultSelectionApplied,
       positions: decoratedPositions,
       pnl: pnl,
       balances: balancesSummary,
