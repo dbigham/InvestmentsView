@@ -8,6 +8,7 @@ client/dist/
 server/token-store.json
 server/account-names.json
 server/account-beneficiaries.json
+server/data/qqq-cache/
 
 # Env files
 *.env

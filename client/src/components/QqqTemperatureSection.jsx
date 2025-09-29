@@ -1,10 +1,83 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatNumber, formatPercent } from '../utils/formatters';
 
 const CHART_WIDTH = 720;
 const CHART_HEIGHT = 260;
-const PADDING = { top: 24, right: 32, bottom: 36, left: 48 };
+const PADDING = { top: 24, right: 0, bottom: 36, left: 0 };
+
+const TIMEFRAME_OPTIONS = [
+  { value: '1M', label: '1 month' },
+  { value: '1Y', label: '1 year' },
+  { value: '5Y', label: '5 years' },
+  { value: '10Y', label: '10 years' },
+  { value: 'ALL', label: 'All time' },
+];
+
+function parseDate(value) {
+  if (!value) {
+    return null;
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return null;
+  }
+  const parsed = new Date(`${raw}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function subtractInterval(date, option) {
+  if (!(date instanceof Date)) {
+    return null;
+  }
+  const result = new Date(date.getTime());
+  switch (option) {
+    case '1M':
+      result.setMonth(result.getMonth() - 1);
+      break;
+    case '1Y':
+      result.setFullYear(result.getFullYear() - 1);
+      break;
+    case '5Y':
+      result.setFullYear(result.getFullYear() - 5);
+      break;
+    case '10Y':
+      result.setFullYear(result.getFullYear() - 10);
+      break;
+    default:
+      return null;
+  }
+  return result;
+}
+
+function filterSeries(series, timeframe) {
+  if (!Array.isArray(series)) {
+    return [];
+  }
+  const normalized = series.filter((entry) => entry && entry.date && Number.isFinite(entry.temperature));
+  if (!normalized.length) {
+    return [];
+  }
+  if (timeframe === 'ALL') {
+    return normalized;
+  }
+  const lastEntry = normalized[normalized.length - 1];
+  const lastDate = parseDate(lastEntry.date);
+  const cutoffDate = subtractInterval(lastDate, timeframe);
+  if (!cutoffDate) {
+    return normalized;
+  }
+  return normalized.filter((entry) => {
+    const entryDate = parseDate(entry.date);
+    if (!entryDate) {
+      return false;
+    }
+    return entryDate >= cutoffDate;
+  });
+}
 
 function buildChartMetrics(series) {
   if (!Array.isArray(series) || series.length === 0) {
@@ -62,7 +135,9 @@ function formatShare(value) {
 }
 
 export default function QqqTemperatureSection({ data, loading, error, onRetry }) {
-  const chartMetrics = useMemo(() => buildChartMetrics(data?.series), [data?.series]);
+  const [timeframe, setTimeframe] = useState('5Y');
+  const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
+  const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
   const latestTemperature = Number(data?.latest?.temperature);
   const latestLabel = Number.isFinite(latestTemperature)
     ? `T = ${formatNumber(latestTemperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -70,6 +145,8 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
 
   const allocation = data?.allocation || null;
   const hasChart = chartMetrics && chartMetrics.points.length >= 1;
+  const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.rangeStart;
+  const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.rangeEnd;
 
   const pathD = useMemo(() => {
     if (!hasChart) {
@@ -121,6 +198,25 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
         <span className="qqq-section__updated">{`Updated ${formatDate(data?.updated)}`}</span>
       </div>
 
+      <div className="qqq-section__controls">
+        <label className="qqq-section__control-label" htmlFor="qqq-temperature-range">
+          Time frame
+        </label>
+        <select
+          id="qqq-temperature-range"
+          className="qqq-section__control-select"
+          value={timeframe}
+          onChange={(event) => setTimeframe(event.target.value)}
+          disabled={!hasChart || loading}
+        >
+          {TIMEFRAME_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {loading && (
         <div className="qqq-section__status" role="status">
           Loading QQQ temperature…
@@ -165,8 +261,8 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
             </div>
           )}
           <div className="qqq-section__chart-footer">
-            <span>{formatDate(data?.rangeStart || chartMetrics.rangeStart)}</span>
-            <span>{formatDate(data?.rangeEnd || chartMetrics.rangeEnd)}</span>
+            <span>{formatDate(displayRangeStart)}</span>
+            <span>{formatDate(displayRangeEnd)}</span>
           </div>
         </div>
       )}
@@ -194,6 +290,10 @@ QqqTemperatureSection.propTypes = {
     updated: PropTypes.string,
     rangeStart: PropTypes.string,
     rangeEnd: PropTypes.string,
+    growthCurve: PropTypes.shape({
+      A: PropTypes.number,
+      r: PropTypes.number,
+    }),
     series: PropTypes.arrayOf(
       PropTypes.shape({
         date: PropTypes.string.isRequired,
