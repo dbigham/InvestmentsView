@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
-import TimePill from './TimePill';
 import { classifyPnL, formatMoney, formatNumber, formatSignedMoney, formatSignedPercent } from '../utils/formatters';
 
 const TABLE_HEADERS = [
@@ -200,13 +199,7 @@ PnlBadge.defaultProps = {
   percent: null,
 };
 
-function PositionsTable({
-  positions,
-  totalMarketValue,
-  asOf,
-  sortColumn,
-  sortDirection,
-}) {
+function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection }) {
   const [sortState, setSortState] = useState({ column: sortColumn, direction: sortDirection });
   const [pnlMode, setPnlMode] = useState('currency');
 
@@ -297,7 +290,6 @@ function PositionsTable({
               Positions
             </button>
           </div>
-          <TimePill asOf={asOf} />
         </header>
         <div className="empty-state">No positions to display.</div>
       </section>
@@ -312,7 +304,6 @@ function PositionsTable({
             Positions
           </button>
         </div>
-        <TimePill asOf={asOf} />
       </header>
 
       <div className="positions-table" role="table">
@@ -422,14 +413,12 @@ PositionsTable.propTypes = {
     })
   ).isRequired,
   totalMarketValue: PropTypes.number,
-  asOf: PropTypes.string,
   sortColumn: PropTypes.string,
   sortDirection: PropTypes.oneOf(['asc', 'desc']),
 };
 
 PositionsTable.defaultProps = {
   totalMarketValue: null,
-  asOf: null,
   sortColumn: 'portfolioShare',
   sortDirection: 'desc',
 };
