@@ -376,6 +376,7 @@ export default function PnlHeatmapDialog({
   onClose,
   baseCurrency,
   asOf,
+  totalMarketValue,
 }) {
   const metricKey = mode === 'open' ? 'openPnl' : 'dayPnl';
   const metricLabel = mode === 'open' ? 'Open P&L' : "Today's P&L";
@@ -420,6 +421,8 @@ export default function PnlHeatmapDialog({
     );
   }, [positions, metricKey]);
 
+  const resolvedMarketValue = isFiniteNumber(totalMarketValue) ? totalMarketValue : totals.marketValue;
+
   const asOfDisplay = asOf ? `As of ${formatDateTime(asOf)}` : null;
   const normalizedCurrency = typeof baseCurrency === 'string' && baseCurrency.trim()
     ? baseCurrency.trim().toUpperCase()
@@ -428,8 +431,8 @@ export default function PnlHeatmapDialog({
     ? `${formatSignedMoney(totals.pnl)} ${normalizedCurrency}`
     : formatSignedMoney(totals.pnl);
   const marketValueLabel = normalizedCurrency
-    ? `${formatMoney(totals.marketValue)} ${normalizedCurrency}`
-    : formatMoney(totals.marketValue);
+    ? `${formatMoney(resolvedMarketValue)} ${normalizedCurrency}`
+    : formatMoney(resolvedMarketValue);
   const fallbackCurrency =
     typeof baseCurrency === 'string' && baseCurrency.trim()
       ? baseCurrency.trim().toUpperCase()
@@ -604,9 +607,11 @@ PnlHeatmapDialog.propTypes = {
   onClose: PropTypes.func.isRequired,
   baseCurrency: PropTypes.string,
   asOf: PropTypes.string,
+  totalMarketValue: PropTypes.number,
 };
 
 PnlHeatmapDialog.defaultProps = {
   baseCurrency: 'CAD',
   asOf: null,
+  totalMarketValue: null,
 };
