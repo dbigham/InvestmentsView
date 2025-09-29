@@ -117,6 +117,34 @@ function buildSecondaryLabel(account, totalAccounts) {
   return parts.join(' - ') || null;
 }
 
+const HIDDEN_ACCOUNT_PATTERN = /(?:not\s*used|unused)/i;
+
+function containsHiddenKeyword(value) {
+  if (value == null) {
+    return false;
+  }
+  const stringValue = typeof value === 'string' ? value : String(value);
+  return HIDDEN_ACCOUNT_PATTERN.test(stringValue);
+}
+
+function shouldHideAccountOption(option) {
+  if (!option) {
+    return false;
+  }
+  const fieldsToCheck = [
+    option.primary,
+    option.meta,
+    option.secondary,
+    option.account?.displayName,
+    option.account?.ownerLabel,
+    option.account?.clientAccountType,
+    option.account?.type,
+    option.account?.number,
+    option.account?.name,
+  ];
+  return fieldsToCheck.some(containsHiddenKeyword);
+}
+
 function buildAccountOption(account, context) {
   if (!account) {
     return null;
@@ -176,7 +204,7 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
   const optionsState = useMemo(() => {
     const accountOptions = accounts
       .map((account) => buildAccountOption(account, { multipleOwners, totalAccounts }))
-      .filter(Boolean);
+      .filter((option) => option && !shouldHideAccountOption(option));
     const allOption = buildAllOption(totalAccounts, accountOptions, multipleOwners);
     const optionsList = [];
     if (allOption) {
