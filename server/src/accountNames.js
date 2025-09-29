@@ -1,20 +1,28 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_FILE_NAME = 'account-names.json';
+const DEFAULT_FILE_CANDIDATES = ['accounts.json', 'account-names.json'];
 
-const accountNamesFilePath = (() => {
-  const configured = process.env.ACCOUNT_NAMES_FILE;
-  if (!configured) {
-    return path.join(process.cwd(), DEFAULT_FILE_NAME);
+function resolveConfiguredFilePath() {
+  const configured = process.env.ACCOUNTS_FILE || process.env.ACCOUNT_NAMES_FILE;
+  if (configured) {
+    if (path.isAbsolute(configured)) {
+      return configured;
+    }
+    return path.join(process.cwd(), configured);
   }
-  if (path.isAbsolute(configured)) {
-    return configured;
+  for (const name of DEFAULT_FILE_CANDIDATES) {
+    const candidate = path.join(process.cwd(), name);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
   }
-  return path.join(process.cwd(), configured);
-})();
+  return path.join(process.cwd(), DEFAULT_FILE_CANDIDATES[0]);
+}
 
+let resolvedFilePath = resolveConfiguredFilePath();
 let cachedOverrides = {};
+let cachedPortalOverrides = {};
 let cachedMarker = null;
 let hasLoggedError = false;
 
@@ -47,13 +55,86 @@ function applyOverride(target, key, label) {
   target[normalizedKey] = normalizedLabel;
 }
 
-function extractEntry(target, entry, fallbackKey) {
+function applyPortalOverride(target, key, portalId) {
+  if (!key || !portalId) {
+    return;
+  }
+  const normalizedKey = String(key).trim();
+  if (!normalizedKey) {
+    return;
+  }
+  const normalizedPortalId = String(portalId).trim();
+  if (!normalizedPortalId) {
+    return;
+  }
+  target[normalizedKey] = normalizedPortalId;
+}
+
+const ACCOUNT_ENTRY_HINT_KEYS = new Set([
+  'name',
+  'displayName',
+  'label',
+  'title',
+  'value',
+  'nickname',
+  'alias',
+  'number',
+  'accountNumber',
+  'accountId',
+  'id',
+  'key',
+  'portalAccountId',
+  'portalId',
+  'portal',
+  'portalUUID',
+  'portalUuid',
+  'uuid',
+  'accountUuid',
+  'summaryUuid',
+]);
+
+const PORTAL_ID_KEYS = [
+  'portalAccountId',
+  'portalId',
+  'portal',
+  'portalUUID',
+  'portalUuid',
+  'uuid',
+  'accountUuid',
+  'summaryUuid',
+  'questradePortalId',
+  'questradeAccountId',
+];
+
+function isLikelyAccountEntryObject(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return false;
+  }
+  return Object.keys(entry).some((key) => ACCOUNT_ENTRY_HINT_KEYS.has(key));
+}
+
+function resolvePortalCandidate(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  for (const key of PORTAL_ID_KEYS) {
+    if (entry[key] !== undefined && entry[key] !== null) {
+      const candidate = String(entry[key]).trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+function extractEntry(namesTarget, portalTarget, entry, fallbackKey) {
   if (entry === null || entry === undefined) {
     return;
   }
   if (typeof entry === 'string') {
     if (isLikelyAccountKey(fallbackKey)) {
-      applyOverride(target, fallbackKey, entry);
+      applyOverride(namesTarget, fallbackKey, entry);
     }
     return;
   }
@@ -73,20 +154,37 @@ function extractEntry(target, entry, fallbackKey) {
     entry.nickname ??
     entry.alias;
 
+  const portalCandidate = resolvePortalCandidate(entry);
+
   if (candidateKey !== undefined && candidateLabel !== undefined) {
-    applyOverride(target, candidateKey, candidateLabel);
+    applyOverride(namesTarget, candidateKey, candidateLabel);
   } else if (isLikelyAccountKey(fallbackKey) && candidateLabel !== undefined) {
-    applyOverride(target, fallbackKey, candidateLabel);
+    applyOverride(namesTarget, fallbackKey, candidateLabel);
   }
+
+  if (portalCandidate) {
+    if (candidateKey !== undefined) {
+      applyPortalOverride(portalTarget, candidateKey, portalCandidate);
+    } else if (isLikelyAccountKey(fallbackKey)) {
+      applyPortalOverride(portalTarget, fallbackKey, portalCandidate);
+    }
+  }
+
+  const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
+  nestedKeys.forEach((key) => {
+    if (entry[key]) {
+      collectOverridesFromContainer(namesTarget, portalTarget, entry[key]);
+    }
+  });
 }
 
-function collectOverridesFromContainer(target, container) {
+function collectOverridesFromContainer(namesTarget, portalTarget, container) {
   if (!container) {
     return;
   }
   if (Array.isArray(container)) {
     container.forEach((entry) => {
-      extractEntry(target, entry, undefined);
+      extractEntry(namesTarget, portalTarget, entry, undefined);
     });
     return;
   }
@@ -97,84 +195,115 @@ function collectOverridesFromContainer(target, container) {
     const value = container[key];
     if (typeof value === 'string') {
       if (isLikelyAccountKey(key)) {
-        applyOverride(target, key, value);
+        applyOverride(namesTarget, key, value);
       }
       return;
     }
-    extractEntry(target, value, key);
+    if (isLikelyAccountKey(key) || isLikelyAccountEntryObject(value)) {
+      extractEntry(namesTarget, portalTarget, value, key);
+      return;
+    }
+    collectOverridesFromContainer(namesTarget, portalTarget, value);
   });
 }
 
-function normalizeAccountNameOverrides(raw) {
+function normalizeAccountOverrides(raw) {
   const overrides = {};
+  const portalOverrides = {};
   if (!raw) {
-    return overrides;
+    return { overrides, portalOverrides };
   }
   if (typeof raw !== 'object') {
-    return overrides;
+    return { overrides, portalOverrides };
   }
 
   if (Array.isArray(raw)) {
-    collectOverridesFromContainer(overrides, raw);
-    return overrides;
+    collectOverridesFromContainer(overrides, portalOverrides, raw);
+    return { overrides, portalOverrides };
   }
 
-  collectOverridesFromContainer(overrides, raw);
+  collectOverridesFromContainer(overrides, portalOverrides, raw);
 
-  const nestedKeys = ['accounts', 'numbers', 'overrides', 'items'];
+  const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
   nestedKeys.forEach((key) => {
     if (raw[key]) {
-      collectOverridesFromContainer(overrides, raw[key]);
+      collectOverridesFromContainer(overrides, portalOverrides, raw[key]);
     }
   });
 
-  return overrides;
+  return { overrides, portalOverrides };
 }
 
-function loadAccountNameOverrides() {
-  if (!accountNamesFilePath) {
-    cachedOverrides = {};
+function loadAccountOverrides() {
+  const filePath = resolveConfiguredFilePath();
+  if (filePath !== resolvedFilePath) {
+    resolvedFilePath = filePath;
     cachedMarker = null;
-    return cachedOverrides;
   }
-  if (!fs.existsSync(accountNamesFilePath)) {
+  if (!filePath) {
     cachedOverrides = {};
+    cachedPortalOverrides = {};
     cachedMarker = null;
     hasLoggedError = false;
-    return cachedOverrides;
+    return { overrides: cachedOverrides, portalOverrides: cachedPortalOverrides };
   }
-  const stats = fs.statSync(accountNamesFilePath);
+  if (!fs.existsSync(filePath)) {
+    cachedOverrides = {};
+    cachedPortalOverrides = {};
+    cachedMarker = null;
+    hasLoggedError = false;
+    return { overrides: cachedOverrides, portalOverrides: cachedPortalOverrides };
+  }
+  const stats = fs.statSync(filePath);
   const marker = createMarker(stats);
   if (marker && marker === cachedMarker) {
-    return cachedOverrides;
+    return { overrides: cachedOverrides, portalOverrides: cachedPortalOverrides };
   }
-  const content = fs.readFileSync(accountNamesFilePath, 'utf-8').replace(/^\uFEFF/, '');
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
   if (!content.trim()) {
     cachedOverrides = {};
+    cachedPortalOverrides = {};
     cachedMarker = marker;
     hasLoggedError = false;
-    return cachedOverrides;
+    return { overrides: cachedOverrides, portalOverrides: cachedPortalOverrides };
   }
   const parsed = JSON.parse(content);
-  cachedOverrides = normalizeAccountNameOverrides(parsed);
+  const normalized = normalizeAccountOverrides(parsed);
+  cachedOverrides = normalized.overrides;
+  cachedPortalOverrides = normalized.portalOverrides;
   cachedMarker = marker;
   hasLoggedError = false;
-  return cachedOverrides;
+  return { overrides: cachedOverrides, portalOverrides: cachedPortalOverrides };
 }
 
 function getAccountNameOverrides() {
   try {
-    return loadAccountNameOverrides();
+    return loadAccountOverrides().overrides;
   } catch (error) {
     if (!hasLoggedError) {
-      console.warn('Failed to load account name overrides from ' + accountNamesFilePath + ':', error.message);
+      console.warn('Failed to load account overrides from ' + resolvedFilePath + ':', error.message);
       hasLoggedError = true;
     }
     return cachedOverrides || {};
   }
 }
 
+function getAccountPortalOverrides() {
+  try {
+    return loadAccountOverrides().portalOverrides;
+  } catch (error) {
+    if (!hasLoggedError) {
+      console.warn('Failed to load account overrides from ' + resolvedFilePath + ':', error.message);
+      hasLoggedError = true;
+    }
+    return cachedPortalOverrides || {};
+  }
+}
+
 module.exports = {
   getAccountNameOverrides,
-  accountNamesFilePath,
+  getAccountPortalOverrides,
+  get accountNamesFilePath() {
+    return resolvedFilePath;
+  },
 };
