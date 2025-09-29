@@ -750,6 +750,17 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.pnl-heatmap-dialog__toolbar {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.pnl-heatmap-dialog__toolbar .pnl-heatmap-dialog__controls {
+  margin-top: 0;
+}
+
 .pnl-heatmap-dialog__controls {
   margin-top: 16px;
   display: inline-flex;
@@ -821,7 +832,7 @@ textarea {
   position: relative;
   flex: 1;
   border-radius: 16px;
-  background: var(--color-surface-alt);
+  background: #000;
   overflow: hidden;
   min-height: 360px;
 }
@@ -834,22 +845,33 @@ textarea {
   justify-content: center;
   text-align: center;
   gap: 4px;
-  padding: 8px;
-  border-radius: 12px;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   overflow: hidden;
+  border: none;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+}
+
+.pnl-heatmap-board__tile:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: -2px;
 }
 
 .pnl-heatmap-board__symbol {
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 
 .pnl-heatmap-board__value {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 
 .pnl-heatmap-empty {
@@ -866,10 +888,21 @@ textarea {
     border-radius: 16px;
   }
 
+  .pnl-heatmap-dialog__toolbar {
+    margin-top: 12px;
+    gap: 8px;
+  }
+
+  .pnl-heatmap-dialog__toolbar .pnl-heatmap-dialog__controls {
+    width: 100%;
+    justify-content: center;
+  }
+
   .pnl-heatmap-dialog__controls {
     margin-top: 12px;
     gap: 6px;
     padding: 3px;
+    width: auto;
   }
 
   .pnl-heatmap-board__symbol {

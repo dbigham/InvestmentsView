@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import {
   formatDateTime,
@@ -7,6 +7,7 @@ import {
   formatSignedMoney,
   formatSignedPercent,
 } from '../utils/formatters';
+import { buildQuoteUrl, openQuote } from '../utils/quotes';
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -49,6 +50,19 @@ function computePercentChange(position, metricKey) {
     return (metricValue / totalCost) * 100;
   }
   return metricValue === 0 ? 0 : null;
+}
+
+function resolveMetricValue(position, metricKey) {
+  if (!position) {
+    return 0;
+  }
+  if (metricKey === 'dayPnl' && isFiniteNumber(position.normalizedDayPnl)) {
+    return position.normalizedDayPnl;
+  }
+  if (metricKey === 'openPnl' && isFiniteNumber(position.normalizedOpenPnl)) {
+    return position.normalizedOpenPnl;
+  }
+  return isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
 }
 
 function layoutRow(row, rowWeight, rect, totalWeight) {
@@ -239,7 +253,7 @@ function buildHeatmapNodes(positions, metricKey) {
         return null;
       }
 
-      const metricValue = isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
+      const metricValue = resolveMetricValue(position, metricKey);
       const percentChange = computePercentChange(position, metricKey);
 
       return {
@@ -299,7 +313,7 @@ function buildHeatmapNodes(positions, metricKey) {
     });
 
   const layout = buildTreemapLayout(sorted);
-  const gutter = 0.004;
+  const gutter = 0;
 
   return layout.map((node) => {
     const adjustedWidth = Math.max(0, node.width - gutter * 2);
@@ -362,13 +376,37 @@ export default function PnlHeatmapDialog({
   onClose,
   baseCurrency,
   asOf,
+  totalMarketValue,
 }) {
-  const metricKey = mode === 'open' ? 'openPnl' : 'dayPnl';
-  const metricLabel = mode === 'open' ? 'Open P&L' : "Today's P&L";
-  const percentColorThreshold = mode === 'open' ? 70 : 5;
+  const initialMetric = mode === 'open' ? 'open' : 'day';
+  const [metricMode, setMetricMode] = useState(initialMetric);
+  useEffect(() => {
+    setMetricMode(initialMetric);
+  }, [initialMetric]);
+
+  const metricKey = metricMode === 'open' ? 'openPnl' : 'dayPnl';
+  const metricLabel = metricMode === 'open' ? 'Open P&L' : "Today's P&L";
+  const percentColorThreshold = metricMode === 'open' ? 70 : 5;
+  const tileGapPx = 1;
+  const halfTileGapPx = tileGapPx / 2;
+  const epsilon = 0.0001;
+  const toPercent = (fraction) => `${(fraction * 100).toFixed(4)}%`;
+  const formatPx = (value) => `${Number.parseFloat(value.toFixed(3))}`;
 
   const nodes = useMemo(() => buildHeatmapNodes(positions, metricKey), [positions, metricKey]);
   const [colorMode, setColorMode] = useState('percent');
+  const handleTileClick = useCallback((event, symbol) => {
+    if (!symbol) {
+      return;
+    }
+    const provider = event.altKey ? 'yahoo' : 'google';
+    const url = buildQuoteUrl(symbol, provider);
+    if (!url) {
+      return;
+    }
+    event.stopPropagation();
+    openQuote(symbol, provider);
+  }, []);
 
   const totals = useMemo(() => {
     if (!positions.length) {
@@ -376,8 +414,10 @@ export default function PnlHeatmapDialog({
     }
     return positions.reduce(
       (acc, position) => {
-        const marketValue = isFiniteNumber(position.normalizedMarketValue) ? position.normalizedMarketValue : 0;
-        const pnlValue = isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
+        const marketValue = isFiniteNumber(position.normalizedMarketValue)
+          ? position.normalizedMarketValue
+          : 0;
+        const pnlValue = resolveMetricValue(position, metricKey);
         return {
           marketValue: acc.marketValue + marketValue,
           pnl: acc.pnl + pnlValue,
@@ -387,6 +427,8 @@ export default function PnlHeatmapDialog({
     );
   }, [positions, metricKey]);
 
+  const resolvedMarketValue = isFiniteNumber(totalMarketValue) ? totalMarketValue : totals.marketValue;
+
   const asOfDisplay = asOf ? `As of ${formatDateTime(asOf)}` : null;
   const normalizedCurrency = typeof baseCurrency === 'string' && baseCurrency.trim()
     ? baseCurrency.trim().toUpperCase()
@@ -395,8 +437,8 @@ export default function PnlHeatmapDialog({
     ? `${formatSignedMoney(totals.pnl)} ${normalizedCurrency}`
     : formatSignedMoney(totals.pnl);
   const marketValueLabel = normalizedCurrency
-    ? `${formatMoney(totals.marketValue)} ${normalizedCurrency}`
-    : formatMoney(totals.marketValue);
+    ? `${formatMoney(resolvedMarketValue)} ${normalizedCurrency}`
+    : formatMoney(resolvedMarketValue);
   const fallbackCurrency =
     typeof baseCurrency === 'string' && baseCurrency.trim()
       ? baseCurrency.trim().toUpperCase()
@@ -418,27 +460,51 @@ export default function PnlHeatmapDialog({
               {pnlLabel} in {marketValueLabel} total market value
             </p>
             {asOfDisplay && <p className="pnl-heatmap-dialog__timestamp">{asOfDisplay}</p>}
-            <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Color tiles by">
-              <button
-                type="button"
-                className={`pnl-heatmap-dialog__control${
-                  colorMode === 'percent' ? ' pnl-heatmap-dialog__control--active' : ''
-                }`}
-                onClick={() => setColorMode('percent')}
-                aria-pressed={colorMode === 'percent'}
-              >
-                % change
-              </button>
-              <button
-                type="button"
-                className={`pnl-heatmap-dialog__control${
-                  colorMode === 'value' ? ' pnl-heatmap-dialog__control--active' : ''
-                }`}
-                onClick={() => setColorMode('value')}
-                aria-pressed={colorMode === 'value'}
-              >
-                {currencyLabel} change
-              </button>
+            <div className="pnl-heatmap-dialog__toolbar">
+              <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Select P&L metric">
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    metricMode === 'day' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setMetricMode('day')}
+                  aria-pressed={metricMode === 'day'}
+                >
+                  Today's P&L
+                </button>
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    metricMode === 'open' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setMetricMode('open')}
+                  aria-pressed={metricMode === 'open'}
+                >
+                  Open P&L
+                </button>
+              </div>
+              <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Color tiles by">
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    colorMode === 'percent' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setColorMode('percent')}
+                  aria-pressed={colorMode === 'percent'}
+                >
+                  % change
+                </button>
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    colorMode === 'value' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setColorMode('value')}
+                  aria-pressed={colorMode === 'value'}
+                >
+                  {currencyLabel} change
+                </button>
+              </div>
             </div>
           </div>
           <button type="button" className="pnl-heatmap-dialog__close" onClick={onClose} aria-label="Close">
@@ -474,8 +540,21 @@ export default function PnlHeatmapDialog({
                     ? valueDisplay ?? '—'
                     : percentDisplay ?? '—';
                 const areaFraction = node.width * node.height;
-                const symbolFontSize = clamp(Math.sqrt(areaFraction) * 54, 10, 28);
-                const percentFontSize = clamp(symbolFontSize - 2, 9, 24);
+                const areaRoot = Math.sqrt(areaFraction);
+                const symbolFontSize = clamp(areaRoot * 70, 7, 28);
+                const percentFontSize = clamp(symbolFontSize * 0.85, 6, 24);
+                const tileHeightFraction = node.height;
+                const contentGapPx = clamp(tileHeightFraction * 80, 0.5, 4);
+                const touchesLeftEdge = node.x <= epsilon;
+                const touchesTopEdge = node.y <= epsilon;
+                const touchesRightEdge = node.x + node.width >= 1 - epsilon;
+                const touchesBottomEdge = node.y + node.height >= 1 - epsilon;
+                const leftOffsetPx = touchesLeftEdge ? 0 : halfTileGapPx;
+                const topOffsetPx = touchesTopEdge ? 0 : halfTileGapPx;
+                const widthAdjustmentPx =
+                  (touchesLeftEdge ? 0 : halfTileGapPx) + (touchesRightEdge ? 0 : halfTileGapPx);
+                const heightAdjustmentPx =
+                  (touchesTopEdge ? 0 : halfTileGapPx) + (touchesBottomEdge ? 0 : halfTileGapPx);
                 const tooltipLines = [
                   node.description ? `${node.symbol} — ${node.description}` : node.symbol,
                   `${metricLabel}: ${pnlDisplay}`,
@@ -486,32 +565,43 @@ export default function PnlHeatmapDialog({
                   .join('\n');
 
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={node.id}
                     className="pnl-heatmap-board__tile"
                     style={{
-                      left: `${node.x * 100}%`,
-                      top: `${node.y * 100}%`,
-                      width: `${node.width * 100}%`,
-                      height: `${node.height * 100}%`,
+                      left: touchesLeftEdge
+                        ? toPercent(node.x)
+                        : `calc(${toPercent(node.x)} + ${formatPx(leftOffsetPx)}px)`,
+                      top: touchesTopEdge
+                        ? toPercent(node.y)
+                        : `calc(${toPercent(node.y)} + ${formatPx(topOffsetPx)}px)`,
+                      width: touchesLeftEdge && touchesRightEdge
+                        ? toPercent(node.width)
+                        : `calc(${toPercent(node.width)} - ${formatPx(widthAdjustmentPx)}px)`,
+                      height: touchesTopEdge && touchesBottomEdge
+                        ? toPercent(node.height)
+                        : `calc(${toPercent(node.height)} - ${formatPx(heightAdjustmentPx)}px)`,
                       backgroundColor,
                       color: textColor,
+                      gap: `${formatPx(contentGapPx)}px`,
                     }}
                     title={tooltipLines}
+                    onClick={(event) => handleTileClick(event, node.symbol)}
                   >
                     <span
                       className="pnl-heatmap-board__symbol"
-                      style={{ fontSize: `${symbolFontSize}px` }}
+                      style={{ fontSize: `${symbolFontSize}px`, lineHeight: 1 }}
                     >
                       {node.symbol}
                     </span>
                     <span
                       className="pnl-heatmap-board__value"
-                      style={{ fontSize: `${percentFontSize}px` }}
+                      style={{ fontSize: `${percentFontSize}px`, lineHeight: 1 }}
                     >
                       {detailDisplay}
                     </span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -533,6 +623,8 @@ PnlHeatmapDialog.propTypes = {
       dayPnl: PropTypes.number,
       openPnl: PropTypes.number,
       normalizedMarketValue: PropTypes.number,
+      normalizedDayPnl: PropTypes.number,
+      normalizedOpenPnl: PropTypes.number,
       portfolioShare: PropTypes.number,
       rowId: PropTypes.string,
       currentMarketValue: PropTypes.number,
@@ -545,9 +637,11 @@ PnlHeatmapDialog.propTypes = {
   onClose: PropTypes.func.isRequired,
   baseCurrency: PropTypes.string,
   asOf: PropTypes.string,
+  totalMarketValue: PropTypes.number,
 };
 
 PnlHeatmapDialog.defaultProps = {
   baseCurrency: 'CAD',
   asOf: null,
+  totalMarketValue: null,
 };
