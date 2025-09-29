@@ -301,13 +301,19 @@ textarea {
   transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.equity-card__action-button:hover:not(:disabled),
-.equity-card__action-button:focus-visible {
-  border-color: var(--color-border-strong);
-  background: var(--color-surface);
+.equity-card__action-button:hover:not(:disabled) {
+  border-color: #1b2733;
+  background: var(--color-surface-alt);
   color: var(--color-text-primary);
   box-shadow: none;
-  outline: 2px solid var(--color-border-strong);
+}
+
+.equity-card__action-button:focus-visible {
+  border-color: #1b2733;
+  background: var(--color-surface-alt);
+  color: var(--color-text-primary);
+  box-shadow: none;
+  outline: 2px solid #1b2733;
   outline-offset: 2px;
 }
 
@@ -430,7 +436,7 @@ textarea {
 }
 
 .beneficiaries-list__value {
-  font-weight: 600;
+  font-weight: 400;
   font-size: 16px;
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
@@ -454,7 +460,7 @@ textarea {
 
 .beneficiaries-dialog__total-value {
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
 }
