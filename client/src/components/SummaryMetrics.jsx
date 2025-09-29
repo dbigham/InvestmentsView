@@ -8,10 +8,32 @@ import {
   formatSignedPercent,
 } from '../utils/formatters';
 
-function MetricRow({ label, value, extra, tone, className }) {
+function MetricRow({ label, value, extra, tone, className, onActivate }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
+  const interactive = typeof onActivate === 'function';
+
+  const handleKeyDown = (event) => {
+    if (!interactive) {
+      return;
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onActivate();
+    }
+  };
+
+  const interactiveProps = interactive
+    ? {
+        role: 'button',
+        tabIndex: 0,
+        onClick: onActivate,
+        onKeyDown: handleKeyDown,
+        'data-interactive': 'true',
+      }
+    : {};
+
   return (
-    <div className={rowClass}>
+    <div className={rowClass} {...interactiveProps}>
       <dt>{label}</dt>
       <dd>
         <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
@@ -27,11 +49,13 @@ MetricRow.propTypes = {
   extra: PropTypes.node,
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
   className: PropTypes.string,
+  onActivate: PropTypes.func,
 };
 
 MetricRow.defaultProps = {
   extra: null,
   className: '',
+  onActivate: null,
 };
 
 export default function SummaryMetrics({
@@ -46,6 +70,7 @@ export default function SummaryMetrics({
   usdToCadRate,
   onShowBeneficiaries,
   beneficiariesDisabled,
+  onShowPnlBreakdown,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -124,8 +149,14 @@ export default function SummaryMetrics({
             value={formattedToday}
             extra={dayPercent ? `(${dayPercent})` : null}
             tone={todayTone}
+            onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null}
           />
-          <MetricRow label="Open P&L" value={formattedOpen} tone={openTone} />
+          <MetricRow
+            label="Open P&L"
+            value={formattedOpen}
+            tone={openTone}
+            onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
+          />
           <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
         </dl>
         <dl className="equity-card__metric-column">
@@ -173,6 +204,7 @@ SummaryMetrics.propTypes = {
   usdToCadRate: PropTypes.number,
   onShowBeneficiaries: PropTypes.func,
   beneficiariesDisabled: PropTypes.bool,
+  onShowPnlBreakdown: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -184,4 +216,5 @@ SummaryMetrics.defaultProps = {
   usdToCadRate: null,
   onShowBeneficiaries: null,
   beneficiariesDisabled: false,
+  onShowPnlBreakdown: null,
 };
