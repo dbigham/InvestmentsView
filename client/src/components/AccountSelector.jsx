@@ -479,6 +479,7 @@ AccountSelector.propTypes = {
       ownerEmail: PropTypes.string,
       loginId: PropTypes.string,
       displayName: PropTypes.string,
+      beneficiary: PropTypes.string,
     })
   ).isRequired,
   selected: PropTypes.string.isRequired,
