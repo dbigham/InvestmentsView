@@ -5,7 +5,7 @@ const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-const { getAccountNameOverrides } = require('./accountNames');
+const { getAccountNameOverrides, getAccountPortalOverrides } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 
 const PORT = process.env.PORT || 4000;
@@ -202,9 +202,9 @@ allLogins.forEach((login) => {
 });
 
 
-function resolveAccountDisplayName(overrides, account, login) {
-  if (!overrides || !account) {
-    return null;
+function buildAccountOverrideKeys(account, login) {
+  if (!account) {
+    return [];
   }
 
   const candidates = [];
@@ -245,6 +245,15 @@ function resolveAccountDisplayName(overrides, account, login) {
     candidates.push(alternateNumber);
   }
 
+  return candidates;
+}
+
+function resolveAccountOverrideValue(overrides, account, login) {
+  if (!overrides || !account) {
+    return null;
+  }
+
+  const candidates = buildAccountOverrideKeys(account, login);
   const seen = new Set();
   for (const rawKey of candidates) {
     if (!rawKey) {
@@ -266,6 +275,14 @@ function resolveAccountDisplayName(overrides, account, login) {
   }
 
   return null;
+}
+
+function resolveAccountDisplayName(overrides, account, login) {
+  return resolveAccountOverrideValue(overrides, account, login);
+}
+
+function resolveAccountPortalId(overrides, account, login) {
+  return resolveAccountOverrideValue(overrides, account, login);
 }
 
 function resolveAccountBeneficiary(beneficiaries, account, login) {
@@ -696,6 +713,7 @@ app.get('/api/summary', async function (req, res) {
   try {
     const accountCollections = [];
     const accountNameOverrides = getAccountNameOverrides();
+    const accountPortalOverrides = getAccountPortalOverrides();
     const accountBeneficiaries = getAccountBeneficiaries();
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
@@ -718,6 +736,10 @@ app.get('/api/summary', async function (req, res) {
         const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
         if (displayName) {
           normalizedAccount.displayName = displayName;
+        }
+        const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
+        if (overridePortalId) {
+          normalizedAccount.portalAccountId = overridePortalId;
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
         if (defaultBeneficiary) {
