@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
@@ -7,10 +7,18 @@ import './App.css';
 
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
+  const lastAccountRef = useRef();
 
   useEffect(() => {
     let cancelled = false;
-    setState({ loading: true, data: null, error: null });
+    const previousAccount = lastAccountRef.current;
+    const isSameAccount = previousAccount === accountNumber;
+    lastAccountRef.current = accountNumber;
+
+    setState((prev) => {
+      const nextData = isSameAccount ? prev.data : null;
+      return { loading: true, data: nextData, error: null };
+    });
 
     getSummary(accountNumber)
       .then((summary) => {
@@ -20,7 +28,11 @@ function useSummaryData(accountNumber, refreshKey) {
       })
       .catch((error) => {
         if (!cancelled) {
-          setState({ loading: false, data: null, error });
+          setState((prev) => ({
+            loading: false,
+            data: isSameAccount ? prev.data : null,
+            error,
+          }));
         }
       });
 
@@ -569,11 +581,22 @@ export default function App() {
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
-  const showContent = !loading && !error && data;
+  const showContent = Boolean(data) && !loading;
 
   const handleRefresh = () => {
     setRefreshKey((value) => value + 1);
   };
+
+  if (loading && !data) {
+    return (
+      <div className="summary-page summary-page--initial-loading">
+        <div className="initial-loading" role="status" aria-live="polite">
+          <span className="visually-hidden">Loading latest account data…</span>
+          <span className="initial-loading__spinner" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="summary-page">
@@ -587,7 +610,6 @@ export default function App() {
           />
         </header>
 
-        {loading && <div className="status-message">Loading latest account data...</div>}
         {error && (
           <div className="status-message error">
             <strong>Unable to load data.</strong>
