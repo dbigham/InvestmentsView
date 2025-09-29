@@ -443,11 +443,19 @@ const BALANCE_FIELD_ALIASES = {
 const NET_DEPOSIT_VALUE_KEYS = ['netDeposits', 'netDeposit', 'value', 'amount', 'total', 'totalNetDeposits'];
 
 function createEmptyBalanceAccumulator(currency) {
-  const base = { currency: currency || null, isRealTime: false };
+  const base = { currency: currency || null, isRealTime: false, __fieldCounts: Object.create(null) };
   BALANCE_NUMERIC_FIELDS.forEach(function (field) {
     base[field] = 0;
+    base.__fieldCounts[field] = 0;
   });
   return base;
+}
+
+function markBalanceFieldPresent(target, field) {
+  if (!target.__fieldCounts) {
+    target.__fieldCounts = Object.create(null);
+  }
+  target.__fieldCounts[field] = (target.__fieldCounts[field] || 0) + 1;
 }
 
 function pickNumericValue(source, key) {
@@ -472,7 +480,9 @@ function accumulateBalance(target, source) {
   BALANCE_NUMERIC_FIELDS.forEach(function (field) {
     const value = pickNumericValue(source, field);
     if (value !== null) {
-      target[field] += value;
+      const current = typeof target[field] === 'number' && Number.isFinite(target[field]) ? target[field] : 0;
+      target[field] = current + value;
+      markBalanceFieldPresent(target, field);
     }
   });
   if (source && typeof source.isRealTime === 'boolean') {
@@ -585,6 +595,7 @@ function applyNetDeposits(summary, netDepositsResponses) {
       }
       if (Math.abs(summary.combined[currency].netDeposits) < 1e-9) {
         summary.combined[currency].netDeposits = amount;
+        markBalanceFieldPresent(summary.combined[currency], 'netDeposits');
       }
 
       if (!summary.perCurrency[currency]) {
@@ -592,9 +603,35 @@ function applyNetDeposits(summary, netDepositsResponses) {
       }
       if (Math.abs(summary.perCurrency[currency].netDeposits) < 1e-9) {
         summary.perCurrency[currency].netDeposits = amount;
+        markBalanceFieldPresent(summary.perCurrency[currency], 'netDeposits');
       }
     });
   });
+}
+
+function finalizeBalances(summary) {
+  if (!summary) {
+    return summary;
+  }
+  ['combined', 'perCurrency'].forEach(function (scope) {
+    const bucket = summary[scope];
+    if (!bucket) {
+      return;
+    }
+    Object.values(bucket).forEach(function (entry) {
+      if (!entry || !entry.__fieldCounts) {
+        return;
+      }
+      BALANCE_NUMERIC_FIELDS.forEach(function (field) {
+        const count = entry.__fieldCounts[field] || 0;
+        if (count === 0) {
+          delete entry[field];
+        }
+      });
+      delete entry.__fieldCounts;
+    });
+  });
+  return summary;
 }
 
 function mergePnL(positions) {
@@ -757,6 +794,7 @@ app.get('/api/summary', async function (req, res) {
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
     applyNetDeposits(balancesSummary, netDepositsResults);
+    finalizeBalances(balancesSummary);
 
     const responseAccounts = allAccounts.map(function (account) {
       return {
