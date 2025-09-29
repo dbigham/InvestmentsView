@@ -581,6 +581,11 @@ textarea {
   transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease;
 }
 
+.time-pill--refreshing {
+  justify-content: center;
+  gap: 0;
+}
+
 
 
 
@@ -591,6 +596,19 @@ textarea {
   background-position: center;
   background-size: 14px 14px;
   background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M0%200h24v24H0Z%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M17.65%206.35A8%208%200%201%200%2019.73%2014h-2.08A6%206%200%201%201%2012%206a5.92%205.92%200%200%201%204.22%201.78L13%2011h7V4Z%22%20fill%3D%22%236b7787%22%2F%3E%3C%2Fsvg%3E");
+}
+
+.time-pill--refreshing .time-pill__icon {
+  animation: time-pill-spin 1s linear infinite;
+}
+
+@keyframes time-pill-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 .equity-card__chip-row {
   display: inline-flex;
