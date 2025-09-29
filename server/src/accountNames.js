@@ -339,7 +339,12 @@ function loadAccountOverrides() {
   const stats = fs.statSync(filePath);
   const marker = createMarker(stats);
   if (marker && marker === cachedMarker) {
-    return { overrides: cachedOverrides, portalOverrides: cachedPortalOverrides, ordering: cachedOrdering };
+    return {
+      overrides: cachedOverrides,
+      portalOverrides: cachedPortalOverrides,
+      chatOverrides: cachedChatOverrides,
+      ordering: cachedOrdering,
+    };
   }
   const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
   if (!content.trim()) {
