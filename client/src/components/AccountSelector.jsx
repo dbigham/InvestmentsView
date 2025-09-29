@@ -493,6 +493,7 @@ AccountSelector.propTypes = {
       displayName: PropTypes.string,
       beneficiary: PropTypes.string,
       portalAccountId: PropTypes.string,
+      showQQQDetails: PropTypes.bool,
     })
   ).isRequired,
   selected: PropTypes.string.isRequired,

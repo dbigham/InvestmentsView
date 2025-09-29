@@ -10,8 +10,10 @@ const {
   getAccountPortalOverrides,
   getAccountChatOverrides,
   getAccountOrdering,
+  getAccountSettings,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
+const { getQqqTemperatureSummary } = require('./qqqTemperature');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -715,6 +717,22 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
   });
 }
 
+app.get('/api/qqq-temperature', async function (req, res) {
+  try {
+    const summary = await getQqqTemperatureSummary();
+    if (!summary) {
+      return res.status(404).json({ message: 'QQQ temperature data unavailable' });
+    }
+    res.json(summary);
+  } catch (error) {
+    if (error && error.code === 'MISSING_DEPENDENCY') {
+      return res.status(503).send(error.message);
+    }
+    const message = error && error.message ? error.message : 'Unknown error';
+    res.status(500).json({ message: 'Failed to load QQQ temperature data', details: message });
+  }
+});
+
 app.get('/api/summary', async function (req, res) {
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
@@ -725,6 +743,7 @@ app.get('/api/summary', async function (req, res) {
     const accountPortalOverrides = getAccountPortalOverrides();
     const accountChatOverrides = getAccountChatOverrides();
     const configuredOrdering = getAccountOrdering();
+    const accountSettings = getAccountSettings();
     const accountBeneficiaries = getAccountBeneficiaries();
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
@@ -757,6 +776,10 @@ app.get('/api/summary', async function (req, res) {
           normalizedAccount.chatURL = overrideChatUrl;
         } else if (normalizedAccount.chatURL === undefined) {
           normalizedAccount.chatURL = null;
+        }
+        const showQqqDetails = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
+        if (typeof showQqqDetails === 'boolean') {
+          normalizedAccount.showQQQDetails = showQqqDetails;
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
         if (defaultBeneficiary) {
@@ -930,6 +953,7 @@ app.get('/api/summary', async function (req, res) {
         beneficiary: account.beneficiary || null,
         portalAccountId: account.portalAccountId || null,
         chatURL: account.chatURL || null,
+        showQQQDetails: account.showQQQDetails === true,
       };
     });
 
