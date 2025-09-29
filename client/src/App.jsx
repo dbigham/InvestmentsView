@@ -742,6 +742,20 @@ export default function App() {
     });
   }, [positions, totalMarketValue, currencyRates, baseCurrency]);
 
+  const heatmapMarketValue = useMemo(() => {
+    if (activeBalances && typeof activeBalances === 'object') {
+      const balanceMarketValue = coerceNumber(activeBalances.marketValue);
+      if (balanceMarketValue !== null) {
+        const balanceCurrency =
+          (activeCurrency && typeof activeCurrency.currency === 'string'
+            ? activeCurrency.currency
+            : baseCurrency) || baseCurrency;
+        return normalizeCurrencyAmount(balanceMarketValue, balanceCurrency, currencyRates, baseCurrency);
+      }
+    }
+    return totalMarketValue;
+  }, [activeBalances, activeCurrency, currencyRates, baseCurrency, totalMarketValue]);
+
   const orderedPositions = useMemo(() => {
     const list = positionsWithShare.slice();
     list.sort((a, b) => {
@@ -1095,6 +1109,7 @@ export default function App() {
           onClose={handleClosePnlBreakdown}
           baseCurrency={baseCurrency}
           asOf={asOf}
+          totalMarketValue={heatmapMarketValue}
         />
       )}
     </div>
