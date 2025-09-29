@@ -1,0 +1,29 @@
+{
+  "defaultBeneficiary": "Daniel and Meredith Bigham",
+  "overrides": [
+    {
+      "account": "RESP_ACCOUNT_NUMBER",
+      "beneficiary": "Kids"
+    },
+    {
+      "account": "PHILANTHROPY_ACCOUNT_NUMBER",
+      "beneficiary": "Philanthropy"
+    },
+    {
+      "account": "ELI_ACCOUNT_NUMBER",
+      "beneficiary": "Eli Bigham"
+    },
+    {
+      "account": "HAZEL_ACCOUNT_NUMBER",
+      "beneficiary": "Hazel Bigham"
+    },
+    {
+      "account": "OLIVE_ACCOUNT_NUMBER",
+      "beneficiary": "Olive Bigham"
+    },
+    {
+      "account": "EMMA_ACCOUNT_NUMBER",
+      "beneficiary": "Emma Bigham"
+    }
+  ]
+}

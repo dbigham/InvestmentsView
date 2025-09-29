@@ -4,6 +4,7 @@ import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
 import { getSummary } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
+import BeneficiariesDialog from './components/BeneficiariesDialog';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -587,11 +588,13 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
+  const [showBeneficiaries, setShowBeneficiaries] = useState(false);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
+  const accountBalances = data?.accountBalances || {};
   const asOf = data?.asOf || null;
 
   const baseCurrency = 'CAD';
@@ -663,6 +666,101 @@ export default function App() {
   const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
   const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
 
+  const beneficiarySummary = useMemo(() => {
+    if (!accounts.length) {
+      return { totals: [], missingAccounts: [], hasBalances: false };
+    }
+
+    const balanceEntries = accountBalances && typeof accountBalances === 'object' ? accountBalances : {};
+    const accountMap = new Map();
+    accounts.forEach((account) => {
+      if (account && account.id) {
+        accountMap.set(account.id, account);
+      }
+    });
+
+    const totalsMap = new Map();
+    const allAccountBuckets = new Map();
+    const coveredAccountBuckets = new Map();
+
+    accountMap.forEach((account) => {
+      const beneficiary = account.beneficiary || 'Unassigned';
+      if (!totalsMap.has(beneficiary)) {
+        totalsMap.set(beneficiary, 0);
+      }
+      if (!allAccountBuckets.has(beneficiary)) {
+        allAccountBuckets.set(beneficiary, new Set());
+      }
+      allAccountBuckets.get(beneficiary).add(account.id);
+      if (!coveredAccountBuckets.has(beneficiary)) {
+        coveredAccountBuckets.set(beneficiary, new Set());
+      }
+    });
+
+    let hasBalanceEntries = false;
+
+    Object.entries(balanceEntries).forEach(([accountId, combined]) => {
+      const account = accountMap.get(accountId);
+      if (!account) {
+        return;
+      }
+      hasBalanceEntries = true;
+      const beneficiary = account.beneficiary || 'Unassigned';
+      let accountTotal = 0;
+      if (combined && typeof combined === 'object') {
+        Object.entries(combined).forEach(([currency, values]) => {
+          if (!values || typeof values !== 'object') {
+            return;
+          }
+          const totalEquity =
+            values.totalEquity ?? values.marketValue ?? values.cash ?? values.buyingPower ?? null;
+          if (!isFiniteNumber(totalEquity)) {
+            return;
+          }
+          accountTotal += normalizeCurrencyAmount(totalEquity, currency, currencyRates, baseCurrency);
+        });
+      }
+      totalsMap.set(beneficiary, (totalsMap.get(beneficiary) || 0) + accountTotal);
+      const coveredSet = coveredAccountBuckets.get(beneficiary) || new Set();
+      coveredSet.add(accountId);
+      coveredAccountBuckets.set(beneficiary, coveredSet);
+    });
+
+    const missingAccounts = [];
+    accountMap.forEach((account, accountId) => {
+      const beneficiary = account.beneficiary || 'Unassigned';
+      const coveredSet = coveredAccountBuckets.get(beneficiary);
+      if (!coveredSet || !coveredSet.has(accountId)) {
+        missingAccounts.push(account);
+      }
+    });
+
+    const totals = Array.from(totalsMap.entries())
+      .map(([beneficiary, total]) => {
+        const coveredSet = coveredAccountBuckets.get(beneficiary);
+        const allSet = allAccountBuckets.get(beneficiary);
+        return {
+          beneficiary,
+          total,
+          accountCount: coveredSet ? coveredSet.size : 0,
+          totalAccounts: allSet ? allSet.size : coveredSet ? coveredSet.size : 0,
+        };
+      })
+      .sort((a, b) => {
+        const diff = (b.total || 0) - (a.total || 0);
+        if (Math.abs(diff) > 0.01) {
+          return diff;
+        }
+        return a.beneficiary.localeCompare(b.beneficiary);
+      });
+
+    return {
+      totals,
+      missingAccounts,
+      hasBalances: hasBalanceEntries,
+    };
+  }, [accounts, accountBalances, currencyRates, baseCurrency]);
+
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
@@ -711,6 +809,11 @@ export default function App() {
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
+  const beneficiariesTotals = beneficiarySummary.totals;
+  const beneficiariesMissingAccounts = beneficiarySummary.missingAccounts;
+  const beneficiariesDisabled = !beneficiarySummary.hasBalances;
+  const showingAllAccounts = selectedAccount === 'all';
+
   const resolvedSortColumn =
     positionsSort && typeof positionsSort.column === 'string' && positionsSort.column.trim()
       ? positionsSort.column
@@ -730,6 +833,17 @@ export default function App() {
 
   const handleRefresh = () => {
     setRefreshKey((value) => value + 1);
+  };
+
+  const handleOpenBeneficiaries = () => {
+    if (!beneficiarySummary.hasBalances) {
+      return;
+    }
+    setShowBeneficiaries(true);
+  };
+
+  const handleCloseBeneficiaries = () => {
+    setShowBeneficiaries(false);
   };
 
   if (loading && !data) {
@@ -773,6 +887,8 @@ export default function App() {
             onRefresh={handleRefresh}
             displayTotalEquity={displayTotalEquity}
             usdToCadRate={usdToCadRate}
+            onShowBeneficiaries={handleOpenBeneficiaries}
+            beneficiariesDisabled={beneficiariesDisabled}
           />
         )}
 
@@ -788,6 +904,16 @@ export default function App() {
           />
         )}
       </main>
+      {showBeneficiaries && (
+        <BeneficiariesDialog
+          totals={beneficiariesTotals}
+          onClose={handleCloseBeneficiaries}
+          baseCurrency={baseCurrency}
+          isFilteredView={!showingAllAccounts}
+          missingAccounts={beneficiariesMissingAccounts}
+          asOf={asOf}
+        />
+      )}
     </div>
   );
 }
