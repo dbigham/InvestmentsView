@@ -8,6 +8,7 @@ import BeneficiariesDialog from './components/BeneficiariesDialog';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
+const EMPTY_OBJECT = Object.freeze({});
 
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
@@ -465,6 +466,34 @@ function resolveAccountTotalInBase(combined, currencyRates, baseCurrency = 'CAD'
   return fallbackTotal;
 }
 
+function resolveAccountPnlInBase(combined, field, currencyRates, baseCurrency = 'CAD') {
+  if (!combined || typeof combined !== 'object') {
+    return 0;
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+
+  let total = 0;
+  Object.entries(combined).forEach(([currencyKey, values]) => {
+    if (!values || typeof values !== 'object') {
+      return;
+    }
+    const amount = coerceNumber(values[field]);
+    if (amount === null) {
+      return;
+    }
+    const entryCurrency =
+      typeof values.currency === 'string' && values.currency.trim()
+        ? values.currency.toUpperCase()
+        : typeof currencyKey === 'string' && currencyKey.trim()
+          ? currencyKey.toUpperCase()
+          : normalizedBase;
+    total += normalizeCurrencyAmount(amount, entryCurrency, currencyRates, baseCurrency);
+  });
+
+  return total;
+}
+
 
 function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = 'CAD' }) {
   if (!Array.isArray(positions) || positions.length === 0) {
@@ -654,7 +683,7 @@ export default function App() {
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
-  const accountBalances = data?.accountBalances || {};
+  const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
   const baseCurrency = 'CAD';
@@ -726,12 +755,19 @@ export default function App() {
   const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
   const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
 
+  const normalizedAccountBalances = useMemo(() => {
+    if (accountBalances && typeof accountBalances === 'object') {
+      return accountBalances;
+    }
+    return EMPTY_OBJECT;
+  }, [accountBalances]);
+
   const beneficiarySummary = useMemo(() => {
     if (!accounts.length) {
       return { totals: [], missingAccounts: [], hasBalances: false };
     }
 
-    const balanceEntries = accountBalances && typeof accountBalances === 'object' ? accountBalances : {};
+    const balanceEntries = normalizedAccountBalances;
     const accountMap = new Map();
     accounts.forEach((account) => {
       if (account && account.id) {
@@ -743,11 +779,16 @@ export default function App() {
     const allAccountBuckets = new Map();
     const coveredAccountBuckets = new Map();
 
+    const ensureAggregate = (beneficiary) => {
+      if (!totalsMap.has(beneficiary)) {
+        totalsMap.set(beneficiary, { total: 0, dayPnl: 0, openPnl: 0 });
+      }
+      return totalsMap.get(beneficiary);
+    };
+
     accountMap.forEach((account) => {
       const beneficiary = account.beneficiary || 'Unassigned';
-      if (!totalsMap.has(beneficiary)) {
-        totalsMap.set(beneficiary, 0);
-      }
+      ensureAggregate(beneficiary);
       if (!allAccountBuckets.has(beneficiary)) {
         allAccountBuckets.set(beneficiary, new Set());
       }
@@ -767,7 +808,10 @@ export default function App() {
       hasBalanceEntries = true;
       const beneficiary = account.beneficiary || 'Unassigned';
       const accountTotal = resolveAccountTotalInBase(combined, currencyRates, baseCurrency);
-      totalsMap.set(beneficiary, (totalsMap.get(beneficiary) || 0) + accountTotal);
+      const aggregate = ensureAggregate(beneficiary);
+      aggregate.total += accountTotal;
+      aggregate.dayPnl += resolveAccountPnlInBase(combined, 'dayPnl', currencyRates, baseCurrency);
+      aggregate.openPnl += resolveAccountPnlInBase(combined, 'openPnl', currencyRates, baseCurrency);
       const coveredSet = coveredAccountBuckets.get(beneficiary) || new Set();
       coveredSet.add(accountId);
       coveredAccountBuckets.set(beneficiary, coveredSet);
@@ -783,12 +827,14 @@ export default function App() {
     });
 
     const totals = Array.from(totalsMap.entries())
-      .map(([beneficiary, total]) => {
+      .map(([beneficiary, aggregate]) => {
         const coveredSet = coveredAccountBuckets.get(beneficiary);
         const allSet = allAccountBuckets.get(beneficiary);
         return {
           beneficiary,
-          total,
+          total: aggregate.total,
+          dayPnl: aggregate.dayPnl,
+          openPnl: aggregate.openPnl,
           accountCount: coveredSet ? coveredSet.size : 0,
           totalAccounts: allSet ? allSet.size : coveredSet ? coveredSet.size : 0,
         };
@@ -806,7 +852,7 @@ export default function App() {
       missingAccounts,
       hasBalances: hasBalanceEntries,
     };
-  }, [accounts, accountBalances, currencyRates, baseCurrency]);
+  }, [accounts, normalizedAccountBalances, currencyRates, baseCurrency]);
 
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
