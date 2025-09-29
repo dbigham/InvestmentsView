@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { classifyPnL, formatMoney, formatNumber, formatSignedMoney, formatSignedPercent } from '../utils/formatters';
+import { buildQuoteUrl, openQuote } from '../utils/quotes';
 
 const TABLE_HEADERS = [
   {
@@ -120,21 +121,6 @@ function truncateDescription(value) {
     return normalized;
   }
   return `${normalized.slice(0, 21).trimEnd()}...`;
-}
-
-function buildQuoteUrl(symbol, provider) {
-  if (!symbol) {
-    return null;
-  }
-  const normalized = String(symbol).trim().toUpperCase();
-  if (!normalized) {
-    return null;
-  }
-  const encoded = encodeURIComponent(normalized);
-  if (provider === 'yahoo') {
-    return `https://ca.finance.yahoo.com/quote/${encoded}/`;
-  }
-  return `https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=${encoded}%20chart`;
 }
 
 function compareRows(header, direction, accessorOverride) {
@@ -344,14 +330,13 @@ function PositionsTable({
       if (element && typeof element.closest === 'function' && element.closest('button, a')) {
         return;
       }
-      const url = buildQuoteUrl(symbol, event.altKey ? 'yahoo' : 'google');
+      const provider = event.altKey ? 'yahoo' : 'google';
+      const url = buildQuoteUrl(symbol, provider);
       if (!url) {
         return;
       }
       event.stopPropagation();
-      if (typeof window !== 'undefined' && typeof window.open === 'function') {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      }
+      openQuote(symbol, provider);
     },
     []
   );

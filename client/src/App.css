@@ -839,17 +839,28 @@ textarea {
   box-shadow: none;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   overflow: hidden;
+  border: none;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+}
+
+.pnl-heatmap-board__tile:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: -2px;
 }
 
 .pnl-heatmap-board__symbol {
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 
 .pnl-heatmap-board__value {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
 }
 
 .pnl-heatmap-empty {
