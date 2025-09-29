@@ -32,7 +32,7 @@ function layoutRow(row, rowWeight, rect, totalWeight) {
     };
   }
 
-  const horizontal = rect.width >= rect.height;
+  const horizontal = rect.width < rect.height;
 
   if (horizontal) {
     const rowHeight = rowArea / rect.width;
