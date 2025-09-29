@@ -1,6 +1,12 @@
 import { useEffect, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { formatMoney, formatDateTime } from '../utils/formatters';
+import {
+  formatMoney,
+  formatDateTime,
+  formatSignedMoney,
+  formatSignedPercent,
+  classifyPnL,
+} from '../utils/formatters';
 
 function formatAccountCount(covered, total) {
   if (!total && !covered) {
@@ -43,6 +49,25 @@ export default function BeneficiariesDialog({
   const grandTotal = useMemo(() => {
     return totals.reduce((acc, entry) => acc + (entry.total || 0), 0);
   }, [totals]);
+
+  const percentOptions = useMemo(
+    () => ({ minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    []
+  );
+
+  const formatPercentChange = (pnlValue, totalValue) => {
+    if (typeof pnlValue !== 'number' || Number.isNaN(pnlValue)) {
+      return null;
+    }
+    if (typeof totalValue !== 'number' || totalValue === 0) {
+      return null;
+    }
+    const percent = (pnlValue / totalValue) * 100;
+    if (!Number.isFinite(percent)) {
+      return null;
+    }
+    return formatSignedPercent(percent, percentOptions);
+  };
 
   const missingBeneficiaries = useMemo(() => {
     if (!missingAccounts || missingAccounts.length === 0) {
@@ -94,17 +119,52 @@ export default function BeneficiariesDialog({
         {totals.length ? (
           <div className="beneficiaries-dialog__body">
             <ul className="beneficiaries-list">
-              {totals.map((entry) => (
-                <li key={entry.beneficiary} className="beneficiaries-list__item">
-                  <div className="beneficiaries-list__info">
-                    <span className="beneficiaries-list__name">{entry.beneficiary}</span>
-                    <span className="beneficiaries-list__accounts">
-                      {formatAccountCount(entry.accountCount, entry.totalAccounts)}
-                    </span>
-                  </div>
-                  <span className="beneficiaries-list__value">{formatMoney(entry.total)}</span>
-                </li>
-              ))}
+              {totals.map((entry) => {
+                const todayTone = classifyPnL(entry.dayPnl);
+                const openTone = classifyPnL(entry.openPnl);
+                const todayFormatted = formatSignedMoney(entry.dayPnl);
+                const openFormatted = formatSignedMoney(entry.openPnl);
+                const todayPercent = formatPercentChange(entry.dayPnl, entry.total);
+                const openPercent = formatPercentChange(entry.openPnl, entry.total);
+
+                return (
+                  <li key={entry.beneficiary} className="beneficiaries-list__item">
+                    <div className="beneficiaries-list__header">
+                      <div className="beneficiaries-list__info">
+                        <span className="beneficiaries-list__name">{entry.beneficiary}</span>
+                        <span className="beneficiaries-list__accounts">
+                          {formatAccountCount(entry.accountCount, entry.totalAccounts)}
+                        </span>
+                      </div>
+                      <span className="beneficiaries-list__value">{formatMoney(entry.total)}</span>
+                    </div>
+                    <div className="beneficiaries-list__pnl-group">
+                      <div className="beneficiaries-list__pnl-row">
+                        <span className="beneficiaries-list__pnl-label">Today's P&amp;L</span>
+                        <span
+                          className={`beneficiaries-list__pnl-value beneficiaries-list__pnl-value--${todayTone}`}
+                        >
+                          {todayFormatted}
+                        </span>
+                        {todayPercent && (
+                          <span className="beneficiaries-list__pnl-extra">({todayPercent})</span>
+                        )}
+                      </div>
+                      <div className="beneficiaries-list__pnl-row">
+                        <span className="beneficiaries-list__pnl-label">Open P&amp;L</span>
+                        <span
+                          className={`beneficiaries-list__pnl-value beneficiaries-list__pnl-value--${openTone}`}
+                        >
+                          {openFormatted}
+                        </span>
+                        {openPercent && (
+                          <span className="beneficiaries-list__pnl-extra">({openPercent})</span>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
 
             <div className="beneficiaries-dialog__footer">
@@ -140,6 +200,8 @@ BeneficiariesDialog.propTypes = {
     PropTypes.shape({
       beneficiary: PropTypes.string.isRequired,
       total: PropTypes.number.isRequired,
+      dayPnl: PropTypes.number.isRequired,
+      openPnl: PropTypes.number.isRequired,
       accountCount: PropTypes.number.isRequired,
       totalAccounts: PropTypes.number.isRequired,
     })

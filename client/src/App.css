@@ -413,7 +413,13 @@ textarea {
 
 .beneficiaries-list__item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.beneficiaries-list__header {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
@@ -422,6 +428,8 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .beneficiaries-list__name {
@@ -440,6 +448,49 @@ textarea {
   font-size: 16px;
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
+}
+
+.beneficiaries-list__pnl-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.beneficiaries-list__pnl-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.beneficiaries-list__pnl-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.beneficiaries-list__pnl-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.beneficiaries-list__pnl-value--positive {
+  color: var(--color-accent);
+}
+
+.beneficiaries-list__pnl-value--negative {
+  color: var(--color-negative);
+}
+
+.beneficiaries-list__pnl-value--neutral {
+  color: var(--color-text-primary);
+}
+
+.beneficiaries-list__pnl-extra {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .beneficiaries-dialog__footer {
