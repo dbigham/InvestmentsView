@@ -16,93 +16,182 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function buildTreemapLayout(items, orientation = 'vertical', origin = { x: 0, y: 0, width: 1, height: 1 }) {
+function layoutRow(row, rowWeight, rect, totalWeight) {
+  const areaScale = (rect.width * rect.height) / totalWeight;
+  const rowArea = rowWeight * areaScale;
+  if (rowArea <= 0) {
+    return {
+      placed: row.map((item) => ({
+        ...item,
+        x: rect.x,
+        y: rect.y,
+        width: 0,
+        height: 0,
+      })),
+      remainingRect: rect,
+    };
+  }
+
+  const horizontal = rect.width >= rect.height;
+
+  if (horizontal) {
+    const rowHeight = rowArea / rect.width;
+    let cursorX = rect.x;
+    const placed = row.map((item) => {
+      const itemArea = item.weight * areaScale;
+      const itemWidth = rowHeight > 0 ? itemArea / rowHeight : 0;
+      const tile = {
+        ...item,
+        x: cursorX,
+        y: rect.y,
+        width: itemWidth,
+        height: rowHeight,
+      };
+      cursorX += itemWidth;
+      return tile;
+    });
+    return {
+      placed,
+      remainingRect: {
+        x: rect.x,
+        y: rect.y + rowHeight,
+        width: rect.width,
+        height: Math.max(0, rect.height - rowHeight),
+      },
+    };
+  }
+
+  const rowWidth = rowArea / rect.height;
+  let cursorY = rect.y;
+  const placed = row.map((item) => {
+    const itemArea = item.weight * areaScale;
+    const itemHeight = rowWidth > 0 ? itemArea / rowWidth : 0;
+    const tile = {
+      ...item,
+      x: rect.x,
+      y: cursorY,
+      width: rowWidth,
+      height: itemHeight,
+    };
+    cursorY += itemHeight;
+    return tile;
+  });
+
+  return {
+    placed,
+    remainingRect: {
+      x: rect.x + rowWidth,
+      y: rect.y,
+      width: Math.max(0, rect.width - rowWidth),
+      height: rect.height,
+    },
+  };
+}
+
+function worstAspect(row, rowWeight, rect, totalWeight) {
+  if (!row.length) {
+    return Infinity;
+  }
+
+  const shortSide = Math.min(rect.width, rect.height);
+  if (shortSide <= 0) {
+    return Infinity;
+  }
+
+  const areaScale = (rect.width * rect.height) / totalWeight;
+  const rowArea = rowWeight * areaScale;
+  if (rowArea <= 0) {
+    return Infinity;
+  }
+
+  const maxWeight = row.reduce((max, item) => Math.max(max, item.weight), 0);
+  const minWeight = row.reduce((min, item) => Math.min(min, item.weight), Number.POSITIVE_INFINITY);
+  const maxArea = maxWeight * areaScale;
+  const minArea = minWeight * areaScale;
+
+  if (minArea <= 0) {
+    return Infinity;
+  }
+
+  const shortSideSquared = shortSide * shortSide;
+  const rowAreaSquared = rowArea * rowArea;
+
+  return Math.max((shortSideSquared * maxArea) / rowAreaSquared, rowAreaSquared / (shortSideSquared * minArea));
+}
+
+function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
   if (!items.length) {
     return [];
   }
 
-  if (items.length === 1) {
-    const [item] = items;
-    return [
-      {
-        ...item,
-        x: origin.x,
-        y: origin.y,
-        width: origin.width,
-        height: origin.height,
-      },
-    ];
-  }
-
   const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
   if (totalWeight <= 0) {
-    return items.map((item) => ({ ...item, x: origin.x, y: origin.y, width: origin.width, height: origin.height }));
+    return items.map((item) => ({ ...item, x: rect.x, y: rect.y, width: rect.width, height: rect.height }));
   }
 
-  let splitIndex = 0;
-  let running = 0;
-  const target = totalWeight / 2;
+  const stack = [{
+    items: items.slice(),
+    rect,
+    totalWeight,
+  }];
 
-  while (splitIndex < items.length) {
-    running += items[splitIndex].weight;
-    splitIndex += 1;
-    if (running >= target) {
-      break;
+  const placedNodes = [];
+
+  while (stack.length) {
+    const current = stack.pop();
+    const { items: remainingItems, rect: currentRect, totalWeight: currentTotal } = current;
+
+    if (!remainingItems.length) {
+      continue;
+    }
+
+    if (remainingItems.length === 1) {
+      const [only] = remainingItems;
+      placedNodes.push({
+        ...only,
+        x: currentRect.x,
+        y: currentRect.y,
+        width: currentRect.width,
+        height: currentRect.height,
+      });
+      continue;
+    }
+
+    let row = [];
+    let rowWeight = 0;
+    const queue = remainingItems.slice();
+
+    while (queue.length) {
+      const next = queue[0];
+      const testRow = row.concat(next);
+      const testWeight = rowWeight + next.weight;
+      const currentWorst = worstAspect(row, rowWeight, currentRect, currentTotal);
+      const nextWorst = worstAspect(testRow, testWeight, currentRect, currentTotal);
+
+      if (row.length && nextWorst > currentWorst) {
+        break;
+      }
+
+      row = testRow;
+      rowWeight = testWeight;
+      queue.shift();
+    }
+
+    const { placed, remainingRect } = layoutRow(row, rowWeight, currentRect, currentTotal);
+    placedNodes.push(...placed);
+
+    const leftover = remainingItems.slice(row.length);
+    if (leftover.length) {
+      const leftoverWeight = leftover.reduce((sum, item) => sum + item.weight, 0);
+      stack.push({
+        items: leftover,
+        rect: remainingRect,
+        totalWeight: leftoverWeight > 0 ? leftoverWeight : Number.EPSILON,
+      });
     }
   }
 
-  if (splitIndex <= 0) {
-    splitIndex = 1;
-  } else if (splitIndex >= items.length) {
-    splitIndex = items.length - 1;
-  }
-
-  const firstGroup = items.slice(0, splitIndex);
-  const secondGroup = items.slice(splitIndex);
-  const firstWeight = firstGroup.reduce((sum, item) => sum + item.weight, 0);
-
-  if (orientation === 'vertical') {
-    const firstWidth = origin.width * (firstWeight / totalWeight);
-    const secondWidth = origin.width - firstWidth;
-    return [
-      ...buildTreemapLayout(firstGroup, 'horizontal', {
-        x: origin.x,
-        y: origin.y,
-        width: firstWidth,
-        height: origin.height,
-      }),
-      ...buildTreemapLayout(secondGroup, 'horizontal', {
-        x: origin.x + firstWidth,
-        y: origin.y,
-        width: secondWidth,
-        height: origin.height,
-      }),
-    ];
-  }
-
-  const firstHeight = origin.height * (firstWeight / totalWeight);
-  const secondHeight = origin.height - firstHeight;
-  return [
-    ...buildTreemapLayout(firstGroup, 'vertical', {
-      x: origin.x,
-      y: origin.y,
-      width: origin.width,
-      height: firstHeight,
-    }),
-    ...buildTreemapLayout(secondGroup, 'vertical', {
-      x: origin.x,
-      y: origin.y + firstHeight,
-      width: origin.width,
-      height: secondHeight,
-    }),
-  ];
-}
-
-function resolveOrientation(width, height) {
-  if (width >= height) {
-    return 'vertical';
-  }
-  return 'horizontal';
+  return placedNodes;
 }
 
 function buildHeatmapNodes(positions, metricKey) {
@@ -122,9 +211,32 @@ function buildHeatmapNodes(positions, metricKey) {
     return [];
   }
 
-  const sorted = filtered.slice().sort((a, b) => b.weight - a.weight);
-  const layoutOrientation = resolveOrientation(1, 1);
-  const layout = buildTreemapLayout(sorted, layoutOrientation);
+  const sorted = filtered
+    .slice()
+    .sort((a, b) => {
+      const score = (value) => {
+        if (value > 0) return 0;
+        if (value === 0) return 1;
+        return 2;
+      };
+      const aScore = score(a.metricValue);
+      const bScore = score(b.metricValue);
+      if (aScore !== bScore) {
+        return aScore - bScore;
+      }
+      if (aScore === 0) {
+        return b.weight - a.weight;
+      }
+      if (aScore === 2) {
+        if (a.weight !== b.weight) {
+          return a.weight - b.weight;
+        }
+        return Math.abs(a.metricValue) - Math.abs(b.metricValue);
+      }
+      return b.weight - a.weight;
+    });
+
+  const layout = buildTreemapLayout(sorted);
   const gutter = 0.004;
 
   return layout.map((node) => {
