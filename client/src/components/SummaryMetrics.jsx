@@ -44,6 +44,8 @@ export default function SummaryMetrics({
   onRefresh,
   displayTotalEquity,
   usdToCadRate,
+  onShowBeneficiaries,
+  beneficiariesDisabled,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -81,7 +83,19 @@ export default function SummaryMetrics({
             </p>
           )}
         </div>
-        <TimePill asOf={asOf} onRefresh={onRefresh} />
+        <div className="equity-card__actions">
+          {onShowBeneficiaries && (
+            <button
+              type="button"
+              className="equity-card__action-button"
+              onClick={onShowBeneficiaries}
+              disabled={beneficiariesDisabled}
+            >
+              Beneficiaries
+            </button>
+          )}
+          <TimePill asOf={asOf} onRefresh={onRefresh} />
+        </div>
       </header>
 
       {currencyOptions.length > 0 && (
@@ -157,6 +171,8 @@ SummaryMetrics.propTypes = {
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
   usdToCadRate: PropTypes.number,
+  onShowBeneficiaries: PropTypes.func,
+  beneficiariesDisabled: PropTypes.bool,
 };
 
 SummaryMetrics.defaultProps = {
@@ -166,4 +182,6 @@ SummaryMetrics.defaultProps = {
   onRefresh: null,
   displayTotalEquity: null,
   usdToCadRate: null,
+  onShowBeneficiaries: null,
+  beneficiariesDisabled: false,
 };

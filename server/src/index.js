@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 const { getAccountNameOverrides } = require('./accountNames');
+const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -258,6 +259,89 @@ function resolveAccountDisplayName(overrides, account, login) {
       return overrides[key];
     }
     const condensed = key.replace(/\s+/g, '');
+    if (!seen.has(condensed) && overrides[condensed]) {
+      return overrides[condensed];
+    }
+    seen.add(condensed);
+  }
+
+  return null;
+}
+
+function resolveAccountBeneficiary(beneficiaries, account, login) {
+  if (!beneficiaries || !account) {
+    return null;
+  }
+
+  const overrides = beneficiaries.overrides || {};
+
+  const candidates = [];
+  const accountId = account.id ? String(account.id).trim() : null;
+  const accountNumber = account.number ? String(account.number).trim() : null;
+  const alternateNumber = account.accountNumber ? String(account.accountNumber).trim() : null;
+  const displayName = account.displayName ? String(account.displayName).trim() : null;
+
+  if (login) {
+    const loginId = login.id ? String(login.id).trim() : null;
+    const loginLabel = resolveLoginDisplay(login);
+    const loginLabelTrimmed = loginLabel ? String(loginLabel).trim() : null;
+    const loginEmail = login.email ? String(login.email).trim() : null;
+
+    if (loginId && accountNumber) {
+      candidates.push(`${loginId}:${accountNumber}`);
+    }
+    if (loginId && accountId && accountId !== accountNumber) {
+      candidates.push(`${loginId}:${accountId}`);
+    }
+    if (loginLabelTrimmed && accountNumber) {
+      candidates.push(`${loginLabelTrimmed}:${accountNumber}`);
+    }
+    if (loginLabelTrimmed && accountId && accountId !== accountNumber) {
+      candidates.push(`${loginLabelTrimmed}:${accountId}`);
+    }
+    if (loginEmail && accountNumber) {
+      candidates.push(`${loginEmail}:${accountNumber}`);
+    }
+  }
+
+  if (accountId) {
+    candidates.push(accountId);
+  }
+  if (accountNumber) {
+    candidates.push(accountNumber);
+  }
+  if (alternateNumber && alternateNumber !== accountNumber) {
+    candidates.push(alternateNumber);
+  }
+  if (displayName) {
+    candidates.push(displayName);
+  }
+
+  const typeCandidates = [account.type, account.clientAccountType];
+  typeCandidates.forEach((candidateType) => {
+    if (candidateType) {
+      candidates.push(String(candidateType).trim());
+    }
+  });
+
+  const seen = new Set();
+  for (const rawKey of candidates) {
+    if (!rawKey) {
+      continue;
+    }
+    const key = rawKey.trim();
+    if (!key) {
+      continue;
+    }
+    const normalized = key.toLowerCase();
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    if (overrides[normalized]) {
+      return overrides[normalized];
+    }
+    const condensed = key.replace(/\s+/g, '').toLowerCase();
     if (!seen.has(condensed) && overrides[condensed]) {
       return overrides[condensed];
     }
@@ -527,6 +611,19 @@ function mergeBalances(allBalances) {
   return summary;
 }
 
+function summarizeAccountCombinedBalances(balanceEntry) {
+  const summary = mergeBalances([balanceEntry]);
+  finalizeBalances(summary);
+  if (!summary || !summary.combined) {
+    return null;
+  }
+  const combined = summary.combined;
+  if (!combined || typeof combined !== 'object' || !Object.keys(combined).length) {
+    return null;
+  }
+  return combined;
+}
+
 function finalizeBalances(summary) {
   if (!summary) {
     return summary;
@@ -599,6 +696,7 @@ app.get('/api/summary', async function (req, res) {
   try {
     const accountCollections = [];
     const accountNameOverrides = getAccountNameOverrides();
+    const accountBeneficiaries = getAccountBeneficiaries();
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
       const normalized = fetchedAccounts.map(function (account, index) {
@@ -620,6 +718,14 @@ app.get('/api/summary', async function (req, res) {
         const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
         if (displayName) {
           normalizedAccount.displayName = displayName;
+        }
+        const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
+        if (defaultBeneficiary) {
+          normalizedAccount.beneficiary = defaultBeneficiary;
+        }
+        const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
+        if (resolvedBeneficiary) {
+          normalizedAccount.beneficiary = resolvedBeneficiary;
         }
         return normalizedAccount;
       });
@@ -663,6 +769,13 @@ app.get('/api/summary', async function (req, res) {
         return fetchBalances(context.login, context.account.number);
       })
     );
+    const perAccountCombinedBalances = {};
+    selectedContexts.forEach(function (context, index) {
+      const combined = summarizeAccountCombinedBalances(balancesResults[index]);
+      if (combined) {
+        perAccountCombinedBalances[context.account.id] = combined;
+      }
+    });
     const flattenedPositions = positionsResults
       .map(function (positions, index) {
         const context = selectedContexts[index];
@@ -720,6 +833,7 @@ app.get('/api/summary', async function (req, res) {
         ownerEmail: account.ownerEmail,
         displayName: account.displayName || null,
         loginId: account.loginId,
+        beneficiary: account.beneficiary || null,
       };
     });
 
@@ -731,6 +845,7 @@ app.get('/api/summary', async function (req, res) {
       positions: decoratedPositions,
       pnl: pnl,
       balances: balancesSummary,
+      accountBalances: perAccountCombinedBalances,
       asOf: new Date().toISOString(),
     });
   } catch (error) {
