@@ -5,11 +5,19 @@ const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
+const { getAccountNameOverrides } = require('./accountNames');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
 const tokenFilePath = path.join(process.cwd(), 'token-store.json');
+
+function resolveLoginDisplay(login) {
+  if (!login) {
+    return null;
+  }
+  return login.label || login.email || login.id;
+}
 
 const app = express();
 app.use(cors({ origin: ALLOWED_ORIGIN }));
@@ -192,13 +200,72 @@ allLogins.forEach((login) => {
   loginsById[login.id] = login;
 });
 
-function resolveLoginDisplay(login) {
-  if (!login) {
+
+function resolveAccountDisplayName(overrides, account, login) {
+  if (!overrides || !account) {
     return null;
   }
-  return login.label || login.email || login.id;
-}
 
+  const candidates = [];
+  const accountId = account.id ? String(account.id).trim() : null;
+  const accountNumber = account.number ? String(account.number).trim() : null;
+  const alternateNumber = account.accountNumber ? String(account.accountNumber).trim() : null;
+
+  if (login) {
+    const loginId = login.id ? String(login.id).trim() : null;
+    const loginLabel = resolveLoginDisplay(login);
+    const loginLabelTrimmed = loginLabel ? String(loginLabel).trim() : null;
+    const loginEmail = login.email ? String(login.email).trim() : null;
+
+    if (loginId && accountNumber) {
+      candidates.push(`${loginId}:${accountNumber}`);
+    }
+    if (loginId && accountId && accountId !== accountNumber) {
+      candidates.push(`${loginId}:${accountId}`);
+    }
+    if (loginLabelTrimmed && accountNumber) {
+      candidates.push(`${loginLabelTrimmed}:${accountNumber}`);
+    }
+    if (loginLabelTrimmed && accountId && accountId !== accountNumber) {
+      candidates.push(`${loginLabelTrimmed}:${accountId}`);
+    }
+    if (loginEmail && accountNumber) {
+      candidates.push(`${loginEmail}:${accountNumber}`);
+    }
+  }
+
+  if (accountId) {
+    candidates.push(accountId);
+  }
+  if (accountNumber) {
+    candidates.push(accountNumber);
+  }
+  if (alternateNumber && alternateNumber !== accountNumber) {
+    candidates.push(alternateNumber);
+  }
+
+  const seen = new Set();
+  for (const rawKey of candidates) {
+    if (!rawKey) {
+      continue;
+    }
+    const key = rawKey.trim();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    if (overrides[key]) {
+      return overrides[key];
+    }
+    const condensed = key.replace(/\s+/g, '');
+    if (!seen.has(condensed) && overrides[condensed]) {
+      return overrides[condensed];
+    }
+    seen.add(condensed);
+  }
+
+  return null;
+}
 if (tokenStoreState.__migratedFromLegacy) {
   delete tokenStoreState.__migratedFromLegacy;
   persistTokenStore(tokenStoreState);
@@ -576,6 +643,7 @@ app.get('/api/summary', async function (req, res) {
 
   try {
     const accountCollections = [];
+    const accountNameOverrides = getAccountNameOverrides();
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
       const normalized = fetchedAccounts.map(function (account, index) {
@@ -583,7 +651,7 @@ app.get('/api/summary', async function (req, res) {
         const number = String(rawNumber);
         const compositeId = login.id + ':' + number;
         const ownerLabel = resolveLoginDisplay(login);
-        return Object.assign({}, account, {
+        const normalizedAccount = Object.assign({}, account, {
           id: compositeId,
           number,
           accountNumber: number,
@@ -594,6 +662,11 @@ app.get('/api/summary', async function (req, res) {
           loginLabel: ownerLabel,
           loginEmail: login.email || null,
         });
+        const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
+        if (displayName) {
+          normalizedAccount.displayName = displayName;
+        }
+        return normalizedAccount;
       });
       accountCollections.push({ login, accounts: normalized });
     }
@@ -696,6 +769,7 @@ app.get('/api/summary', async function (req, res) {
         clientAccountType: account.clientAccountType,
         ownerLabel: account.ownerLabel,
         ownerEmail: account.ownerEmail,
+        displayName: account.displayName || null,
         loginId: account.loginId,
       };
     });
@@ -725,6 +799,13 @@ app.get('/health', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on port ' + PORT);
 });
+
+
+
+
+
+
+
 
 
 

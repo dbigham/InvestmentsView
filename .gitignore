@@ -6,6 +6,7 @@ server/node_modules/
 # Build output
 client/dist/
 server/token-store.json
+server/account-names.json
 
 # Env files
 *.env
