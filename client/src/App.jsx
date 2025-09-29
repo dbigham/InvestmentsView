@@ -672,6 +672,14 @@ function resolveNormalizedMarketValue(position, currencyRates, baseCurrency = 'C
   return normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency);
 }
 
+function resolveNormalizedPnl(position, field, currencyRates, baseCurrency = 'CAD') {
+  if (!position || !isFiniteNumber(position?.[field])) {
+    return 0;
+  }
+  const currency = position?.currency || baseCurrency;
+  return normalizeCurrencyAmount(position[field], currency, currencyRates, baseCurrency);
+}
+
 export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [currencyView, setCurrencyView] = useState(null);
@@ -722,7 +730,15 @@ export default function App() {
     return positions.map((position) => {
       const normalizedValue = resolveNormalizedMarketValue(position, currencyRates, baseCurrency);
       const share = totalMarketValue > 0 ? (normalizedValue / totalMarketValue) * 100 : 0;
-      return { ...position, portfolioShare: share, normalizedMarketValue: normalizedValue };
+      const normalizedDayPnl = resolveNormalizedPnl(position, 'dayPnl', currencyRates, baseCurrency);
+      const normalizedOpenPnl = resolveNormalizedPnl(position, 'openPnl', currencyRates, baseCurrency);
+      return {
+        ...position,
+        portfolioShare: share,
+        normalizedMarketValue: normalizedValue,
+        normalizedDayPnl,
+        normalizedOpenPnl,
+      };
     });
   }, [positions, totalMarketValue, currencyRates, baseCurrency]);
 
