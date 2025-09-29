@@ -342,13 +342,17 @@ function PositionsTable({
         </div>
 
         <div className="positions-table__body">
-          {sortedPositions.map((position) => {
+          {sortedPositions.map((position, index) => {
             const displayShare = formatShare(position.portfolioShare);
             const displayDescription = truncateDescription(position.description);
+            const fallbackKey = `${position.accountNumber || position.accountId || 'row'}:${
+              position.symbolId ?? position.symbol ?? index
+            }`;
+            const rowKey = position.rowId || fallbackKey;
 
             return (
               <div
-                key={`${position.accountNumber || position.accountId}:${position.symbolId}`}
+                key={rowKey}
                 className="positions-table__row positions-table__row--clickable"
                 role="row"
                 onClick={(event) => handleRowNavigation(event, position.symbol)}
@@ -408,7 +412,7 @@ PositionsTable.propTypes = {
       accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
       accountNumber: PropTypes.string,
       symbol: PropTypes.string.isRequired,
-      symbolId: PropTypes.number.isRequired,
+      symbolId: PropTypes.oneOfType([PropTypes.number, PropTypes.string]).isRequired,
       description: PropTypes.string,
       dayPnl: PropTypes.number,
       openPnl: PropTypes.number,
@@ -419,6 +423,8 @@ PositionsTable.propTypes = {
       currency: PropTypes.string,
       portfolioShare: PropTypes.number,
       totalCost: PropTypes.number,
+      rowId: PropTypes.string,
+      normalizedMarketValue: PropTypes.number,
     })
   ).isRequired,
   totalMarketValue: PropTypes.number,
