@@ -598,6 +598,14 @@ export default function App() {
   const baseCurrency = 'CAD';
   const currencyRates = useMemo(() => buildCurrencyRateMap(balances, baseCurrency), [balances]);
 
+  const usdToCadRate = useMemo(() => {
+    const rate = currencyRates.get('USD');
+    if (isFiniteNumber(rate) && rate > 0) {
+      return rate;
+    }
+    return null;
+  }, [currencyRates]);
+
   const positions = useMemo(() => {
     if (selectedAccount === 'all') {
       return aggregatePositionsBySymbol(rawPositions, { currencyRates, baseCurrency });
@@ -765,6 +773,7 @@ export default function App() {
             asOf={asOf}
             onRefresh={handleRefresh}
             displayTotalEquity={displayTotalEquity}
+            usdToCadRate={usdToCadRate}
           />
         )}
 
