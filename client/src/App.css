@@ -821,7 +821,7 @@ textarea {
   position: relative;
   flex: 1;
   border-radius: 16px;
-  background: var(--color-surface-alt);
+  background: #000;
   overflow: hidden;
   min-height: 360px;
 }

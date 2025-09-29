@@ -366,9 +366,11 @@ export default function PnlHeatmapDialog({
   const metricKey = mode === 'open' ? 'openPnl' : 'dayPnl';
   const metricLabel = mode === 'open' ? 'Open P&L' : "Today's P&L";
   const percentColorThreshold = mode === 'open' ? 70 : 5;
-  const tileBleedPx = 1;
-  const halfTileBleedPx = tileBleedPx / 2;
+  const tileGapPx = 1;
+  const halfTileGapPx = tileGapPx / 2;
+  const epsilon = 0.0001;
   const toPercent = (fraction) => `${(fraction * 100).toFixed(4)}%`;
+  const formatPx = (value) => `${Number.parseFloat(value.toFixed(3))}`;
 
   const nodes = useMemo(() => buildHeatmapNodes(positions, metricKey), [positions, metricKey]);
   const [colorMode, setColorMode] = useState('percent');
@@ -477,8 +479,18 @@ export default function PnlHeatmapDialog({
                     ? valueDisplay ?? '—'
                     : percentDisplay ?? '—';
                 const areaFraction = node.width * node.height;
-                const symbolFontSize = clamp(Math.sqrt(areaFraction) * 54, 10, 28);
-                const percentFontSize = clamp(symbolFontSize - 2, 9, 24);
+                const symbolFontSize = clamp(Math.sqrt(areaFraction) * 64, 6, 28);
+                const percentFontSize = clamp(symbolFontSize - 2, 5, 24);
+                const touchesLeftEdge = node.x <= epsilon;
+                const touchesTopEdge = node.y <= epsilon;
+                const touchesRightEdge = node.x + node.width >= 1 - epsilon;
+                const touchesBottomEdge = node.y + node.height >= 1 - epsilon;
+                const leftOffsetPx = touchesLeftEdge ? 0 : halfTileGapPx;
+                const topOffsetPx = touchesTopEdge ? 0 : halfTileGapPx;
+                const widthAdjustmentPx =
+                  (touchesLeftEdge ? 0 : halfTileGapPx) + (touchesRightEdge ? 0 : halfTileGapPx);
+                const heightAdjustmentPx =
+                  (touchesTopEdge ? 0 : halfTileGapPx) + (touchesBottomEdge ? 0 : halfTileGapPx);
                 const tooltipLines = [
                   node.description ? `${node.symbol} — ${node.description}` : node.symbol,
                   `${metricLabel}: ${pnlDisplay}`,
@@ -493,10 +505,18 @@ export default function PnlHeatmapDialog({
                     key={node.id}
                     className="pnl-heatmap-board__tile"
                     style={{
-                      left: `calc(${toPercent(node.x)} - ${halfTileBleedPx}px)`,
-                      top: `calc(${toPercent(node.y)} - ${halfTileBleedPx}px)`,
-                      width: `calc(${toPercent(node.width)} + ${tileBleedPx}px)`,
-                      height: `calc(${toPercent(node.height)} + ${tileBleedPx}px)`,
+                      left: touchesLeftEdge
+                        ? toPercent(node.x)
+                        : `calc(${toPercent(node.x)} + ${formatPx(leftOffsetPx)}px)`,
+                      top: touchesTopEdge
+                        ? toPercent(node.y)
+                        : `calc(${toPercent(node.y)} + ${formatPx(topOffsetPx)}px)`,
+                      width: touchesLeftEdge && touchesRightEdge
+                        ? toPercent(node.width)
+                        : `calc(${toPercent(node.width)} - ${formatPx(widthAdjustmentPx)}px)`,
+                      height: touchesTopEdge && touchesBottomEdge
+                        ? toPercent(node.height)
+                        : `calc(${toPercent(node.height)} - ${formatPx(heightAdjustmentPx)}px)`,
                       backgroundColor,
                       color: textColor,
                     }}
