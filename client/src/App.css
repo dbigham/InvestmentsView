@@ -184,7 +184,7 @@ textarea {
 
 .account-selector__option {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 18px;
@@ -205,13 +205,12 @@ textarea {
 }
 
 .account-selector__option--selected .account-selector__primary {
-  color: var(--color-accent);
+  color: var(--color-text-primary);
 }
 
 .account-selector__check {
-  width: 16px;
-  height: 16px;
-  margin-top: 6px;
+  width: 20px;
+  height: 20px;
   background-image: url("data:image/svg+xml,%3Csvg width='16' height='16' viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%2318A37A' d='M6.4 11.2L3.2 8l1.12-1.12L6.4 8.96l5.28-5.28L12.8 4.8z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: center;
