@@ -715,7 +715,7 @@ textarea {
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--color-text-tertiary);
+  color: #440000;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -727,13 +727,13 @@ textarea {
 
 .pnl-heatmap-dialog__control:hover,
 .pnl-heatmap-dialog__control:focus-visible {
-  color: var(--color-text-primary);
+  color: #111827;
 }
 
 .pnl-heatmap-dialog__control--active {
-  background: rgba(255, 255, 255, 0.12);
-  color: #f8fafc;
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.28);
+  background: rgba(255, 255, 255, 0.9);
+  color: #000000;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.18);
 }
 
 .pnl-heatmap-dialog__control--active:focus-visible {
@@ -796,7 +796,7 @@ textarea {
   text-transform: uppercase;
 }
 
-.pnl-heatmap-board__percent {
+.pnl-heatmap-board__value {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -825,7 +825,7 @@ textarea {
     font-size: 12px;
   }
 
-  .pnl-heatmap-board__percent {
+  .pnl-heatmap-board__value {
     font-size: 12px;
   }
 }

@@ -356,16 +356,6 @@ function resolveTileColor(value, intensity) {
   return NEUTRAL_COLOR;
 }
 
-function resolveTextColor(intensity, value) {
-  if (value === 0) {
-    return 'rgba(255, 255, 255, 0.9)';
-  }
-  if (intensity >= 0.4) {
-    return 'rgba(255, 255, 255, 0.96)';
-  }
-  return 'var(--color-text-primary)';
-}
-
 export default function PnlHeatmapDialog({
   positions,
   mode,
@@ -375,6 +365,7 @@ export default function PnlHeatmapDialog({
 }) {
   const metricKey = mode === 'open' ? 'openPnl' : 'dayPnl';
   const metricLabel = mode === 'open' ? 'Open P&L' : "Today's P&L";
+  const percentColorThreshold = mode === 'open' ? 70 : 5;
 
   const nodes = useMemo(() => buildHeatmapNodes(positions, metricKey), [positions, metricKey]);
   const [colorMode, setColorMode] = useState('percent');
@@ -395,13 +386,6 @@ export default function PnlHeatmapDialog({
       { marketValue: 0, pnl: 0 }
     );
   }, [positions, metricKey]);
-
-  const maxDollarMagnitude = useMemo(() => {
-    if (!nodes.length) {
-      return 0;
-    }
-    return nodes.reduce((acc, node) => Math.max(acc, Math.abs(node.metricValue)), 0);
-  }, [nodes]);
 
   const asOfDisplay = asOf ? `As of ${formatDateTime(asOf)}` : null;
   const normalizedCurrency = typeof baseCurrency === 'string' && baseCurrency.trim()
@@ -465,16 +449,14 @@ export default function PnlHeatmapDialog({
           {nodes.length ? (
             <div className="pnl-heatmap-board" role="presentation">
               {nodes.map((node) => {
-                const percentIntensity = Math.min(1, Math.abs(node.percentChange ?? 0) / 5);
-                const valueIntensity = maxDollarMagnitude > 0 ? Math.abs(node.metricValue) / maxDollarMagnitude : 0;
-                const resolvedIntensity = clamp(
-                  colorMode === 'percent' ? percentIntensity : valueIntensity,
-                  0,
-                  1
+                const percentChangeValue = isFiniteNumber(node.percentChange) ? node.percentChange : 0;
+                const percentIntensity = Math.min(
+                  1,
+                  Math.abs(percentChangeValue) / Math.max(percentColorThreshold, 1)
                 );
-                const colorBasis = colorMode === 'percent' ? node.percentChange || 0 : node.metricValue || 0;
-                const backgroundColor = resolveTileColor(colorBasis, resolvedIntensity);
-                const textColor = resolveTextColor(resolvedIntensity, colorBasis);
+                const resolvedIntensity = clamp(percentIntensity, 0, 1);
+                const backgroundColor = resolveTileColor(percentChangeValue, resolvedIntensity);
+                const textColor = 'rgba(255, 255, 255, 0.98)';
                 const pnlDisplay = formatSignedMoney(node.metricValue);
                 const shareLabel =
                   node.share !== null
@@ -486,6 +468,11 @@ export default function PnlHeatmapDialog({
                       maximumFractionDigits: 2,
                     })
                   : null;
+                const valueDisplay = isFiniteNumber(node.metricValue) ? pnlDisplay : null;
+                const detailDisplay =
+                  colorMode === 'value'
+                    ? valueDisplay ?? '—'
+                    : percentDisplay ?? '—';
                 const areaFraction = node.width * node.height;
                 const symbolFontSize = clamp(Math.sqrt(areaFraction) * 54, 10, 28);
                 const percentFontSize = clamp(symbolFontSize - 2, 9, 24);
@@ -518,14 +505,12 @@ export default function PnlHeatmapDialog({
                     >
                       {node.symbol}
                     </span>
-                    {percentDisplay && (
-                      <span
-                        className="pnl-heatmap-board__percent"
-                        style={{ fontSize: `${percentFontSize}px` }}
-                      >
-                        {percentDisplay}
-                      </span>
-                    )}
+                    <span
+                      className="pnl-heatmap-board__value"
+                      style={{ fontSize: `${percentFontSize}px` }}
+                    >
+                      {detailDisplay}
+                    </span>
                   </div>
                 );
               })}
