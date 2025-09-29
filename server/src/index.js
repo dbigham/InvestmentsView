@@ -712,15 +712,16 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
   });
 }
 
-app.get('/api/qqq-temperature', function (req, res) {
+app.get('/api/qqq-temperature', async function (req, res) {
   try {
-    const summary = getQqqTemperatureSummary();
+    const summary = await getQqqTemperatureSummary();
     if (!summary) {
       return res.status(404).json({ message: 'QQQ temperature data unavailable' });
     }
     res.json(summary);
   } catch (error) {
-    res.status(500).json({ message: 'Failed to load QQQ temperature data', details: error.message });
+    const message = error && error.message ? error.message : 'Unknown error';
+    res.status(500).json({ message: 'Failed to load QQQ temperature data', details: message });
   }
 });
 
