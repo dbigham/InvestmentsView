@@ -1,6 +1,37 @@
 const fs = require('fs');
 const path = require('path');
-const yahooFinance = require('yahoo-finance2').default;
+
+let yahooFinance = null;
+let yahooFinanceLoadError = null;
+
+try {
+  // yahoo-finance2 is distributed as an ESM module with a default export.
+  // eslint-disable-next-line global-require
+  yahooFinance = require('yahoo-finance2').default;
+} catch (error) {
+  yahooFinanceLoadError = error instanceof Error ? error : new Error(String(error));
+  yahooFinance = null;
+}
+
+const MISSING_DEPENDENCY_MESSAGE =
+  'The "yahoo-finance2" package is required to calculate QQQ temperature data. ' +
+  'Run `npm install` inside the server directory to install it.';
+
+class MissingDependencyError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = 'MissingDependencyError';
+    this.code = 'MISSING_DEPENDENCY';
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
+if (!yahooFinance && yahooFinanceLoadError) {
+  console.warn('[QQQ temperature] yahoo-finance2 dependency not found:', yahooFinanceLoadError.message);
+  console.warn('[QQQ temperature]', MISSING_DEPENDENCY_MESSAGE);
+}
 
 const CACHE_DIR = path.join(__dirname, '..', 'data', 'qqq-cache');
 const SUMMARY_TTL_MS = 1000 * 60 * 60 * 4; // refresh every 4 hours
@@ -25,6 +56,13 @@ let cachedSummary = null;
 let summaryExpiresAt = 0;
 let pendingRefresh = null;
 let lastLoggedError = null;
+
+function ensureYahooFinance() {
+  if (!yahooFinance) {
+    throw new MissingDependencyError(MISSING_DEPENDENCY_MESSAGE, yahooFinanceLoadError);
+  }
+  return yahooFinance;
+}
 
 function ensureCacheDir() {
   if (!fs.existsSync(CACHE_DIR)) {
@@ -150,6 +188,7 @@ function sanitizeHistoricalRows(rows) {
 }
 
 async function loadTickerSeries(ticker) {
+  const finance = ensureYahooFinance();
   ensureCacheDir();
   const cachePath = path.join(CACHE_DIR, `${sanitizeTickerForCache(ticker)}.json`);
   const cachedSeries = readCachedSeries(cachePath);
@@ -175,7 +214,7 @@ async function loadTickerSeries(ticker) {
 
   if (fetchStart && fetchStart <= today) {
     try {
-      const results = await yahooFinance.historical(ticker, {
+      const results = await finance.historical(ticker, {
         period1: fetchStart,
         interval: '1d',
       });
@@ -454,6 +493,7 @@ function roundTemperature(value) {
 }
 
 async function refreshSummary() {
+  ensureYahooFinance();
   const [qqqSeries, ndxSeries, ixicSeries] = await Promise.all([
     loadTickerSeries(TICKERS.qqq),
     loadTickerSeries(TICKERS.ndx),
