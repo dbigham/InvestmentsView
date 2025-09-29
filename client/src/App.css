@@ -640,6 +640,18 @@ textarea {
   border-bottom: 1px dotted var(--color-border-strong);
 }
 
+
+.equity-card__metric-row[data-interactive='true'] {
+  cursor: pointer;
+}
+
+.equity-card__metric-row[data-interactive='true']:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  background: var(--color-surface-alt);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
 .equity-card__metric-column .equity-card__metric-row:first-child {
   padding-top: 0;
 }
@@ -685,6 +697,188 @@ textarea {
 .equity-card__metric-extra {
   font-size: 13px;
   color: var(--color-text-muted);
+}
+
+.pnl-heatmap-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1100;
+}
+
+.pnl-heatmap-dialog {
+  background: var(--color-surface);
+  border-radius: 20px;
+  border: 1px solid var(--color-border);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+  width: min(1100px, 94vw);
+  height: min(760px, 94vh);
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+}
+
+.pnl-heatmap-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.pnl-heatmap-dialog__heading h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.pnl-heatmap-dialog__subtitle {
+  margin: 6px 0 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.pnl-heatmap-dialog__timestamp {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.pnl-heatmap-dialog__controls {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  background: rgba(64, 70, 86, 0.18);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(64, 70, 86, 0.28);
+  backdrop-filter: blur(6px);
+}
+
+.pnl-heatmap-dialog__control {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #440000;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pnl-heatmap-dialog__control:hover,
+.pnl-heatmap-dialog__control:focus-visible {
+  color: #111827;
+}
+
+.pnl-heatmap-dialog__control--active {
+  background: rgba(255, 255, 255, 0.9);
+  color: #000000;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.18);
+}
+
+.pnl-heatmap-dialog__control--active:focus-visible {
+  outline: 2px solid rgba(148, 163, 184, 0.85);
+  outline-offset: 2px;
+}
+
+.pnl-heatmap-dialog__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.pnl-heatmap-dialog__close:hover,
+.pnl-heatmap-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.pnl-heatmap-dialog__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.pnl-heatmap-board {
+  position: relative;
+  flex: 1;
+  border-radius: 16px;
+  background: var(--color-surface-alt);
+  overflow: hidden;
+  min-height: 360px;
+}
+
+.pnl-heatmap-board__tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  overflow: hidden;
+}
+
+.pnl-heatmap-board__symbol {
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pnl-heatmap-board__value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pnl-heatmap-empty {
+  margin: auto;
+  font-size: 15px;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 768px) {
+  .pnl-heatmap-dialog {
+    width: min(95vw, 640px);
+    height: min(90vh, 640px);
+    padding: 20px;
+    border-radius: 16px;
+  }
+
+  .pnl-heatmap-dialog__controls {
+    margin-top: 12px;
+    gap: 6px;
+    padding: 3px;
+  }
+
+  .pnl-heatmap-board__symbol {
+    font-size: 12px;
+  }
+
+  .pnl-heatmap-board__value {
+    font-size: 12px;
+  }
 }
 
 .positions-card {
