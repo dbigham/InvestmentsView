@@ -1011,13 +1011,15 @@ export default function App() {
     return DEFAULT_POSITIONS_SORT.direction;
   })();
 
-  const showContent = Boolean(data) && !loading;
+  const hasData = Boolean(data);
+  const isRefreshing = loading && hasData;
+  const showContent = hasData;
 
   useEffect(() => {
-    if (!showContent && pnlBreakdownMode) {
+    if (!hasData && pnlBreakdownMode) {
       setPnlBreakdownMode(null);
     }
-  }, [showContent, pnlBreakdownMode]);
+  }, [hasData, pnlBreakdownMode]);
 
   const handleRefresh = () => {
     setRefreshKey((value) => value + 1);
@@ -1092,6 +1094,7 @@ export default function App() {
             onShowBeneficiaries={handleOpenBeneficiaries}
             beneficiariesDisabled={beneficiariesDisabled}
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
+            isRefreshing={isRefreshing}
           />
         )}
 
