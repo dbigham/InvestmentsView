@@ -54,7 +54,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - Total equity card with today's and open P&L badges, cash, market value, and buying power.
 - Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
 - Manual refresh button to force a new fetch from Questrade.
-- Beneficiaries overlay that converts every account to CAD and totals holdings for each household member.
+- People overlay that converts every account to CAD and totals holdings for each household member.
 - Automatic handling of access-token refresh and persistence of the newest refresh token.
 
 ## Notes & limitations
