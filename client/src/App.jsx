@@ -189,6 +189,14 @@ function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function pickBalanceEntry(bucket, currency) {
+  if (!bucket || !currency) {
+    return null;
+  }
+  const normalized = currency.toUpperCase();
+  return bucket[normalized] || bucket[currency] || bucket[normalized.toLowerCase()] || null;
+}
+
 function resolvePositionTotalCost(position) {
   if (position && position.totalCost !== undefined && position.totalCost !== null) {
     return position.totalCost;
@@ -199,7 +207,7 @@ function resolvePositionTotalCost(position) {
   return null;
 }
 
-function deriveExchangeRate(perEntry, combinedEntry) {
+function deriveExchangeRate(perEntry, combinedEntry, baseCombinedEntry) {
   if (!perEntry && !combinedEntry) {
     return null;
   }
@@ -209,6 +217,25 @@ function deriveExchangeRate(perEntry, combinedEntry) {
     const candidate = (perEntry && perEntry[field]) ?? (combinedEntry && combinedEntry[field]) ?? null;
     if (isFiniteNumber(candidate) && candidate > 0) {
       return candidate;
+    }
+  }
+
+  if (baseCombinedEntry && combinedEntry) {
+    const baseFields = ['totalEquity', 'marketValue', 'cash', 'buyingPower'];
+    for (const field of baseFields) {
+      const baseValue = baseCombinedEntry[field];
+      const currencyValue = combinedEntry[field];
+      if (!isFiniteNumber(baseValue) || !isFiniteNumber(currencyValue)) {
+        continue;
+      }
+      if (Math.abs(currencyValue) <= 1e-9) {
+        continue;
+      }
+
+      const ratio = baseValue / currencyValue;
+      if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
+        return Math.abs(ratio);
+      }
     }
   }
 
@@ -247,6 +274,7 @@ function buildCurrencyRateMap(balances, baseCurrency = 'CAD') {
 
   const combined = balances.combined || {};
   const perCurrency = balances.perCurrency || {};
+  const baseCombinedEntry = pickBalanceEntry(combined, normalizedBase);
   const allKeys = new Set([
     ...Object.keys(combined || {}),
     ...Object.keys(perCurrency || {}),
@@ -261,10 +289,10 @@ function buildCurrencyRateMap(balances, baseCurrency = 'CAD') {
       return;
     }
 
-    const perEntry = perCurrency[key] || perCurrency[normalizedKey] || null;
-    const combinedEntry = combined[key] || combined[normalizedKey] || null;
+    const perEntry = pickBalanceEntry(perCurrency, key) || pickBalanceEntry(perCurrency, normalizedKey);
+    const combinedEntry = pickBalanceEntry(combined, key) || pickBalanceEntry(combined, normalizedKey);
 
-    const derived = deriveExchangeRate(perEntry, combinedEntry);
+    const derived = deriveExchangeRate(perEntry, combinedEntry, baseCombinedEntry);
     if (derived && derived > 0) {
       rates.set(normalizedKey, derived);
       return;
