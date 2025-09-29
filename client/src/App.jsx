@@ -922,7 +922,44 @@ export default function App() {
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
+  const userSelectedAccountRef = useRef(false);
+
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const defaultAccountId = data?.defaultAccountId ?? null;
+
+  useEffect(() => {
+    if (!defaultAccountId) {
+      return;
+    }
+    if (userSelectedAccountRef.current) {
+      return;
+    }
+    if (selectedAccount && selectedAccount !== 'all') {
+      return;
+    }
+    const normalizedDefault = String(defaultAccountId).trim();
+    if (!normalizedDefault) {
+      return;
+    }
+    const hasMatchingAccount = accounts.some((account) => {
+      if (!account) {
+        return false;
+      }
+      const accountNumber = account.number == null ? null : String(account.number).trim();
+      const accountId = account.id == null ? null : String(account.id).trim();
+      return normalizedDefault === accountNumber || normalizedDefault === accountId;
+    });
+    if (!hasMatchingAccount) {
+      return;
+    }
+    setSelectedAccount(normalizedDefault);
+  }, [defaultAccountId, accounts, selectedAccount, setSelectedAccount]);
+
+  const handleAccountChange = useCallback((nextAccount) => {
+    userSelectedAccountRef.current = true;
+    setSelectedAccount(nextAccount);
+  }, [setSelectedAccount]);
+
   const selectedAccountInfo = useMemo(() => {
     if (!selectedAccount || selectedAccount === 'all') {
       return null;
@@ -1391,7 +1428,7 @@ export default function App() {
           <AccountSelector
             accounts={accounts}
             selected={selectedAccount}
-            onChange={setSelectedAccount}
+            onChange={handleAccountChange}
             disabled={loading && !data}
           />
         </header>
