@@ -6,6 +6,8 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
   timeZone: torontoTimeZone,
 });
+const plainDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
+const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const timeFormatter = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
   minute: '2-digit',
@@ -170,6 +172,28 @@ export function formatSignedPercent(value, fractionDigitsOrOptions = 2) {
     return `-${formattedMagnitude}`;
   }
   return formattedMagnitude;
+}
+
+export function formatDate(dateInput) {
+  if (!dateInput) {
+    return '\u2014';
+  }
+  if (typeof dateInput === 'string') {
+    const match = plainDatePattern.exec(dateInput);
+    if (match) {
+      const [, year, month, day] = match;
+      const monthIndex = Number(month) - 1;
+      const numericDay = Number(day);
+      if (monthIndex >= 0 && monthIndex < monthNames.length && numericDay >= 1 && numericDay <= 31) {
+        return `${monthNames[monthIndex]} ${numericDay}, ${year}`;
+      }
+    }
+  }
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) {
+    return '\u2014';
+  }
+  return dateFormatter.format(date);
 }
 
 export function formatDateTime(dateInput) {

@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary } from './api/questrade';
+import { getSummary, getQqqTemperature } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
+import QqqTemperatureSection from './components/QqqTemperatureSection';
 import {
   formatDateTime,
   formatMoney,
@@ -920,6 +921,9 @@ export default function App() {
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
+  const [qqqData, setQqqData] = useState(null);
+  const [qqqLoading, setQqqLoading] = useState(false);
+  const [qqqError, setQqqError] = useState(null);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -1235,6 +1239,36 @@ export default function App() {
 
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
+  const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
+
+  const fetchQqqTemperature = useCallback(() => {
+    if (qqqLoading) {
+      return;
+    }
+    setQqqLoading(true);
+    setQqqError(null);
+    getQqqTemperature()
+      .then((result) => {
+        setQqqData(result);
+      })
+      .catch((err) => {
+        const normalized = err instanceof Error ? err : new Error('Failed to load QQQ temperature data');
+        setQqqError(normalized);
+      })
+      .finally(() => {
+        setQqqLoading(false);
+      });
+  }, [qqqLoading]);
+
+  useEffect(() => {
+    if (!shouldShowQqqDetails) {
+      return;
+    }
+    if (qqqData || qqqLoading || qqqError) {
+      return;
+    }
+    fetchQqqTemperature();
+  }, [shouldShowQqqDetails, qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
   const peopleDisabled = !peopleSummary.hasBalances;
   const showingAllAccounts = selectedAccount === 'all';
   const selectedAccountChatUrl = useMemo(() => {
@@ -1339,6 +1373,10 @@ export default function App() {
     }
   }, [hasData, pnlBreakdownMode]);
 
+  const handleRetryQqqDetails = useCallback(() => {
+    fetchQqqTemperature();
+  }, [fetchQqqTemperature]);
+
   const handleRefresh = (event) => {
     if (event?.ctrlKey) {
       event.preventDefault();
@@ -1421,6 +1459,15 @@ export default function App() {
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             chatUrl={selectedAccountChatUrl}
+          />
+        )}
+
+        {showContent && shouldShowQqqDetails && (
+          <QqqTemperatureSection
+            data={qqqData}
+            loading={qqqLoading}
+            error={qqqError}
+            onRetry={handleRetryQqqDetails}
           />
         )}
 
