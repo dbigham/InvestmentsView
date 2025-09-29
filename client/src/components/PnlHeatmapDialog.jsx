@@ -366,6 +366,9 @@ export default function PnlHeatmapDialog({
   const metricKey = mode === 'open' ? 'openPnl' : 'dayPnl';
   const metricLabel = mode === 'open' ? 'Open P&L' : "Today's P&L";
   const percentColorThreshold = mode === 'open' ? 70 : 5;
+  const tileBleedPx = 1;
+  const halfTileBleedPx = tileBleedPx / 2;
+  const toPercent = (fraction) => `${(fraction * 100).toFixed(4)}%`;
 
   const nodes = useMemo(() => buildHeatmapNodes(positions, metricKey), [positions, metricKey]);
   const [colorMode, setColorMode] = useState('percent');
@@ -490,10 +493,10 @@ export default function PnlHeatmapDialog({
                     key={node.id}
                     className="pnl-heatmap-board__tile"
                     style={{
-                      left: `${node.x * 100}%`,
-                      top: `${node.y * 100}%`,
-                      width: `${node.width * 100}%`,
-                      height: `${node.height * 100}%`,
+                      left: `calc(${toPercent(node.x)} - ${halfTileBleedPx}px)`,
+                      top: `calc(${toPercent(node.y)} - ${halfTileBleedPx}px)`,
+                      width: `calc(${toPercent(node.width)} + ${tileBleedPx}px)`,
+                      height: `calc(${toPercent(node.height)} + ${tileBleedPx}px)`,
                       backgroundColor,
                       color: textColor,
                     }}
