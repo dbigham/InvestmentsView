@@ -200,12 +200,24 @@ PnlBadge.defaultProps = {
   percent: null,
 };
 
-function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection, onSortChange }) {
+function PositionsTable({
+  positions,
+  totalMarketValue,
+  sortColumn,
+  sortDirection,
+  onSortChange,
+  pnlMode: externalPnlMode,
+  onPnlModeChange,
+}) {
   const [sortState, setSortState] = useState(() => ({
     column: sortColumn,
     direction: sortDirection === 'asc' ? 'asc' : 'desc',
   }));
-  const [pnlMode, setPnlMode] = useState('currency');
+  const [internalPnlMode, setInternalPnlMode] = useState('currency');
+
+  const pnlMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
+    ? externalPnlMode
+    : internalPnlMode;
 
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
 
@@ -282,8 +294,14 @@ function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection
   }, [onSortChange]);
 
   const handleTogglePnlMode = useCallback(() => {
-    setPnlMode((mode) => (mode === 'currency' ? 'percent' : 'currency'));
-  }, []);
+    const nextMode = pnlMode === 'currency' ? 'percent' : 'currency';
+    if (typeof onPnlModeChange === 'function') {
+      onPnlModeChange(nextMode);
+    }
+    if (externalPnlMode !== 'currency' && externalPnlMode !== 'percent') {
+      setInternalPnlMode(nextMode);
+    }
+  }, [externalPnlMode, onPnlModeChange, pnlMode]);
 
   const handleRowNavigation = useCallback(
     (event, symbol) => {
@@ -447,6 +465,8 @@ PositionsTable.propTypes = {
   sortColumn: PropTypes.string,
   sortDirection: PropTypes.oneOf(['asc', 'desc']),
   onSortChange: PropTypes.func,
+  pnlMode: PropTypes.oneOf(['currency', 'percent']),
+  onPnlModeChange: PropTypes.func,
 };
 
 PositionsTable.defaultProps = {
@@ -454,6 +474,8 @@ PositionsTable.defaultProps = {
   sortColumn: 'portfolioShare',
   sortDirection: 'desc',
   onSortChange: null,
+  pnlMode: null,
+  onPnlModeChange: null,
 };
 
 export default PositionsTable;
