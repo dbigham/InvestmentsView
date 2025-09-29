@@ -4,7 +4,7 @@ import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
 import { getSummary } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
-import BeneficiariesDialog from './components/BeneficiariesDialog';
+import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import './App.css';
 
@@ -692,7 +692,7 @@ export default function App() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
-  const [showBeneficiaries, setShowBeneficiaries] = useState(false);
+  const [showPeople, setShowPeople] = useState(false);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
@@ -816,7 +816,7 @@ export default function App() {
     return totals;
   }, [rawPositions, currencyRates, baseCurrency]);
 
-  const beneficiarySummary = useMemo(() => {
+  const peopleSummary = useMemo(() => {
     if (!accounts.length) {
       return { totals: [], missingAccounts: [], hasBalances: false };
     }
@@ -992,9 +992,9 @@ export default function App() {
     totalMarketValue,
   ]);
 
-  const beneficiariesTotals = beneficiarySummary.totals;
-  const beneficiariesMissingAccounts = beneficiarySummary.missingAccounts;
-  const beneficiariesDisabled = !beneficiarySummary.hasBalances;
+  const peopleTotals = peopleSummary.totals;
+  const peopleMissingAccounts = peopleSummary.missingAccounts;
+  const peopleDisabled = !peopleSummary.hasBalances;
   const showingAllAccounts = selectedAccount === 'all';
 
   const resolvedSortColumn =
@@ -1063,15 +1063,15 @@ export default function App() {
     setPnlBreakdownMode(null);
   };
 
-  const handleOpenBeneficiaries = () => {
-    if (!beneficiarySummary.hasBalances) {
+  const handleOpenPeople = () => {
+    if (!peopleSummary.hasBalances) {
       return;
     }
-    setShowBeneficiaries(true);
+    setShowPeople(true);
   };
 
-  const handleCloseBeneficiaries = () => {
-    setShowBeneficiaries(false);
+  const handleClosePeople = () => {
+    setShowPeople(false);
   };
 
   if (loading && !data) {
@@ -1115,8 +1115,8 @@ export default function App() {
             onRefresh={handleRefresh}
             displayTotalEquity={displayTotalEquity}
             usdToCadRate={usdToCadRate}
-            onShowBeneficiaries={handleOpenBeneficiaries}
-            beneficiariesDisabled={beneficiariesDisabled}
+            onShowPeople={handleOpenPeople}
+            peopleDisabled={peopleDisabled}
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
@@ -1135,13 +1135,13 @@ export default function App() {
           />
         )}
       </main>
-      {showBeneficiaries && (
-        <BeneficiariesDialog
-          totals={beneficiariesTotals}
-          onClose={handleCloseBeneficiaries}
+      {showPeople && (
+        <PeopleDialog
+          totals={peopleTotals}
+          onClose={handleClosePeople}
           baseCurrency={baseCurrency}
           isFilteredView={!showingAllAccounts}
-          missingAccounts={beneficiariesMissingAccounts}
+          missingAccounts={peopleMissingAccounts}
           asOf={asOf}
         />
       )}
