@@ -68,8 +68,8 @@ export default function SummaryMetrics({
   onRefresh,
   displayTotalEquity,
   usdToCadRate,
-  onShowBeneficiaries,
-  beneficiariesDisabled,
+  onShowPeople,
+  peopleDisabled,
   onShowPnlBreakdown,
   isRefreshing,
   isAutoRefreshing,
@@ -111,14 +111,14 @@ export default function SummaryMetrics({
           )}
         </div>
         <div className="equity-card__actions">
-          {onShowBeneficiaries && (
+          {onShowPeople && (
             <button
               type="button"
               className="equity-card__action-button"
-              onClick={onShowBeneficiaries}
-              disabled={beneficiariesDisabled}
+              onClick={onShowPeople}
+              disabled={peopleDisabled}
             >
-              Beneficiaries
+              People
             </button>
           )}
           <TimePill
@@ -209,8 +209,8 @@ SummaryMetrics.propTypes = {
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
   usdToCadRate: PropTypes.number,
-  onShowBeneficiaries: PropTypes.func,
-  beneficiariesDisabled: PropTypes.bool,
+  onShowPeople: PropTypes.func,
+  peopleDisabled: PropTypes.bool,
   onShowPnlBreakdown: PropTypes.func,
   isRefreshing: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
@@ -223,8 +223,8 @@ SummaryMetrics.defaultProps = {
   onRefresh: null,
   displayTotalEquity: null,
   usdToCadRate: null,
-  onShowBeneficiaries: null,
-  beneficiariesDisabled: false,
+  onShowPeople: null,
+  peopleDisabled: false,
   onShowPnlBreakdown: null,
   isRefreshing: false,
   isAutoRefreshing: false,

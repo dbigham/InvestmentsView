@@ -21,7 +21,7 @@ function formatAccountCount(covered, total) {
   return `${safeCovered} of ${safeTotal} ${plural}`;
 }
 
-export default function BeneficiariesDialog({
+export default function PeopleDialog({
   totals,
   onClose,
   baseCurrency,
@@ -69,7 +69,7 @@ export default function BeneficiariesDialog({
     return formatSignedPercent(percent, percentOptions);
   };
 
-  const missingBeneficiaries = useMemo(() => {
+  const missingPeople = useMemo(() => {
     if (!missingAccounts || missingAccounts.length === 0) {
       return [];
     }
@@ -82,7 +82,7 @@ export default function BeneficiariesDialog({
     return Array.from(names);
   }, [missingAccounts]);
 
-  const hasMissing = missingBeneficiaries.length > 0;
+  const hasMissing = missingPeople.length > 0;
 
   const noticeMessage = useMemo(() => {
     if (!hasMissing) {
@@ -91,11 +91,11 @@ export default function BeneficiariesDialog({
     if (isFilteredView) {
       return 'Totals reflect only the currently selected account(s). Choose “All accounts” to see the full household.';
     }
-    if (missingBeneficiaries.length) {
-      return `No balance data was returned for: ${missingBeneficiaries.join(', ')}. Try refreshing to include them.`;
+    if (missingPeople.length) {
+      return `No balance data was returned for: ${missingPeople.join(', ')}. Try refreshing to include them.`;
     }
     return 'Some accounts did not return balance data in the latest refresh. Try refreshing to include them.';
-  }, [hasMissing, isFilteredView, missingBeneficiaries]);
+  }, [hasMissing, isFilteredView, missingPeople]);
 
   return (
     <div className="beneficiaries-overlay" role="presentation" onClick={handleOverlayClick}>
@@ -103,11 +103,11 @@ export default function BeneficiariesDialog({
         className="beneficiaries-dialog"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="beneficiaries-dialog-title"
+        aria-labelledby="people-dialog-title"
       >
         <header className="beneficiaries-dialog__header">
           <div className="beneficiaries-dialog__heading">
-            <h2 id="beneficiaries-dialog-title">Beneficiaries</h2>
+            <h2 id="people-dialog-title">People</h2>
             <p className="beneficiaries-dialog__subtitle">Totals in {baseCurrency}</p>
             {asOf && <p className="beneficiaries-dialog__timestamp">As of {formatDateTime(asOf)}</p>}
           </div>
@@ -180,7 +180,7 @@ export default function BeneficiariesDialog({
           </div>
         ) : (
           <div className="beneficiaries-dialog__empty">
-            No beneficiary totals are available yet. Refresh to pull the latest balances.
+            No people totals are available yet. Refresh to pull the latest balances.
           </div>
         )}
       </div>
@@ -195,7 +195,7 @@ const accountShape = PropTypes.shape({
   beneficiary: PropTypes.string,
 });
 
-BeneficiariesDialog.propTypes = {
+PeopleDialog.propTypes = {
   totals: PropTypes.arrayOf(
     PropTypes.shape({
       beneficiary: PropTypes.string.isRequired,
@@ -213,7 +213,7 @@ BeneficiariesDialog.propTypes = {
   asOf: PropTypes.string,
 };
 
-BeneficiariesDialog.defaultProps = {
+PeopleDialog.defaultProps = {
   isFilteredView: false,
   missingAccounts: [],
   asOf: null,
