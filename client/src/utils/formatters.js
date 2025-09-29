@@ -172,6 +172,17 @@ export function formatSignedPercent(value, fractionDigitsOrOptions = 2) {
   return formattedMagnitude;
 }
 
+export function formatDate(dateInput) {
+  if (!dateInput) {
+    return '\u2014';
+  }
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) {
+    return '\u2014';
+  }
+  return dateFormatter.format(date);
+}
+
 export function formatDateTime(dateInput) {
   if (!dateInput) {
     return '\u2014';

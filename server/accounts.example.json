@@ -1,7 +1,8 @@
 {
   "53384039": {
     "name": "TFSA - Primary",
-    "uuid": "ac4ea32e-3034-4232-056a-194d8395463c"
+    "uuid": "ac4ea32e-3034-4232-056a-194d8395463c",
+    "showQQQDetails": true
   },
   "53384040": {
     "name": "Margin",
