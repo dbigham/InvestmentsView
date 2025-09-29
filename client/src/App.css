@@ -346,6 +346,7 @@ textarea {
 }
 
 .equity-card__action-menu-item {
+  display: block;
   width: 100%;
   background: none;
   border: none;
@@ -354,6 +355,7 @@ textarea {
   font-size: 13px;
   color: var(--color-text-primary);
   cursor: pointer;
+  text-decoration: none;
 }
 
 .equity-card__action-menu-item:hover:not(:disabled),
