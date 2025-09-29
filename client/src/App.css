@@ -36,6 +36,18 @@ body {
   color: var(--color-text-primary);
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 button,
 input,
 select,
@@ -47,6 +59,35 @@ textarea {
   min-height: 100vh;
   padding: 32px 32px 72px;
   background: var(--color-bg-page);
+}
+
+.summary-page--initial-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.initial-loading {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.initial-loading__spinner {
+  width: 72px;
+  height: 72px;
+  border-radius: 999px;
+  border: 6px solid rgba(24, 163, 122, 0.18);
+  border-top-color: var(--color-accent);
+  animation: initial-loading-spin 0.9s linear infinite;
+}
+
+@keyframes initial-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .summary-main {
