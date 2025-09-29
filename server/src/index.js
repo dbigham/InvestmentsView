@@ -398,23 +398,6 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
-async function fetchNetDeposits(login, accountId) {
-  try {
-    const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/netDeposits');
-    return data || null;
-  } catch (error) {
-    console.warn(
-      'Failed to fetch net deposits for account ' +
-        accountId +
-        ' (login ' +
-        resolveLoginDisplay(login) +
-        '):',
-      error.response ? error.response.status : error.message
-    );
-    return null;
-  }
-}
-
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -422,7 +405,6 @@ const BALANCE_NUMERIC_FIELDS = [
   'cash',
   'buyingPower',
   'maintenanceExcess',
-  'netDeposits',
   'dayPnl',
   'openPnl',
   'totalPnl',
@@ -435,12 +417,9 @@ const BALANCE_FIELD_ALIASES = {
   dayPnl: ['dayPnL'],
   openPnl: ['openPnL'],
   totalPnl: ['totalPnL', 'totalPnLInBase', 'totalReturn'],
-  netDeposits: ['netDeposit', 'netDepositsValue', 'netDepositsAmount'],
   realizedPnl: ['realizedPnL'],
   unrealizedPnl: ['unrealizedPnL'],
 };
-
-const NET_DEPOSIT_VALUE_KEYS = ['netDeposits', 'netDeposit', 'value', 'amount', 'total', 'totalNetDeposits'];
 
 function createEmptyBalanceAccumulator(currency) {
   const base = { currency: currency || null, isRealTime: false, __fieldCounts: Object.create(null) };
@@ -488,23 +467,6 @@ function accumulateBalance(target, source) {
   if (source && typeof source.isRealTime === 'boolean') {
     target.isRealTime = target.isRealTime || source.isRealTime;
   }
-}
-
-function extractNetDepositEntries(response) {
-  if (!response || typeof response !== 'object') {
-    return [];
-  }
-  const candidateKeys = ['netDeposits', 'netDeposit', 'totalNetDeposits', 'entries', 'values', 'items'];
-  for (const key of candidateKeys) {
-    const value = response[key];
-    if (Array.isArray(value)) {
-      return value;
-    }
-  }
-  if (response.currency) {
-    return [response];
-  }
-  return [];
 }
 
 async function fetchSymbolsDetails(login, symbolIds) {
@@ -563,50 +525,6 @@ function mergeBalances(allBalances) {
   });
 
   return summary;
-}
-
-function applyNetDeposits(summary, netDepositsResponses) {
-  if (!summary || !netDepositsResponses) {
-    return;
-  }
-  netDepositsResponses.forEach(function (response) {
-    const entries = extractNetDepositEntries(response);
-    entries.forEach(function (entry) {
-      if (!entry || typeof entry !== 'object') {
-        return;
-      }
-      const currency = entry.currency;
-      if (!currency) {
-        return;
-      }
-      let amount = null;
-      for (const key of NET_DEPOSIT_VALUE_KEYS) {
-        const candidate = entry[key];
-        if (typeof candidate === 'number' && Number.isFinite(candidate)) {
-          amount = candidate;
-          break;
-        }
-      }
-      if (amount === null) {
-        return;
-      }
-      if (!summary.combined[currency]) {
-        summary.combined[currency] = createEmptyBalanceAccumulator(currency);
-      }
-      if (Math.abs(summary.combined[currency].netDeposits) < 1e-9) {
-        summary.combined[currency].netDeposits = amount;
-        markBalanceFieldPresent(summary.combined[currency], 'netDeposits');
-      }
-
-      if (!summary.perCurrency[currency]) {
-        summary.perCurrency[currency] = createEmptyBalanceAccumulator(currency);
-      }
-      if (Math.abs(summary.perCurrency[currency].netDeposits) < 1e-9) {
-        summary.perCurrency[currency].netDeposits = amount;
-        markBalanceFieldPresent(summary.perCurrency[currency], 'netDeposits');
-      }
-    });
-  });
 }
 
 function finalizeBalances(summary) {
@@ -745,12 +663,6 @@ app.get('/api/summary', async function (req, res) {
         return fetchBalances(context.login, context.account.number);
       })
     );
-    const netDepositsResults = await Promise.all(
-      selectedContexts.map(function (context) {
-        return fetchNetDeposits(context.login, context.account.number);
-      })
-    );
-
     const flattenedPositions = positionsResults
       .map(function (positions, index) {
         const context = selectedContexts[index];
@@ -793,7 +705,6 @@ app.get('/api/summary', async function (req, res) {
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
-    applyNetDeposits(balancesSummary, netDepositsResults);
     finalizeBalances(balancesSummary);
 
     const responseAccounts = allAccounts.map(function (account) {
