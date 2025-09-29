@@ -42,7 +42,6 @@ export default function SummaryMetrics({
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
-  const netDeposits = balances?.netDeposits ?? null;
   const buyingPower = balances?.buyingPower ?? null;
 
   const todayTone = classifyPnL(pnl?.dayPnl);
@@ -99,7 +98,6 @@ export default function SummaryMetrics({
           />
           <MetricRow label="Open P&L" value={formattedOpen} tone={openTone} />
           <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
-          <MetricRow label="Net deposits" value={formatMoney(netDeposits)} tone="neutral" />
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
@@ -135,7 +133,6 @@ SummaryMetrics.propTypes = {
     totalEquity: PropTypes.number,
     marketValue: PropTypes.number,
     cash: PropTypes.number,
-    netDeposits: PropTypes.number,
     buyingPower: PropTypes.number,
   }),
   pnl: PropTypes.shape({
