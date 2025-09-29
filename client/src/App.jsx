@@ -689,6 +689,7 @@ export default function App() {
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showBeneficiaries, setShowBeneficiaries] = useState(false);
@@ -1016,12 +1017,35 @@ export default function App() {
   const showContent = hasData;
 
   useEffect(() => {
+    if (!autoRefreshEnabled) {
+      return undefined;
+    }
+
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setRefreshKey((value) => value + 1);
+    }, 10000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [autoRefreshEnabled]);
+
+  useEffect(() => {
     if (!hasData && pnlBreakdownMode) {
       setPnlBreakdownMode(null);
     }
   }, [hasData, pnlBreakdownMode]);
 
-  const handleRefresh = () => {
+  const handleRefresh = (event) => {
+    if (event?.ctrlKey) {
+      event.preventDefault();
+      setAutoRefreshEnabled((value) => !value);
+      return;
+    }
     setRefreshKey((value) => value + 1);
   };
 
@@ -1095,6 +1119,7 @@ export default function App() {
             beneficiariesDisabled={beneficiariesDisabled}
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
             isRefreshing={isRefreshing}
+            isAutoRefreshing={autoRefreshEnabled}
           />
         )}
 
