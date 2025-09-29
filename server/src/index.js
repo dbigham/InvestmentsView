@@ -5,7 +5,11 @@ const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-const { getAccountNameOverrides, getAccountPortalOverrides } = require('./accountNames');
+const {
+  getAccountNameOverrides,
+  getAccountPortalOverrides,
+  getAccountOrdering,
+} = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 
 const PORT = process.env.PORT || 4000;
@@ -714,6 +718,7 @@ app.get('/api/summary', async function (req, res) {
     const accountCollections = [];
     const accountNameOverrides = getAccountNameOverrides();
     const accountPortalOverrides = getAccountPortalOverrides();
+    const configuredOrdering = getAccountOrdering();
     const accountBeneficiaries = getAccountBeneficiaries();
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
@@ -754,9 +759,64 @@ app.get('/api/summary', async function (req, res) {
       accountCollections.push({ login, accounts: normalized });
     }
 
-    const allAccounts = accountCollections.flatMap(function (entry) {
+    let allAccounts = accountCollections.flatMap(function (entry) {
       return entry.accounts;
     });
+
+    if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
+      const orderingMap = new Map();
+      configuredOrdering.forEach(function (entry, index) {
+        const normalized = entry == null ? '' : String(entry).trim();
+        if (!normalized) {
+          return;
+        }
+        if (!orderingMap.has(normalized)) {
+          orderingMap.set(normalized, index);
+        }
+      });
+
+      if (orderingMap.size) {
+        const DEFAULT_ORDER = Number.MAX_SAFE_INTEGER;
+        const resolveAccountOrder = function (account) {
+          if (!account) {
+            return DEFAULT_ORDER;
+          }
+          const candidates = [];
+          if (account.number) {
+            candidates.push(String(account.number).trim());
+          }
+          if (account.accountNumber) {
+            candidates.push(String(account.accountNumber).trim());
+          }
+          if (account.id) {
+            candidates.push(String(account.id).trim());
+          }
+          for (const candidate of candidates) {
+            if (!candidate) {
+              continue;
+            }
+            if (orderingMap.has(candidate)) {
+              return orderingMap.get(candidate);
+            }
+          }
+          return DEFAULT_ORDER;
+        };
+
+        allAccounts = allAccounts
+          .map(function (account, index) {
+            return { account, index, order: resolveAccountOrder(account) };
+          })
+          .sort(function (a, b) {
+            if (a.order !== b.order) {
+              return a.order - b.order;
+            }
+            return a.index - b.index;
+          })
+          .map(function (entry) {
+            return entry.account;
+          });
+      }
+    }
 
     const accountsById = {};
     allAccounts.forEach(function (account) {
