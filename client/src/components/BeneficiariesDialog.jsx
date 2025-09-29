@@ -129,37 +129,37 @@ export default function BeneficiariesDialog({
 
                 return (
                   <li key={entry.beneficiary} className="beneficiaries-list__item">
-                    <div className="beneficiaries-list__info">
-                      <span className="beneficiaries-list__name">{entry.beneficiary}</span>
-                      <span className="beneficiaries-list__accounts">
-                        {formatAccountCount(entry.accountCount, entry.totalAccounts)}
-                      </span>
-                    </div>
-                    <div className="beneficiaries-list__metrics">
+                    <div className="beneficiaries-list__header">
+                      <div className="beneficiaries-list__info">
+                        <span className="beneficiaries-list__name">{entry.beneficiary}</span>
+                        <span className="beneficiaries-list__accounts">
+                          {formatAccountCount(entry.accountCount, entry.totalAccounts)}
+                        </span>
+                      </div>
                       <span className="beneficiaries-list__value">{formatMoney(entry.total)}</span>
-                      <div className="beneficiaries-list__pnl-group">
-                        <div className="beneficiaries-list__pnl-row">
-                          <span className="beneficiaries-list__pnl-label">Today's P&amp;L</span>
-                          <span
-                            className={`beneficiaries-list__pnl-value beneficiaries-list__pnl-value--${todayTone}`}
-                          >
-                            {todayFormatted}
-                          </span>
-                          {todayPercent && (
-                            <span className="beneficiaries-list__pnl-extra">({todayPercent})</span>
-                          )}
-                        </div>
-                        <div className="beneficiaries-list__pnl-row">
-                          <span className="beneficiaries-list__pnl-label">Open P&amp;L</span>
-                          <span
-                            className={`beneficiaries-list__pnl-value beneficiaries-list__pnl-value--${openTone}`}
-                          >
-                            {openFormatted}
-                          </span>
-                          {openPercent && (
-                            <span className="beneficiaries-list__pnl-extra">({openPercent})</span>
-                          )}
-                        </div>
+                    </div>
+                    <div className="beneficiaries-list__pnl-group">
+                      <div className="beneficiaries-list__pnl-row">
+                        <span className="beneficiaries-list__pnl-label">Today's P&amp;L</span>
+                        <span
+                          className={`beneficiaries-list__pnl-value beneficiaries-list__pnl-value--${todayTone}`}
+                        >
+                          {todayFormatted}
+                        </span>
+                        {todayPercent && (
+                          <span className="beneficiaries-list__pnl-extra">({todayPercent})</span>
+                        )}
+                      </div>
+                      <div className="beneficiaries-list__pnl-row">
+                        <span className="beneficiaries-list__pnl-label">Open P&amp;L</span>
+                        <span
+                          className={`beneficiaries-list__pnl-value beneficiaries-list__pnl-value--${openTone}`}
+                        >
+                          {openFormatted}
+                        </span>
+                        {openPercent && (
+                          <span className="beneficiaries-list__pnl-extra">({openPercent})</span>
+                        )}
                       </div>
                     </div>
                   </li>

@@ -762,6 +762,36 @@ export default function App() {
     return EMPTY_OBJECT;
   }, [accountBalances]);
 
+  const accountPnlTotals = useMemo(() => {
+    if (!Array.isArray(rawPositions) || rawPositions.length === 0) {
+      return new Map();
+    }
+
+    const totals = new Map();
+
+    rawPositions.forEach((position) => {
+      const accountId = position?.accountId;
+      if (!accountId) {
+        return;
+      }
+
+      const currency = position?.currency || baseCurrency;
+      const day = isFiniteNumber(position?.dayPnl) ? position.dayPnl : 0;
+      const open = isFiniteNumber(position?.openPnl) ? position.openPnl : 0;
+
+      const bucket = totals.get(accountId) || { dayPnl: 0, openPnl: 0 };
+      if (day) {
+        bucket.dayPnl += normalizeCurrencyAmount(day, currency, currencyRates, baseCurrency);
+      }
+      if (open) {
+        bucket.openPnl += normalizeCurrencyAmount(open, currency, currencyRates, baseCurrency);
+      }
+      totals.set(accountId, bucket);
+    });
+
+    return totals;
+  }, [rawPositions, currencyRates, baseCurrency]);
+
   const beneficiarySummary = useMemo(() => {
     if (!accounts.length) {
       return { totals: [], missingAccounts: [], hasBalances: false };
@@ -810,8 +840,14 @@ export default function App() {
       const accountTotal = resolveAccountTotalInBase(combined, currencyRates, baseCurrency);
       const aggregate = ensureAggregate(beneficiary);
       aggregate.total += accountTotal;
-      aggregate.dayPnl += resolveAccountPnlInBase(combined, 'dayPnl', currencyRates, baseCurrency);
-      aggregate.openPnl += resolveAccountPnlInBase(combined, 'openPnl', currencyRates, baseCurrency);
+      const accountPnl = accountPnlTotals.get(accountId);
+      if (accountPnl) {
+        aggregate.dayPnl += accountPnl.dayPnl;
+        aggregate.openPnl += accountPnl.openPnl;
+      } else {
+        aggregate.dayPnl += resolveAccountPnlInBase(combined, 'dayPnl', currencyRates, baseCurrency);
+        aggregate.openPnl += resolveAccountPnlInBase(combined, 'openPnl', currencyRates, baseCurrency);
+      }
       const coveredSet = coveredAccountBuckets.get(beneficiary) || new Set();
       coveredSet.add(accountId);
       coveredAccountBuckets.set(beneficiary, coveredSet);
@@ -852,7 +888,13 @@ export default function App() {
       missingAccounts,
       hasBalances: hasBalanceEntries,
     };
-  }, [accounts, normalizedAccountBalances, currencyRates, baseCurrency]);
+  }, [
+    accounts,
+    normalizedAccountBalances,
+    currencyRates,
+    baseCurrency,
+    accountPnlTotals,
+  ]);
 
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
