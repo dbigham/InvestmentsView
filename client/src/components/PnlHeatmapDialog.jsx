@@ -52,6 +52,19 @@ function computePercentChange(position, metricKey) {
   return metricValue === 0 ? 0 : null;
 }
 
+function resolveMetricValue(position, metricKey) {
+  if (!position) {
+    return 0;
+  }
+  if (metricKey === 'dayPnl' && isFiniteNumber(position.normalizedDayPnl)) {
+    return position.normalizedDayPnl;
+  }
+  if (metricKey === 'openPnl' && isFiniteNumber(position.normalizedOpenPnl)) {
+    return position.normalizedOpenPnl;
+  }
+  return isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
+}
+
 function layoutRow(row, rowWeight, rect, totalWeight) {
   const areaScale = (rect.width * rect.height) / totalWeight;
   const rowArea = rowWeight * areaScale;
@@ -240,7 +253,7 @@ function buildHeatmapNodes(positions, metricKey) {
         return null;
       }
 
-      const metricValue = isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
+      const metricValue = resolveMetricValue(position, metricKey);
       const percentChange = computePercentChange(position, metricKey);
 
       return {
@@ -394,8 +407,10 @@ export default function PnlHeatmapDialog({
     }
     return positions.reduce(
       (acc, position) => {
-        const marketValue = isFiniteNumber(position.normalizedMarketValue) ? position.normalizedMarketValue : 0;
-        const pnlValue = isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
+        const marketValue = isFiniteNumber(position.normalizedMarketValue)
+          ? position.normalizedMarketValue
+          : 0;
+        const pnlValue = resolveMetricValue(position, metricKey);
         return {
           marketValue: acc.marketValue + marketValue,
           pnl: acc.pnl + pnlValue,
@@ -575,6 +590,8 @@ PnlHeatmapDialog.propTypes = {
       dayPnl: PropTypes.number,
       openPnl: PropTypes.number,
       normalizedMarketValue: PropTypes.number,
+      normalizedDayPnl: PropTypes.number,
+      normalizedOpenPnl: PropTypes.number,
       portfolioShare: PropTypes.number,
       rowId: PropTypes.string,
       currentMarketValue: PropTypes.number,
