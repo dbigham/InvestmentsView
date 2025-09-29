@@ -200,6 +200,10 @@ PnlBadge.defaultProps = {
   percent: null,
 };
 
+function isPnlColumn(columnKey) {
+  return columnKey === 'dayPnl' || columnKey === 'openPnl';
+}
+
 function PositionsTable({
   positions,
   totalMarketValue,
@@ -209,9 +213,15 @@ function PositionsTable({
   pnlMode: externalPnlMode,
   onPnlModeChange,
 }) {
+  const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
+  const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
+    ? externalPnlMode
+    : 'currency';
+
   const [sortState, setSortState] = useState(() => ({
     column: sortColumn,
-    direction: sortDirection === 'asc' ? 'asc' : 'desc',
+    direction: resolvedDirection,
+    valueMode: isPnlColumn(sortColumn) ? initialExternalMode : null,
   }));
   const [internalPnlMode, setInternalPnlMode] = useState('currency');
 
@@ -219,16 +229,18 @@ function PositionsTable({
     ? externalPnlMode
     : internalPnlMode;
 
-  const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
-
   useEffect(() => {
     setSortState((current) => {
       if (current.column === sortColumn && current.direction === resolvedDirection) {
         return current;
       }
-      return { column: sortColumn, direction: resolvedDirection };
+      return {
+        column: sortColumn,
+        direction: resolvedDirection,
+        valueMode: isPnlColumn(sortColumn) ? pnlMode : null,
+      };
     });
-  }, [sortColumn, resolvedDirection]);
+  }, [sortColumn, resolvedDirection, pnlMode]);
 
   const aggregateMarketValue = useMemo(() => {
     if (typeof totalMarketValue === 'number' && totalMarketValue > 0) {
@@ -262,7 +274,9 @@ function PositionsTable({
       return decoratedPositions.slice();
     }
     let accessorOverride = null;
-    if (pnlMode === 'percent') {
+    const effectiveMode = sortState.valueMode === 'percent' ? 'percent' : 'currency';
+
+    if (effectiveMode === 'percent') {
       if (header.key === 'dayPnl') {
         accessorOverride = (row) => row.dayPnlPercent ?? 0;
       } else if (header.key === 'openPnl') {
@@ -271,7 +285,7 @@ function PositionsTable({
     }
     const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
-  }, [decoratedPositions, sortState, pnlMode]);
+  }, [decoratedPositions, sortState]);
 
   const handleSort = useCallback((columnKey) => {
     const header = TABLE_HEADERS.find((column) => column.key === columnKey);
@@ -281,17 +295,33 @@ function PositionsTable({
     setSortState((current) => {
       let nextState;
       if (current.column === columnKey) {
-        nextState = { column: columnKey, direction: current.direction === 'asc' ? 'desc' : 'asc' };
+        let nextDirection = current.direction === 'asc' ? 'desc' : 'asc';
+        let nextValueMode = current.valueMode;
+
+        if (isPnlColumn(columnKey)) {
+          if (current.valueMode !== pnlMode) {
+            nextDirection = current.direction;
+            nextValueMode = pnlMode;
+          }
+        } else {
+          nextValueMode = null;
+        }
+
+        nextState = { column: columnKey, direction: nextDirection, valueMode: nextValueMode };
       } else {
         const defaultDirection = header.sortType === 'text' ? 'asc' : 'desc';
-        nextState = { column: columnKey, direction: defaultDirection };
+        nextState = {
+          column: columnKey,
+          direction: defaultDirection,
+          valueMode: isPnlColumn(columnKey) ? pnlMode : null,
+        };
       }
       if (typeof onSortChange === 'function') {
-        onSortChange(nextState);
+        onSortChange({ column: nextState.column, direction: nextState.direction });
       }
       return nextState;
     });
-  }, [onSortChange]);
+  }, [onSortChange, pnlMode]);
 
   const handleTogglePnlMode = useCallback(() => {
     const nextMode = pnlMode === 'currency' ? 'percent' : 'currency';
