@@ -136,13 +136,18 @@ function coerceNumber(value) {
     return value;
   }
   if (typeof value === 'string') {
-    const normalized = value.replace(/,/g, '').trim();
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const isParenthesized = /^\(.*\)$/.test(trimmed);
+    const normalized = trimmed.replace(/[^0-9.-]/g, '');
     if (!normalized) {
       return null;
     }
     const numeric = Number(normalized);
     if (!Number.isNaN(numeric)) {
-      return numeric;
+      return isParenthesized ? -numeric : numeric;
     }
   }
   return null;

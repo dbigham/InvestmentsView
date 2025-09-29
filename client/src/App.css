@@ -750,6 +750,17 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.pnl-heatmap-dialog__toolbar {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.pnl-heatmap-dialog__toolbar .pnl-heatmap-dialog__controls {
+  margin-top: 0;
+}
+
 .pnl-heatmap-dialog__controls {
   margin-top: 16px;
   display: inline-flex;
@@ -877,10 +888,21 @@ textarea {
     border-radius: 16px;
   }
 
+  .pnl-heatmap-dialog__toolbar {
+    margin-top: 12px;
+    gap: 8px;
+  }
+
+  .pnl-heatmap-dialog__toolbar .pnl-heatmap-dialog__controls {
+    width: 100%;
+    justify-content: center;
+  }
+
   .pnl-heatmap-dialog__controls {
     margin-top: 12px;
     gap: 6px;
     padding: 3px;
+    width: auto;
   }
 
   .pnl-heatmap-board__symbol {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import {
   formatDateTime,
@@ -378,9 +378,15 @@ export default function PnlHeatmapDialog({
   asOf,
   totalMarketValue,
 }) {
-  const metricKey = mode === 'open' ? 'openPnl' : 'dayPnl';
-  const metricLabel = mode === 'open' ? 'Open P&L' : "Today's P&L";
-  const percentColorThreshold = mode === 'open' ? 70 : 5;
+  const initialMetric = mode === 'open' ? 'open' : 'day';
+  const [metricMode, setMetricMode] = useState(initialMetric);
+  useEffect(() => {
+    setMetricMode(initialMetric);
+  }, [initialMetric]);
+
+  const metricKey = metricMode === 'open' ? 'openPnl' : 'dayPnl';
+  const metricLabel = metricMode === 'open' ? 'Open P&L' : "Today's P&L";
+  const percentColorThreshold = metricMode === 'open' ? 70 : 5;
   const tileGapPx = 1;
   const halfTileGapPx = tileGapPx / 2;
   const epsilon = 0.0001;
@@ -454,27 +460,51 @@ export default function PnlHeatmapDialog({
               {pnlLabel} in {marketValueLabel} total market value
             </p>
             {asOfDisplay && <p className="pnl-heatmap-dialog__timestamp">{asOfDisplay}</p>}
-            <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Color tiles by">
-              <button
-                type="button"
-                className={`pnl-heatmap-dialog__control${
-                  colorMode === 'percent' ? ' pnl-heatmap-dialog__control--active' : ''
-                }`}
-                onClick={() => setColorMode('percent')}
-                aria-pressed={colorMode === 'percent'}
-              >
-                % change
-              </button>
-              <button
-                type="button"
-                className={`pnl-heatmap-dialog__control${
-                  colorMode === 'value' ? ' pnl-heatmap-dialog__control--active' : ''
-                }`}
-                onClick={() => setColorMode('value')}
-                aria-pressed={colorMode === 'value'}
-              >
-                {currencyLabel} change
-              </button>
+            <div className="pnl-heatmap-dialog__toolbar">
+              <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Select P&L metric">
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    metricMode === 'day' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setMetricMode('day')}
+                  aria-pressed={metricMode === 'day'}
+                >
+                  Today's P&L
+                </button>
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    metricMode === 'open' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setMetricMode('open')}
+                  aria-pressed={metricMode === 'open'}
+                >
+                  Open P&L
+                </button>
+              </div>
+              <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Color tiles by">
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    colorMode === 'percent' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setColorMode('percent')}
+                  aria-pressed={colorMode === 'percent'}
+                >
+                  % change
+                </button>
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    colorMode === 'value' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setColorMode('value')}
+                  aria-pressed={colorMode === 'value'}
+                >
+                  {currencyLabel} change
+                </button>
+              </div>
             </div>
           </div>
           <button type="button" className="pnl-heatmap-dialog__close" onClick={onClose} aria-label="Close">
