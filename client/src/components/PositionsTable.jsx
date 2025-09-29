@@ -330,6 +330,16 @@ function PositionsTable({
       if (element && typeof element.closest === 'function' && element.closest('button, a')) {
         return;
       }
+      if (event.ctrlKey || event.metaKey) {
+        const questradeUrl = buildQuoteUrl(symbol, 'questrade');
+        if (!questradeUrl) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openQuote(symbol, 'questrade');
+        return;
+      }
       const provider = event.altKey ? 'yahoo' : 'google';
       const url = buildQuoteUrl(symbol, provider);
       if (!url) {

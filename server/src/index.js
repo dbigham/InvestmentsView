@@ -834,6 +834,7 @@ app.get('/api/summary', async function (req, res) {
         displayName: account.displayName || null,
         loginId: account.loginId,
         beneficiary: account.beneficiary || null,
+        portalAccountId: account.portalAccountId || null,
       };
     });
 

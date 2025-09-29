@@ -7,6 +7,9 @@ export function buildQuoteUrl(symbol, provider) {
     return null;
   }
   const encoded = encodeURIComponent(normalized);
+  if (provider === 'questrade') {
+    return `https://myportal.questrade.com/investing/summary/quote/${encoded}`;
+  }
   if (provider === 'yahoo') {
     return `https://ca.finance.yahoo.com/quote/${encoded}/`;
   }

@@ -1,5 +1,6 @@
-﻿import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import { openAccountSummary } from '../utils/questrade';
 
 function normalizeLabel(value) {
   if (!value) {
@@ -296,13 +297,6 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
     }
   }, [disabled, isOpen]);
 
-  const handleToggle = () => {
-    if (disabled || !options.length) {
-      return;
-    }
-    setIsOpen((value) => !value);
-  };
-
   const handleSelect = (option) => {
     if (!option) {
       return;
@@ -379,16 +373,6 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
     }
   };
 
-  const listId = `${baseId}-list`;
-  const activeOptionId = isOpen && highlightedIndex >= 0 ? `${baseId}-option-${highlightedIndex}` : undefined;
-  const classes = ['account-selector'];
-  if (isOpen) {
-    classes.push('account-selector--open');
-  }
-  if (disabled || !options.length) {
-    classes.push('account-selector--disabled');
-  }
-
   const displayOption =
     selectedOption ||
     allOption || {
@@ -399,6 +383,34 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
     };
 
   const isTriggerDisabled = disabled || !options.length;
+
+  const handleToggle = (event) => {
+    if (isTriggerDisabled) {
+      return;
+    }
+    if (event && (event.ctrlKey || event.metaKey)) {
+      const account = displayOption.account;
+      if (account) {
+        const opened = openAccountSummary(account);
+        if (opened) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }
+    }
+    setIsOpen((value) => !value);
+  };
+
+  const listId = `${baseId}-list`;
+  const activeOptionId = isOpen && highlightedIndex >= 0 ? `${baseId}-option-${highlightedIndex}` : undefined;
+  const classes = ['account-selector'];
+  if (isOpen) {
+    classes.push('account-selector--open');
+  }
+  if (isTriggerDisabled) {
+    classes.push('account-selector--disabled');
+  }
 
   return (
     <div className={classes.join(' ')} ref={containerRef}>
@@ -480,6 +492,7 @@ AccountSelector.propTypes = {
       loginId: PropTypes.string,
       displayName: PropTypes.string,
       beneficiary: PropTypes.string,
+      portalAccountId: PropTypes.string,
     })
   ).isRequired,
   selected: PropTypes.string.isRequired,
