@@ -699,6 +699,48 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.pnl-heatmap-dialog__controls {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  background: rgba(64, 70, 86, 0.18);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(64, 70, 86, 0.28);
+  backdrop-filter: blur(6px);
+}
+
+.pnl-heatmap-dialog__control {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pnl-heatmap-dialog__control:hover,
+.pnl-heatmap-dialog__control:focus-visible {
+  color: var(--color-text-primary);
+}
+
+.pnl-heatmap-dialog__control--active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.28);
+}
+
+.pnl-heatmap-dialog__control--active:focus-visible {
+  outline: 2px solid rgba(148, 163, 184, 0.85);
+  outline-offset: 2px;
+}
+
 .pnl-heatmap-dialog__close {
   border: none;
   background: transparent;
@@ -771,6 +813,12 @@ textarea {
     height: min(90vh, 640px);
     padding: 20px;
     border-radius: 16px;
+  }
+
+  .pnl-heatmap-dialog__controls {
+    margin-top: 12px;
+    gap: 6px;
+    padding: 3px;
   }
 
   .pnl-heatmap-board__symbol {
