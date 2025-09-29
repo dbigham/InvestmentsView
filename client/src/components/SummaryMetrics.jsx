@@ -59,11 +59,14 @@ MetricRow.defaultProps = {
   onActivate: null,
 };
 
-function ActionMenu({ onCopySummary, disabled }) {
+function ActionMenu({ onCopySummary, disabled, chatUrl }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const containerRef = useRef(null);
   const generatedId = useId();
+  const normalizedChatUrl = typeof chatUrl === 'string' ? chatUrl.trim() : '';
+  const hasChatLink = Boolean(normalizedChatUrl);
+  const hasCopyAction = typeof onCopySummary === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -138,17 +141,33 @@ function ActionMenu({ onCopySummary, disabled }) {
       </button>
       {open && (
         <ul className="equity-card__action-menu-list" role="menu" id={menuId}>
-          <li role="none">
-            <button
-              type="button"
-              className="equity-card__action-menu-item"
-              role="menuitem"
-              onClick={handleCopy}
-              disabled={busy}
-            >
-              Copy to clipboard
-            </button>
-          </li>
+          {hasChatLink && (
+            <li role="none">
+              <a
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                href={normalizedChatUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setOpen(false)}
+              >
+                Chat
+              </a>
+            </li>
+          )}
+          {hasCopyAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleCopy}
+                disabled={busy}
+              >
+                Copy to clipboard
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </div>
@@ -158,11 +177,13 @@ function ActionMenu({ onCopySummary, disabled }) {
 ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
   disabled: PropTypes.bool,
+  chatUrl: PropTypes.string,
 };
 
 ActionMenu.defaultProps = {
   onCopySummary: null,
   disabled: false,
+  chatUrl: null,
 };
 
 export default function SummaryMetrics({
@@ -181,6 +202,7 @@ export default function SummaryMetrics({
   isRefreshing,
   isAutoRefreshing,
   onCopySummary,
+  chatUrl,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -236,7 +258,7 @@ export default function SummaryMetrics({
               People
             </button>
           )}
-          {onCopySummary && <ActionMenu onCopySummary={onCopySummary} />}
+          {(onCopySummary || chatUrl) && <ActionMenu onCopySummary={onCopySummary} chatUrl={chatUrl} />}
           <TimePill
             asOf={asOf}
             onRefresh={onRefresh}
@@ -331,6 +353,7 @@ SummaryMetrics.propTypes = {
   isRefreshing: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
+  chatUrl: PropTypes.string,
 };
 
 SummaryMetrics.defaultProps = {
@@ -346,4 +369,5 @@ SummaryMetrics.defaultProps = {
   isRefreshing: false,
   isAutoRefreshing: false,
   onCopySummary: null,
+  chatUrl: null,
 };

@@ -23,8 +23,9 @@ function resolveConfiguredFilePath() {
 let resolvedFilePath = resolveConfiguredFilePath();
 let cachedOverrides = {};
 let cachedPortalOverrides = {};
-let cachedOrdering = [];
+let cachedChatOverrides = {};
 let cachedSettings = {};
+let cachedOrdering = [];
 let cachedMarker = null;
 let hasLoggedError = false;
 
@@ -148,6 +149,9 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'uuid',
   'accountUuid',
   'summaryUuid',
+  'chatURL',
+  'chatUrl',
+  'showQQQDetails',
 ]);
 
 const PORTAL_ID_KEYS = [
@@ -162,6 +166,8 @@ const PORTAL_ID_KEYS = [
   'questradePortalId',
   'questradeAccountId',
 ];
+
+const CHAT_URL_KEYS = ['chatURL', 'chatUrl'];
 
 function isLikelyAccountEntryObject(entry) {
   if (!entry || typeof entry !== 'object') {
@@ -185,7 +191,40 @@ function resolvePortalCandidate(entry) {
   return null;
 }
 
-function extractEntry(namesTarget, portalTarget, settingsTarget, entry, fallbackKey, orderingTracker) {
+function applyChatOverride(target, key, url) {
+  if (!target) {
+    return;
+  }
+  if (!key || !url) {
+    return;
+  }
+  const normalizedKey = String(key).trim();
+  if (!normalizedKey) {
+    return;
+  }
+  const normalizedUrl = String(url).trim();
+  if (!normalizedUrl) {
+    return;
+  }
+  target[normalizedKey] = normalizedUrl;
+}
+
+function resolveChatCandidate(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  for (const key of CHAT_URL_KEYS) {
+    if (entry[key] !== undefined && entry[key] !== null) {
+      const candidate = String(entry[key]).trim();
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+function extractEntry(namesTarget, portalTarget, chatTarget, settingsTarget, entry, fallbackKey, orderingTracker) {
   if (entry === null || entry === undefined) {
     return;
   }
@@ -213,6 +252,7 @@ function extractEntry(namesTarget, portalTarget, settingsTarget, entry, fallback
     entry.alias;
 
   const portalCandidate = resolvePortalCandidate(entry);
+  const chatCandidate = resolveChatCandidate(entry);
 
   const resolvedKey =
     candidateKey !== undefined && candidateKey !== null
@@ -225,10 +265,12 @@ function extractEntry(namesTarget, portalTarget, settingsTarget, entry, fallback
     applyOverride(namesTarget, resolvedKey, candidateLabel);
   }
 
-  if (portalCandidate) {
-    if (resolvedKey !== undefined) {
-      applyPortalOverride(portalTarget, resolvedKey, portalCandidate);
-    }
+  if (portalCandidate && resolvedKey !== undefined) {
+    applyPortalOverride(portalTarget, resolvedKey, portalCandidate);
+  }
+
+  if (chatCandidate && resolvedKey !== undefined) {
+    applyChatOverride(chatTarget, resolvedKey, chatCandidate);
   }
 
   if (settingsTarget && resolvedKey !== undefined) {
@@ -244,18 +286,18 @@ function extractEntry(namesTarget, portalTarget, settingsTarget, entry, fallback
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
   nestedKeys.forEach((key) => {
     if (entry[key]) {
-      collectOverridesFromContainer(namesTarget, portalTarget, settingsTarget, entry[key], orderingTracker);
+      collectOverridesFromContainer(namesTarget, portalTarget, chatTarget, settingsTarget, entry[key], orderingTracker);
     }
   });
 }
 
-function collectOverridesFromContainer(namesTarget, portalTarget, settingsTarget, container, orderingTracker) {
+function collectOverridesFromContainer(namesTarget, portalTarget, chatTarget, settingsTarget, container, orderingTracker) {
   if (!container) {
     return;
   }
   if (Array.isArray(container)) {
     container.forEach((entry) => {
-      extractEntry(namesTarget, portalTarget, settingsTarget, entry, undefined, orderingTracker);
+      extractEntry(namesTarget, portalTarget, chatTarget, settingsTarget, entry, undefined, orderingTracker);
     });
     return;
   }
@@ -272,40 +314,41 @@ function collectOverridesFromContainer(namesTarget, portalTarget, settingsTarget
       return;
     }
     if (isLikelyAccountKey(key) || isLikelyAccountEntryObject(value)) {
-      extractEntry(namesTarget, portalTarget, settingsTarget, value, key, orderingTracker);
+      extractEntry(namesTarget, portalTarget, chatTarget, settingsTarget, value, key, orderingTracker);
       return;
     }
-    collectOverridesFromContainer(namesTarget, portalTarget, settingsTarget, value, orderingTracker);
+    collectOverridesFromContainer(namesTarget, portalTarget, chatTarget, settingsTarget, value, orderingTracker);
   });
 }
 
 function normalizeAccountOverrides(raw) {
   const overrides = {};
   const portalOverrides = {};
+  const chatOverrides = {};
   const settings = {};
   const orderingTracker = { list: [], seen: new Set() };
   if (!raw) {
-    return { overrides, portalOverrides, settings, ordering: orderingTracker.list };
+    return { overrides, portalOverrides, chatOverrides, settings, ordering: orderingTracker.list };
   }
   if (typeof raw !== 'object') {
-    return { overrides, portalOverrides, settings, ordering: orderingTracker.list };
+    return { overrides, portalOverrides, chatOverrides, settings, ordering: orderingTracker.list };
   }
 
   if (Array.isArray(raw)) {
-    collectOverridesFromContainer(overrides, portalOverrides, settings, raw, orderingTracker);
-    return { overrides, portalOverrides, settings, ordering: orderingTracker.list };
+    collectOverridesFromContainer(overrides, portalOverrides, chatOverrides, settings, raw, orderingTracker);
+    return { overrides, portalOverrides, chatOverrides, settings, ordering: orderingTracker.list };
   }
 
-  collectOverridesFromContainer(overrides, portalOverrides, settings, raw, orderingTracker);
+  collectOverridesFromContainer(overrides, portalOverrides, chatOverrides, settings, raw, orderingTracker);
 
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
   nestedKeys.forEach((key) => {
     if (raw[key]) {
-      collectOverridesFromContainer(overrides, portalOverrides, settings, raw[key], orderingTracker);
+      collectOverridesFromContainer(overrides, portalOverrides, chatOverrides, settings, raw[key], orderingTracker);
     }
   });
 
-  return { overrides, portalOverrides, settings, ordering: orderingTracker.list };
+  return { overrides, portalOverrides, chatOverrides, settings, ordering: orderingTracker.list };
 }
 
 function loadAccountOverrides() {
@@ -317,13 +360,15 @@ function loadAccountOverrides() {
   if (!filePath) {
     cachedOverrides = {};
     cachedPortalOverrides = {};
-    cachedOrdering = [];
+    cachedChatOverrides = {};
     cachedSettings = {};
+    cachedOrdering = [];
     cachedMarker = null;
     hasLoggedError = false;
     return {
       overrides: cachedOverrides,
       portalOverrides: cachedPortalOverrides,
+      chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
     };
@@ -331,13 +376,15 @@ function loadAccountOverrides() {
   if (!fs.existsSync(filePath)) {
     cachedOverrides = {};
     cachedPortalOverrides = {};
-    cachedOrdering = [];
+    cachedChatOverrides = {};
     cachedSettings = {};
+    cachedOrdering = [];
     cachedMarker = null;
     hasLoggedError = false;
     return {
       overrides: cachedOverrides,
       portalOverrides: cachedPortalOverrides,
+      chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
     };
@@ -348,6 +395,7 @@ function loadAccountOverrides() {
     return {
       overrides: cachedOverrides,
       portalOverrides: cachedPortalOverrides,
+      chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
     };
@@ -356,13 +404,15 @@ function loadAccountOverrides() {
   if (!content.trim()) {
     cachedOverrides = {};
     cachedPortalOverrides = {};
-    cachedOrdering = [];
+    cachedChatOverrides = {};
     cachedSettings = {};
+    cachedOrdering = [];
     cachedMarker = marker;
     hasLoggedError = false;
     return {
       overrides: cachedOverrides,
       portalOverrides: cachedPortalOverrides,
+      chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
     };
@@ -371,13 +421,15 @@ function loadAccountOverrides() {
   const normalized = normalizeAccountOverrides(parsed);
   cachedOverrides = normalized.overrides;
   cachedPortalOverrides = normalized.portalOverrides;
-  cachedOrdering = normalized.ordering || [];
+  cachedChatOverrides = normalized.chatOverrides;
   cachedSettings = normalized.settings || {};
+  cachedOrdering = normalized.ordering || [];
   cachedMarker = marker;
   hasLoggedError = false;
   return {
     overrides: cachedOverrides,
     portalOverrides: cachedPortalOverrides,
+    chatOverrides: cachedChatOverrides,
     settings: cachedSettings,
     ordering: cachedOrdering,
   };
@@ -404,6 +456,18 @@ function getAccountPortalOverrides() {
       hasLoggedError = true;
     }
     return cachedPortalOverrides || {};
+  }
+}
+
+function getAccountChatOverrides() {
+  try {
+    return loadAccountOverrides().chatOverrides;
+  } catch (error) {
+    if (!hasLoggedError) {
+      console.warn('Failed to load account overrides from ' + resolvedFilePath + ':', error.message);
+      hasLoggedError = true;
+    }
+    return cachedChatOverrides || {};
   }
 }
 
@@ -434,6 +498,7 @@ function getAccountSettings() {
 module.exports = {
   getAccountNameOverrides,
   getAccountPortalOverrides,
+  getAccountChatOverrides,
   getAccountSettings,
   getAccountOrdering,
   get accountNamesFilePath() {
