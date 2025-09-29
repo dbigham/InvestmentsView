@@ -1,6 +1,12 @@
 import PropTypes from 'prop-types';
 import TimePill from './TimePill';
-import { classifyPnL, formatMoney, formatSignedMoney, formatSignedPercent } from '../utils/formatters';
+import {
+  classifyPnL,
+  formatMoney,
+  formatNumber,
+  formatSignedMoney,
+  formatSignedPercent,
+} from '../utils/formatters';
 
 function MetricRow({ label, value, extra, tone, className }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
@@ -37,6 +43,7 @@ export default function SummaryMetrics({
   asOf,
   onRefresh,
   displayTotalEquity,
+  usdToCadRate,
 }) {
   const title = currencyOption?.title || 'Total equity';
   const totalEquity = balances?.totalEquity ?? null;
@@ -65,6 +72,14 @@ export default function SummaryMetrics({
         <div className="equity-card__heading">
           <h2 className="equity-card__title">{title}</h2>
           <p className="equity-card__value">{formatMoney(displayTotalEquity ?? totalEquity)}</p>
+          {usdToCadRate !== null && (
+            <p className="equity-card__subtext">
+              <span className="equity-card__subtext-label">USD → CAD</span>
+              <span className="equity-card__subtext-value">
+                {formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+              </span>
+            </p>
+          )}
         </div>
         <TimePill asOf={asOf} onRefresh={onRefresh} />
       </header>
@@ -143,6 +158,7 @@ SummaryMetrics.propTypes = {
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
+  usdToCadRate: PropTypes.number,
 };
 
 SummaryMetrics.defaultProps = {
@@ -151,4 +167,5 @@ SummaryMetrics.defaultProps = {
   asOf: null,
   onRefresh: null,
   displayTotalEquity: null,
+  usdToCadRate: null,
 };
