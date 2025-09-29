@@ -293,7 +293,7 @@ textarea {
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface-alt);
   color: var(--color-text-primary);
-  font-weight: 600;
+  font-weight: 400;
   font-size: 13px;
   padding: 8px 16px;
   border-radius: var(--radius-pill);
@@ -303,10 +303,12 @@ textarea {
 
 .equity-card__action-button:hover:not(:disabled),
 .equity-card__action-button:focus-visible {
-  border-color: var(--color-border-active);
-  color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgba(24, 163, 122, 0.18);
-  outline: none;
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  box-shadow: none;
+  outline: 2px solid var(--color-border-strong);
+  outline-offset: 2px;
 }
 
 .equity-card__action-button:disabled {
@@ -921,5 +923,3 @@ button.time-pill:hover .time-pill__icon {
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-
-
