@@ -10,6 +10,7 @@
   --color-text-muted: #8895a7;
   --color-border: #dfe5ef;
   --color-border-strong: #c9d3e1;
+  --color-border-active: #3f4a5d;
   --color-divider: #edf1f7;
   --color-accent: #18a37a;
   --color-accent-soft: #e3f5ed;
@@ -109,7 +110,7 @@ textarea {
 }
 
 .account-selector__trigger[aria-expanded='true'] {
-  border-color: var(--color-text-primary);
+  border-color: var(--color-border-active);
   box-shadow: 0 12px 28px rgba(27, 39, 51, 0.16);
 }
 
