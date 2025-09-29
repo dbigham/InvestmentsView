@@ -74,7 +74,6 @@ function buildCurrencyOptions(balances) {
         label: `Combined in ${currency}`,
         scope: 'combined',
         currency,
-        title: `Total equity (Combined in ${currency})`,
       });
     });
   }
@@ -86,7 +85,6 @@ function buildCurrencyOptions(balances) {
         label: currency,
         scope: 'perCurrency',
         currency,
-        title: `Total equity (${currency})`,
       });
     });
   }
