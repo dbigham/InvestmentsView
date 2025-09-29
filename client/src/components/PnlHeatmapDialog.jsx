@@ -299,7 +299,7 @@ function buildHeatmapNodes(positions, metricKey) {
     });
 
   const layout = buildTreemapLayout(sorted);
-  const gutter = 0.004;
+  const gutter = 0;
 
   return layout.map((node) => {
     const adjustedWidth = Math.max(0, node.width - gutter * 2);
