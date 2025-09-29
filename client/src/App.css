@@ -304,6 +304,24 @@ textarea {
   letter-spacing: -0.01em;
 }
 
+.equity-card__subtext {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.equity-card__subtext-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.equity-card__subtext-value {
+  font-variant-numeric: tabular-nums;
+}
+
 .time-pill {
   display: inline-flex;
   align-items: center;
