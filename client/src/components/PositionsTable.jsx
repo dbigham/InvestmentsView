@@ -169,11 +169,13 @@ function compareRows(header, direction, accessorOverride) {
 function PnlBadge({ value, percent, mode, onToggle }) {
   const tone = classifyPnL(value);
   const isPercentMode = mode === 'percent';
-  const formatted = isPercentMode
-    ? percent !== null && Number.isFinite(percent)
-      ? formatSignedPercent(percent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      : '\u2014'
-    : formatSignedMoney(value);
+  const hasPercent = percent !== null && Number.isFinite(percent);
+  const formattedPercent = hasPercent
+    ? formatSignedPercent(percent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '\u2014';
+  const formattedCurrency = formatSignedMoney(value);
+  const formatted = isPercentMode ? formattedPercent : formattedCurrency;
+  const tooltip = isPercentMode ? formattedCurrency : formattedPercent;
 
   return (
     <button
@@ -181,7 +183,7 @@ function PnlBadge({ value, percent, mode, onToggle }) {
       className={`positions-table__pnl ${tone}`}
       onClick={onToggle}
       aria-pressed={isPercentMode}
-      title={isPercentMode ? 'Show dollar values' : 'Show percentage values'}
+      title={tooltip}
     >
       {formatted}
     </button>
