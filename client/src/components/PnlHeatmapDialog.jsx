@@ -197,15 +197,29 @@ function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
 function buildHeatmapNodes(positions, metricKey) {
   const filtered = positions
     .filter((position) => isFiniteNumber(position.normalizedMarketValue) && position.normalizedMarketValue > 0)
-    .map((position) => ({
-      id: position.rowId || position.symbol || position.symbolId || String(position.id || position.symbol || Math.random()),
-      symbol: position.symbol || position.symbolId || '—',
-      description: position.description || null,
-      weight: position.normalizedMarketValue,
-      share: isFiniteNumber(position.portfolioShare) ? position.portfolioShare : null,
-      metricValue: isFiniteNumber(position[metricKey]) ? position[metricKey] : 0,
-      marketValue: position.normalizedMarketValue,
-    }));
+    .map((position) => {
+      const metricValue = isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
+      const marketValue = position.normalizedMarketValue;
+      const percentChange =
+        marketValue > 0 && isFiniteNumber(metricValue) ? (metricValue / marketValue) * 100 : 0;
+      const magnitude = Math.abs(percentChange);
+
+      return {
+        id:
+          position.rowId ||
+          position.symbol ||
+          position.symbolId ||
+          String(position.id || position.symbol || Math.random()),
+        symbol: position.symbol || position.symbolId || '—',
+        description: position.description || null,
+        weight: Math.max(magnitude, 0.0001),
+        share: isFiniteNumber(position.portfolioShare) ? position.portfolioShare : null,
+        metricValue,
+        marketValue,
+        percentChange,
+        percentMagnitude: magnitude,
+      };
+    });
 
   if (!filtered.length) {
     return [];
@@ -254,25 +268,23 @@ function buildHeatmapNodes(positions, metricKey) {
 
 function resolveTileColor(value, intensity) {
   if (value > 0) {
-    const hue = 142;
-    const saturation = 45 + intensity * 35;
-    const lightness = 82 - intensity * 40;
-    return `hsl(${hue}, ${clamp(saturation, 40, 85)}%, ${clamp(lightness, 30, 82)}%)`;
+    const saturation = 55 + intensity * 30;
+    const lightness = 74 - intensity * 40;
+    return `hsl(140, ${clamp(saturation, 50, 85)}%, ${clamp(lightness, 28, 74)}%)`;
   }
   if (value < 0) {
-    const hue = 0;
-    const saturation = 50 + intensity * 35;
-    const lightness = 82 - intensity * 40;
-    return `hsl(${hue}, ${clamp(saturation, 45, 90)}%, ${clamp(lightness, 28, 82)}%)`;
+    const saturation = 60 + intensity * 30;
+    const lightness = 74 - intensity * 42;
+    return `hsl(0, ${clamp(saturation, 55, 90)}%, ${clamp(lightness, 26, 74)}%)`;
   }
-  return 'hsl(215, 20%, 92%)';
+  return '#3b4758';
 }
 
 function resolveTextColor(intensity, value) {
   if (value === 0) {
-    return 'var(--color-text-primary)';
+    return 'rgba(255, 255, 255, 0.92)';
   }
-  if (intensity >= 0.4) {
+  if (intensity >= 0.5) {
     return 'rgba(255, 255, 255, 0.96)';
   }
   return 'var(--color-text-primary)';
@@ -311,7 +323,7 @@ export default function PnlHeatmapDialog({
     if (!nodes.length) {
       return 0;
     }
-    return nodes.reduce((acc, node) => Math.max(acc, Math.abs(node.metricValue)), 0);
+    return nodes.reduce((acc, node) => Math.max(acc, node.percentMagnitude), 0);
   }, [nodes]);
 
   const asOfDisplay = asOf ? `As of ${formatDateTime(asOf)}` : null;
@@ -349,15 +361,31 @@ export default function PnlHeatmapDialog({
           {nodes.length ? (
             <div className="pnl-heatmap-board" role="presentation">
               {nodes.map((node) => {
-                const intensity = maxMagnitude > 0 ? Math.min(1, Math.abs(node.metricValue) / maxMagnitude) : 0;
-                const backgroundColor = resolveTileColor(node.metricValue, intensity);
-                const textColor = resolveTextColor(intensity, node.metricValue);
+                const intensity = maxMagnitude > 0 ? Math.min(1, node.percentMagnitude / maxMagnitude) : 0;
+                const backgroundColor = resolveTileColor(node.percentChange, intensity);
+                const textColor = resolveTextColor(intensity, node.percentChange);
                 const pnlDisplay = formatSignedMoney(node.metricValue);
-                const shareLabel = node.share !== null ? formatPercent(node.share, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : null;
-                const changePercent = node.marketValue > 0 ? node.metricValue / node.marketValue : null;
-                const percentDisplay = isFiniteNumber(changePercent)
-                  ? formatSignedPercent(changePercent * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                const shareLabel =
+                  node.share !== null
+                    ? formatPercent(node.share, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                    : null;
+                const percentDisplay = isFiniteNumber(node.percentChange)
+                  ? formatSignedPercent(node.percentChange, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })
                   : null;
+                const areaFraction = node.width * node.height;
+                const symbolFontSize = clamp(Math.sqrt(areaFraction) * 54, 10, 28);
+                const percentFontSize = clamp(symbolFontSize - 2, 9, 24);
+                const tooltipLines = [
+                  node.description ? `${node.symbol} — ${node.description}` : node.symbol,
+                  `${metricLabel}: ${pnlDisplay}`,
+                  percentDisplay ? `Change: ${percentDisplay}` : null,
+                  shareLabel ? `Portfolio share: ${shareLabel}` : null,
+                ]
+                  .filter(Boolean)
+                  .join('\n');
 
                 return (
                   <div
@@ -371,20 +399,22 @@ export default function PnlHeatmapDialog({
                       backgroundColor,
                       color: textColor,
                     }}
-                    title={`${node.symbol}\n${metricLabel}: ${pnlDisplay}${
-                      percentDisplay ? ` (${percentDisplay})` : ''
-                    }${shareLabel ? `\nPortfolio share: ${shareLabel}` : ''}`}
+                    title={tooltipLines}
                   >
-                    <div className="pnl-heatmap-board__tile-header">
-                      <span className="pnl-heatmap-board__symbol">{node.symbol}</span>
-                      {shareLabel && <span className="pnl-heatmap-board__share">{shareLabel}</span>}
-                    </div>
-                    <div className="pnl-heatmap-board__tile-footer">
-                      <span className="pnl-heatmap-board__value">{pnlDisplay}</span>
-                      {percentDisplay && (
-                        <span className="pnl-heatmap-board__percent">{percentDisplay}</span>
-                      )}
-                    </div>
+                    <span
+                      className="pnl-heatmap-board__symbol"
+                      style={{ fontSize: `${symbolFontSize}px` }}
+                    >
+                      {node.symbol}
+                    </span>
+                    {percentDisplay && (
+                      <span
+                        className="pnl-heatmap-board__percent"
+                        style={{ fontSize: `${percentFontSize}px` }}
+                      >
+                        {percentDisplay}
+                      </span>
+                    )}
                   </div>
                 );
               })}
