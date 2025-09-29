@@ -969,17 +969,27 @@ export default function App() {
 
   const heatmapMarketValue = useMemo(() => {
     if (activeBalances && typeof activeBalances === 'object') {
+      const balanceTotalEquity = coerceNumber(activeBalances.totalEquity);
       const balanceMarketValue = coerceNumber(activeBalances.marketValue);
-      if (balanceMarketValue !== null) {
+      const resolvedBalanceValue =
+        balanceTotalEquity !== null ? balanceTotalEquity : balanceMarketValue !== null ? balanceMarketValue : null;
+
+      if (resolvedBalanceValue !== null) {
         const balanceCurrency =
           (activeCurrency && typeof activeCurrency.currency === 'string'
             ? activeCurrency.currency
             : baseCurrency) || baseCurrency;
-        return normalizeCurrencyAmount(balanceMarketValue, balanceCurrency, currencyRates, baseCurrency);
+        return normalizeCurrencyAmount(resolvedBalanceValue, balanceCurrency, currencyRates, baseCurrency);
       }
     }
     return totalMarketValue;
-  }, [activeBalances, activeCurrency, currencyRates, baseCurrency, totalMarketValue]);
+  }, [
+    activeBalances,
+    activeCurrency,
+    currencyRates,
+    baseCurrency,
+    totalMarketValue,
+  ]);
 
   const beneficiariesTotals = beneficiarySummary.totals;
   const beneficiariesMissingAccounts = beneficiarySummary.missingAccounts;
