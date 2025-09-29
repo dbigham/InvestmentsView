@@ -1,3 +1,4 @@
+import { useEffect, useId, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import TimePill from './TimePill';
 import {
@@ -58,6 +59,112 @@ MetricRow.defaultProps = {
   onActivate: null,
 };
 
+function ActionMenu({ onCopySummary, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const containerRef = useRef(null);
+  const generatedId = useId();
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const handlePointer = (event) => {
+      if (!containerRef.current) {
+        return;
+      }
+      if (containerRef.current.contains(event.target)) {
+        return;
+      }
+      setOpen(false);
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  const handleToggle = () => {
+    if (disabled || busy) {
+      return;
+    }
+    setOpen((value) => !value);
+  };
+
+  const handleCopy = async () => {
+    if (!onCopySummary || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onCopySummary();
+    } catch (error) {
+      console.error('Failed to copy summary', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  const effectiveDisabled = disabled || busy;
+  const menuId = generatedId || 'equity-card-action-menu';
+
+  return (
+    <div className="equity-card__action-menu" ref={containerRef}>
+      <button
+        type="button"
+        className="equity-card__action-button equity-card__action-button--menu"
+        onClick={handleToggle}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        disabled={effectiveDisabled}
+      >
+        {busy ? 'Working…' : 'Actions'}
+        <span className="equity-card__action-caret" aria-hidden="true" />
+      </button>
+      {open && (
+        <ul className="equity-card__action-menu-list" role="menu" id={menuId}>
+          <li role="none">
+            <button
+              type="button"
+              className="equity-card__action-menu-item"
+              role="menuitem"
+              onClick={handleCopy}
+              disabled={busy}
+            >
+              Copy to clipboard
+            </button>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
+}
+
+ActionMenu.propTypes = {
+  onCopySummary: PropTypes.func,
+  disabled: PropTypes.bool,
+};
+
+ActionMenu.defaultProps = {
+  onCopySummary: null,
+  disabled: false,
+};
+
 export default function SummaryMetrics({
   currencyOption,
   currencyOptions,
@@ -73,6 +180,7 @@ export default function SummaryMetrics({
   onShowPnlBreakdown,
   isRefreshing,
   isAutoRefreshing,
+  onCopySummary,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -121,6 +229,7 @@ export default function SummaryMetrics({
               People
             </button>
           )}
+          {onCopySummary && <ActionMenu onCopySummary={onCopySummary} />}
           <TimePill
             asOf={asOf}
             onRefresh={onRefresh}
@@ -214,6 +323,7 @@ SummaryMetrics.propTypes = {
   onShowPnlBreakdown: PropTypes.func,
   isRefreshing: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
+  onCopySummary: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -228,4 +338,5 @@ SummaryMetrics.defaultProps = {
   onShowPnlBreakdown: null,
   isRefreshing: false,
   isAutoRefreshing: false,
+  onCopySummary: null,
 };
