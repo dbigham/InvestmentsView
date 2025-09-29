@@ -283,6 +283,193 @@ textarea {
   gap: 16px;
 }
 
+.equity-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.equity-card__action-button {
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-alt);
+  color: var(--color-text-primary);
+  font-weight: 400;
+  font-size: 13px;
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.equity-card__action-button:hover:not(:disabled),
+.equity-card__action-button:focus-visible {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  box-shadow: none;
+  outline: 2px solid var(--color-border-strong);
+  outline-offset: 2px;
+}
+
+.equity-card__action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  box-shadow: none;
+}
+
+.beneficiaries-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1000;
+}
+
+.beneficiaries-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  max-width: 520px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.beneficiaries-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.beneficiaries-dialog__heading h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.beneficiaries-dialog__subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.beneficiaries-dialog__timestamp {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.beneficiaries-dialog__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.beneficiaries-dialog__close:hover,
+.beneficiaries-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.beneficiaries-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.beneficiaries-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.beneficiaries-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.beneficiaries-list__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.beneficiaries-list__name {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--color-text-primary);
+}
+
+.beneficiaries-list__accounts {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.beneficiaries-list__value {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.beneficiaries-dialog__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+
+.beneficiaries-dialog__total-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.beneficiaries-dialog__total-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.beneficiaries-dialog__notice {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.beneficiaries-dialog__empty {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
 .equity-card__heading {
   display: flex;
   flex-direction: column;
@@ -736,5 +923,3 @@ button.time-pill:hover .time-pill__icon {
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-
-

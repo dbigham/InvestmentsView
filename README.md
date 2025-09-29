@@ -22,6 +22,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 
      inside the `server` directory. Repeat for every login you want to mirror (for example, `--id=daniel` and `--id=meredith`). When omitted, `--id` defaults to `primary` and updates that entry.
    - Optionally adjust `CLIENT_ORIGIN` or `PORT` if you change the frontend host.
+   - (Optional) Copy `server/account-beneficiaries.example.json` to `server/account-beneficiaries.json` and replace the placeholder account numbers with your own. The proxy reads this file to attach household beneficiary metadata (for example "Eli Bigham" or "Philanthropy") to each account.
    - Copy `client/.env.example` to `client/.env` if you want to point the UI at a non-default proxy URL.
 
 2. Install dependencies
@@ -53,6 +54,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - Total equity card with today's and open P&L badges, cash, market value, and buying power.
 - Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
 - Manual refresh button to force a new fetch from Questrade.
+- Beneficiaries overlay that converts every account to CAD and totals holdings for each household member.
 - Automatic handling of access-token refresh and persistence of the newest refresh token.
 
 ## Notes & limitations
