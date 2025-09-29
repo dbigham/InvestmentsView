@@ -212,16 +212,16 @@ export default function SummaryMetrics({
           {usdToCadRate !== null && (
             <p className="equity-card__subtext">
               <a
-                className="equity-card__subtext-label"
+                className="equity-card__subtext-link"
                 href="https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=usd%20=%20?%20cad"
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                USD → CAD
+                <span className="equity-card__subtext-label">USD → CAD</span>
+                <span className="equity-card__subtext-value">
+                  {formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                </span>
               </a>
-              <span className="equity-card__subtext-value">
-                {formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
-              </span>
             </p>
           )}
         </div>

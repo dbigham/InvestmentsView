@@ -616,6 +616,20 @@ textarea {
   gap: 6px;
 }
 
+.equity-card__subtext-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.equity-card__subtext-link:focus,
+.equity-card__subtext-link:hover {
+  color: inherit;
+  text-decoration: none;
+}
+
 .equity-card__subtext-label {
   font-weight: 600;
   letter-spacing: 0.02em;
