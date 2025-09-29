@@ -479,8 +479,11 @@ export default function PnlHeatmapDialog({
                     ? valueDisplay ?? '—'
                     : percentDisplay ?? '—';
                 const areaFraction = node.width * node.height;
-                const symbolFontSize = clamp(Math.sqrt(areaFraction) * 64, 6, 28);
-                const percentFontSize = clamp(symbolFontSize - 2, 5, 24);
+                const areaRoot = Math.sqrt(areaFraction);
+                const symbolFontSize = clamp(areaRoot * 70, 7, 28);
+                const percentFontSize = clamp(symbolFontSize * 0.85, 6, 24);
+                const tileHeightFraction = node.height;
+                const contentGapPx = clamp(tileHeightFraction * 80, 0.5, 4);
                 const touchesLeftEdge = node.x <= epsilon;
                 const touchesTopEdge = node.y <= epsilon;
                 const touchesRightEdge = node.x + node.width >= 1 - epsilon;
@@ -519,18 +522,19 @@ export default function PnlHeatmapDialog({
                         : `calc(${toPercent(node.height)} - ${formatPx(heightAdjustmentPx)}px)`,
                       backgroundColor,
                       color: textColor,
+                      gap: `${formatPx(contentGapPx)}px`,
                     }}
                     title={tooltipLines}
                   >
                     <span
                       className="pnl-heatmap-board__symbol"
-                      style={{ fontSize: `${symbolFontSize}px` }}
+                      style={{ fontSize: `${symbolFontSize}px`, lineHeight: 1 }}
                     >
                       {node.symbol}
                     </span>
                     <span
                       className="pnl-heatmap-board__value"
-                      style={{ fontSize: `${percentFontSize}px` }}
+                      style={{ fontSize: `${percentFontSize}px`, lineHeight: 1 }}
                     >
                       {detailDisplay}
                     </span>
