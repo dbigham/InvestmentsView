@@ -336,7 +336,13 @@ async function questradeRequest(login, pathSegment, options = {}) {
   if (!login) {
     throw new Error('Questrade login context is required for API requests');
   }
-  const { method = 'GET', params, data, headers = {} } = options;
+  const {
+    method = 'GET',
+    params,
+    data,
+    headers = {},
+    expectedStatuses = [],
+  } = options;
   const tokenContext = await getTokenContext(login);
   const url = new URL(pathSegment, tokenContext.apiServer).toString();
 
@@ -375,10 +381,14 @@ async function questradeRequest(login, pathSegment, options = {}) {
       const retryResponse = await enqueueRequest(() => axios(retryConfig));
       return retryResponse.data;
     }
-    console.error(
-      'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
-      error.response ? error.response.data : error.message
-    );
+    const status = error.response ? error.response.status : null;
+    const shouldSuppressLog = expectedStatuses.includes(status);
+    if (!shouldSuppressLog) {
+      console.error(
+        'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
+        error.response ? error.response.data : error.message
+      );
+    }
     throw error;
   }
 }
@@ -400,9 +410,16 @@ async function fetchBalances(login, accountId) {
 
 async function fetchNetDeposits(login, accountId) {
   try {
-    const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/netDeposits');
+    const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/netDeposits', {
+      expectedStatuses: [404],
+    });
     return data || null;
   } catch (error) {
+    const status = error.response ? error.response.status : null;
+    const code = error.response && error.response.data ? error.response.data.code : null;
+    if (status === 404 || code === 1001) {
+      return null;
+    }
     console.warn(
       'Failed to fetch net deposits for account ' +
         accountId +
