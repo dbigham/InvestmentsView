@@ -588,6 +588,7 @@ export default function App() {
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
+  const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -784,6 +785,8 @@ export default function App() {
             sortColumn={resolvedSortColumn}
             sortDirection={resolvedSortDirection}
             onSortChange={setPositionsSort}
+            pnlMode={positionsPnlMode}
+            onPnlModeChange={setPositionsPnlMode}
           />
         )}
       </main>

@@ -137,11 +137,12 @@ function buildQuoteUrl(symbol, provider) {
   return `https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=${encoded}%20chart`;
 }
 
-function compareRows(header, direction) {
+function compareRows(header, direction, accessorOverride) {
   const multiplier = direction === 'asc' ? 1 : -1;
+  const accessor = typeof accessorOverride === 'function' ? accessorOverride : header.accessor;
   return (a, b) => {
-    const valueA = header.accessor(a);
-    const valueB = header.accessor(b);
+    const valueA = accessor(a);
+    const valueB = accessor(b);
 
     if (header.sortType === 'text') {
       const textA = (valueA ?? '').toString().toUpperCase();
@@ -199,12 +200,24 @@ PnlBadge.defaultProps = {
   percent: null,
 };
 
-function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection, onSortChange }) {
+function PositionsTable({
+  positions,
+  totalMarketValue,
+  sortColumn,
+  sortDirection,
+  onSortChange,
+  pnlMode: externalPnlMode,
+  onPnlModeChange,
+}) {
   const [sortState, setSortState] = useState(() => ({
     column: sortColumn,
     direction: sortDirection === 'asc' ? 'asc' : 'desc',
   }));
-  const [pnlMode, setPnlMode] = useState('currency');
+  const [internalPnlMode, setInternalPnlMode] = useState('currency');
+
+  const pnlMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
+    ? externalPnlMode
+    : internalPnlMode;
 
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
 
@@ -248,9 +261,17 @@ function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection
     if (!header) {
       return decoratedPositions.slice();
     }
-    const sorter = compareRows(header, sortState.direction);
+    let accessorOverride = null;
+    if (pnlMode === 'percent') {
+      if (header.key === 'dayPnl') {
+        accessorOverride = (row) => row.dayPnlPercent ?? 0;
+      } else if (header.key === 'openPnl') {
+        accessorOverride = (row) => row.openPnlPercent ?? 0;
+      }
+    }
+    const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
-  }, [decoratedPositions, sortState]);
+  }, [decoratedPositions, sortState, pnlMode]);
 
   const handleSort = useCallback((columnKey) => {
     const header = TABLE_HEADERS.find((column) => column.key === columnKey);
@@ -273,8 +294,14 @@ function PositionsTable({ positions, totalMarketValue, sortColumn, sortDirection
   }, [onSortChange]);
 
   const handleTogglePnlMode = useCallback(() => {
-    setPnlMode((mode) => (mode === 'currency' ? 'percent' : 'currency'));
-  }, []);
+    const nextMode = pnlMode === 'currency' ? 'percent' : 'currency';
+    if (typeof onPnlModeChange === 'function') {
+      onPnlModeChange(nextMode);
+    }
+    if (externalPnlMode !== 'currency' && externalPnlMode !== 'percent') {
+      setInternalPnlMode(nextMode);
+    }
+  }, [externalPnlMode, onPnlModeChange, pnlMode]);
 
   const handleRowNavigation = useCallback(
     (event, symbol) => {
@@ -438,6 +465,8 @@ PositionsTable.propTypes = {
   sortColumn: PropTypes.string,
   sortDirection: PropTypes.oneOf(['asc', 'desc']),
   onSortChange: PropTypes.func,
+  pnlMode: PropTypes.oneOf(['currency', 'percent']),
+  onPnlModeChange: PropTypes.func,
 };
 
 PositionsTable.defaultProps = {
@@ -445,6 +474,8 @@ PositionsTable.defaultProps = {
   sortColumn: 'portfolioShare',
   sortDirection: 'desc',
   onSortChange: null,
+  pnlMode: null,
+  onPnlModeChange: null,
 };
 
 export default PositionsTable;
