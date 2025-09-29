@@ -38,7 +38,7 @@ export default function SummaryMetrics({
   onRefresh,
   displayTotalEquity,
 }) {
-  const title = currencyOption?.title || 'Total equity';
+  const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
