@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import {
   formatDate,
@@ -13,6 +13,7 @@ import {
   sliceTimeline,
   buildChartPoints,
 } from '../utils/performance';
+import { logPerformanceDebug } from '../utils/performanceDebug';
 
 const CHART_WIDTH = 560;
 const CHART_HEIGHT = 260;
@@ -152,20 +153,39 @@ export default function AccountPerformanceDialog({
   loading,
   error,
   onRetry,
+  traceId,
 }) {
+  const dialogTraceId = traceId || null;
+  const hasTimeline = Array.isArray(data?.timeline);
+  const timelineLength = hasTimeline ? data.timeline.length : 0;
+  const warningsLength = Array.isArray(data?.warnings) ? data.warnings.length : 0;
+
+  useEffect(() => {
+    logPerformanceDebug('AccountPerformanceDialog props changed.', {
+      traceId: dialogTraceId,
+      loading,
+      error: error || null,
+      period,
+      hasTimeline,
+      timelinePoints: timelineLength,
+      warnings: warningsLength,
+    });
+  }, [dialogTraceId, loading, error, period, hasTimeline, timelineLength, warningsLength]);
   useEffect(() => {
     function handleKey(event) {
       if (event.key === 'Escape') {
         event.preventDefault();
+        logPerformanceDebug('Performance dialog closed via Escape key.', { traceId: dialogTraceId });
         onClose();
       }
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, [dialogTraceId, onClose]);
 
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
+      logPerformanceDebug('Performance dialog overlay clicked.', { traceId: dialogTraceId });
       onClose();
     }
   };
@@ -177,6 +197,30 @@ export default function AccountPerformanceDialog({
     return computePerformanceSummary(data.timeline, period);
   }, [data, period]);
 
+  useEffect(() => {
+    if (!summary) {
+      logPerformanceDebug('AccountPerformanceDialog summary unavailable for current selection.', {
+        traceId: dialogTraceId,
+        period,
+        hasTimeline,
+        timelinePoints: timelineLength,
+      });
+      return;
+    }
+    logPerformanceDebug('AccountPerformanceDialog summary computed.', {
+      traceId: dialogTraceId,
+      period,
+      startIndex: summary.startIndex,
+      endIndex: summary.endIndex,
+      startValue: summary.startValue,
+      endValue: summary.endValue,
+      netFlows: summary.netFlows,
+      totalPnl: summary.totalPnl,
+      percent: summary.percent,
+      cagr: summary.cagr,
+    });
+  }, [dialogTraceId, summary, period, hasTimeline, timelineLength]);
+
   const chartPoints = useMemo(() => {
     if (!data || !summary) {
       return [];
@@ -184,6 +228,26 @@ export default function AccountPerformanceDialog({
     const slice = sliceTimeline(data.timeline, summary.startIndex, summary.endIndex);
     return buildChartPoints(slice);
   }, [data, summary]);
+
+  useEffect(() => {
+    logPerformanceDebug('AccountPerformanceDialog chart points prepared.', {
+      traceId: dialogTraceId,
+      points: chartPoints.length,
+    });
+  }, [chartPoints, dialogTraceId]);
+
+  const handlePeriodChange = useCallback(
+    (event) => {
+      const nextPeriod = event.target.value;
+      logPerformanceDebug('AccountPerformanceDialog period selection changed.', {
+        traceId: dialogTraceId,
+        from: period,
+        to: nextPeriod,
+      });
+      onPeriodChange(nextPeriod);
+    },
+    [dialogTraceId, onPeriodChange, period]
+  );
 
   const totalPnlTone = classifyPnL(summary ? summary.totalPnl : 0);
   const totalPnlFormatted = summary ? formatSignedMoney(summary.totalPnl) : '—';
@@ -269,7 +333,7 @@ export default function AccountPerformanceDialog({
                     </span>
                     <label className="performance-dialog__period-select">
                       <span className="visually-hidden">Select performance period</span>
-                      <select value={period} onChange={(event) => onPeriodChange(event.target.value)}>
+                      <select value={period} onChange={handlePeriodChange}>
                         {PERFORMANCE_PERIOD_OPTIONS.map((option) => (
                           <option key={option.value} value={option.value}>
                             {option.label}
@@ -339,6 +403,7 @@ AccountPerformanceDialog.propTypes = {
     warnings: PropTypes.arrayOf(PropTypes.string),
     startDate: PropTypes.string,
     endDate: PropTypes.string,
+    traceId: PropTypes.number,
   }),
   onClose: PropTypes.func.isRequired,
   period: PropTypes.string.isRequired,
@@ -346,6 +411,7 @@ AccountPerformanceDialog.propTypes = {
   loading: PropTypes.bool,
   error: PropTypes.string,
   onRetry: PropTypes.func,
+  traceId: PropTypes.number,
 };
 
 AccountPerformanceDialog.defaultProps = {
@@ -353,4 +419,5 @@ AccountPerformanceDialog.defaultProps = {
   loading: false,
   error: null,
   onRetry: null,
+  traceId: null,
 };
