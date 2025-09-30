@@ -1505,24 +1505,94 @@ button.time-pill:hover .time-pill__icon {
   color: var(--color-text-muted);
 }
 
-.qqq-section__allocation {
+.qqq-section__model-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.qqq-section__model-meta span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.qqq-section__meta-label {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.qqq-section__evaluation {
+  border-top: 1px solid var(--color-border);
+  padding-top: 16px;
   display: grid;
-  gap: 8px;
+  gap: 12px;
   font-size: 14px;
   color: var(--color-text-secondary);
 }
 
-.qqq-section__allocation-label {
+.qqq-section__evaluation-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.qqq-section__evaluation-action {
   font-weight: 600;
+  font-size: 16px;
+  color: var(--color-text-primary);
+  text-transform: capitalize;
+}
+
+.qqq-section__evaluation-action[class*='--rebalance'] {
+  color: var(--color-accent);
+}
+
+.qqq-section__evaluation-reason {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.qqq-section__evaluation-metrics {
+  display: grid;
+  gap: 8px;
+}
+
+.qqq-section__evaluation-metric {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.qqq-section__evaluation-metric dt {
+  font-weight: 500;
   color: var(--color-text-primary);
 }
 
-.qqq-section__allocation-values {
-  display: grid;
-  gap: 4px;
-  padding-left: 12px;
+.qqq-section__evaluation-metric dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
 }
 
-.qqq-section__allocation-values span {
-  font-variant-numeric: tabular-nums;
+.qqq-section__evaluation-note {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.qqq-section__evaluation-note strong {
+  color: var(--color-text-primary);
+}
+
+.qqq-section__evaluation-message {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
 }

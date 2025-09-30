@@ -34,14 +34,22 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
         cd ../client
         npm install
 
-3. Run the backend
+3. (Optional) Install the investment model helpers
+
+       mkdir -p vendor
+       git clone https://github.com/dbigham/TQQQ.git vendor/TQQQ
+
+   The server will also honour the `INVESTMENT_MODEL_REPO` environment variable if you prefer to keep the checkout elsewhere. The
+   bridge is only required when accounts are configured with an `investmentModel`.
+
+4. Run the backend
 
         cd server
         npm run dev
 
    The server listens on port `4000` by default. It keeps access tokens in memory and saves the most recent refresh token to `server/token-store.json` so restarts do not require manual updates.
 
-4. Run the frontend
+5. Run the frontend
 
         cd client
         npm run dev
@@ -63,6 +71,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - The proxy requests `/v1/accounts`, `/v1/accounts/{id}/positions`, `/v1/accounts/{id}/balances`, and `/v1/symbols` for enrichment. Additional summary widgets (charts, watchlists, events) from the official site are intentionally omitted.
 - Combined P&L values still reflect the native currency of each position; cross-currency translation is on the enhancement list.
 - The app is read-only by design; no trade placement or fund transfers are exposed.
+- When preparing a pull request with the OpenAI `make_pr` helper, avoid adding Git submodules. The helper snapshots files but does not understand gitlink entries, so the request fails silently after a few seconds instead of creating the PR. Vendor external code directly if it needs to ship with the app.
 
 ## Building for production
 
