@@ -1473,7 +1473,7 @@ button.time-pill:hover .time-pill__icon {
 .qqq-section__series-path {
   fill: none;
   stroke: var(--color-accent);
-  stroke-width: 2.5;
+  stroke-width: 1.25;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
