@@ -1,3 +1,5 @@
+const { beginPerformanceTrace } = require('./performanceDebug');
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 let yahooFinance = null;
@@ -484,7 +486,15 @@ async function computeAccountPerformance({
   baseCurrency = 'CAD',
   endDate = new Date(),
 }) {
+  const trace = beginPerformanceTrace('computeAccountPerformance', {
+    executions: Array.isArray(executions) ? executions.length : 0,
+    baseCurrency,
+    endDate: formatDate(endDate) || null,
+  });
+
   if (!Array.isArray(executions) || executions.length === 0) {
+    trace.warn('No executions provided. Returning empty performance result.');
+    trace.end('computeAccountPerformance finished with no executions.');
     return {
       baseCurrency,
       timeline: [],
@@ -495,7 +505,13 @@ async function computeAccountPerformance({
   }
 
   const { trades, metadataBySymbol } = buildTrades(executions, symbolDetails);
+  trace.log('Built trades from executions.', {
+    trades: trades.length,
+    symbols: metadataBySymbol.size,
+  });
   if (!trades.length || metadataBySymbol.size === 0) {
+    trace.warn('No executable trades with recognizable symbols were found.');
+    trace.end('computeAccountPerformance finished without timeline data.');
     return {
       baseCurrency,
       timeline: [],
@@ -508,26 +524,47 @@ async function computeAccountPerformance({
   const firstTradeDate = trades[0].date;
   const startDate = formatDate(addDays(firstTradeDate, -1));
   const normalizedEndDate = formatDate(endDate) || trades[trades.length - 1].date;
+  trace.log('Resolved performance window.', {
+    firstTradeDate,
+    startDate,
+    endDate: normalizedEndDate,
+  });
 
   const tickers = collectTickers(metadataBySymbol);
   const currencies = collectCurrencies(metadataBySymbol);
+  trace.log('Collected tickers and currencies.', {
+    tickers: tickers.length,
+    currencies: currencies.length,
+  });
 
   const priceSeriesByTicker = {};
   // eslint-disable-next-line no-restricted-syntax
   for (const ticker of tickers) {
+    trace.log('Fetching historical price series.', { ticker });
     // eslint-disable-next-line no-await-in-loop
     priceSeriesByTicker[ticker] = await fetchHistoricalSeries(ticker, startDate, normalizedEndDate);
+    const series = priceSeriesByTicker[ticker];
+    const entries = series instanceof Map ? series.size : Array.isArray(series) ? series.length : 0;
+    trace.log('Historical price series fetched.', { ticker, entries });
   }
 
   const fxSeriesByCurrency = {};
   // eslint-disable-next-line no-restricted-syntax
   for (const currency of currencies) {
+    trace.log('Fetching FX series.', { currency, baseCurrency });
     // eslint-disable-next-line no-await-in-loop
     fxSeriesByCurrency[currency] = await fetchFxSeries(currency, baseCurrency, startDate, normalizedEndDate);
+    const series = fxSeriesByCurrency[currency];
+    const entries = series instanceof Map ? series.size : Array.isArray(series) ? series.length : 0;
+    trace.log('FX series fetched.', { currency, entries });
   }
 
   const priceMaps = buildPriceMaps(priceSeriesByTicker);
   const fxMaps = buildFxMaps(fxSeriesByCurrency);
+  trace.log('Constructed price and FX maps.', {
+    priceSeries: Object.keys(priceSeriesByTicker).length,
+    fxSeries: Object.keys(fxSeriesByCurrency).length,
+  });
 
   const { timeline, warnings } = buildTimeline({
     trades,
@@ -538,6 +575,11 @@ async function computeAccountPerformance({
     endDate: normalizedEndDate,
     baseCurrency,
   });
+  trace.log('Timeline constructed.', {
+    points: timeline.length,
+    warnings: warnings.length,
+  });
+  trace.end('computeAccountPerformance completed successfully.');
 
   return {
     baseCurrency,

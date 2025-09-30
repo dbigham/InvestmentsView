@@ -14,6 +14,7 @@ import {
   formatNumber,
   formatSignedMoney,
 } from './utils/formatters';
+import { beginPerformanceTrace, logPerformanceDebug } from './utils/performanceDebug';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -933,6 +934,7 @@ export default function App() {
     error: null,
     accountId: null,
     period: 'all',
+    traceId: null,
   });
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
@@ -1003,55 +1005,184 @@ export default function App() {
 
   const handleRequestPerformance = useCallback(() => {
     if (!selectedAccountId) {
+      logPerformanceDebug('Performance request ignored because no account is selected.');
       return;
     }
     const accountId = selectedAccountId;
+    const trace = beginPerformanceTrace('Load account performance', {
+      accountId,
+      mode: 'initial',
+    });
+    trace.log('Performance request initiated from summary metrics.');
     if (selectedPerformanceData) {
-      setPerformanceDialogState({ open: true, loading: false, error: null, accountId, period: 'all' });
+      const cachedTimeline = Array.isArray(selectedPerformanceData.timeline)
+        ? selectedPerformanceData.timeline.length
+        : 0;
+      trace.log('Using cached performance data.', {
+        timelinePoints: cachedTimeline,
+        warnings: Array.isArray(selectedPerformanceData.warnings)
+          ? selectedPerformanceData.warnings.length
+          : 0,
+        startDate: selectedPerformanceData.startDate || null,
+        endDate: selectedPerformanceData.endDate || null,
+        traceId: selectedPerformanceData.traceId || null,
+      });
+      setPerformanceDialogState({
+        open: true,
+        loading: false,
+        error: null,
+        accountId,
+        period: 'all',
+        traceId: selectedPerformanceData.traceId || trace.id,
+      });
+      trace.end('Opened performance dialog with cached data.');
       return;
     }
-    setPerformanceDialogState({ open: false, loading: true, error: null, accountId, period: 'all' });
+    trace.log('No cached data found; requesting from API.');
+    setPerformanceDialogState({
+      open: false,
+      loading: true,
+      error: null,
+      accountId,
+      period: 'all',
+      traceId: trace.id,
+    });
     getAccountPerformance(accountId)
       .then((result) => {
-        setPerformanceDataByAccount((prev) => ({ ...prev, [accountId]: result }));
-        setPerformanceDialogState({ open: true, loading: false, error: null, accountId, period: 'all' });
+        const timelineLength = Array.isArray(result?.timeline) ? result.timeline.length : 0;
+        const warningsLength = Array.isArray(result?.warnings) ? result.warnings.length : 0;
+        trace.log('Received account performance payload from API.', {
+          timelinePoints: timelineLength,
+          warnings: warningsLength,
+          startDate: result?.startDate || null,
+          endDate: result?.endDate || null,
+        });
+        const payload = { ...result, traceId: trace.id };
+        setPerformanceDataByAccount((prev) => ({ ...prev, [accountId]: payload }));
+        trace.log('Cached performance payload for account.', { accountId });
+        setPerformanceDialogState({
+          open: true,
+          loading: false,
+          error: null,
+          accountId,
+          period: 'all',
+          traceId: trace.id,
+        });
+        trace.end('Opened performance dialog after successful fetch.');
       })
       .catch((requestError) => {
         const message =
           requestError && requestError instanceof Error
             ? requestError.message
             : 'Failed to load performance data.';
-        setPerformanceDialogState({ open: true, loading: false, error: message, accountId, period: 'all' });
+        trace.error('Failed to retrieve account performance from API.', requestError);
+        setPerformanceDialogState({
+          open: true,
+          loading: false,
+          error: message,
+          accountId,
+          period: 'all',
+          traceId: trace.id,
+        });
+        trace.end('Opened performance dialog with error message.');
       });
   }, [selectedAccountId, selectedPerformanceData]);
 
   const handleClosePerformance = useCallback(() => {
+    logPerformanceDebug('Closing performance dialog.', {
+      traceId: performanceDialogState.traceId || null,
+    });
     setPerformanceDialogState((prev) => ({ ...prev, open: false }));
-  }, []);
+  }, [performanceDialogState.traceId]);
 
-  const handlePerformancePeriodChange = useCallback((nextPeriod) => {
-    setPerformanceDialogState((prev) => ({ ...prev, period: nextPeriod || 'all' }));
-  }, []);
+  const handlePerformancePeriodChange = useCallback(
+    (nextPeriod) => {
+      logPerformanceDebug('Performance period change requested.', {
+        traceId: performanceDialogState.traceId || null,
+        from: performanceDialogState.period,
+        to: nextPeriod || 'all',
+      });
+      setPerformanceDialogState((prev) => ({ ...prev, period: nextPeriod || 'all' }));
+    },
+    [performanceDialogState.period, performanceDialogState.traceId]
+  );
 
   const handleRetryPerformance = useCallback(() => {
     const targetAccountId = performanceDialogState.accountId || selectedAccountId;
     if (!targetAccountId) {
+      logPerformanceDebug('Retry ignored because no target account is available.', {
+        traceId: performanceDialogState.traceId || null,
+      });
       return;
     }
-    setPerformanceDialogState((prev) => ({ ...prev, loading: true, error: null, accountId: targetAccountId }));
+    const trace = beginPerformanceTrace('Retry account performance request', {
+      accountId: targetAccountId,
+      previousTraceId: performanceDialogState.traceId || null,
+    });
+    trace.log('Retry initiated from performance dialog.');
+    setPerformanceDialogState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+      accountId: targetAccountId,
+      traceId: trace.id,
+    }));
     getAccountPerformance(targetAccountId)
       .then((result) => {
-        setPerformanceDataByAccount((prev) => ({ ...prev, [targetAccountId]: result }));
-        setPerformanceDialogState((prev) => ({ ...prev, open: true, loading: false, error: null }));
+        const timelineLength = Array.isArray(result?.timeline) ? result.timeline.length : 0;
+        const warningsLength = Array.isArray(result?.warnings) ? result.warnings.length : 0;
+        trace.log('Received account performance payload from API.', {
+          timelinePoints: timelineLength,
+          warnings: warningsLength,
+          startDate: result?.startDate || null,
+          endDate: result?.endDate || null,
+        });
+        const payload = { ...result, traceId: trace.id };
+        setPerformanceDataByAccount((prev) => ({ ...prev, [targetAccountId]: payload }));
+        trace.log('Cached performance payload for account.', { accountId: targetAccountId });
+        setPerformanceDialogState((prev) => ({
+          ...prev,
+          open: true,
+          loading: false,
+          error: null,
+          traceId: trace.id,
+        }));
+        trace.end('Retry completed successfully.');
       })
       .catch((requestError) => {
         const message =
           requestError && requestError instanceof Error
             ? requestError.message
             : 'Failed to load performance data.';
-        setPerformanceDialogState((prev) => ({ ...prev, loading: false, error: message, open: true }));
+        trace.error('Retry failed to retrieve account performance.', requestError);
+        setPerformanceDialogState((prev) => ({
+          ...prev,
+          loading: false,
+          error: message,
+          open: true,
+          traceId: trace.id,
+        }));
+        trace.end('Retry completed with error.');
       });
-  }, [performanceDialogState.accountId, selectedAccountId]);
+  }, [performanceDialogState.accountId, performanceDialogState.traceId, selectedAccountId]);
+
+  useEffect(() => {
+    logPerformanceDebug('Performance dialog state updated.', {
+      traceId: performanceDialogState.traceId || null,
+      open: performanceDialogState.open,
+      loading: performanceDialogState.loading,
+      error: performanceDialogState.error || null,
+      accountId: performanceDialogState.accountId || null,
+      period: performanceDialogState.period,
+    });
+  }, [
+    performanceDialogState.traceId,
+    performanceDialogState.open,
+    performanceDialogState.loading,
+    performanceDialogState.error,
+    performanceDialogState.accountId,
+    performanceDialogState.period,
+  ]);
 
   const performanceButtonLoading = useMemo(() => {
     if (!selectedAccountId) {
@@ -1716,6 +1847,7 @@ export default function App() {
           loading={performanceDialogState.loading}
           error={performanceDialogState.error}
           onRetry={handleRetryPerformance}
+          traceId={performanceDialogState.traceId}
         />
       )}
       {pnlBreakdownMode && (

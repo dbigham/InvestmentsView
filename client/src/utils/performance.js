@@ -1,3 +1,5 @@
+import { logPerformanceDebug } from './performanceDebug';
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_YEAR = 365.25;
 
@@ -143,12 +145,27 @@ function computeXirr(cashFlows) {
 }
 
 export function computePerformanceSummary(timeline, period) {
-  const window = getTimelineWindow(timeline, period);
+  const normalizedPeriod = period || 'all';
+  if (!Array.isArray(timeline) || timeline.length === 0) {
+    logPerformanceDebug('computePerformanceSummary skipped: empty timeline.', {
+      period: normalizedPeriod,
+    });
+    return null;
+  }
+  const window = getTimelineWindow(timeline, normalizedPeriod);
   if (!window) {
+    logPerformanceDebug('computePerformanceSummary could not resolve a window.', {
+      period: normalizedPeriod,
+    });
     return null;
   }
   const { startIndex, endIndex } = window;
   if (startIndex > endIndex) {
+    logPerformanceDebug('computePerformanceSummary received an invalid index range.', {
+      period: normalizedPeriod,
+      startIndex,
+      endIndex,
+    });
     return null;
   }
   const startValue = startIndex > 0 ? Number(timeline[startIndex - 1].value) || 0 : 0;
@@ -156,7 +173,12 @@ export function computePerformanceSummary(timeline, period) {
   const { total: netFlows, positive: positiveFlows } = sumFlows(timeline, startIndex, endIndex);
   const totalPnl = endValue - startValue - netFlows;
   const invested = startValue + positiveFlows;
-  const percent = invested > 0 ? (totalPnl / invested) * 100 : startValue !== 0 ? (totalPnl / Math.abs(startValue)) * 100 : null;
+  const percent =
+    invested > 0
+      ? (totalPnl / invested) * 100
+      : startValue !== 0
+      ? (totalPnl / Math.abs(startValue)) * 100
+      : null;
 
   const startDate = parseDate(timeline[startIndex].date);
   const endDate = parseDate(timeline[endIndex].date);
@@ -182,7 +204,7 @@ export function computePerformanceSummary(timeline, period) {
     }
   }
 
-  return {
+  const summary = {
     startIndex,
     endIndex,
     startValue,
@@ -194,6 +216,20 @@ export function computePerformanceSummary(timeline, period) {
     startDate: startDate ? toDateKey(startDate) : null,
     endDate: endDate ? toDateKey(endDate) : null,
   };
+
+  logPerformanceDebug('computePerformanceSummary completed.', {
+    period: normalizedPeriod,
+    startIndex,
+    endIndex,
+    startValue,
+    endValue,
+    netFlows,
+    totalPnl,
+    percent,
+    cagr,
+  });
+
+  return summary;
 }
 
 export function sliceTimeline(timeline, startIndex, endIndex) {

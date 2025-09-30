@@ -17,6 +17,7 @@ const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel } = require('./investmentModel');
 const { computeAccountPerformance, MissingDependencyError } = require('./accountPerformance');
+const { beginPerformanceTrace } = require('./performanceDebug');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -954,7 +955,12 @@ app.get('/api/qqq-temperature', async function (req, res) {
 
 app.get('/api/accounts/:accountId/performance', async function (req, res) {
   const { accountId } = req.params;
+  const trace = beginPerformanceTrace('GET /api/accounts/:accountId/performance', {
+    accountId,
+  });
   if (!accountId || accountId === 'all') {
+    trace.warn('Account performance requested without a specific account.');
+    trace.end('Responded with 400 for invalid account selection.');
     res.status(400).send('Account performance is only available for a single account.');
     return;
   }
@@ -964,15 +970,25 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
   const accountNumber = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
   const login = loginId ? loginsById[loginId] : null;
   if (!login || !accountNumber) {
+    trace.warn('Account lookup failed.', { loginId, accountNumber });
+    trace.end('Responded with 404 because account was not found.');
     res.status(404).send('Account not found.');
     return;
   }
 
   try {
+    trace.log('Fetching executions and balances from Questrade.', {
+      loginId: login.id,
+      accountNumber,
+    });
     const [executions, balances] = await Promise.all([
       fetchExecutions(login, accountNumber),
       fetchBalances(login, accountNumber).catch(() => null),
     ]);
+    trace.log('Fetched upstream data.', {
+      executions: Array.isArray(executions) ? executions.length : 0,
+      balancesAvailable: Boolean(balances),
+    });
     const rawSymbolIds = executions
       .map((execution) => {
         if (!execution) {
@@ -1002,12 +1018,32 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
           .filter((symbolId) => symbolId !== null)
       )
     );
+    trace.log('Normalized symbol identifiers from executions.', {
+      rawSymbols: rawSymbolIds.length,
+      uniqueSymbols: numericSymbolIds.length,
+    });
     const symbolDetails = numericSymbolIds.length ? await fetchSymbolsDetails(login, numericSymbolIds) : {};
+    if (numericSymbolIds.length) {
+      trace.log('Fetched symbol metadata.', {
+        symbolsRequested: numericSymbolIds.length,
+        symbolsResolved: Object.keys(symbolDetails || {}).length,
+      });
+    } else {
+      trace.log('No symbol metadata required for executions.');
+    }
     const baseCurrency = resolveBaseCurrencyFromBalances(balances, 'CAD');
+    trace.log('Resolved base currency for performance.', { baseCurrency });
     const performance = await computeAccountPerformance({
       executions,
       symbolDetails,
       baseCurrency,
+    });
+
+    trace.log('Computed account performance timeline.', {
+      timelinePoints: Array.isArray(performance.timeline) ? performance.timeline.length : 0,
+      warnings: Array.isArray(performance.warnings) ? performance.warnings.length : 0,
+      startDate: performance.startDate,
+      endDate: performance.endDate,
     });
 
     res.json({
@@ -1019,17 +1055,24 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
       timeline: performance.timeline,
       warnings: performance.warnings,
     });
+    trace.end('Performance response delivered successfully.');
   } catch (error) {
     if (error && error.code === 'MISSING_DEPENDENCY') {
+      trace.error('Missing dependency while computing account performance.', error);
+      trace.end('Responded with 503 due to missing dependency.');
       res.status(503).json({ error: error.message });
       return;
     }
     const status = error && error.response && error.response.status;
     if (status === 404) {
+      trace.warn('Upstream returned 404 while fetching account data.', { status });
+      trace.end('Responded with 404 because upstream account was missing.');
       res.status(404).send('Account not found.');
       return;
     }
+    trace.error('Failed to build performance for account.', error);
     console.error('Failed to build performance for account', accountId, error && error.message ? error.message : error);
+    trace.end('Responded with 500 due to performance failure.');
     res.status(500).send('Failed to build account performance.');
   }
 });
