@@ -1000,6 +1000,12 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
         if (execution.symbolID !== undefined && execution.symbolID !== null) {
           return execution.symbolID;
         }
+        if (execution.securityId !== undefined && execution.securityId !== null) {
+          return execution.securityId;
+        }
+        if (execution.securityID !== undefined && execution.securityID !== null) {
+          return execution.securityID;
+        }
         return null;
       })
       .filter((symbolId) => symbolId !== null && symbolId !== undefined);
