@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import TimePill from './TimePill';
 import {
@@ -12,6 +12,7 @@ import {
 function MetricRow({ label, value, extra, tone, className, onActivate }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   const interactive = typeof onActivate === 'function';
+  const isPrimitiveValue = typeof value === 'string' || typeof value === 'number';
 
   const handleKeyDown = (event) => {
     if (!interactive) {
@@ -33,11 +34,17 @@ function MetricRow({ label, value, extra, tone, className, onActivate }) {
       }
     : {};
 
+  const displayValue = isPrimitiveValue ? (
+    <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
+  ) : (
+    <span className="equity-card__metric-node">{value}</span>
+  );
+
   return (
     <div className={rowClass} {...interactiveProps}>
       <dt>{label}</dt>
       <dd>
-        <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
+        {displayValue}
         {extra && <span className="equity-card__metric-extra">{extra}</span>}
       </dd>
     </div>
@@ -46,7 +53,7 @@ function MetricRow({ label, value, extra, tone, className, onActivate }) {
 
 MetricRow.propTypes = {
   label: PropTypes.string.isRequired,
-  value: PropTypes.string.isRequired,
+  value: PropTypes.oneOfType([PropTypes.string, PropTypes.number, PropTypes.node]).isRequired,
   extra: PropTypes.node,
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
   className: PropTypes.string,
@@ -205,6 +212,9 @@ export default function SummaryMetrics({
   chatUrl,
   showQqqTemperature,
   qqqSummary,
+  onShowPerformance,
+  performanceLoading,
+  hasPerformanceData,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -215,6 +225,25 @@ export default function SummaryMetrics({
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
   const totalTone = classifyPnL(pnl?.totalPnl);
+
+  const performanceButton = useMemo(() => {
+    if (typeof onShowPerformance !== 'function') {
+      return null;
+    }
+    const label = hasPerformanceData ? 'View performance' : 'Calculate performance';
+    const buttonLabel = performanceLoading ? 'Calculating…' : label;
+    return (
+      <button
+        type="button"
+        className="equity-card__metric-button"
+        onClick={onShowPerformance}
+        disabled={performanceLoading}
+      >
+        {performanceLoading && <span className="equity-card__metric-button-icon" aria-hidden="true" />}
+        <span>{buttonLabel}</span>
+      </button>
+    );
+  }, [onShowPerformance, hasPerformanceData, performanceLoading]);
 
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
@@ -355,7 +384,11 @@ export default function SummaryMetrics({
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
-          <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          <MetricRow
+            label="Total P&L"
+            value={performanceButton || formattedTotal}
+            tone={performanceButton ? 'neutral' : totalTone}
+          />
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
@@ -414,6 +447,9 @@ SummaryMetrics.propTypes = {
     date: PropTypes.string,
     message: PropTypes.string,
   }),
+  onShowPerformance: PropTypes.func,
+  performanceLoading: PropTypes.bool,
+  hasPerformanceData: PropTypes.bool,
 };
 
 SummaryMetrics.defaultProps = {
@@ -432,4 +468,7 @@ SummaryMetrics.defaultProps = {
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
+  onShowPerformance: null,
+  performanceLoading: false,
+  hasPerformanceData: false,
 };
