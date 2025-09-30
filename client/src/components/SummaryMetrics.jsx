@@ -226,6 +226,11 @@ export default function SummaryMetrics({
     dayPercentValue !== null && Number.isFinite(dayPercentValue)
       ? formatSignedPercent(dayPercentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : null;
+  const openPercentValue = safeTotalEquity ? ((pnl?.openPnl || 0) / safeTotalEquity) * 100 : null;
+  const openPercent =
+    openPercentValue !== null && Number.isFinite(openPercentValue)
+      ? formatSignedPercent(openPercentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : null;
 
   return (
     <section className="equity-card">
@@ -323,6 +328,7 @@ export default function SummaryMetrics({
           <MetricRow
             label="Open P&L"
             value={formattedOpen}
+            extra={openPercent ? `(${openPercent})` : null}
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
