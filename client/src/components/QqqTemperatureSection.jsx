@@ -4,7 +4,7 @@ import { formatDate, formatNumber, formatPercent } from '../utils/formatters';
 
 const CHART_WIDTH = 720;
 const CHART_HEIGHT = 260;
-const PADDING = { top: 24, right: 0, bottom: 13, left: 0 };
+const PADDING = { top: 12, right: 0, bottom: 9, left: 0 };
 
 const TIMEFRAME_OPTIONS = [
   { value: '1M', label: '1 month' },
