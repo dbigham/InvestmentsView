@@ -220,12 +220,39 @@ export default function SummaryMetrics({
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
   const formattedTotal = formatSignedMoney(pnl?.totalPnl ?? null);
 
-  const safeTotalEquity = typeof totalEquity === 'number' && totalEquity !== 0 ? totalEquity : null;
-  const dayPercentValue = safeTotalEquity ? ((pnl?.dayPnl || 0) / safeTotalEquity) * 100 : null;
-  const dayPercent =
-    dayPercentValue !== null && Number.isFinite(dayPercentValue)
-      ? formatSignedPercent(dayPercentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      : null;
+  const safeTotalEquity = Number.isFinite(totalEquity) ? totalEquity : null;
+
+  const formatPnlPercent = (change) => {
+    if (!Number.isFinite(change)) {
+      if (change === 0) {
+        return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return null;
+    }
+
+    if (change === 0) {
+      return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    if (safeTotalEquity === null) {
+      return null;
+    }
+
+    const baseValue = safeTotalEquity - change;
+    if (!Number.isFinite(baseValue) || baseValue === 0) {
+      return null;
+    }
+
+    const percentValue = (change / baseValue) * 100;
+    if (!Number.isFinite(percentValue)) {
+      return null;
+    }
+
+    return formatSignedPercent(percentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const dayPercent = formatPnlPercent(pnl?.dayPnl);
+  const openPercent = formatPnlPercent(pnl?.openPnl);
 
   return (
     <section className="equity-card">
@@ -323,6 +350,7 @@ export default function SummaryMetrics({
           <MetricRow
             label="Open P&L"
             value={formattedOpen}
+            extra={openPercent ? `(${openPercent})` : null}
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
