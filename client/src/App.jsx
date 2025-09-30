@@ -1333,15 +1333,6 @@ export default function App() {
     fetchQqqTemperature,
   ]);
   const qqqSummary = useMemo(() => {
-    if (qqqLoading) {
-      return { status: 'loading' };
-    }
-    if (qqqError) {
-      return {
-        status: 'error',
-        message: qqqError.message || 'Unable to load QQQ temperature data',
-      };
-    }
     const latestTemperature = Number(qqqData?.latest?.temperature);
     const latestDate =
       typeof qqqData?.latest?.date === 'string' && qqqData.latest.date.trim()
@@ -1349,16 +1340,30 @@ export default function App() {
         : typeof qqqData?.rangeEnd === 'string'
         ? qqqData.rangeEnd
         : null;
+
     if (Number.isFinite(latestTemperature)) {
       return {
-        status: 'ready',
+        status: qqqLoading ? 'refreshing' : 'ready',
         temperature: latestTemperature,
         date: latestDate,
       };
     }
+
+    if (qqqError) {
+      return {
+        status: 'error',
+        message: qqqError.message || 'Unable to load QQQ temperature data',
+      };
+    }
+
+    if (qqqLoading) {
+      return { status: 'loading' };
+    }
+
     if (qqqData) {
       return { status: 'error', message: 'QQQ temperature unavailable' };
     }
+
     return { status: 'loading' };
   }, [qqqData, qqqLoading, qqqError]);
 

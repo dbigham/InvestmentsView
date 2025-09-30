@@ -282,7 +282,8 @@ export default function SummaryMetrics({
               <span className="equity-card__subtext-value">
                 {(() => {
                   const status = qqqSummary?.status || 'loading';
-                  if (status === 'ready' && Number.isFinite(qqqSummary?.temperature)) {
+                  const hasTemperature = Number.isFinite(qqqSummary?.temperature);
+                  if ((status === 'ready' || status === 'refreshing') && hasTemperature) {
                     const formattedTemp = formatNumber(qqqSummary.temperature, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
