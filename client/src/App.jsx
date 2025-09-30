@@ -978,6 +978,29 @@ export default function App() {
     [setActiveAccountId, setSelectedAccountState]
   );
 
+  const selectedAccountInfo = useMemo(() => {
+    if (!selectedAccount || selectedAccount === 'all') {
+      return null;
+    }
+    return (
+      accounts.find((account) => {
+        if (!account) {
+          return false;
+        }
+        const accountId = typeof account.id === 'string' ? account.id : null;
+        const accountNumber = typeof account.number === 'string' ? account.number : null;
+        return accountId === selectedAccount || accountNumber === selectedAccount;
+      }) || null
+    );
+  }, [accounts, selectedAccount]);
+  const selectedAccountId = selectedAccountInfo ? selectedAccountInfo.id : null;
+  const selectedPerformanceData = useMemo(() => {
+    if (!selectedAccountId) {
+      return null;
+    }
+    return performanceDataByAccount[selectedAccountId] || null;
+  }, [performanceDataByAccount, selectedAccountId]);
+
   const handleRequestPerformance = useCallback(() => {
     if (!selectedAccountId) {
       return;
@@ -1030,28 +1053,6 @@ export default function App() {
       });
   }, [performanceDialogState.accountId, selectedAccountId]);
 
-  const selectedAccountInfo = useMemo(() => {
-    if (!selectedAccount || selectedAccount === 'all') {
-      return null;
-    }
-    return (
-      accounts.find((account) => {
-        if (!account) {
-          return false;
-        }
-        const accountId = typeof account.id === 'string' ? account.id : null;
-        const accountNumber = typeof account.number === 'string' ? account.number : null;
-        return accountId === selectedAccount || accountNumber === selectedAccount;
-      }) || null
-    );
-  }, [accounts, selectedAccount]);
-  const selectedAccountId = selectedAccountInfo ? selectedAccountInfo.id : null;
-  const selectedPerformanceData = useMemo(() => {
-    if (!selectedAccountId) {
-      return null;
-    }
-    return performanceDataByAccount[selectedAccountId] || null;
-  }, [performanceDataByAccount, selectedAccountId]);
   const performanceButtonLoading = useMemo(() => {
     if (!selectedAccountId) {
       return false;
