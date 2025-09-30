@@ -571,10 +571,12 @@ export default function PnlHeatmapDialog({
                   (touchesLeftEdge ? 0 : halfTileGapPx) + (touchesRightEdge ? 0 : halfTileGapPx);
                 const heightAdjustmentPx =
                   (touchesTopEdge ? 0 : halfTileGapPx) + (touchesBottomEdge ? 0 : halfTileGapPx);
+                const pnlLine = percentDisplay
+                  ? `${metricLabel}: ${pnlDisplay} (${percentDisplay})`
+                  : `${metricLabel}: ${pnlDisplay}`;
                 const tooltipLines = [
                   node.description ? `${node.symbol} — ${node.description}` : node.symbol,
-                  `${metricLabel}: ${pnlDisplay}`,
-                  percentDisplay ? `Change: ${percentDisplay}` : null,
+                  pnlLine,
                   priceLine,
                   shareLabel ? `Portfolio share: ${shareLabel}` : null,
                 ]
