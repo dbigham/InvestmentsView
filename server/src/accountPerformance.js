@@ -166,30 +166,68 @@ async function fetchFxSeries(currency, baseCurrency, startDate, endDate) {
   return series;
 }
 
+function resolveDirection(rawSide) {
+  const side = String(rawSide || '').toLowerCase();
+  if (!side) {
+    return 0;
+  }
+  if (side.includes('buy') || side.includes('cover')) {
+    return 1;
+  }
+  if (side.includes('sell') || side.includes('short')) {
+    return -1;
+  }
+  return 0;
+}
+
+function pickFirstNumber(source, fields, fallback = null) {
+  if (!source) {
+    return fallback;
+  }
+  for (const field of fields) {
+    if (!field) {
+      continue;
+    }
+    const value = source[field];
+    const numeric = safeNumber(value, null);
+    if (Number.isFinite(numeric) && numeric !== null) {
+      return numeric;
+    }
+  }
+  return fallback;
+}
+
+function resolveExecutionTime(execution) {
+  return (
+    parseDateTime(execution && (execution.executionTime || execution.transactTime || execution.tradeDate)) ||
+    parseDateTime(execution && execution.transactionTime)
+  );
+}
+
 function normalizeExecution(execution) {
-  const dateTime = parseDateTime(execution && execution.executionTime);
+  const dateTime = resolveExecutionTime(execution);
   const date = formatDate(dateTime);
   if (!date) {
     return null;
   }
-  const side = String(execution && execution.side ? execution.side : '').toLowerCase();
-  let direction = 0;
-  if (side === 'buy' || side === 'cover') {
-    direction = 1;
-  } else if (side === 'sell' || side === 'short') {
-    direction = -1;
-  }
+  const direction = resolveDirection(execution && execution.side);
   if (direction === 0) {
     return null;
   }
-  const quantity = safeNumber(execution.quantity || execution.execShares || execution.enteredQuantity, 0);
+  const quantity = pickFirstNumber(execution, ['quantity', 'execShares', 'enteredQuantity', 'filledQuantity'], 0);
   if (quantity === 0) {
     return null;
   }
-  const price = safeNumber(execution.price || execution.avgPrice || execution.averagePrice || execution.executionPrice, 0);
+  const price = pickFirstNumber(execution, ['price', 'avgPrice', 'averagePrice', 'executionPrice'], 0);
   const gross = Math.abs(price * quantity);
-  const netAmount = safeNumber(execution.netAmount, gross);
-  const amount = Math.abs(netAmount) > 0 ? Math.abs(netAmount) : gross;
+  const netAmount = pickFirstNumber(
+    execution,
+    ['netAmount', 'netCash', 'netAmountInAccountCurrency', 'netAmountCad'],
+    null
+  );
+  const signedContribution =
+    netAmount !== null && netAmount !== 0 ? netAmount : direction > 0 ? -gross : gross;
+  const amount = Math.abs(signedContribution) > 0 ? Math.abs(signedContribution) : gross;
   return {
     symbolId: execution.symbolId || execution.symbolID || execution.symbol || null,
     symbol: execution.symbol || null,
@@ -198,6 +236,7 @@ function normalizeExecution(execution) {
     direction,
     quantity,
     amount,
+    contribution: signedContribution,
   };
 }
 
@@ -235,7 +274,12 @@ function buildTrades(executions, symbolDetails) {
       currency: meta.currency,
       ticker: meta.ticker,
       quantityChange: normalized.direction * normalized.quantity,
-      contribution: normalized.direction > 0 ? normalized.amount : -normalized.amount,
+      contribution:
+        normalized.contribution !== null && normalized.contribution !== undefined
+          ? normalized.contribution
+          : normalized.direction > 0
+            ? -normalized.amount
+            : normalized.amount,
     });
   });
   trades.sort((a, b) => {
