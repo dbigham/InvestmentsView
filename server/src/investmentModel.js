@@ -16,7 +16,7 @@ class InvestmentModelError extends Error {
 }
 
 const SCRIPT_NAME = 'strategy_tqqq_reserve.py';
-const DEFAULT_REPOSITORY_PATH = path.join(__dirname, '..', 'vendor', 'TQQQ');
+const DEFAULT_REPOSITORY_PATH = path.join(__dirname, '..', '..', 'vendor', 'TQQQ');
 
 function normalizePath(input) {
   if (!input || typeof input !== 'string') {
