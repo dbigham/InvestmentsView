@@ -588,6 +588,275 @@ textarea {
   color: var(--color-text-secondary);
 }
 
+.performance-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.performance-dialog {
+  background: var(--color-surface);
+  border-radius: 20px;
+  border: 1px solid var(--color-border);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+  width: min(840px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.performance-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 28px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.performance-dialog__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.performance-dialog__heading h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.performance-dialog__subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.performance-dialog__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.performance-dialog__close:hover,
+.performance-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.performance-dialog__body {
+  padding: 24px 28px 32px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.performance-dialog__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-alt);
+  border-radius: 14px;
+  padding: 12px 16px;
+}
+
+.performance-dialog__status--error {
+  color: var(--color-negative);
+  background: rgba(255, 101, 101, 0.12);
+}
+
+.performance-dialog__status--empty {
+  color: var(--color-text-muted);
+  background: var(--color-surface-alt);
+}
+
+.performance-dialog__retry {
+  margin-top: 12px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font-size: 13px;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.performance-dialog__retry:hover,
+.performance-dialog__retry:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.performance-dialog__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.performance-dialog__metric {
+  min-width: 220px;
+}
+
+.performance-dialog__metric dt {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.performance-dialog__metric dd {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.performance-dialog__metric-value {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.performance-dialog__metric-value--positive {
+  color: var(--color-accent);
+}
+
+.performance-dialog__metric-value--negative {
+  color: var(--color-negative);
+}
+
+.performance-dialog__metric-value--neutral {
+  color: var(--color-text-primary);
+}
+
+.performance-dialog__metric-extra {
+  font-size: 16px;
+  color: var(--color-text-muted);
+}
+
+.performance-dialog__metric--cagr dd {
+  gap: 14px;
+}
+
+.performance-dialog__period-select select {
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  padding: 6px 12px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.performance-dialog__period-select select:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.performance-dialog__details {
+  margin: 0;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.performance-dialog__details-row dt {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.performance-dialog__details-row dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.performance-dialog__chart {
+  width: 100%;
+}
+
+.performance-dialog__chart--empty {
+  border: 1px dashed var(--color-border);
+  border-radius: 16px;
+  padding: 32px;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.performance-dialog__chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.performance-dialog__chart-surface {
+  fill: var(--color-surface-alt);
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+
+.performance-dialog__chart-line {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+
+.performance-dialog__chart-marker {
+  fill: var(--color-accent-soft);
+  stroke: var(--color-accent);
+  stroke-width: 1.5;
+}
+
+.performance-dialog__chart-marker--latest {
+  fill: var(--color-accent);
+}
+
+.performance-dialog__chart-guide {
+  stroke: var(--color-border);
+  stroke-dasharray: 4 4;
+}
+
+.performance-dialog__chart-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.performance-dialog__warnings {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.performance-dialog__warnings ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
 .equity-card__heading {
   display: flex;
   flex-direction: column;
@@ -795,6 +1064,48 @@ textarea {
 
 .equity-card__metric-value--neutral {
   color: var(--color-text-primary);
+}
+
+.equity-card__metric-node {
+  display: inline-flex;
+  align-items: center;
+}
+
+.equity-card__metric-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+}
+
+.equity-card__metric-button:hover:not(:disabled),
+.equity-card__metric-button:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.equity-card__metric-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.equity-card__metric-button-icon {
+  width: 14px;
+  height: 14px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px 14px;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M0%200h24v24H0Z%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M17.65%206.35A8%208%200%201%200%2019.73%2014h-2.08A6%206%200%201%201%2012%206a5.92%205.92%200%200%201%204.22%201.78L13%2011h7V4Z%22%20fill%3D%22%236b7787%22%2F%3E%3C%2Fsvg%3E");
+  animation: time-pill-spin 1s linear infinite;
 }
 
 .equity-card__metric-extra {

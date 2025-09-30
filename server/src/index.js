@@ -16,6 +16,7 @@ const {
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel } = require('./investmentModel');
+const { computeAccountPerformance, MissingDependencyError } = require('./accountPerformance');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -539,6 +540,43 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+async function fetchExecutions(login, accountId, options = {}) {
+  const results = [];
+  const params = {};
+  const { startTime, endTime } = options;
+  if (startTime) {
+    const start = new Date(startTime);
+    if (!Number.isNaN(start.getTime())) {
+      params.startTime = start.toISOString();
+    }
+  }
+  if (endTime) {
+    const end = new Date(endTime);
+    if (!Number.isNaN(end.getTime())) {
+      params.endTime = end.toISOString();
+    }
+  }
+
+  let nextPath = null;
+
+  do {
+    const path = nextPath || '/v1/accounts/' + accountId + '/executions';
+    const requestOptions = nextPath ? {} : { params };
+    // eslint-disable-next-line no-await-in-loop
+    const data = await questradeRequest(login, path, requestOptions);
+    const entries = Array.isArray(data && data.executions) ? data.executions : [];
+    entries.forEach((entry) => results.push(entry));
+    const next = data && data.next ? String(data.next).trim() : '';
+    if (next) {
+      nextPath = next;
+    } else {
+      nextPath = null;
+    }
+  } while (nextPath);
+
+  return results;
+}
+
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -679,6 +717,32 @@ function summarizeAccountCombinedBalances(balanceEntry) {
     return null;
   }
   return combined;
+}
+
+function resolveBaseCurrencyFromBalances(balanceEntry, fallback = 'CAD') {
+  if (!balanceEntry || typeof balanceEntry !== 'object') {
+    return fallback;
+  }
+  const combinedBalances = Array.isArray(balanceEntry.combinedBalances) ? balanceEntry.combinedBalances : [];
+  if (!combinedBalances.length) {
+    return fallback;
+  }
+  let best = null;
+  combinedBalances.forEach((balance) => {
+    if (!balance || !balance.currency) {
+      return;
+    }
+    const equity = pickNumericValue(balance, 'totalEquity');
+    const marketValue = pickNumericValue(balance, 'marketValue');
+    const score = Number.isFinite(equity) ? equity : Number.isFinite(marketValue) ? marketValue : null;
+    if (!Number.isFinite(score)) {
+      return;
+    }
+    if (!best || score > best.score) {
+      best = { currency: String(balance.currency).toUpperCase(), score };
+    }
+  });
+  return best ? best.currency : fallback;
 }
 
 function finalizeBalances(summary) {
@@ -880,6 +944,77 @@ app.get('/api/qqq-temperature', async function (req, res) {
     }
     const message = error && error.message ? error.message : 'Unknown error';
     res.status(500).json({ message: 'Failed to load QQQ temperature data', details: message });
+  }
+});
+
+app.get('/api/accounts/:accountId/performance', async function (req, res) {
+  const { accountId } = req.params;
+  if (!accountId || accountId === 'all') {
+    res.status(400).send('Account performance is only available for a single account.');
+    return;
+  }
+
+  const parts = String(accountId).split(':');
+  const loginId = parts.length > 1 ? parts[0] : null;
+  const accountNumber = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
+  const login = loginId ? loginsById[loginId] : null;
+  if (!login || !accountNumber) {
+    res.status(404).send('Account not found.');
+    return;
+  }
+
+  try {
+    const [executions, balances] = await Promise.all([
+      fetchExecutions(login, accountNumber),
+      fetchBalances(login, accountNumber).catch(() => null),
+    ]);
+    const rawSymbolIds = executions
+      .map((execution) => execution && execution.symbolId)
+      .filter((symbolId) => symbolId !== null && symbolId !== undefined);
+    const numericSymbolIds = Array.from(
+      new Set(
+        rawSymbolIds
+          .map((symbolId) => {
+            if (typeof symbolId === 'number') {
+              return symbolId;
+            }
+            if (typeof symbolId === 'string' && /^\d+$/.test(symbolId)) {
+              return Number(symbolId);
+            }
+            return null;
+          })
+          .filter((symbolId) => symbolId !== null)
+      )
+    );
+    const symbolDetails = numericSymbolIds.length ? await fetchSymbolsDetails(login, numericSymbolIds) : {};
+    const baseCurrency = resolveBaseCurrencyFromBalances(balances, 'CAD');
+    const performance = await computeAccountPerformance({
+      executions,
+      symbolDetails,
+      baseCurrency,
+    });
+
+    res.json({
+      accountId,
+      baseCurrency: performance.baseCurrency,
+      generatedAt: new Date().toISOString(),
+      startDate: performance.startDate,
+      endDate: performance.endDate,
+      timeline: performance.timeline,
+      warnings: performance.warnings,
+    });
+  } catch (error) {
+    if (error && error.code === 'MISSING_DEPENDENCY') {
+      res.status(503).json({ error: error.message });
+      return;
+    }
+    const status = error && error.response && error.response.status;
+    if (status === 404) {
+      res.status(404).send('Account not found.');
+      return;
+    }
+    console.error('Failed to build performance for account', accountId, error && error.message ? error.message : error);
+    res.status(500).send('Failed to build account performance.');
   }
 });
 

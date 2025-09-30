@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary, getQqqTemperature } from './api/questrade';
+import { getSummary, getQqqTemperature, getAccountPerformance } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
+import AccountPerformanceDialog from './components/AccountPerformanceDialog';
 import {
   formatDateTime,
   formatMoney,
@@ -925,6 +926,14 @@ export default function App() {
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
+  const [performanceDataByAccount, setPerformanceDataByAccount] = useState({});
+  const [performanceDialogState, setPerformanceDialogState] = useState({
+    open: false,
+    loading: false,
+    error: null,
+    accountId: null,
+    period: 'all',
+  });
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -969,6 +978,58 @@ export default function App() {
     [setActiveAccountId, setSelectedAccountState]
   );
 
+  const handleRequestPerformance = useCallback(() => {
+    if (!selectedAccountId) {
+      return;
+    }
+    const accountId = selectedAccountId;
+    if (selectedPerformanceData) {
+      setPerformanceDialogState({ open: true, loading: false, error: null, accountId, period: 'all' });
+      return;
+    }
+    setPerformanceDialogState({ open: false, loading: true, error: null, accountId, period: 'all' });
+    getAccountPerformance(accountId)
+      .then((result) => {
+        setPerformanceDataByAccount((prev) => ({ ...prev, [accountId]: result }));
+        setPerformanceDialogState({ open: true, loading: false, error: null, accountId, period: 'all' });
+      })
+      .catch((requestError) => {
+        const message =
+          requestError && requestError instanceof Error
+            ? requestError.message
+            : 'Failed to load performance data.';
+        setPerformanceDialogState({ open: true, loading: false, error: message, accountId, period: 'all' });
+      });
+  }, [selectedAccountId, selectedPerformanceData]);
+
+  const handleClosePerformance = useCallback(() => {
+    setPerformanceDialogState((prev) => ({ ...prev, open: false }));
+  }, []);
+
+  const handlePerformancePeriodChange = useCallback((nextPeriod) => {
+    setPerformanceDialogState((prev) => ({ ...prev, period: nextPeriod || 'all' }));
+  }, []);
+
+  const handleRetryPerformance = useCallback(() => {
+    const targetAccountId = performanceDialogState.accountId || selectedAccountId;
+    if (!targetAccountId) {
+      return;
+    }
+    setPerformanceDialogState((prev) => ({ ...prev, loading: true, error: null, accountId: targetAccountId }));
+    getAccountPerformance(targetAccountId)
+      .then((result) => {
+        setPerformanceDataByAccount((prev) => ({ ...prev, [targetAccountId]: result }));
+        setPerformanceDialogState((prev) => ({ ...prev, open: true, loading: false, error: null }));
+      })
+      .catch((requestError) => {
+        const message =
+          requestError && requestError instanceof Error
+            ? requestError.message
+            : 'Failed to load performance data.';
+        setPerformanceDialogState((prev) => ({ ...prev, loading: false, error: message, open: true }));
+      });
+  }, [performanceDialogState.accountId, selectedAccountId]);
+
   const selectedAccountInfo = useMemo(() => {
     if (!selectedAccount || selectedAccount === 'all') {
       return null;
@@ -984,6 +1045,34 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
+  const selectedAccountId = selectedAccountInfo ? selectedAccountInfo.id : null;
+  const selectedPerformanceData = useMemo(() => {
+    if (!selectedAccountId) {
+      return null;
+    }
+    return performanceDataByAccount[selectedAccountId] || null;
+  }, [performanceDataByAccount, selectedAccountId]);
+  const performanceButtonLoading = useMemo(() => {
+    if (!selectedAccountId) {
+      return false;
+    }
+    return (
+      performanceDialogState.loading &&
+      !performanceDialogState.open &&
+      performanceDialogState.accountId === selectedAccountId
+    );
+  }, [
+    performanceDialogState.loading,
+    performanceDialogState.open,
+    performanceDialogState.accountId,
+    selectedAccountId,
+  ]);
+  const performanceDialogData = useMemo(() => {
+    if (!performanceDialogState.accountId) {
+      return null;
+    }
+    return performanceDataByAccount[performanceDialogState.accountId] || null;
+  }, [performanceDialogState.accountId, performanceDataByAccount]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
@@ -1063,6 +1152,19 @@ export default function App() {
       setCurrencyView(currencyOptions[0].value);
     }
   }, [currencyOptions, currencyView]);
+
+  useEffect(() => {
+    if (!selectedAccountId) {
+      setPerformanceDialogState({ open: false, loading: false, error: null, accountId: null, period: 'all' });
+      return;
+    }
+    setPerformanceDialogState((prev) => {
+      if (prev.accountId && prev.accountId !== selectedAccountId && prev.open) {
+        return { ...prev, open: false, period: 'all', error: null };
+      }
+      return prev;
+    });
+  }, [selectedAccountId]);
 
   const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
   const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
@@ -1296,6 +1398,8 @@ export default function App() {
   const qqqSectionTitle = selectedAccountInfo?.investmentModel ? 'Investment Model' : 'QQQ temperature';
 
   const showingAllAccounts = selectedAccount === 'all';
+  const hasPerformanceData = Boolean(selectedPerformanceData);
+  const performancePeriod = performanceDialogState.period || 'all';
 
   const fetchQqqTemperature = useCallback(() => {
     if (qqqLoading) {
@@ -1561,6 +1665,9 @@ export default function App() {
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
+            onShowPerformance={!showingAllAccounts && selectedAccountId ? handleRequestPerformance : null}
+            performanceLoading={!showingAllAccounts ? performanceButtonLoading : false}
+            hasPerformanceData={!showingAllAccounts ? hasPerformanceData : false}
           />
         )}
 
@@ -1597,6 +1704,17 @@ export default function App() {
           isFilteredView={!showingAllAccounts}
           missingAccounts={peopleMissingAccounts}
           asOf={asOf}
+        />
+      )}
+      {performanceDialogState.open && (
+        <AccountPerformanceDialog
+          data={performanceDialogData}
+          onClose={handleClosePerformance}
+          period={performancePeriod}
+          onPeriodChange={handlePerformancePeriodChange}
+          loading={performanceDialogState.loading}
+          error={performanceDialogState.error}
+          onRetry={handleRetryPerformance}
         />
       )}
       {pnlBreakdownMode && (
