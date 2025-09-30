@@ -987,6 +987,7 @@ export default function App() {
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
+  const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
   const baseCurrency = 'CAD';
@@ -1282,6 +1283,18 @@ export default function App() {
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
   const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
+
+  const selectedAccountEvaluation = useMemo(() => {
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    if (selectedAccountInfo.id && investmentModelEvaluations[selectedAccountInfo.id]) {
+      return investmentModelEvaluations[selectedAccountInfo.id];
+    }
+    return null;
+  }, [selectedAccountInfo, investmentModelEvaluations]);
+  const qqqSectionTitle = selectedAccountInfo?.investmentModel ? 'Investment Model' : 'QQQ temperature';
+
   const showingAllAccounts = selectedAccount === 'all';
 
   const fetchQqqTemperature = useCallback(() => {
@@ -1552,6 +1565,10 @@ export default function App() {
             loading={qqqLoading}
             error={qqqError}
             onRetry={handleRetryQqqDetails}
+            title={qqqSectionTitle}
+            modelName={selectedAccountInfo?.investmentModel || null}
+            lastRebalance={selectedAccountInfo?.investmentModelLastRebalance || null}
+            evaluation={selectedAccountEvaluation}
           />
         )}
 

@@ -470,57 +470,6 @@ function iterativeConstantGrowth(tYears, prices) {
   return { A, r };
 }
 
-function computeAllocation(temperature) {
-  if (!Number.isFinite(temperature)) {
-    return null;
-  }
-
-  let proportion;
-  if (temperature >= 1.5) {
-    proportion = 0.2;
-  } else if (temperature >= 1) {
-    const ratio = (temperature - 1) / 0.5;
-    proportion = 0.8 - 0.6 * ratio;
-  } else if (temperature > 0.9) {
-    const ratio = (temperature - 0.9) / 0.1;
-    proportion = 1 - 0.2 * ratio;
-  } else {
-    proportion = 1;
-  }
-
-  proportion = Math.max(0.2, Math.min(1, proportion));
-
-  const exposure = 3 * proportion;
-  let totalEquity = proportion;
-  let tqqq = 0;
-  let qqq = 0;
-
-  if (exposure <= 1) {
-    totalEquity = clampFraction(proportion * 3);
-    qqq = totalEquity;
-  } else if (proportion < 0.425) {
-    const tqqqPortion = (exposure - 1) / 2;
-    const qqqPortion = (3 - exposure) / 2;
-    totalEquity = 1;
-    tqqq = clampFraction(tqqqPortion);
-    qqq = clampFraction(qqqPortion);
-  } else {
-    totalEquity = clampFraction(proportion);
-    tqqq = totalEquity;
-  }
-
-  const tBills = clampFraction(1 - totalEquity);
-
-  return {
-    temperature,
-    baseProportion: proportion,
-    totalEquity,
-    tqqq,
-    qqq,
-    tBills,
-  };
-}
-
 function logErrorOnce(message, error) {
   if (!error) {
     return;
@@ -583,7 +532,6 @@ async function refreshSummary() {
   }
 
   const latest = series[series.length - 1];
-  const allocation = computeAllocation(latest.temperature);
 
   return {
     updated: new Date().toISOString(),
@@ -591,7 +539,6 @@ async function refreshSummary() {
     rangeEnd: latest.date,
     series,
     latest,
-    allocation,
     growthCurve: {
       A: growth.A,
       r: growth.r,

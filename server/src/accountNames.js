@@ -99,19 +99,105 @@ function coerceBoolean(value) {
   return null;
 }
 
-function applyShowDetailsSetting(target, key, value) {
+function ensureAccountSettingsEntry(target, key) {
   if (!target || !key) {
-    return;
+    return null;
   }
   const normalizedKey = String(key).trim();
   if (!normalizedKey) {
+    return null;
+  }
+  const existing = target[normalizedKey];
+  if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+    return existing;
+  }
+  const container = {};
+  target[normalizedKey] = container;
+  return container;
+}
+
+function applyShowDetailsSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
     return;
   }
   const resolved = coerceBoolean(value);
   if (resolved === null) {
     return;
   }
-  target[normalizedKey] = resolved;
+  container.showQQQDetails = resolved;
+}
+
+function normalizeModelKey(value) {
+  if (value == null) {
+    return null;
+  }
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function applyInvestmentModelSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeModelKey(value);
+  if (!normalized) {
+    delete container.investmentModel;
+    return;
+  }
+  container.investmentModel = normalized;
+}
+
+function normalizeDateOnly(value) {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    if (Number.isNaN(time)) {
+      return null;
+    }
+    return new Date(time).toISOString().slice(0, 10);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const derived = new Date(value);
+    if (Number.isNaN(derived.getTime())) {
+      return null;
+    }
+    return derived.toISOString().slice(0, 10);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(`${trimmed}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+    return parsed.toISOString().slice(0, 10);
+  }
+  if (typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, 'date')) {
+      return normalizeDateOnly(value.date);
+    }
+    return null;
+  }
+  return null;
+}
+
+function applyLastRebalanceSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeDateOnly(value);
+  if (!normalized) {
+    delete container.lastRebalance;
+    return;
+  }
+  container.lastRebalance = normalized;
 }
 
 function recordOrdering(tracker, key) {
@@ -286,6 +372,12 @@ function extractEntry(
   if (settingsTarget && resolvedKey !== undefined) {
     if (Object.prototype.hasOwnProperty.call(entry, 'showQQQDetails')) {
       applyShowDetailsSetting(settingsTarget, resolvedKey, entry.showQQQDetails);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'investmentModel')) {
+      applyInvestmentModelSetting(settingsTarget, resolvedKey, entry.investmentModel);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'lastRebalance')) {
+      applyLastRebalanceSetting(settingsTarget, resolvedKey, entry.lastRebalance);
     }
   }
 
