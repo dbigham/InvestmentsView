@@ -4,6 +4,8 @@
     "uuid": "ac4ea32e-3034-4232-056a-194d8395463c",
     "chatURL": "https://chat.openai.com/share/example",
     "showQQQDetails": true,
+    "investmentModel": "A1",
+    "lastRebalance": "2024-01-15",
     "default": true
   },
   "53384040": {
