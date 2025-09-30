@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+const vm = require('vm');
 
 class InvestmentModelError extends Error {
   constructor(message, options = {}) {
@@ -27,6 +28,172 @@ function normalizePath(input) {
     return null;
   }
   return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed);
+}
+
+
+function stripWrappingQuotes(value) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length < 2) {
+    return trimmed;
+  }
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+
+function commandLooksLikePath(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  return path.isAbsolute(value) || value.includes('/') || value.includes('\\');
+}
+
+function normalizePythonCommandCandidate(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+  const stripped = stripWrappingQuotes(value);
+  if (!stripped) {
+    return null;
+  }
+  if (commandLooksLikePath(stripped)) {
+    return normalizePath(stripped);
+  }
+  return stripped;
+}
+
+
+function sanitizeBridgeJsonString(raw) {
+  if (typeof raw !== 'string' || !raw) {
+    return raw;
+  }
+  // Replace non-standard JSON tokens emitted by Python's json.dumps (NaN/Infinity)
+  return raw
+    .replace(/-?Infinity/g, 'null')
+    .replace(/NaN/g, 'null');
+}
+
+function buildPythonCandidates(bridgeRoot) {
+  const seen = new Set();
+  const results = [];
+
+  function addCandidate(command, argsPrefix = []) {
+    if (!command) {
+      return;
+    }
+    const normalizedCommand = normalizePythonCommandCandidate(command);
+    if (!normalizedCommand) {
+      return;
+    }
+    const normalizedArgs = Array.isArray(argsPrefix)
+      ? argsPrefix
+          .filter((part) => typeof part === 'string' && part.trim())
+          .map((part) => part.trim())
+      : [];
+    const key = normalizedCommand + '|' + normalizedArgs.join('\u0000');
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push({
+      command: normalizedCommand,
+      argsPrefix: normalizedArgs,
+    });
+  }
+
+  const envCandidates = [process.env.INVESTMENT_MODEL_PYTHON, process.env.PYTHON, process.env.PYTHON3];
+  envCandidates.forEach((candidate) => addCandidate(candidate));
+
+  if (bridgeRoot) {
+    const venvPaths = [
+      path.join(bridgeRoot, '.venv', 'bin', 'python3'),
+      path.join(bridgeRoot, '.venv', 'bin', 'python'),
+      path.join(bridgeRoot, '.venv', 'Scripts', 'python.exe'),
+      path.join(bridgeRoot, 'venv', 'bin', 'python3'),
+      path.join(bridgeRoot, 'venv', 'bin', 'python'),
+      path.join(bridgeRoot, 'venv', 'Scripts', 'python.exe'),
+    ];
+    venvPaths.forEach((candidate) => addCandidate(candidate));
+  }
+
+  if (process.platform === 'win32') {
+    addCandidate('python');
+    addCandidate('python3');
+    addCandidate('py', ['-3']);
+    addCandidate('py');
+  } else {
+    addCandidate('python3');
+    addCandidate('python');
+  }
+
+  return results;
+}
+
+let cachedPythonInvocation = null;
+
+function resolvePythonInvocation(bridgeRoot) {
+  if (cachedPythonInvocation) {
+    return cachedPythonInvocation;
+  }
+
+  const candidates = buildPythonCandidates(bridgeRoot);
+  const errors = [];
+
+  for (const candidate of candidates) {
+    const { command, argsPrefix } = candidate;
+    if (!command) {
+      continue;
+    }
+
+    if (commandLooksLikePath(command) && !fs.existsSync(command)) {
+      errors.push(command + ': not found');
+      continue;
+    }
+
+    try {
+      const result = spawnSync(command, [...argsPrefix, '--version'], {
+        cwd: bridgeRoot || process.cwd(),
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+        timeout: 3000,
+      });
+
+      if (result.error) {
+        errors.push(command + ': ' + result.error.message);
+        continue;
+      }
+
+      if (typeof result.status === 'number' && result.status !== 0) {
+        const output = [result.stderr, result.stdout].filter(Boolean).join(' ').trim();
+        if (result.status === 9009 || result.status === 127) {
+          errors.push(command + ': command not available' + (output ? ' (' + output + ')' : ''));
+          continue;
+        }
+        errors.push(command + ': exited with status ' + result.status + (output ? ' (' + output + ')' : ''));
+        continue;
+      }
+
+      cachedPythonInvocation = { command, argsPrefix };
+      return cachedPythonInvocation;
+    } catch (error) {
+      errors.push(command + ': ' + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  const detail = errors.length ? ' Tried: ' + errors.join('; ') : '';
+  throw new InvestmentModelError(
+    'Python interpreter not found. Install Python 3 and ensure it is available on PATH, or set INVESTMENT_MODEL_PYTHON to the interpreter location.' +
+      detail,
+    { code: 'PYTHON_NOT_FOUND' }
+  );
 }
 
 function resolveBridgeLocation() {
@@ -69,22 +236,6 @@ function ensureBridgeAvailable() {
   throw new InvestmentModelError(instructions, { code: 'BRIDGE_NOT_FOUND' });
 }
 
-function resolvePythonExecutable() {
-  const candidates = [
-    process.env.INVESTMENT_MODEL_PYTHON,
-    process.env.PYTHON,
-    process.env.PYTHON3,
-    'python3',
-    'python',
-  ];
-  for (const candidate of candidates) {
-    if (candidate && typeof candidate === 'string' && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-  return 'python3';
-}
-
 function evaluateInvestmentModel(payload) {
   return new Promise((resolve, reject) => {
     let location;
@@ -108,9 +259,18 @@ function evaluateInvestmentModel(payload) {
       return;
     }
 
-    const pythonExecutable = resolvePythonExecutable();
-    const args = [SCRIPT_NAME, '--integration-request', '-'];
-    const child = spawn(pythonExecutable, args, {
+    let pythonInvocation;
+    try {
+      pythonInvocation = resolvePythonInvocation(location.root);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    const args = []
+      .concat(pythonInvocation.argsPrefix || [])
+      .concat([SCRIPT_NAME, '--integration-request', '-']);
+    const child = spawn(pythonInvocation.command, args, {
       cwd: location.root,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
@@ -141,6 +301,11 @@ function evaluateInvestmentModel(payload) {
         const trimmedStdout = stdout.trim();
         const trimmedStderr = stderr.trim();
         const details = trimmedStderr || trimmedStdout;
+        const payloadForLog = serialized.length > 5000 ? serialized.slice(0, 5000) + '... (truncated)' : serialized;
+        const fredKey = process.env.FRED_API_KEY || '';
+        const fredSummary = fredKey ? 'present (ends ' + fredKey.slice(-4) + ')' : 'missing';
+        console.error('Investment model request payload:', payloadForLog);
+        console.error('FRED_API_KEY:', fredSummary);
         reject(
           new InvestmentModelError(
             'Investment model bridge exited with status ' + code + (details ? ': ' + details : ''),
@@ -160,16 +325,34 @@ function evaluateInvestmentModel(payload) {
         return;
       }
 
+      const sanitized = sanitizeBridgeJsonString(output);
+      let primaryParseError = null;
       try {
-        const parsed = JSON.parse(output);
+        const parsed = JSON.parse(sanitized);
         resolve(parsed);
+        return;
       } catch (error) {
-        reject(
-          new InvestmentModelError('Failed to parse investment model response.', {
-            code: 'PARSE_ERROR',
-            cause: error instanceof Error ? error : new Error(String(error)),
-          })
-        );
+        primaryParseError = error instanceof Error ? error : new Error(String(error));
+        try {
+          const fallback = vm.runInNewContext('(' + sanitized + ')', {}, { timeout: 500 });
+          resolve(fallback);
+          return;
+        } catch (fallbackError) {
+          const secondaryError = fallbackError instanceof Error ? fallbackError : new Error(String(fallbackError));
+          const responseForLog = output.length > 5000 ? output.slice(0, 5000) + '... (truncated)' : output;
+          const sanitizedForLog = sanitized.length > 5000 ? sanitized.slice(0, 5000) + '... (truncated)' : sanitized;
+          console.error('Investment model sanitized response:', sanitizedForLog);
+          console.error('Investment model raw response:', responseForLog);
+          reject(
+            new InvestmentModelError('Failed to parse investment model response. Raw output: ' + responseForLog, {
+              code: 'PARSE_ERROR',
+              cause: secondaryError,
+              rawOutput: output,
+              sanitizedOutput: sanitized,
+              primaryParseError,
+            })
+          );
+        }
       }
     });
 
@@ -181,6 +364,10 @@ module.exports = {
   evaluateInvestmentModel,
   InvestmentModelError,
   resolveBridgeLocation,
+  resolvePythonInvocation,
   DEFAULT_REPOSITORY_PATH,
   SCRIPT_NAME,
 };
+
+
+
