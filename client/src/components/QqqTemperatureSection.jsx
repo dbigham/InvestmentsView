@@ -268,10 +268,14 @@ export default function QqqTemperatureSection({
       ? evaluationData.model.base_allocation
       : null;
     if (isFiniteNumber(baseAllocation)) {
-      evaluationMetrics.push({
-        label: 'Base allocation',
-        value: formatPercent(baseAllocation * 100, percentOptions),
-      });
+      const matchesTarget =
+        isFiniteNumber(targetAllocation) && Math.abs(baseAllocation - targetAllocation) < 1e-6;
+      if (!matchesTarget) {
+        evaluationMetrics.push({
+          label: 'Base allocation',
+          value: formatPercent(baseAllocation * 100, percentOptions),
+        });
+      }
     }
     const cadence =
       (evaluationData.model && Number.isFinite(evaluationData.model.rebalance_cadence)
@@ -281,9 +285,12 @@ export default function QqqTemperatureSection({
         ? evaluationDecision.details.rebalance_cadence
         : null);
     if (Number.isFinite(cadence)) {
-      const cadenceLabel = formatTradingDays(cadence);
-      if (cadenceLabel) {
-        evaluationMetrics.push({ label: 'Rebalance cadence', value: cadenceLabel });
+      const isDefaultCadence = Math.abs(cadence - 22) < 1e-6;
+      if (!isDefaultCadence) {
+        const cadenceLabel = formatTradingDays(cadence);
+        if (cadenceLabel) {
+          evaluationMetrics.push({ label: 'Rebalance cadence', value: cadenceLabel });
+        }
       }
     }
     const daysSince =
@@ -294,7 +301,10 @@ export default function QqqTemperatureSection({
         ? evaluationDecision.details.days_since_last_rebalance
         : null);
     if (Number.isFinite(daysSince)) {
-      evaluationMetrics.push({ label: 'Days since rebalance', value: Math.round(daysSince).toString() });
+      const roundedDaysSince = Math.round(daysSince);
+      if (roundedDaysSince !== 0) {
+        evaluationMetrics.push({ label: 'Days since rebalance', value: roundedDaysSince.toString() });
+      }
     }
   }
 
