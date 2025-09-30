@@ -380,8 +380,18 @@ export default function AccountPerformanceDialog({
           )}
 
           {!loading && !error && (!data || !summary) && (
-            <div className="performance-dialog__status performance-dialog__status--empty">
-              Unable to calculate performance data for this account.
+            <div className="performance-dialog__status performance-dialog__status--empty" role="note">
+              <p>Unable to calculate performance data for this account.</p>
+              {Array.isArray(data?.warnings) && data.warnings.length > 0 && (
+                <>
+                  <p>Additional details:</p>
+                  <ul>
+                    {data.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </div>
           )}
         </div>
