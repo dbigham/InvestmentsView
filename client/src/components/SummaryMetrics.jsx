@@ -241,9 +241,11 @@ export default function SummaryMetrics({
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                <span className="equity-card__subtext-label">USD → CAD</span>
                 <span className="equity-card__subtext-value">
-                  {formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                  {`USD → CAD: ${formatNumber(usdToCadRate, {
+                    minimumFractionDigits: 3,
+                    maximumFractionDigits: 3,
+                  })}`}
                 </span>
               </a>
             </p>
