@@ -1493,7 +1493,6 @@ button.time-pill:hover .time-pill__icon {
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-primary);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
   pointer-events: none;
   white-space: nowrap;
 }
