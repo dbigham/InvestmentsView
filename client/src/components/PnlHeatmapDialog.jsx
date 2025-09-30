@@ -267,6 +267,11 @@ function buildHeatmapNodes(positions, metricKey) {
         weight: marketValue,
         marketValue,
         portfolioShare: isFiniteNumber(position.portfolioShare) ? position.portfolioShare : null,
+        currency:
+          typeof position.currency === 'string' && position.currency.trim()
+            ? position.currency.trim().toUpperCase()
+            : null,
+        currentPrice: isFiniteNumber(position.currentPrice) ? position.currentPrice : null,
         metricValue,
         percentChange,
       };
@@ -539,6 +544,17 @@ export default function PnlHeatmapDialog({
                   colorMode === 'value'
                     ? valueDisplay ?? '—'
                     : percentDisplay ?? '—';
+                const priceDisplay = isFiniteNumber(node.currentPrice)
+                  ? formatMoney(node.currentPrice, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })
+                  : null;
+                const priceLine = priceDisplay
+                  ? `Price: ${priceDisplay}${
+                      node.currency ? ` (${String(node.currency).toUpperCase()})` : ''
+                    }`
+                  : null;
                 const areaFraction = node.width * node.height;
                 const areaRoot = Math.sqrt(areaFraction);
                 const symbolFontSize = clamp(areaRoot * 70, 7, 28);
@@ -559,6 +575,7 @@ export default function PnlHeatmapDialog({
                   node.description ? `${node.symbol} — ${node.description}` : node.symbol,
                   `${metricLabel}: ${pnlDisplay}`,
                   percentDisplay ? `Change: ${percentDisplay}` : null,
+                  priceLine,
                   shareLabel ? `Portfolio share: ${shareLabel}` : null,
                 ]
                   .filter(Boolean)
@@ -628,6 +645,8 @@ PnlHeatmapDialog.propTypes = {
       portfolioShare: PropTypes.number,
       rowId: PropTypes.string,
       currentMarketValue: PropTypes.number,
+      currentPrice: PropTypes.number,
+      currency: PropTypes.string,
       totalCost: PropTypes.number,
       averageEntryPrice: PropTypes.number,
       openQuantity: PropTypes.number,
