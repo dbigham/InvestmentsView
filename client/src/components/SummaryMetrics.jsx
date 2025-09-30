@@ -203,6 +203,8 @@ export default function SummaryMetrics({
   isAutoRefreshing,
   onCopySummary,
   chatUrl,
+  showQqqTemperature,
+  qqqSummary,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -239,11 +241,33 @@ export default function SummaryMetrics({
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                <span className="equity-card__subtext-label">USD → CAD</span>
                 <span className="equity-card__subtext-value">
-                  {formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                  {`USD → CAD: ${formatNumber(usdToCadRate, {
+                    minimumFractionDigits: 3,
+                    maximumFractionDigits: 3,
+                  })}`}
                 </span>
               </a>
+            </p>
+          )}
+          {showQqqTemperature && (
+            <p className="equity-card__subtext" role="status">
+              <span className="equity-card__subtext-value">
+                {(() => {
+                  const status = qqqSummary?.status || 'loading';
+                  if (status === 'ready' && Number.isFinite(qqqSummary?.temperature)) {
+                    const formattedTemp = formatNumber(qqqSummary.temperature, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    });
+                    return `QQQ temperature: ${formattedTemp}`;
+                  }
+                  if (status === 'error') {
+                    return qqqSummary?.message || 'Unable to load';
+                  }
+                  return 'QQQ temperature: Loading…';
+                })()}
+              </span>
             </p>
           )}
         </div>
@@ -354,6 +378,13 @@ SummaryMetrics.propTypes = {
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
   chatUrl: PropTypes.string,
+  showQqqTemperature: PropTypes.bool,
+  qqqSummary: PropTypes.shape({
+    status: PropTypes.oneOf(['loading', 'ready', 'error']),
+    temperature: PropTypes.number,
+    date: PropTypes.string,
+    message: PropTypes.string,
+  }),
 };
 
 SummaryMetrics.defaultProps = {
@@ -370,4 +401,6 @@ SummaryMetrics.defaultProps = {
   isAutoRefreshing: false,
   onCopySummary: null,
   chatUrl: null,
+  showQqqTemperature: false,
+  qqqSummary: null,
 };
