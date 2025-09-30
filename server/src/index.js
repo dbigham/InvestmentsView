@@ -11,6 +11,7 @@ const {
   getAccountChatOverrides,
   getAccountOrdering,
   getAccountSettings,
+  getDefaultAccountId,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
@@ -294,6 +295,33 @@ function resolveAccountPortalId(overrides, account, login) {
 
 function resolveAccountChatUrl(overrides, account, login) {
   return resolveAccountOverrideValue(overrides, account, login);
+}
+
+function findDefaultAccount(accountCollections, defaultKey) {
+  if (!defaultKey) {
+    return null;
+  }
+  const trimmedKey = String(defaultKey).trim();
+  if (!trimmedKey) {
+    return null;
+  }
+  const overrides = {};
+  overrides[trimmedKey] = true;
+  const condensed = trimmedKey.replace(/\s+/g, '');
+  if (condensed && condensed !== trimmedKey) {
+    overrides[condensed] = true;
+  }
+
+  for (const collection of accountCollections) {
+    const { login, accounts } = collection;
+    for (const account of accounts) {
+      if (resolveAccountOverrideValue(overrides, account, login)) {
+        return account;
+      }
+    }
+  }
+
+  return null;
 }
 
 function resolveAccountBeneficiary(beneficiaries, account, login) {
@@ -736,6 +764,8 @@ app.get('/api/qqq-temperature', async function (req, res) {
 app.get('/api/summary', async function (req, res) {
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
+  const isDefaultRequested = requestedAccountId === 'default';
+  const configuredDefaultKey = getDefaultAccountId();
 
   try {
     const accountCollections = [];
@@ -793,6 +823,8 @@ app.get('/api/summary', async function (req, res) {
       });
       accountCollections.push({ login, accounts: normalized });
     }
+
+    const defaultAccount = findDefaultAccount(accountCollections, configuredDefaultKey);
 
     let allAccounts = accountCollections.flatMap(function (entry) {
       return entry.accounts;
@@ -859,13 +891,28 @@ app.get('/api/summary', async function (req, res) {
     });
 
     let selectedAccounts = allAccounts;
-    if (!includeAllAccounts) {
+    let resolvedAccountId = null;
+    let resolvedAccountNumber = null;
+    const viewingAllAccounts = includeAllAccounts || (isDefaultRequested && !defaultAccount);
+
+    if (isDefaultRequested) {
+      if (defaultAccount) {
+        selectedAccounts = [defaultAccount];
+      }
+    } else if (!includeAllAccounts) {
       selectedAccounts = allAccounts.filter(function (account) {
         return account.id === requestedAccountId || account.number === requestedAccountId;
       });
       if (!selectedAccounts.length) {
         return res.status(404).json({ message: 'No accounts found for the provided filter.' });
       }
+    }
+
+    if (viewingAllAccounts) {
+      resolvedAccountId = 'all';
+    } else if (selectedAccounts.length === 1) {
+      resolvedAccountId = selectedAccounts[0].id;
+      resolvedAccountNumber = selectedAccounts[0].number;
     }
 
     const selectedContexts = selectedAccounts.map(function (account) {
@@ -937,6 +984,8 @@ app.get('/api/summary', async function (req, res) {
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
 
+    const defaultAccountId = defaultAccount ? defaultAccount.id : null;
+
     const responseAccounts = allAccounts.map(function (account) {
       return {
         id: account.id,
@@ -954,6 +1003,7 @@ app.get('/api/summary', async function (req, res) {
         portalAccountId: account.portalAccountId || null,
         chatURL: account.chatURL || null,
         showQQQDetails: account.showQQQDetails === true,
+        isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });
 
@@ -962,6 +1012,11 @@ app.get('/api/summary', async function (req, res) {
       filteredAccountIds: selectedContexts.map(function (context) {
         return context.account.id;
       }),
+      defaultAccountId,
+      defaultAccountNumber: defaultAccount ? defaultAccount.number : null,
+      resolvedAccountId,
+      resolvedAccountNumber,
+      requestedAccountId: requestedAccountId || null,
       positions: decoratedPositions,
       pnl: pnl,
       balances: balancesSummary,
