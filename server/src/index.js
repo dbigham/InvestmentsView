@@ -540,16 +540,21 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+const DEFAULT_EXECUTIONS_START_TIME = '2000-01-01T00:00:00.000Z';
+
 async function fetchExecutions(login, accountId, options = {}) {
   const results = [];
   const params = {};
   const { startTime, endTime } = options;
-  if (startTime) {
-    const start = new Date(startTime);
+
+  const startSource = startTime ?? DEFAULT_EXECUTIONS_START_TIME;
+  if (startSource) {
+    const start = new Date(startSource);
     if (!Number.isNaN(start.getTime())) {
       params.startTime = start.toISOString();
     }
   }
+
   if (endTime) {
     const end = new Date(endTime);
     if (!Number.isNaN(end.getTime())) {
