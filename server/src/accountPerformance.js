@@ -227,13 +227,37 @@ function normalizeExecution(execution) {
     ['netAmount', 'netCash', 'netAmountInAccountCurrency', 'netAmountCad'],
     null
   );
+
+  const rawSymbolId =
+    execution.symbolId ?? execution.symbolID ?? execution.securityId ?? execution.securityID ?? null;
+  const rawSymbol =
+    execution.symbol ??
+    execution.symbolDescription ??
+    execution.description ??
+    execution.securitySymbol ??
+    execution.underlyingSymbol ??
+    null;
+  const normalizedSymbol = typeof rawSymbol === 'string' ? rawSymbol.trim() : null;
+  const symbolId =
+    rawSymbolId !== undefined && rawSymbolId !== null && rawSymbolId !== ''
+      ? rawSymbolId
+      : normalizedSymbol;
+
+  const resolvedCurrency =
+    execution.currency ?? execution.payableCurrency ?? execution.accountCurrency ?? execution.primaryCurrency ?? 'CAD';
+  const normalizedCurrency =
+    typeof resolvedCurrency === 'string' && resolvedCurrency.trim()
+      ? resolvedCurrency.trim().toUpperCase()
+      : 'CAD';
+
   const signedContribution =
     netAmount !== null && netAmount !== 0 ? netAmount : direction > 0 ? -gross : gross;
   const amount = Math.abs(signedContribution) > 0 ? Math.abs(signedContribution) : gross;
+
   return {
-    symbolId: execution.symbolId || execution.symbolID || execution.symbol || null,
-    symbol: execution.symbol || null,
-    currency: String(execution.currency || execution.payableCurrency || 'CAD').toUpperCase(),
+    symbolId,
+    symbol: normalizedSymbol,
+    currency: normalizedCurrency,
     date,
     direction,
     quantity,
@@ -242,18 +266,57 @@ function normalizeExecution(execution) {
   };
 }
 
-function normalizeSymbolMetadata(symbolDetails, execution) {
-  const symbolId = execution.symbolId;
+function normalizeSymbolMetadata(symbolDetails, normalizedExecution, rawExecution) {
+  const symbolId = normalizedExecution.symbolId;
   const detail = symbolDetails && symbolId != null ? symbolDetails[symbolId] : null;
-  const ticker = detail && detail.symbol ? String(detail.symbol).trim() : execution.symbol ? String(execution.symbol).trim() : null;
-  const currency = detail && detail.currency ? String(detail.currency).toUpperCase() : execution.currency;
+
+  const fallbackSymbols = [
+    detail && detail.symbol,
+    normalizedExecution.symbol,
+    rawExecution && rawExecution.symbol,
+    rawExecution && rawExecution.symbolDescription,
+    rawExecution && rawExecution.description,
+    rawExecution && rawExecution.securitySymbol,
+    rawExecution && rawExecution.underlyingSymbol,
+  ];
+
+  let ticker = null;
+  for (const candidate of fallbackSymbols) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      ticker = candidate.trim();
+      break;
+    }
+  }
+
   if (!ticker) {
     return null;
   }
+
+  const fallbackCurrencies = [
+    detail && detail.currency,
+    normalizedExecution.currency,
+    rawExecution && rawExecution.currency,
+    rawExecution && rawExecution.payableCurrency,
+    rawExecution && rawExecution.accountCurrency,
+    rawExecution && rawExecution.primaryCurrency,
+  ];
+
+  let currency = null;
+  for (const candidate of fallbackCurrencies) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      currency = candidate.trim().toUpperCase();
+      break;
+    }
+  }
+
+  if (!currency) {
+    currency = 'CAD';
+  }
+
   return {
     symbolId,
     ticker,
-    currency: currency || 'CAD',
+    currency,
   };
 }
 
@@ -262,10 +325,10 @@ function buildTrades(executions, symbolDetails) {
   const metadataBySymbol = new Map();
   executions.forEach((raw) => {
     const normalized = normalizeExecution(raw);
-    if (!normalized || !normalized.symbolId) {
+    if (!normalized || normalized.symbolId === undefined || normalized.symbolId === null || normalized.symbolId === '') {
       return;
     }
-    const meta = normalizeSymbolMetadata(symbolDetails, normalized);
+    const meta = normalizeSymbolMetadata(symbolDetails, normalized, raw);
     if (!meta) {
       return;
     }
