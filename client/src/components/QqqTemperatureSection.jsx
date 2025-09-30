@@ -179,7 +179,12 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
     if (!hasChart) {
       return null;
     }
-    return chartMetrics.points[chartMetrics.points.length - 1];
+    const { points } = chartMetrics;
+    const lastIndex = points.length - 1;
+    const lastPoint = points[lastIndex];
+    const previousPoint = lastIndex > 0 ? points[lastIndex - 1] : null;
+    const trend = previousPoint ? lastPoint.temperature - previousPoint.temperature : 0;
+    return { ...lastPoint, trend };
   }, [chartMetrics, hasChart]);
 
   const labelPosition = useMemo(() => {
@@ -187,7 +192,12 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
       return null;
     }
     const leftPercent = Math.min(94, Math.max(0, (marker.x / CHART_WIDTH) * 100));
-    const topPercent = Math.min(92, Math.max(8, (marker.y / CHART_HEIGHT) * 100));
+    const verticalOffset = marker.trend > 0 ? -24 : marker.trend < 0 ? 24 : 0;
+    const adjustedY = Math.min(
+      CHART_HEIGHT - PADDING.bottom,
+      Math.max(PADDING.top, marker.y + verticalOffset),
+    );
+    const topPercent = Math.min(92, Math.max(8, (adjustedY / CHART_HEIGHT) * 100));
     return { left: `${leftPercent}%`, top: `${topPercent}%` };
   }, [marker]);
 
