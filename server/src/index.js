@@ -974,7 +974,18 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
       fetchBalances(login, accountNumber).catch(() => null),
     ]);
     const rawSymbolIds = executions
-      .map((execution) => execution && execution.symbolId)
+      .map((execution) => {
+        if (!execution) {
+          return null;
+        }
+        if (execution.symbolId !== undefined && execution.symbolId !== null) {
+          return execution.symbolId;
+        }
+        if (execution.symbolID !== undefined && execution.symbolID !== null) {
+          return execution.symbolID;
+        }
+        return null;
+      })
       .filter((symbolId) => symbolId !== null && symbolId !== undefined);
     const numericSymbolIds = Array.from(
       new Set(
