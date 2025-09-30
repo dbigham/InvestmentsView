@@ -361,18 +361,11 @@ export default function QqqTemperatureSection({
         <span className="qqq-section__updated">{`Updated ${formatDate(data?.updated)}`}</span>
       </div>
 
-      {(modelName || lastRebalance) && (
+      {lastRebalance && (
         <div className="qqq-section__model-meta">
-          {modelName && (
-            <span>
-              <span className="qqq-section__meta-label">Model:</span> {modelName}
-            </span>
-          )}
-          {lastRebalance && (
-            <span>
-              <span className="qqq-section__meta-label">Last rebalance:</span> {formatDate(lastRebalance)}
-            </span>
-          )}
+          <span>
+            <span className="qqq-section__meta-label">Last rebalance:</span> {formatDate(lastRebalance)}
+          </span>
         </div>
       )}
 
