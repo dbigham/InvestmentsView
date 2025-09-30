@@ -1283,6 +1283,7 @@ export default function App() {
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
   const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
+
   const selectedAccountEvaluation = useMemo(() => {
     if (!selectedAccountInfo) {
       return null;
@@ -1293,6 +1294,8 @@ export default function App() {
     return null;
   }, [selectedAccountInfo, investmentModelEvaluations]);
   const qqqSectionTitle = selectedAccountInfo?.investmentModel ? 'Investment Model' : 'QQQ temperature';
+
+  const showingAllAccounts = selectedAccount === 'all';
 
   const fetchQqqTemperature = useCallback(() => {
     if (qqqLoading) {
@@ -1314,16 +1317,52 @@ export default function App() {
   }, [qqqLoading]);
 
   useEffect(() => {
-    if (!shouldShowQqqDetails) {
+    if (!shouldShowQqqDetails && !showingAllAccounts) {
       return;
     }
     if (qqqData || qqqLoading || qqqError) {
       return;
     }
     fetchQqqTemperature();
-  }, [shouldShowQqqDetails, qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
+  }, [
+    shouldShowQqqDetails,
+    showingAllAccounts,
+    qqqData,
+    qqqLoading,
+    qqqError,
+    fetchQqqTemperature,
+  ]);
+  const qqqSummary = useMemo(() => {
+    if (qqqLoading) {
+      return { status: 'loading' };
+    }
+    if (qqqError) {
+      return {
+        status: 'error',
+        message: qqqError.message || 'Unable to load QQQ temperature data',
+      };
+    }
+    const latestTemperature = Number(qqqData?.latest?.temperature);
+    const latestDate =
+      typeof qqqData?.latest?.date === 'string' && qqqData.latest.date.trim()
+        ? qqqData.latest.date
+        : typeof qqqData?.rangeEnd === 'string'
+        ? qqqData.rangeEnd
+        : null;
+    if (Number.isFinite(latestTemperature)) {
+      return {
+        status: 'ready',
+        temperature: latestTemperature,
+        date: latestDate,
+      };
+    }
+    if (qqqData) {
+      return { status: 'error', message: 'QQQ temperature unavailable' };
+    }
+    return { status: 'loading' };
+  }, [qqqData, qqqLoading, qqqError]);
+
   const peopleDisabled = !peopleSummary.hasBalances;
-  const showingAllAccounts = selectedAccount === 'all';
   const selectedAccountChatUrl = useMemo(() => {
     if (!selectedAccountInfo || typeof selectedAccountInfo.chatURL !== 'string') {
       return null;
@@ -1437,6 +1476,9 @@ export default function App() {
       return;
     }
     setRefreshKey((value) => value + 1);
+    if (showingAllAccounts || shouldShowQqqDetails) {
+      fetchQqqTemperature();
+    }
   };
 
   const handleShowPnlBreakdown = (mode) => {
@@ -1512,6 +1554,8 @@ export default function App() {
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             chatUrl={selectedAccountChatUrl}
+            showQqqTemperature={showingAllAccounts}
+            qqqSummary={qqqSummary}
           />
         )}
 
