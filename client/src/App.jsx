@@ -913,7 +913,8 @@ function resolveNormalizedPnl(position, field, currencyRates, baseCurrency = 'CA
 }
 
 export default function App() {
-  const [selectedAccount, setSelectedAccount] = useState('all');
+  const [selectedAccountState, setSelectedAccountState] = useState('all');
+  const [activeAccountId, setActiveAccountId] = useState('default');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
@@ -924,9 +925,50 @@ export default function App() {
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
-  const { loading, data, error } = useSummaryData(selectedAccount, refreshKey);
+  const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const selectedAccount = useMemo(() => {
+    if (activeAccountId === 'default') {
+      const filtered = Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds : [];
+      if (filtered.length === 1) {
+        return filtered[0];
+      }
+      if (filtered.length > 1) {
+        return 'all';
+      }
+    }
+    return selectedAccountState;
+  }, [activeAccountId, data?.filteredAccountIds, selectedAccountState]);
+
+  useEffect(() => {
+    if (activeAccountId !== 'default') {
+      return;
+    }
+    const filtered = Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds : [];
+    if (filtered.length === 1) {
+      const resolvedId = filtered[0];
+      if (resolvedId && selectedAccountState !== resolvedId) {
+        setSelectedAccountState(resolvedId);
+      }
+      return;
+    }
+    if (filtered.length > 1 && selectedAccountState !== 'all') {
+      setSelectedAccountState('all');
+    }
+  }, [activeAccountId, data?.filteredAccountIds, selectedAccountState, setSelectedAccountState]);
+
+  const handleAccountChange = useCallback(
+    (value) => {
+      if (!value) {
+        return;
+      }
+      setSelectedAccountState(value);
+      setActiveAccountId(value);
+    },
+    [setActiveAccountId, setSelectedAccountState]
+  );
+
   const selectedAccountInfo = useMemo(() => {
     if (!selectedAccount || selectedAccount === 'all') {
       return null;
@@ -1429,7 +1471,7 @@ export default function App() {
           <AccountSelector
             accounts={accounts}
             selected={selectedAccount}
-            onChange={setSelectedAccount}
+            onChange={handleAccountChange}
             disabled={loading && !data}
           />
         </header>
