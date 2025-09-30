@@ -15,6 +15,7 @@ const {
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
+const { evaluateInvestmentModel } = require('./investmentModel');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -716,6 +717,127 @@ function mergePnL(positions) {
   );
 }
 
+function buildInvestmentModelPositions(positions, accountId) {
+  if (!Array.isArray(positions) || !accountId) {
+    return [];
+  }
+
+  const normalizedAccountId = String(accountId);
+  const results = [];
+
+  positions.forEach(function (position) {
+    if (!position || String(position.accountId) !== normalizedAccountId) {
+      return;
+    }
+    const symbol = position.symbol ? String(position.symbol).trim() : null;
+    if (!symbol) {
+      return;
+    }
+    const marketValue = Number(position.currentMarketValue);
+    if (!Number.isFinite(marketValue)) {
+      return;
+    }
+    const entry = { symbol, dollars: marketValue };
+    const shares = Number(position.openQuantity);
+    if (Number.isFinite(shares) && shares !== 0) {
+      entry.shares = shares;
+    }
+    if (Math.abs(entry.dollars) < 0.01 && (!entry.shares || Math.abs(entry.shares) < 0.01)) {
+      return;
+    }
+    results.push(entry);
+  });
+
+  return results;
+}
+
+function findAccountCadBalance(accountId, perAccountBalances) {
+  if (!accountId || !perAccountBalances) {
+    return null;
+  }
+
+  const balances = perAccountBalances[accountId];
+  if (!balances || typeof balances !== 'object') {
+    return null;
+  }
+
+  const cadKey = Object.keys(balances).find(function (key) {
+    return key && typeof key === 'string' && key.toUpperCase() === 'CAD';
+  });
+  if (!cadKey) {
+    return null;
+  }
+  const cadBalance = balances[cadKey];
+  if (!cadBalance || typeof cadBalance !== 'object') {
+    return null;
+  }
+  return cadBalance;
+}
+
+function extractCadMarketValue(balanceEntry) {
+  if (!balanceEntry || typeof balanceEntry !== 'object') {
+    return null;
+  }
+  const preferredFields = ['marketValue', 'totalEquity', 'cash'];
+  for (const field of preferredFields) {
+    const value = Number(balanceEntry[field]);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function buildInitialInvestmentModelPositions(account, perAccountBalances) {
+  const cadBalance = findAccountCadBalance(account.id, perAccountBalances);
+  if (!cadBalance) {
+    return { positions: [], reserveSymbol: 'SGOV' };
+  }
+  const cadValue = extractCadMarketValue(cadBalance);
+  if (!Number.isFinite(cadValue)) {
+    return { positions: [], reserveSymbol: 'SGOV' };
+  }
+  return {
+    positions: [
+      {
+        symbol: 'SGOV',
+        dollars: cadValue,
+      },
+    ],
+    reserveSymbol: 'SGOV',
+  };
+}
+
+function buildInvestmentModelRequest(account, positions, perAccountBalances) {
+  if (!account || !account.investmentModel) {
+    return null;
+  }
+
+  const modelKey = String(account.investmentModel).trim();
+  if (!modelKey) {
+    return null;
+  }
+
+  const requestDate = new Date().toISOString().slice(0, 10);
+  const payload = {
+    experiment: modelKey,
+    request_date: requestDate,
+  };
+
+  if (account.investmentModelLastRebalance) {
+    payload.positions = buildInvestmentModelPositions(positions, account.id);
+    payload.last_rebalance = account.investmentModelLastRebalance;
+  } else {
+    const initial = buildInitialInvestmentModelPositions(account, perAccountBalances);
+    payload.positions = initial.positions;
+    if (initial.reserveSymbol) {
+      payload.reserve_symbol = initial.reserveSymbol;
+    }
+  }
+
+  return payload;
+}
+
 function decoratePositions(positions, symbolsMap, accountsMap) {
   return positions.map(function (position) {
     const symbolInfo = symbolsMap[position.symbolId];
@@ -807,9 +929,34 @@ app.get('/api/summary', async function (req, res) {
         } else if (normalizedAccount.chatURL === undefined) {
           normalizedAccount.chatURL = null;
         }
-        const showQqqDetails = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
-        if (typeof showQqqDetails === 'boolean') {
-          normalizedAccount.showQQQDetails = showQqqDetails;
+        const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
+        if (typeof accountSettingsOverride === 'boolean') {
+          normalizedAccount.showQQQDetails = accountSettingsOverride;
+        } else if (accountSettingsOverride && typeof accountSettingsOverride === 'object') {
+          if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
+            normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
+          }
+          if (typeof accountSettingsOverride.investmentModel === 'string') {
+            const trimmedModel = accountSettingsOverride.investmentModel.trim();
+            if (trimmedModel) {
+              normalizedAccount.investmentModel = trimmedModel;
+            }
+          }
+          if (typeof accountSettingsOverride.lastRebalance === 'string') {
+            const trimmedDate = accountSettingsOverride.lastRebalance.trim();
+            if (trimmedDate) {
+              normalizedAccount.investmentModelLastRebalance = trimmedDate;
+            }
+          } else if (
+            accountSettingsOverride.lastRebalance &&
+            typeof accountSettingsOverride.lastRebalance === 'object' &&
+            typeof accountSettingsOverride.lastRebalance.date === 'string'
+          ) {
+            const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
+            if (trimmedDate) {
+              normalizedAccount.investmentModelLastRebalance = trimmedDate;
+            }
+          }
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
         if (defaultBeneficiary) {
@@ -986,6 +1133,28 @@ app.get('/api/summary', async function (req, res) {
 
     const defaultAccountId = defaultAccount ? defaultAccount.id : null;
 
+    const investmentModelEvaluations = {};
+    if (selectedContexts.length === 1) {
+      const context = selectedContexts[0];
+      const { account } = context;
+      if (account && account.investmentModel) {
+        const payload = buildInvestmentModelRequest(account, flattenedPositions, perAccountCombinedBalances);
+        if (!payload || !Array.isArray(payload.positions) || payload.positions.length === 0) {
+          investmentModelEvaluations[account.id] = { status: 'no_positions' };
+        } else {
+          try {
+            const evaluation = await evaluateInvestmentModel(payload);
+            investmentModelEvaluations[account.id] = { status: 'ok', data: evaluation };
+          } catch (modelError) {
+            const message =
+              modelError && modelError.message ? modelError.message : 'Failed to evaluate investment model.';
+            console.warn('Investment model evaluation failed for account ' + account.id + ':', message);
+            investmentModelEvaluations[account.id] = { status: 'error', message };
+          }
+        }
+      }
+    }
+
     const responseAccounts = allAccounts.map(function (account) {
       return {
         id: account.id,
@@ -1003,6 +1172,8 @@ app.get('/api/summary', async function (req, res) {
         portalAccountId: account.portalAccountId || null,
         chatURL: account.chatURL || null,
         showQQQDetails: account.showQQQDetails === true,
+        investmentModel: account.investmentModel || null,
+        investmentModelLastRebalance: account.investmentModelLastRebalance || null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });
@@ -1021,6 +1192,7 @@ app.get('/api/summary', async function (req, res) {
       pnl: pnl,
       balances: balancesSummary,
       accountBalances: perAccountCombinedBalances,
+      investmentModelEvaluations,
       asOf: new Date().toISOString(),
     });
   } catch (error) {

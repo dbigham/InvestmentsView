@@ -14,6 +14,30 @@ const TIMEFRAME_OPTIONS = [
   { value: 'ALL', label: 'All time' },
 ];
 
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function formatActionLabel(action) {
+  if (!action) {
+    return 'Hold';
+  }
+  const normalized = String(action).replace(/[_\s]+/g, ' ').trim();
+  if (!normalized) {
+    return 'Hold';
+  }
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function formatTradingDays(value) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  const rounded = Math.round(value);
+  const suffix = rounded === 1 ? '' : 's';
+  return `${rounded} trading day${suffix}`;
+}
+
 function parseDate(value) {
   if (!value) {
     return null;
@@ -127,14 +151,16 @@ function buildChartMetrics(series) {
   };
 }
 
-function formatShare(value) {
-  if (!Number.isFinite(value)) {
-    return '—';
-  }
-  return formatPercent(value * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-}
-
-export default function QqqTemperatureSection({ data, loading, error, onRetry }) {
+export default function QqqTemperatureSection({
+  data,
+  loading,
+  error,
+  onRetry,
+  title,
+  modelName,
+  lastRebalance,
+  evaluation,
+}) {
   const [timeframe, setTimeframe] = useState('5Y');
   const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
   const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
@@ -143,10 +169,13 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
     ? `T = ${formatNumber(latestTemperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : null;
 
-  const allocation = data?.allocation || null;
   const hasChart = chartMetrics && chartMetrics.points.length >= 1;
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.rangeStart;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.rangeEnd;
+  const resolvedTitle = title || (modelName ? 'Investment Model' : 'QQQ temperature');
+  const headingId = modelName ? 'investment-model-heading' : 'qqq-temperature-heading';
+  const loadingLabel = modelName ? 'Loading investment model…' : 'Loading QQQ temperature…';
+  const errorLabel = modelName ? 'Unable to load investment model details.' : 'Unable to load QQQ temperature details.';
 
   const pathD = useMemo(() => {
     if (!hasChart) {
@@ -201,12 +230,151 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
     return { left: `${leftPercent}%`, top: `${topPercent}%` };
   }, [marker]);
 
+  const evaluationStatus = evaluation?.status || null;
+  const evaluationData = evaluationStatus === 'ok' && evaluation && typeof evaluation === 'object' ? evaluation.data || null : null;
+  const evaluationDecision = evaluationData && typeof evaluationData === 'object' ? evaluationData.decision || null : null;
+  const evaluationReason = evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.reason || null : null;
+  const evaluationAction = evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.action || null : null;
+  const evaluationActionClass = evaluationAction
+    ? String(evaluationAction)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+    : 'hold';
+  const evaluationMetrics = [];
+  const percentOptions = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+
+  if (evaluationData) {
+    const currentAllocation = evaluationData.current_allocation;
+    if (isFiniteNumber(currentAllocation)) {
+      evaluationMetrics.push({
+        label: 'Current allocation',
+        value: formatPercent(currentAllocation * 100, percentOptions),
+      });
+    }
+    const targetAllocation =
+      (evaluationData.model && isFiniteNumber(evaluationData.model.target_allocation)
+        ? evaluationData.model.target_allocation
+        : null) ??
+      (evaluationDecision && evaluationDecision.details && isFiniteNumber(evaluationDecision.details.target_p)
+        ? evaluationDecision.details.target_p
+        : null);
+    if (isFiniteNumber(targetAllocation)) {
+      evaluationMetrics.push({
+        label: 'Target allocation',
+        value: formatPercent(targetAllocation * 100, percentOptions),
+      });
+    }
+    const baseAllocation = evaluationData.model && isFiniteNumber(evaluationData.model.base_allocation)
+      ? evaluationData.model.base_allocation
+      : null;
+    if (isFiniteNumber(baseAllocation)) {
+      evaluationMetrics.push({
+        label: 'Base allocation',
+        value: formatPercent(baseAllocation * 100, percentOptions),
+      });
+    }
+    const cadence =
+      (evaluationData.model && Number.isFinite(evaluationData.model.rebalance_cadence)
+        ? evaluationData.model.rebalance_cadence
+        : null) ??
+      (evaluationDecision && evaluationDecision.details && Number.isFinite(evaluationDecision.details.rebalance_cadence)
+        ? evaluationDecision.details.rebalance_cadence
+        : null);
+    if (Number.isFinite(cadence)) {
+      const cadenceLabel = formatTradingDays(cadence);
+      if (cadenceLabel) {
+        evaluationMetrics.push({ label: 'Rebalance cadence', value: cadenceLabel });
+      }
+    }
+    const daysSince =
+      (evaluationData.model && Number.isFinite(evaluationData.model.days_since_last_rebalance)
+        ? evaluationData.model.days_since_last_rebalance
+        : null) ??
+      (evaluationDecision && evaluationDecision.details && Number.isFinite(evaluationDecision.details.days_since_last_rebalance)
+        ? evaluationDecision.details.days_since_last_rebalance
+        : null);
+    if (Number.isFinite(daysSince)) {
+      evaluationMetrics.push({ label: 'Days since rebalance', value: Math.round(daysSince).toString() });
+    }
+  }
+
+  let evaluationContent = null;
+  if (evaluationStatus === 'ok' && evaluationData) {
+    const actionLabel = formatActionLabel(evaluationAction);
+    const recent = evaluationData.recent_rebalance || null;
+    evaluationContent = (
+      <>
+        <div className="qqq-section__evaluation-summary">
+          <span className={`qqq-section__evaluation-action qqq-section__evaluation-action--${evaluationActionClass}`}>
+            {actionLabel}
+          </span>
+          {evaluationReason && <span className="qqq-section__evaluation-reason">{evaluationReason}</span>}
+        </div>
+        {evaluationMetrics.length > 0 && (
+          <dl className="qqq-section__evaluation-metrics">
+            {evaluationMetrics.map((metric) => (
+              <div key={metric.label} className="qqq-section__evaluation-metric">
+                <dt>{metric.label}</dt>
+                <dd>{metric.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {recent && recent.date && (
+          <div className="qqq-section__evaluation-note">
+            <span>Recent action:</span>{' '}
+            <strong>{formatDate(recent.date)}</strong>
+            {recent.reason ? ` — ${recent.reason}` : ''}
+          </div>
+        )}
+      </>
+    );
+  } else if (evaluationStatus === 'missing_last_rebalance') {
+    evaluationContent = (
+      <p className="qqq-section__evaluation-message">
+        No last rebalance date is recorded for this account. Update the configuration with a “lastRebalance” value to enable
+        model checks.
+      </p>
+    );
+  } else if (evaluationStatus === 'no_positions') {
+    evaluationContent = (
+      <p className="qqq-section__evaluation-message">
+        No positions were found for this account, so the model could not be evaluated.
+      </p>
+    );
+  } else if (evaluationStatus === 'error') {
+    evaluationContent = (
+      <p className="qqq-section__evaluation-message">
+        Unable to evaluate the investment model{evaluation?.message ? `: ${evaluation.message}` : '.'}
+      </p>
+    );
+  }
+
+  const evaluationBlock = evaluationContent ? (
+    <div className={`qqq-section__evaluation qqq-section__evaluation--${evaluationStatus}`}>{evaluationContent}</div>
+  ) : null;
+
   return (
-    <section className="qqq-section" aria-labelledby="qqq-temperature-heading">
+    <section className="qqq-section" aria-labelledby={headingId}>
       <div className="qqq-section__header">
-        <h2 id="qqq-temperature-heading">QQQ temperature</h2>
+        <h2 id={headingId}>{resolvedTitle}</h2>
         <span className="qqq-section__updated">{`Updated ${formatDate(data?.updated)}`}</span>
       </div>
+
+      {(modelName || lastRebalance) && (
+        <div className="qqq-section__model-meta">
+          {modelName && (
+            <span>
+              <span className="qqq-section__meta-label">Model:</span> {modelName}
+            </span>
+          )}
+          {lastRebalance && (
+            <span>
+              <span className="qqq-section__meta-label">Last rebalance:</span> {formatDate(lastRebalance)}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="qqq-section__controls">
         <label className="qqq-section__control-label" htmlFor="qqq-temperature-range">
@@ -229,13 +397,13 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
 
       {loading && (
         <div className="qqq-section__status" role="status">
-          Loading QQQ temperature…
+          {loadingLabel}
         </div>
       )}
 
       {!loading && error && (
         <div className="qqq-section__status qqq-section__status--error" role="alert">
-          <span>Unable to load QQQ temperature details.</span>
+          <span>{errorLabel}</span>
           {error.message && <span className="qqq-section__status-detail">{error.message}</span>}
           {onRetry && (
             <button type="button" className="qqq-section__retry" onClick={onRetry}>
@@ -279,19 +447,10 @@ export default function QqqTemperatureSection({ data, loading, error, onRetry })
       )}
 
       {!loading && !error && !hasChart && (
-        <div className="qqq-section__status">No QQQ temperature data available.</div>
+        <div className="qqq-section__status">No {modelName ? 'investment model' : 'QQQ temperature'} data available.</div>
       )}
 
-      {allocation && (
-        <div className="qqq-section__allocation">
-          <span className="qqq-section__allocation-label">Proportions for temperature:</span>
-          <div className="qqq-section__allocation-values">
-            <span>{`${formatShare(allocation.tqqq)} TQQQ`}</span>
-            <span>{`${formatShare(allocation.qqq)} QQQ`}</span>
-            <span>{`${formatShare(allocation.tBills)} t-bills`}</span>
-          </div>
-        </div>
-      )}
+      {!loading && !error && evaluationBlock}
     </section>
   );
 }
@@ -315,18 +474,18 @@ QqqTemperatureSection.propTypes = {
       date: PropTypes.string,
       temperature: PropTypes.number,
     }),
-    allocation: PropTypes.shape({
-      temperature: PropTypes.number,
-      baseProportion: PropTypes.number,
-      totalEquity: PropTypes.number,
-      tqqq: PropTypes.number,
-      qqq: PropTypes.number,
-      tBills: PropTypes.number,
-    }),
   }),
   loading: PropTypes.bool,
   error: PropTypes.instanceOf(Error),
   onRetry: PropTypes.func,
+  title: PropTypes.string,
+  modelName: PropTypes.string,
+  lastRebalance: PropTypes.string,
+  evaluation: PropTypes.shape({
+    status: PropTypes.string,
+    data: PropTypes.object,
+    message: PropTypes.string,
+  }),
 };
 
 QqqTemperatureSection.defaultProps = {
@@ -334,4 +493,8 @@ QqqTemperatureSection.defaultProps = {
   loading: false,
   error: null,
   onRetry: null,
+  title: null,
+  modelName: null,
+  lastRebalance: null,
+  evaluation: null,
 };
