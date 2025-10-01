@@ -16,6 +16,8 @@ const {
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel } = require('./investmentModel');
+const { computeAccountPerformance, MissingDependencyError } = require('./accountPerformance');
+const { beginPerformanceTrace } = require('./performanceDebug');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -477,7 +479,15 @@ async function questradeRequest(login, pathSegment, options = {}) {
   if (!login) {
     throw new Error('Questrade login context is required for API requests');
   }
-  const { method = 'GET', params, data, headers = {} } = options;
+  const {
+    method = 'GET',
+    params,
+    data,
+    headers = {},
+    trace,
+    traceLabel,
+    traceMetadata,
+  } = options;
   const tokenContext = await getTokenContext(login);
   const url = new URL(pathSegment, tokenContext.apiServer).toString();
 
@@ -494,8 +504,26 @@ async function questradeRequest(login, pathSegment, options = {}) {
     ),
   };
 
+  if (trace) {
+    trace.log('Issuing Questrade request.', {
+      label: traceLabel || null,
+      url,
+      method,
+      params: params || null,
+      metadata: traceMetadata || null,
+    });
+  }
+
   try {
     const response = await enqueueRequest(() => axios(baseConfig));
+    if (trace) {
+      trace.log('Received Questrade response.', {
+        label: traceLabel || null,
+        url,
+        status: response.status,
+      });
+      trace.log('Questrade response payload.', response.data);
+    }
     return response.data;
   } catch (error) {
     if (error.response && error.response.status === 401) {
@@ -513,13 +541,42 @@ async function questradeRequest(login, pathSegment, options = {}) {
           headers
         ),
       };
+      if (trace) {
+        trace.log('Retrying Questrade request after refreshing token.', {
+          label: traceLabel || null,
+          url: retryConfig.url,
+          method,
+          params: params || null,
+          metadata: traceMetadata || null,
+        });
+      }
       const retryResponse = await enqueueRequest(() => axios(retryConfig));
+      if (trace) {
+        trace.log('Received Questrade retry response.', {
+          label: traceLabel || null,
+          url: retryConfig.url,
+          status: retryResponse.status,
+        });
+        trace.log('Questrade retry response payload.', retryResponse.data);
+      }
       return retryResponse.data;
     }
-    console.error(
-      'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
-      error.response ? error.response.data : error.message
-    );
+    if (trace) {
+      trace.error('Questrade request failed.', {
+        label: traceLabel || null,
+        url,
+        status: error.response ? error.response.status : null,
+        message: error.message,
+      });
+      if (error.response && error.response.data) {
+        trace.error('Questrade error payload.', error.response.data);
+      }
+    } else {
+      console.error(
+        'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
+        error.response ? error.response.data : error.message
+      );
+    }
     throw error;
   }
 }
@@ -537,6 +594,79 @@ async function fetchPositions(login, accountId) {
 async function fetchBalances(login, accountId) {
   const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/balances');
   return data || {};
+}
+
+const DEFAULT_EXECUTIONS_START_TIME = '2000-01-01T00:00:00-00:00';
+
+function formatQuestradeDateTime(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return null;
+    }
+    const iso = value.toISOString();
+    const match = iso.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{3}Z$/);
+    if (match) {
+      return match[1] + '-00:00';
+    }
+    return iso;
+  }
+  const stringValue = String(value).trim();
+  if (!stringValue) {
+    return null;
+  }
+  const parsed = new Date(stringValue);
+  if (!Number.isNaN(parsed.getTime())) {
+    return formatQuestradeDateTime(parsed);
+  }
+  return stringValue;
+}
+
+async function fetchExecutions(login, accountId, options = {}) {
+  const results = [];
+  const params = {};
+  const { startTime, endTime, trace } = options;
+
+  const startSource = startTime ?? DEFAULT_EXECUTIONS_START_TIME;
+  const normalizedStart = formatQuestradeDateTime(startSource);
+  if (normalizedStart) {
+    params.startTime = normalizedStart;
+  }
+
+  const normalizedEnd = formatQuestradeDateTime(endTime);
+  if (normalizedEnd) {
+    params.endTime = normalizedEnd;
+  }
+
+  let nextPath = null;
+
+  do {
+    const path = nextPath || '/v1/accounts/' + accountId + '/executions';
+    const requestOptions = nextPath
+      ? { trace, traceLabel: 'fetchExecutions', traceMetadata: { path } }
+      : { params, trace, traceLabel: 'fetchExecutions', traceMetadata: { path, params } };
+    // eslint-disable-next-line no-await-in-loop
+    const data = await questradeRequest(login, path, requestOptions);
+    if (trace) {
+      trace.log('Fetched executions page.', {
+        path,
+        entries: Array.isArray(data && data.executions) ? data.executions.length : 0,
+        hasNext: Boolean(data && data.next),
+      });
+    }
+    const entries = Array.isArray(data && data.executions) ? data.executions : [];
+    entries.forEach((entry) => results.push(entry));
+    const next = data && data.next ? String(data.next).trim() : '';
+    if (next) {
+      nextPath = next;
+    } else {
+      nextPath = null;
+    }
+  } while (nextPath);
+
+  return results;
 }
 
 
@@ -679,6 +809,32 @@ function summarizeAccountCombinedBalances(balanceEntry) {
     return null;
   }
   return combined;
+}
+
+function resolveBaseCurrencyFromBalances(balanceEntry, fallback = 'CAD') {
+  if (!balanceEntry || typeof balanceEntry !== 'object') {
+    return fallback;
+  }
+  const combinedBalances = Array.isArray(balanceEntry.combinedBalances) ? balanceEntry.combinedBalances : [];
+  if (!combinedBalances.length) {
+    return fallback;
+  }
+  let best = null;
+  combinedBalances.forEach((balance) => {
+    if (!balance || !balance.currency) {
+      return;
+    }
+    const equity = pickNumericValue(balance, 'totalEquity');
+    const marketValue = pickNumericValue(balance, 'marketValue');
+    const score = Number.isFinite(equity) ? equity : Number.isFinite(marketValue) ? marketValue : null;
+    if (!Number.isFinite(score)) {
+      return;
+    }
+    if (!best || score > best.score) {
+      best = { currency: String(balance.currency).toUpperCase(), score };
+    }
+  });
+  return best ? best.currency : fallback;
 }
 
 function finalizeBalances(summary) {
@@ -880,6 +1036,141 @@ app.get('/api/qqq-temperature', async function (req, res) {
     }
     const message = error && error.message ? error.message : 'Unknown error';
     res.status(500).json({ message: 'Failed to load QQQ temperature data', details: message });
+  }
+});
+
+app.get('/api/accounts/:accountId/performance', async function (req, res) {
+  const { accountId } = req.params;
+  const trace = beginPerformanceTrace('GET /api/accounts/:accountId/performance', {
+    accountId,
+  });
+  if (!accountId || accountId === 'all') {
+    trace.warn('Account performance requested without a specific account.');
+    trace.end('Responded with 400 for invalid account selection.');
+    res.status(400).send('Account performance is only available for a single account.');
+    return;
+  }
+
+  const parts = String(accountId).split(':');
+  const loginId = parts.length > 1 ? parts[0] : null;
+  const accountNumber = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
+  const login = loginId ? loginsById[loginId] : null;
+  if (!login || !accountNumber) {
+    trace.warn('Account lookup failed.', { loginId, accountNumber });
+    trace.end('Responded with 404 because account was not found.');
+    res.status(404).send('Account not found.');
+    return;
+  }
+
+  try {
+    trace.log('Fetching executions and balances from Questrade.', {
+      loginId: login.id,
+      accountNumber,
+      startTime: formatQuestradeDateTime(DEFAULT_EXECUTIONS_START_TIME),
+      endTime: null,
+    });
+    const [executions, balances] = await Promise.all([
+      fetchExecutions(login, accountNumber, {
+        startTime: DEFAULT_EXECUTIONS_START_TIME,
+        trace,
+      }),
+      fetchBalances(login, accountNumber).catch(() => null),
+    ]);
+    trace.log('Fetched upstream data.', {
+      executions: Array.isArray(executions) ? executions.length : 0,
+      balancesAvailable: Boolean(balances),
+    });
+    const rawSymbolIds = executions
+      .map((execution) => {
+        if (!execution) {
+          return null;
+        }
+        if (execution.symbolId !== undefined && execution.symbolId !== null) {
+          return execution.symbolId;
+        }
+        if (execution.symbolID !== undefined && execution.symbolID !== null) {
+          return execution.symbolID;
+        }
+        if (execution.securityId !== undefined && execution.securityId !== null) {
+          return execution.securityId;
+        }
+        if (execution.securityID !== undefined && execution.securityID !== null) {
+          return execution.securityID;
+        }
+        return null;
+      })
+      .filter((symbolId) => symbolId !== null && symbolId !== undefined);
+    const numericSymbolIds = Array.from(
+      new Set(
+        rawSymbolIds
+          .map((symbolId) => {
+            if (typeof symbolId === 'number') {
+              return symbolId;
+            }
+            if (typeof symbolId === 'string' && /^\d+$/.test(symbolId)) {
+              return Number(symbolId);
+            }
+            return null;
+          })
+          .filter((symbolId) => symbolId !== null)
+      )
+    );
+    trace.log('Normalized symbol identifiers from executions.', {
+      rawSymbols: rawSymbolIds.length,
+      uniqueSymbols: numericSymbolIds.length,
+    });
+    const symbolDetails = numericSymbolIds.length ? await fetchSymbolsDetails(login, numericSymbolIds) : {};
+    if (numericSymbolIds.length) {
+      trace.log('Fetched symbol metadata.', {
+        symbolsRequested: numericSymbolIds.length,
+        symbolsResolved: Object.keys(symbolDetails || {}).length,
+      });
+    } else {
+      trace.log('No symbol metadata required for executions.');
+    }
+    const baseCurrency = resolveBaseCurrencyFromBalances(balances, 'CAD');
+    trace.log('Resolved base currency for performance.', { baseCurrency });
+    const performance = await computeAccountPerformance({
+      executions,
+      symbolDetails,
+      baseCurrency,
+    });
+
+    trace.log('Computed account performance timeline.', {
+      timelinePoints: Array.isArray(performance.timeline) ? performance.timeline.length : 0,
+      warnings: Array.isArray(performance.warnings) ? performance.warnings.length : 0,
+      startDate: performance.startDate,
+      endDate: performance.endDate,
+    });
+
+    res.json({
+      accountId,
+      baseCurrency: performance.baseCurrency,
+      generatedAt: new Date().toISOString(),
+      startDate: performance.startDate,
+      endDate: performance.endDate,
+      timeline: performance.timeline,
+      warnings: performance.warnings,
+    });
+    trace.end('Performance response delivered successfully.');
+  } catch (error) {
+    if (error && error.code === 'MISSING_DEPENDENCY') {
+      trace.error('Missing dependency while computing account performance.', error);
+      trace.end('Responded with 503 due to missing dependency.');
+      res.status(503).json({ error: error.message });
+      return;
+    }
+    const status = error && error.response && error.response.status;
+    if (status === 404) {
+      trace.warn('Upstream returned 404 while fetching account data.', { status });
+      trace.end('Responded with 404 because upstream account was missing.');
+      res.status(404).send('Account not found.');
+      return;
+    }
+    trace.error('Failed to build performance for account.', error);
+    console.error('Failed to build performance for account', accountId, error && error.message ? error.message : error);
+    trace.end('Responded with 500 due to performance failure.');
+    res.status(500).send('Failed to build account performance.');
   }
 });
 
