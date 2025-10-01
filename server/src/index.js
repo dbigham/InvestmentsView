@@ -1122,6 +1122,116 @@ function summarizeCashFlowsForDebug(flows) {
   });
 }
 
+function summarizePositionSnapshotForDebug(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return [];
+  }
+  return Object.keys(snapshot)
+    .sort()
+    .map(function (symbol) {
+      const entry = snapshot[symbol] || {};
+      const quantity = Number.isFinite(entry.quantity) ? entry.quantity : null;
+      const price = Number.isFinite(entry.price) ? entry.price : null;
+      const marketValue = Number.isFinite(entry.marketValue)
+        ? entry.marketValue
+        : Number.isFinite(quantity) && Number.isFinite(price)
+        ? quantity * price
+        : null;
+      const currency = entry.currency || null;
+      const parts = [
+        symbol,
+        'qty=' + formatDecimal(quantity, 4),
+        'price=' + formatDecimal(price, 4),
+        'value=' + formatDecimal(marketValue, 2),
+      ];
+      if (currency) {
+        parts.push(currency);
+      }
+      return parts.join(' | ');
+    });
+}
+
+function summarizeQuantityReconciliationForDebug(netQuantities, snapshot) {
+  const symbols = new Set();
+  if (netQuantities && typeof netQuantities.forEach === 'function') {
+    netQuantities.forEach(function (_, symbol) {
+      if (symbol) {
+        symbols.add(symbol);
+      }
+    });
+  }
+  if (snapshot && typeof snapshot === 'object') {
+    Object.keys(snapshot).forEach(function (symbol) {
+      if (symbol) {
+        symbols.add(symbol);
+      }
+    });
+  }
+  return Array.from(symbols)
+    .sort()
+    .map(function (symbol) {
+      const hasEventQuantity =
+        netQuantities && typeof netQuantities.has === 'function' && netQuantities.has(symbol);
+      const eventQuantity = hasEventQuantity ? netQuantities.get(symbol) : 0;
+      const snapshotEntry = snapshot && snapshot[symbol] ? snapshot[symbol] : null;
+      const hasSnapshot = snapshotEntry && typeof snapshotEntry === 'object';
+      const snapshotQuantity = hasSnapshot && Number.isFinite(snapshotEntry.quantity)
+        ? snapshotEntry.quantity
+        : null;
+      const delta = Number.isFinite(snapshotQuantity)
+        ? snapshotQuantity - eventQuantity
+        : null;
+      const currency = snapshotEntry && snapshotEntry.currency ? snapshotEntry.currency : null;
+      const parts = [
+        symbol,
+        'events=' + formatDecimal(eventQuantity, 4) + (hasEventQuantity ? '' : ' (none)'),
+        'snapshot=' + (Number.isFinite(snapshotQuantity) ? formatDecimal(snapshotQuantity, 4) : 'n/a'),
+      ];
+      parts.push('delta=' + (Number.isFinite(delta) ? formatDecimal(delta, 4) : 'n/a'));
+      if (currency) {
+        parts.push(currency);
+      }
+      return parts.join(' | ');
+    });
+}
+
+function summarizeAggregatedTotalsForDebug(totals) {
+  if (!totals || typeof totals !== 'object') {
+    return [];
+  }
+  const startValue = Number(totals.startValue) || 0;
+  const endValue = Number(totals.endValue) || 0;
+  const contributions = Number(totals.totalContributions) || 0;
+  const withdrawals = Number(totals.totalWithdrawals) || 0;
+  const investedBase = startValue + contributions;
+  const endingCapital = endValue + withdrawals;
+  const totalReturn = Number.isFinite(totals.totalReturn) ? totals.totalReturn : null;
+  const cagr = Number.isFinite(totals.cagr) ? totals.cagr : null;
+  const lines = [];
+  const periodLabel = (totals.startDate || 'n/a') + ' → ' + (totals.endDate || 'n/a');
+  lines.push('period=' + periodLabel);
+  lines.push('startValue=' + formatDecimal(startValue, 2));
+  lines.push('endValue=' + formatDecimal(endValue, 2));
+  lines.push('contributions=' + formatDecimal(contributions, 2));
+  lines.push('withdrawals=' + formatDecimal(withdrawals, 2));
+  lines.push('investedCapital=' + formatDecimal(investedBase, 2));
+  lines.push('endingCapital=' + formatDecimal(endingCapital, 2));
+  lines.push('pnl=' + formatDecimal(Number(totals.totalPnl) || 0, 2));
+  lines.push(
+    'totalReturn=' + (totalReturn !== null ? formatDecimal(totalReturn * 100, 2) + '%' : 'n/a')
+  );
+  lines.push('cagr=' + (cagr !== null ? formatDecimal(cagr * 100, 2) + '%' : 'n/a'));
+  const startDate = totals.startDate ? parseTimestamp(totals.startDate + 'T00:00:00Z') : null;
+  const endDate = totals.endDate ? parseTimestamp(totals.endDate + 'T00:00:00Z') : null;
+  if (startDate && endDate && endDate >= startDate) {
+    const durationDays = Math.round((endDate.getTime() - startDate.getTime()) / (24 * 3600 * 1000));
+    lines.push('duration=' + durationDays + ' days');
+  }
+  const netCashFlow = withdrawals - contributions;
+  lines.push('netCashFlow=' + formatDecimal(netCashFlow, 2));
+  return lines;
+}
+
 function buildPositionSnapshot(positions) {
   const snapshot = {};
   if (!Array.isArray(positions)) {
@@ -1855,6 +1965,24 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
 
   const transferEvents = normalizeTransferEvents(transfers);
   const positionSnapshot = buildPositionSnapshot(positions);
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const snapshotCount = Object.keys(positionSnapshot).length;
+    const snapshotSummaries = summarizePositionSnapshotForDebug(positionSnapshot);
+    if (snapshotSummaries.length) {
+      performanceDebug(
+        'Position snapshot baseline (count=' +
+          snapshotCount +
+          '):\n' +
+          snapshotSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Position snapshot baseline: none');
+    }
+  }
   const now = new Date();
   const finalDateKey = now.toISOString().slice(0, 10);
 
@@ -1893,6 +2021,21 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
   events.forEach(function (event) {
     netQuantities.set(event.symbol, (netQuantities.get(event.symbol) || 0) + event.quantity);
   });
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const reconciliationSummaries = summarizeQuantityReconciliationForDebug(netQuantities, positionSnapshot);
+    if (reconciliationSummaries.length) {
+      performanceDebug(
+        'Net position coverage before adjustments:\n' +
+          reconciliationSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Net position coverage before adjustments: none');
+    }
+  }
 
   const adjustmentTimestamp = earliestTimestamp ? new Date(earliestTimestamp.getTime()) : new Date(now.getTime());
   const adjustmentEvents = [];
@@ -2108,7 +2251,22 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
 
   const totals = computeAggregatedMetrics(timeline, cashFlows);
   if (PERFORMANCE_DEBUG_ENABLED) {
-    performanceDebug('Aggregated totals (' + (baseCurrency || 'n/a') + '):', totals);
+    const totalsSummaries = summarizeAggregatedTotalsForDebug(totals);
+    if (totalsSummaries.length) {
+      performanceDebug(
+        'Aggregated totals (' +
+          (baseCurrency || 'n/a') +
+          '):\n' +
+          totalsSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Aggregated totals (' + (baseCurrency || 'n/a') + '): none');
+    }
+    performanceDebug('Aggregated totals raw data:', totals);
   }
 
   return {
