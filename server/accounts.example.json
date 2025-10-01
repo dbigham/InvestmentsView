@@ -6,7 +6,14 @@
     "showQQQDetails": true,
     "investmentModel": "A1",
     "lastRebalance": "2024-01-15",
-    "default": true
+    "default": true,
+    "transfers": [
+      {
+        "symbol": "AAPL",
+        "quantity": 25,
+        "timestamp": "2020-06-15"
+      }
+    ]
   },
   "53384040": {
     "name": "Margin",

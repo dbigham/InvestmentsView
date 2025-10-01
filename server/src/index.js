@@ -4,6 +4,7 @@ const axios = require('axios');
 const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
+const yahooFinance = require('yahoo-finance2').default;
 require('dotenv').config();
 const {
   getAccountNameOverrides,
@@ -539,6 +540,768 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+async function loadAccountsData(configuredDefaultKey) {
+  const accountNameOverrides = getAccountNameOverrides();
+  const accountPortalOverrides = getAccountPortalOverrides();
+  const accountChatOverrides = getAccountChatOverrides();
+  const accountSettings = getAccountSettings();
+  const accountBeneficiaries = getAccountBeneficiaries();
+  const configuredOrdering = getAccountOrdering();
+
+  const accountCollections = [];
+
+  for (const login of allLogins) {
+    const fetchedAccounts = await fetchAccounts(login);
+    const normalized = fetchedAccounts.map(function (account, index) {
+      const rawNumber = account.number || account.accountNumber || account.id || index;
+      const number = String(rawNumber);
+      const compositeId = login.id + ':' + number;
+      const ownerLabel = resolveLoginDisplay(login);
+      const normalizedAccount = Object.assign({}, account, {
+        id: compositeId,
+        number,
+        accountNumber: number,
+        loginId: login.id,
+        ownerId: login.id,
+        ownerLabel,
+        ownerEmail: login.email || null,
+        loginLabel: ownerLabel,
+        loginEmail: login.email || null,
+      });
+      const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
+      if (displayName) {
+        normalizedAccount.displayName = displayName;
+      }
+      const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
+      if (overridePortalId) {
+        normalizedAccount.portalAccountId = overridePortalId;
+      }
+      const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
+      if (overrideChatUrl) {
+        normalizedAccount.chatURL = overrideChatUrl;
+      } else if (normalizedAccount.chatURL === undefined) {
+        normalizedAccount.chatURL = null;
+      }
+      const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
+      if (typeof accountSettingsOverride === 'boolean') {
+        normalizedAccount.showQQQDetails = accountSettingsOverride;
+      } else if (accountSettingsOverride && typeof accountSettingsOverride === 'object') {
+        if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
+          normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
+        }
+        if (typeof accountSettingsOverride.investmentModel === 'string') {
+          const trimmedModel = accountSettingsOverride.investmentModel.trim();
+          if (trimmedModel) {
+            normalizedAccount.investmentModel = trimmedModel;
+          }
+        }
+        if (typeof accountSettingsOverride.lastRebalance === 'string') {
+          const trimmedDate = accountSettingsOverride.lastRebalance.trim();
+          if (trimmedDate) {
+            normalizedAccount.investmentModelLastRebalance = trimmedDate;
+          }
+        } else if (
+          accountSettingsOverride.lastRebalance &&
+          typeof accountSettingsOverride.lastRebalance === 'object' &&
+          typeof accountSettingsOverride.lastRebalance.date === 'string'
+        ) {
+          const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
+          if (trimmedDate) {
+            normalizedAccount.investmentModelLastRebalance = trimmedDate;
+          }
+        }
+        if (Array.isArray(accountSettingsOverride.transfers) && accountSettingsOverride.transfers.length) {
+          normalizedAccount.performanceTransfers = accountSettingsOverride.transfers.map((transfer) => Object.assign({}, transfer));
+        }
+      }
+      const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
+      if (defaultBeneficiary) {
+        normalizedAccount.beneficiary = defaultBeneficiary;
+      }
+      const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
+      if (resolvedBeneficiary) {
+        normalizedAccount.beneficiary = resolvedBeneficiary;
+      }
+      return normalizedAccount;
+    });
+    accountCollections.push({ login, accounts: normalized });
+  }
+
+  const defaultAccount = findDefaultAccount(accountCollections, configuredDefaultKey);
+
+  let allAccounts = accountCollections.flatMap(function (entry) {
+    return entry.accounts;
+  });
+
+  if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
+    const orderingMap = new Map();
+    configuredOrdering.forEach(function (entry, index) {
+      const normalized = entry == null ? '' : String(entry).trim();
+      if (!normalized) {
+        return;
+      }
+      if (!orderingMap.has(normalized)) {
+        orderingMap.set(normalized, index);
+      }
+    });
+
+    if (orderingMap.size) {
+      const DEFAULT_ORDER = Number.MAX_SAFE_INTEGER;
+      const resolveAccountOrder = function (account) {
+        if (!account) {
+          return DEFAULT_ORDER;
+        }
+        const candidates = [];
+        if (account.number) {
+          candidates.push(String(account.number).trim());
+        }
+        if (account.accountNumber) {
+          candidates.push(String(account.accountNumber).trim());
+        }
+        if (account.id) {
+          candidates.push(String(account.id).trim());
+        }
+        for (const candidate of candidates) {
+          if (!candidate) {
+            continue;
+          }
+          if (orderingMap.has(candidate)) {
+            return orderingMap.get(candidate);
+          }
+        }
+        return DEFAULT_ORDER;
+      };
+
+      allAccounts = allAccounts
+        .map(function (account, index) {
+          return { account, index, order: resolveAccountOrder(account) };
+        })
+        .sort(function (a, b) {
+          if (a.order !== b.order) {
+            return a.order - b.order;
+          }
+          return a.index - b.index;
+        })
+        .map(function (entry) {
+          return entry.account;
+        });
+    }
+  }
+
+  const accountsById = {};
+  allAccounts.forEach(function (account) {
+    accountsById[account.id] = account;
+  });
+
+  return { accountCollections, allAccounts, accountsById, defaultAccount };
+}
+
+async function fetchExecutions(login, accountId, options = {}) {
+  const params = {};
+  if (options.startTime) {
+    params.startTime = options.startTime;
+  }
+  if (options.endTime) {
+    params.endTime = options.endTime;
+  }
+
+  const basePath = '/v1/accounts/' + accountId + '/executions';
+  let nextPath = basePath;
+  let firstRequest = true;
+  const results = [];
+  let safety = 0;
+
+  while (nextPath && safety < 50) {
+    safety += 1;
+    const requestOptions = firstRequest ? { params } : {};
+    const data = await questradeRequest(login, nextPath, requestOptions);
+    firstRequest = false;
+    if (data && Array.isArray(data.executions)) {
+      results.push(...data.executions);
+    }
+    if (data && data.next) {
+      nextPath = data.next;
+    } else if (data && data.nextPage) {
+      nextPath = data.nextPage;
+    } else if (data && data.links && data.links.next) {
+      nextPath = data.links.next;
+    } else if (data && data.more === true && data.nextRecordsPath) {
+      nextPath = data.nextRecordsPath;
+    } else {
+      nextPath = null;
+    }
+  }
+
+  return results;
+}
+
+function parseTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return null;
+    }
+    return new Date(value.getTime());
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const derived = new Date(value);
+    if (Number.isNaN(derived.getTime())) {
+      return null;
+    }
+    return derived;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+    const appended = new Date(trimmed + 'T00:00:00Z');
+    if (!Number.isNaN(appended.getTime())) {
+      return appended;
+    }
+  }
+  return null;
+}
+
+function toDateKey(value) {
+  const timestamp = parseTimestamp(value);
+  if (!timestamp) {
+    return null;
+  }
+  return timestamp.toISOString().slice(0, 10);
+}
+
+function pickNumericCandidate(source, keys) {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    if (!key) {
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      const value = Number(source[key]);
+      if (Number.isFinite(value)) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+function resolveExecutionSide(execution) {
+  const candidates = [execution.side, execution.action, execution.orderSide, execution.type, execution.actionType];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'string') {
+      continue;
+    }
+    const normalized = candidate.trim().toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+    if (normalized.includes('buy')) {
+      return 'buy';
+    }
+    if (normalized.includes('sell')) {
+      return 'sell';
+    }
+  }
+  if (execution.isBuy === true) {
+    return 'buy';
+  }
+  if (execution.isBuy === false) {
+    return 'sell';
+  }
+  return null;
+}
+
+function normalizeExecutionEvents(executions) {
+  if (!Array.isArray(executions)) {
+    return [];
+  }
+  const quantityKeys = ['quantity', 'qty', 'filledQuantity', 'execQuantity'];
+  const priceKeys = ['price', 'avgPrice', 'pricePerUnit', 'pricePerShare'];
+  const feeKeys = ['commission', 'totalCommission', 'commissionAndFees', 'fees'];
+  const timestampKeys = ['transactTime', 'tradeDate', 'transactionTime', 'executionTime', 'fillTime', 'timestamp'];
+
+  const events = [];
+
+  executions.forEach(function (execution) {
+    if (!execution || typeof execution !== 'object') {
+      return;
+    }
+    const symbol = execution.symbol ? String(execution.symbol).trim() : null;
+    if (!symbol) {
+      return;
+    }
+    const side = resolveExecutionSide(execution);
+    if (!side) {
+      return;
+    }
+    const quantityValue = pickNumericCandidate(execution, quantityKeys);
+    const priceValue = pickNumericCandidate(execution, priceKeys);
+    if (!Number.isFinite(quantityValue) || quantityValue === 0 || !Number.isFinite(priceValue)) {
+      return;
+    }
+    const quantity = Math.abs(quantityValue);
+    const price = priceValue;
+    const timestampCandidate = timestampKeys
+      .map(function (key) {
+        return parseTimestamp(execution[key]);
+      })
+      .find(Boolean);
+    const timestamp = timestampCandidate || null;
+    const fees = feeKeys.reduce(function (total, key) {
+      const value = pickNumericCandidate(execution, [key]);
+      if (Number.isFinite(value)) {
+        return total + value;
+      }
+      return total;
+    }, 0);
+    const gross = quantity * price;
+    const cashFlow = side === 'buy' ? -(gross + fees) : gross - fees;
+    const quantityChange = side === 'buy' ? quantity : -quantity;
+    events.push({
+      symbol,
+      quantity: quantityChange,
+      price,
+      cashFlow,
+      timestamp: timestamp || null,
+      type: 'execution',
+      metadata: {
+        side,
+      },
+    });
+  });
+
+  return events;
+}
+
+function normalizeTransferEvents(transfers) {
+  if (!Array.isArray(transfers)) {
+    return [];
+  }
+  return transfers
+    .map(function (transfer) {
+      if (!transfer || typeof transfer !== 'object') {
+        return null;
+      }
+      const symbol = transfer.symbol ? String(transfer.symbol).trim() : null;
+      if (!symbol) {
+        return null;
+      }
+      const quantity = Number(transfer.quantity);
+      if (!Number.isFinite(quantity) || quantity === 0) {
+        return null;
+      }
+      const timestamp = transfer.timestamp ? parseTimestamp(transfer.timestamp) : null;
+      const price = Number(transfer.price);
+      const normalizedPrice = Number.isFinite(price) ? price : null;
+      const currency = transfer.currency ? String(transfer.currency).trim() : null;
+      return {
+        symbol,
+        quantity,
+        price: normalizedPrice,
+        currency: currency || null,
+        cashFlow: 0,
+        timestamp: timestamp || null,
+        type: 'transfer',
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildPositionSnapshot(positions) {
+  const snapshot = {};
+  if (!Array.isArray(positions)) {
+    return snapshot;
+  }
+  positions.forEach(function (position) {
+    if (!position || typeof position !== 'object') {
+      return;
+    }
+    const symbol = position.symbol ? String(position.symbol).trim() : null;
+    if (!symbol) {
+      return;
+    }
+    const quantity = Number(position.openQuantity);
+    const price = Number(position.currentPrice);
+    const marketValue = Number(position.currentMarketValue);
+    const currency = position.currency ? String(position.currency).trim() : null;
+    snapshot[symbol] = {
+      quantity: Number.isFinite(quantity) ? quantity : 0,
+      price: Number.isFinite(price) ? price : null,
+      marketValue: Number.isFinite(marketValue) ? marketValue : null,
+      currency: currency || null,
+    };
+  });
+  return snapshot;
+}
+
+async function fetchHistoricalPrices(symbol, startDate, endDate) {
+  const period1 = new Date(startDate.getTime() - 24 * 3600 * 1000);
+  const period2 = new Date(endDate.getTime() + 24 * 3600 * 1000);
+  try {
+    const history = await yahooFinance.historical(symbol, {
+      period1,
+      period2,
+      interval: '1d',
+    });
+    if (!Array.isArray(history)) {
+      return [];
+    }
+    const dedup = new Map();
+    history.forEach(function (entry) {
+      if (!entry || !entry.date) {
+        return;
+      }
+      const date = entry.date instanceof Date ? entry.date : new Date(entry.date);
+      if (Number.isNaN(date.getTime())) {
+        return;
+      }
+      const price = Number.isFinite(entry.adjClose) ? entry.adjClose : Number(entry.close);
+      if (!Number.isFinite(price)) {
+        return;
+      }
+      const key = date.toISOString().slice(0, 10);
+      dedup.set(key, price);
+    });
+    return Array.from(dedup.entries())
+      .map(function ([date, price]) {
+        return { date, price };
+      })
+      .sort(function (a, b) {
+        return a.date.localeCompare(b.date);
+      });
+  } catch (error) {
+    console.warn('Failed to load price history for symbol ' + symbol + ':', error.message);
+    return [];
+  }
+}
+
+async function buildPriceSeries(symbols, startDate, endDate, finalDateKey, positionSnapshot) {
+  const seriesMap = new Map();
+  for (const symbol of symbols) {
+    const history = await fetchHistoricalPrices(symbol, startDate, endDate);
+    const pointsMap = new Map();
+    history.forEach(function (entry) {
+      if (!entry || !entry.date) {
+        return;
+      }
+      pointsMap.set(entry.date, entry.price);
+    });
+    const snapshot = positionSnapshot[symbol];
+    if (snapshot && finalDateKey) {
+      let resolvedPrice = null;
+      if (Number.isFinite(snapshot.price) && snapshot.price > 0) {
+        resolvedPrice = snapshot.price;
+      } else if (
+        Number.isFinite(snapshot.marketValue) &&
+        Number.isFinite(snapshot.quantity) &&
+        Math.abs(snapshot.quantity) > 1e-9 &&
+        snapshot.marketValue !== 0
+      ) {
+        resolvedPrice = snapshot.marketValue / snapshot.quantity;
+      }
+      if (Number.isFinite(resolvedPrice) && resolvedPrice > 0) {
+        pointsMap.set(finalDateKey, resolvedPrice);
+      }
+    }
+    const ordered = Array.from(pointsMap.entries())
+      .map(function ([date, price]) {
+        return { date, price };
+      })
+      .sort(function (a, b) {
+        return a.date.localeCompare(b.date);
+      });
+    seriesMap.set(symbol, ordered);
+  }
+  return seriesMap;
+}
+
+function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDateKey) {
+  const changeMaps = new Map();
+  const dateSet = new Set();
+
+  events.forEach(function (event) {
+    const dateKey = toDateKey(event.timestamp);
+    if (!dateKey) {
+      return;
+    }
+    dateSet.add(dateKey);
+    let symbolMap = changeMaps.get(event.symbol);
+    if (!symbolMap) {
+      symbolMap = new Map();
+      changeMaps.set(event.symbol, symbolMap);
+    }
+    symbolMap.set(dateKey, (symbolMap.get(dateKey) || 0) + event.quantity);
+  });
+
+  priceSeries.forEach(function (points) {
+    points.forEach(function (point) {
+      if (point && point.date) {
+        dateSet.add(point.date);
+      }
+    });
+  });
+
+  if (finalDateKey) {
+    dateSet.add(finalDateKey);
+  }
+
+  const sortedDates = Array.from(dateSet).filter(Boolean).sort(function (a, b) {
+    return a.localeCompare(b);
+  });
+
+  const priceCursors = new Map();
+  symbols.forEach(function (symbol) {
+    const points = priceSeries.get(symbol) || [];
+    priceCursors.set(symbol, { points, index: 0, lastPrice: null });
+  });
+
+  const quantityBySymbol = new Map();
+  const timeline = [];
+
+  sortedDates.forEach(function (dateKey) {
+    symbols.forEach(function (symbol) {
+      const symbolMap = changeMaps.get(symbol);
+      if (symbolMap && symbolMap.has(dateKey)) {
+        const next = (quantityBySymbol.get(symbol) || 0) + symbolMap.get(dateKey);
+        if (Math.abs(next) < 1e-9) {
+          quantityBySymbol.delete(symbol);
+        } else {
+          quantityBySymbol.set(symbol, next);
+        }
+      }
+    });
+
+    let totalValue = 0;
+    symbols.forEach(function (symbol) {
+      const cursor = priceCursors.get(symbol);
+      if (!cursor) {
+        return;
+      }
+      while (cursor.index < cursor.points.length && cursor.points[cursor.index].date <= dateKey) {
+        cursor.lastPrice = cursor.points[cursor.index].price;
+        cursor.index += 1;
+      }
+      const quantity = quantityBySymbol.get(symbol) || 0;
+      if (!quantity) {
+        return;
+      }
+      if (!Number.isFinite(cursor.lastPrice)) {
+        return;
+      }
+      totalValue += quantity * cursor.lastPrice;
+    });
+
+    timeline.push({ date: dateKey, value: Number.isFinite(totalValue) ? totalValue : 0 });
+  });
+
+  return timeline;
+}
+
+function computeAggregatedMetrics(timeline, cashFlows) {
+  if (!Array.isArray(timeline) || timeline.length === 0) {
+    return {
+      startDate: null,
+      endDate: null,
+      startValue: 0,
+      endValue: 0,
+      totalContributions: 0,
+      totalWithdrawals: 0,
+      totalPnl: 0,
+      totalReturn: null,
+      cagr: null,
+    };
+  }
+
+  const startEntry = timeline[0];
+  const endEntry = timeline[timeline.length - 1];
+  const startValue = Number(startEntry.value) || 0;
+  const endValue = Number(endEntry.value) || 0;
+
+  let totalContributions = 0;
+  let totalWithdrawals = 0;
+  if (Array.isArray(cashFlows)) {
+    cashFlows.forEach(function (flow) {
+      const amount = Number(flow.amount);
+      if (!Number.isFinite(amount) || amount === 0) {
+        return;
+      }
+      if (amount > 0) {
+        totalWithdrawals += amount;
+      } else {
+        totalContributions += -amount;
+      }
+    });
+  }
+
+  const totalPnl = (endValue + totalWithdrawals) - (startValue + totalContributions);
+  const investedBase = startValue + totalContributions;
+  const totalReturn = investedBase > 0 ? totalPnl / investedBase : null;
+
+  const startDate = startEntry.date || null;
+  const endDate = endEntry.date || null;
+  const startTime = startDate ? parseTimestamp(startDate + 'T00:00:00Z') : null;
+  const endTime = endDate ? parseTimestamp(endDate + 'T00:00:00Z') : null;
+  let cagr = null;
+  if (startTime && endTime && endTime > startTime && investedBase > 0 && endValue > 0) {
+    const durationYears = (endTime.getTime() - startTime.getTime()) / (365.25 * 24 * 3600 * 1000);
+    if (durationYears > 0) {
+      const endingCapital = endValue + totalWithdrawals;
+      const startingCapital = investedBase;
+      if (endingCapital > 0 && startingCapital > 0) {
+        cagr = Math.pow(endingCapital / startingCapital, 1 / durationYears) - 1;
+      }
+    }
+  }
+
+  return {
+    startDate,
+    endDate,
+    startValue,
+    endValue,
+    totalContributions,
+    totalWithdrawals,
+    totalPnl,
+    totalReturn,
+    cagr,
+  };
+}
+
+function ensureEventTimestamps(events, fallbackTimestamp) {
+  if (!Array.isArray(events)) {
+    return;
+  }
+  events.forEach(function (event) {
+    if (!event.timestamp) {
+      event.timestamp = fallbackTimestamp ? new Date(fallbackTimestamp.getTime()) : null;
+    }
+  });
+}
+
+async function generateAccountPerformance({ executions, transfers, positions, account }) {
+  const executionEvents = normalizeExecutionEvents(executions);
+  const transferEvents = normalizeTransferEvents(transfers);
+  const positionSnapshot = buildPositionSnapshot(positions);
+  const now = new Date();
+  const finalDateKey = now.toISOString().slice(0, 10);
+
+  const events = executionEvents.concat(transferEvents);
+  let earliestTimestamp = null;
+  events.forEach(function (event) {
+    if (!event.timestamp) {
+      return;
+    }
+    if (!earliestTimestamp || event.timestamp < earliestTimestamp) {
+      earliestTimestamp = event.timestamp;
+    }
+  });
+
+  if (!earliestTimestamp) {
+    earliestTimestamp = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+  }
+
+  ensureEventTimestamps(events, new Date(earliestTimestamp.getTime() - 24 * 3600 * 1000));
+
+  const netQuantities = new Map();
+  events.forEach(function (event) {
+    netQuantities.set(event.symbol, (netQuantities.get(event.symbol) || 0) + event.quantity);
+  });
+
+  Object.keys(positionSnapshot).forEach(function (symbol) {
+    const snapshot = positionSnapshot[symbol];
+    const targetQuantity = snapshot && Number.isFinite(snapshot.quantity) ? snapshot.quantity : 0;
+    const current = netQuantities.get(symbol) || 0;
+    const delta = targetQuantity - current;
+    if (Math.abs(delta) > 1e-6) {
+      events.push({
+        symbol,
+        quantity: delta,
+        price: snapshot && Number.isFinite(snapshot.price) ? snapshot.price : null,
+        cashFlow: 0,
+        timestamp: new Date(now.getTime()),
+        type: 'adjustment',
+      });
+    }
+  });
+
+  events.sort(function (a, b) {
+    const timeA = a.timestamp ? a.timestamp.getTime() : 0;
+    const timeB = b.timestamp ? b.timestamp.getTime() : 0;
+    if (timeA !== timeB) {
+      return timeA - timeB;
+    }
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  const symbols = new Set();
+  events.forEach(function (event) {
+    if (event.symbol) {
+      symbols.add(event.symbol);
+    }
+  });
+  Object.keys(positionSnapshot).forEach(function (symbol) {
+    if (symbol) {
+      symbols.add(symbol);
+    }
+  });
+
+  if (!symbols.size) {
+    return {
+      timeline: [],
+      cashFlows: [],
+      totals: computeAggregatedMetrics([], []),
+      metadata: {
+        eventCount: 0,
+        symbolCount: 0,
+        generatedAt: now.toISOString(),
+      },
+    };
+  }
+
+  const sortedSymbols = Array.from(symbols).sort();
+
+  const earliestEventTime = events.length ? events[0].timestamp || earliestTimestamp : earliestTimestamp;
+  const startDate = earliestEventTime ? new Date(earliestEventTime.getTime()) : new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+  const priceSeries = await buildPriceSeries(sortedSymbols, startDate, now, finalDateKey, positionSnapshot);
+  const timeline = computeAccountPerformanceTimeline(events, priceSeries, sortedSymbols, finalDateKey);
+
+  const cashFlows = events
+    .filter(function (event) {
+      return Number.isFinite(event.cashFlow) && Math.abs(event.cashFlow) > 0.00001;
+    })
+    .map(function (event) {
+      return {
+        timestamp: event.timestamp ? event.timestamp.toISOString() : null,
+        amount: event.cashFlow,
+        symbol: event.symbol,
+        type: event.type,
+      };
+    });
+
+  const totals = computeAggregatedMetrics(timeline, cashFlows);
+
+  return {
+    timeline,
+    cashFlows,
+    totals,
+    metadata: {
+      eventCount: events.length,
+      symbolCount: sortedSymbols.length,
+      generatedAt: now.toISOString(),
+      accountId: account ? account.id : null,
+    },
+  };
+}
+
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -890,152 +1653,7 @@ app.get('/api/summary', async function (req, res) {
   const configuredDefaultKey = getDefaultAccountId();
 
   try {
-    const accountCollections = [];
-    const accountNameOverrides = getAccountNameOverrides();
-    const accountPortalOverrides = getAccountPortalOverrides();
-    const accountChatOverrides = getAccountChatOverrides();
-    const configuredOrdering = getAccountOrdering();
-    const accountSettings = getAccountSettings();
-    const accountBeneficiaries = getAccountBeneficiaries();
-    for (const login of allLogins) {
-      const fetchedAccounts = await fetchAccounts(login);
-      const normalized = fetchedAccounts.map(function (account, index) {
-        const rawNumber = account.number || account.accountNumber || account.id || index;
-        const number = String(rawNumber);
-        const compositeId = login.id + ':' + number;
-        const ownerLabel = resolveLoginDisplay(login);
-        const normalizedAccount = Object.assign({}, account, {
-          id: compositeId,
-          number,
-          accountNumber: number,
-          loginId: login.id,
-          ownerId: login.id,
-          ownerLabel,
-          ownerEmail: login.email || null,
-          loginLabel: ownerLabel,
-          loginEmail: login.email || null,
-        });
-        const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
-        if (displayName) {
-          normalizedAccount.displayName = displayName;
-        }
-        const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
-        if (overridePortalId) {
-          normalizedAccount.portalAccountId = overridePortalId;
-        }
-        const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
-        if (overrideChatUrl) {
-          normalizedAccount.chatURL = overrideChatUrl;
-        } else if (normalizedAccount.chatURL === undefined) {
-          normalizedAccount.chatURL = null;
-        }
-        const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
-        if (typeof accountSettingsOverride === 'boolean') {
-          normalizedAccount.showQQQDetails = accountSettingsOverride;
-        } else if (accountSettingsOverride && typeof accountSettingsOverride === 'object') {
-          if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
-            normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
-          }
-          if (typeof accountSettingsOverride.investmentModel === 'string') {
-            const trimmedModel = accountSettingsOverride.investmentModel.trim();
-            if (trimmedModel) {
-              normalizedAccount.investmentModel = trimmedModel;
-            }
-          }
-          if (typeof accountSettingsOverride.lastRebalance === 'string') {
-            const trimmedDate = accountSettingsOverride.lastRebalance.trim();
-            if (trimmedDate) {
-              normalizedAccount.investmentModelLastRebalance = trimmedDate;
-            }
-          } else if (
-            accountSettingsOverride.lastRebalance &&
-            typeof accountSettingsOverride.lastRebalance === 'object' &&
-            typeof accountSettingsOverride.lastRebalance.date === 'string'
-          ) {
-            const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
-            if (trimmedDate) {
-              normalizedAccount.investmentModelLastRebalance = trimmedDate;
-            }
-          }
-        }
-        const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
-        if (defaultBeneficiary) {
-          normalizedAccount.beneficiary = defaultBeneficiary;
-        }
-        const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
-        if (resolvedBeneficiary) {
-          normalizedAccount.beneficiary = resolvedBeneficiary;
-        }
-        return normalizedAccount;
-      });
-      accountCollections.push({ login, accounts: normalized });
-    }
-
-    const defaultAccount = findDefaultAccount(accountCollections, configuredDefaultKey);
-
-    let allAccounts = accountCollections.flatMap(function (entry) {
-      return entry.accounts;
-    });
-
-    if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
-      const orderingMap = new Map();
-      configuredOrdering.forEach(function (entry, index) {
-        const normalized = entry == null ? '' : String(entry).trim();
-        if (!normalized) {
-          return;
-        }
-        if (!orderingMap.has(normalized)) {
-          orderingMap.set(normalized, index);
-        }
-      });
-
-      if (orderingMap.size) {
-        const DEFAULT_ORDER = Number.MAX_SAFE_INTEGER;
-        const resolveAccountOrder = function (account) {
-          if (!account) {
-            return DEFAULT_ORDER;
-          }
-          const candidates = [];
-          if (account.number) {
-            candidates.push(String(account.number).trim());
-          }
-          if (account.accountNumber) {
-            candidates.push(String(account.accountNumber).trim());
-          }
-          if (account.id) {
-            candidates.push(String(account.id).trim());
-          }
-          for (const candidate of candidates) {
-            if (!candidate) {
-              continue;
-            }
-            if (orderingMap.has(candidate)) {
-              return orderingMap.get(candidate);
-            }
-          }
-          return DEFAULT_ORDER;
-        };
-
-        allAccounts = allAccounts
-          .map(function (account, index) {
-            return { account, index, order: resolveAccountOrder(account) };
-          })
-          .sort(function (a, b) {
-            if (a.order !== b.order) {
-              return a.order - b.order;
-            }
-            return a.index - b.index;
-          })
-          .map(function (entry) {
-            return entry.account;
-          });
-      }
-    }
-
-    const accountsById = {};
-    allAccounts.forEach(function (account) {
-      accountsById[account.id] = account;
-    });
+    const { accountCollections, allAccounts, accountsById, defaultAccount } = await loadAccountsData(configuredDefaultKey);
 
     let selectedAccounts = allAccounts;
     let resolvedAccountId = null;
@@ -1200,6 +1818,92 @@ app.get('/api/summary', async function (req, res) {
       return res.status(error.response.status).json({ message: 'Questrade API error', details: error.response.data });
     }
     res.status(500).json({ message: 'Unexpected server error', details: error.message });
+  }
+});
+
+app.get('/api/account-performance', async function (req, res) {
+  const rawAccountId = typeof req.query.accountId === 'string' ? req.query.accountId.trim() : '';
+  if (!rawAccountId) {
+    return res.status(400).json({ message: 'Query parameter "accountId" is required.' });
+  }
+  if (rawAccountId === 'all') {
+    return res
+      .status(400)
+      .json({ message: 'Performance metrics are only available when viewing a single account.' });
+  }
+
+  try {
+    const configuredDefaultKey = getDefaultAccountId();
+    const { accountCollections, accountsById, allAccounts } = await loadAccountsData(configuredDefaultKey);
+
+    let targetAccount = accountsById[rawAccountId] || null;
+    if (!targetAccount) {
+      targetAccount = allAccounts.find(function (account) {
+        return account && (account.number === rawAccountId || account.accountNumber === rawAccountId);
+      });
+    }
+
+    if (!targetAccount) {
+      return res.status(404).json({ message: 'No matching account found for performance analysis.' });
+    }
+
+    const collection = accountCollections.find(function (entry) {
+      return entry && entry.login && entry.login.id === targetAccount.loginId;
+    });
+    if (!collection || !collection.login) {
+      return res.status(500).json({ message: 'Unable to resolve login context for the requested account.' });
+    }
+
+    const login = collection.login;
+    const accountNumber = targetAccount.number;
+    if (!accountNumber) {
+      return res.status(500).json({ message: 'Account number unavailable for performance query.' });
+    }
+
+    const startTimeParam = typeof req.query.startTime === 'string' ? req.query.startTime.trim() : '';
+    const endTimeParam = typeof req.query.endTime === 'string' ? req.query.endTime.trim() : '';
+    const executionOptions = {};
+    if (startTimeParam) {
+      executionOptions.startTime = startTimeParam;
+    } else {
+      executionOptions.startTime = '1970-01-01T00:00:00Z';
+    }
+    if (endTimeParam) {
+      executionOptions.endTime = endTimeParam;
+    }
+
+    const [positions, executions] = await Promise.all([
+      fetchPositions(login, accountNumber),
+      fetchExecutions(login, accountNumber, executionOptions),
+    ]);
+
+    const transfers = Array.isArray(targetAccount.performanceTransfers) ? targetAccount.performanceTransfers : [];
+
+    const performance = await generateAccountPerformance({
+      executions,
+      transfers,
+      positions,
+      account: targetAccount,
+    });
+
+    res.json({
+      accountId: targetAccount.id,
+      accountNumber: targetAccount.number,
+      accountType: targetAccount.type || null,
+      currency: targetAccount.currency || null,
+      generatedAt: new Date().toISOString(),
+      timeline: performance.timeline,
+      cashFlows: performance.cashFlows,
+      totals: performance.totals,
+      metadata: performance.metadata,
+    });
+  } catch (error) {
+    if (error.response) {
+      return res
+        .status(error.response.status)
+        .json({ message: 'Questrade API error', details: error.response.data });
+    }
+    res.status(500).json({ message: 'Failed to compute account performance.', details: error.message });
   }
 });
 

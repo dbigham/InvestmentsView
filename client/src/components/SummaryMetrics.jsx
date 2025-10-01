@@ -205,6 +205,8 @@ export default function SummaryMetrics({
   chatUrl,
   showQqqTemperature,
   qqqSummary,
+  onShowPerformance,
+  performanceStatus,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -355,7 +357,24 @@ export default function SummaryMetrics({
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
-          <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          {typeof onShowPerformance === 'function' ? (
+            <div className="equity-card__metric-row">
+              <dt>Total P&amp;L</dt>
+              <dd>
+                <button
+                  type="button"
+                  className="performance-trigger"
+                  onClick={onShowPerformance}
+                  disabled={performanceStatus === 'loading'}
+                >
+                  {performanceStatus === 'loading' && <span className="performance-trigger__icon" aria-hidden="true" />}
+                  View performance
+                </button>
+              </dd>
+            </div>
+          ) : (
+            <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          )}
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
@@ -414,6 +433,8 @@ SummaryMetrics.propTypes = {
     date: PropTypes.string,
     message: PropTypes.string,
   }),
+  onShowPerformance: PropTypes.func,
+  performanceStatus: PropTypes.oneOf(['idle', 'loading', 'ready', 'error']),
 };
 
 SummaryMetrics.defaultProps = {
@@ -432,4 +453,6 @@ SummaryMetrics.defaultProps = {
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
+  onShowPerformance: null,
+  performanceStatus: 'idle',
 };
