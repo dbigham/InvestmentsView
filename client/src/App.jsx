@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary, getQqqTemperature } from './api/questrade';
+import { getSummary, getQqqTemperature, getAccountPerformance } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
@@ -13,6 +13,7 @@ import {
   formatNumber,
   formatSignedMoney,
 } from './utils/formatters';
+import AccountPerformanceDialog from './components/AccountPerformanceDialog';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -922,6 +923,12 @@ export default function App() {
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
+  const [showPerformance, setShowPerformance] = useState(false);
+  const [performanceStatus, setPerformanceStatus] = useState('idle');
+  const [performanceData, setPerformanceData] = useState(null);
+  const [performanceError, setPerformanceError] = useState(null);
+  const [performanceRange, setPerformanceRange] = useState('all');
+  const performanceAccountRef = useRef(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
@@ -984,6 +991,15 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
+
+  useEffect(() => {
+    performanceAccountRef.current = selectedAccountInfo?.id || null;
+    setPerformanceStatus('idle');
+    setPerformanceData(null);
+    setPerformanceError(null);
+    setShowPerformance(false);
+    setPerformanceRange('all');
+  }, [selectedAccountInfo?.id]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
@@ -1511,6 +1527,43 @@ export default function App() {
     setShowPeople(false);
   };
 
+  const handleRequestPerformance = () => {
+    if (performanceStatus === 'loading') {
+      return;
+    }
+    if (!selectedAccountInfo?.id || showingAllAccounts) {
+      return;
+    }
+    const accountId = selectedAccountInfo.id;
+    performanceAccountRef.current = accountId;
+    setPerformanceStatus('loading');
+    setPerformanceError(null);
+    setPerformanceRange('all');
+    getAccountPerformance(accountId)
+      .then((result) => {
+        if (performanceAccountRef.current !== accountId) {
+          return;
+        }
+        setPerformanceData(result);
+        setPerformanceStatus('ready');
+        setShowPerformance(true);
+      })
+      .catch((err) => {
+        if (performanceAccountRef.current !== accountId) {
+          return;
+        }
+        const normalized = err instanceof Error ? err : new Error('Failed to calculate performance.');
+        setPerformanceError(normalized);
+        setPerformanceData(null);
+        setPerformanceStatus('error');
+        setShowPerformance(true);
+      });
+  };
+
+  const handleClosePerformance = () => {
+    setShowPerformance(false);
+  };
+
   if (loading && !data) {
     return (
       <div className="summary-page summary-page--initial-loading">
@@ -1561,6 +1614,8 @@ export default function App() {
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
+            onShowPerformance={showingAllAccounts ? null : handleRequestPerformance}
+            performanceStatus={performanceStatus}
           />
         )}
 
@@ -1607,6 +1662,16 @@ export default function App() {
           baseCurrency={baseCurrency}
           asOf={asOf}
           totalMarketValue={heatmapMarketValue}
+        />
+      )}
+      {showPerformance && (
+        <AccountPerformanceDialog
+          performance={performanceData}
+          status={performanceStatus}
+          error={performanceError}
+          onClose={handleClosePerformance}
+          range={performanceRange}
+          onRangeChange={setPerformanceRange}
         />
       )}
     </div>
