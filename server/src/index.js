@@ -1259,6 +1259,51 @@ function buildPositionSnapshot(positions) {
   return snapshot;
 }
 
+function resolveCashBalanceFromBalances(balances, baseCurrency) {
+  if (!balances || typeof balances !== 'object') {
+    return null;
+  }
+  const entries = [];
+  if (Array.isArray(balances.perCurrencyBalances)) {
+    entries.push.apply(entries, balances.perCurrencyBalances);
+  }
+  if (Array.isArray(balances.combinedBalances)) {
+    entries.push.apply(entries, balances.combinedBalances);
+  }
+  if (!entries.length) {
+    return null;
+  }
+  const targetCurrency = baseCurrency && typeof baseCurrency === 'string'
+    ? baseCurrency.trim().toUpperCase()
+    : null;
+  let total = 0;
+  let matched = false;
+  entries.forEach(function (entry) {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const currency = entry.currency && typeof entry.currency === 'string'
+      ? entry.currency.trim().toUpperCase()
+      : null;
+    if (targetCurrency && currency && currency !== targetCurrency) {
+      return;
+    }
+    const cashValue = pickNumericValue(entry, 'cash');
+    if (!Number.isFinite(cashValue)) {
+      return;
+    }
+    if (targetCurrency && !currency) {
+      return;
+    }
+    matched = true;
+    total += cashValue;
+  });
+  if (!matched) {
+    return null;
+  }
+  return total;
+}
+
 function buildSymbolCurrencyMap(positions, executions, transfers, fallbackCurrency) {
   const map = new Map();
   const assign = function (symbol, currency) {
@@ -1888,7 +1933,7 @@ function ensureEventTimestamps(events, fallbackTimestamp) {
   });
 }
 
-async function generateAccountPerformance({ executions, transfers, positions, account }) {
+async function generateAccountPerformance({ executions, transfers, positions, balances, account }) {
   if (PERFORMANCE_DEBUG_ENABLED) {
     const executionSummaries = summarizeExecutionsForDebug(executions);
     const count = Array.isArray(executions) ? executions.length : 0;
@@ -1965,6 +2010,7 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
 
   const transferEvents = normalizeTransferEvents(transfers);
   const positionSnapshot = buildPositionSnapshot(positions);
+  const cashBaseline = resolveCashBalanceFromBalances(balances, baseCurrency);
   if (PERFORMANCE_DEBUG_ENABLED) {
     const snapshotCount = Object.keys(positionSnapshot).length;
     const snapshotSummaries = summarizePositionSnapshotForDebug(positionSnapshot);
@@ -1982,6 +2028,12 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
     } else {
       performanceDebug('Position snapshot baseline: none');
     }
+    performanceDebug(
+      'Cash baseline (base ' +
+        (baseCurrency || 'n/a') +
+        '): ' +
+        (Number.isFinite(cashBaseline) ? formatDecimal(cashBaseline, 2) : 'n/a')
+    );
   }
   const now = new Date();
   const finalDateKey = now.toISOString().slice(0, 10);
@@ -2174,33 +2226,6 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
   const debugTimelineEntries = !Array.isArray(timelineResult) && timelineResult && timelineResult.debugDetails
     ? timelineResult.debugDetails
     : [];
-  if (PERFORMANCE_DEBUG_ENABLED) {
-    const summaryEntries = debugTimelineEntries.length ? debugTimelineEntries : timeline;
-    const timelineSummaries = summarizeTimelineForDebug(summaryEntries);
-    if (timelineSummaries.length) {
-      const startLabel = timeline.length ? timeline[0].date : 'n/a';
-      const endLabel = timeline.length ? timeline[timeline.length - 1].date : 'n/a';
-      performanceDebug(
-        'Account value timeline (' +
-          timeline.length +
-          ' entries, ' +
-          'range ' +
-          startLabel +
-          ' → ' +
-          endLabel +
-          ') ' +
-          (baseCurrency ? '[' + baseCurrency + ']' : '') +
-          ':\n' +
-          timelineSummaries
-            .map(function (line) {
-              return '  ' + line;
-            })
-            .join('\n')
-      );
-    } else {
-      performanceDebug('Account value timeline is empty.');
-    }
-  }
 
   const cashFlows = events
     .filter(function (event) {
@@ -2231,6 +2256,67 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
       return flow;
     });
 
+  if (Number.isFinite(cashBaseline) && timeline.length) {
+    const cashByDate = new Map();
+    cashFlows.forEach(function (flow) {
+      const dateKey = toDateKey(flow.timestamp || flow.date);
+      if (!dateKey) {
+        return;
+      }
+      cashByDate.set(dateKey, (cashByDate.get(dateKey) || 0) + (Number(flow.amount) || 0));
+    });
+    let runningCash = Number.isFinite(cashBaseline) ? cashBaseline : null;
+    if (Number.isFinite(runningCash)) {
+      for (let index = timeline.length - 1; index >= 0; index -= 1) {
+        const entry = timeline[index];
+        entry.cashValue = runningCash;
+        entry.value = (Number(entry.value) || 0) + runningCash;
+        if (PERFORMANCE_DEBUG_ENABLED && debugTimelineEntries[index] && Array.isArray(debugTimelineEntries[index].holdings)) {
+          debugTimelineEntries[index].holdings.push({
+            symbol: 'CASH',
+            quantity: runningCash,
+            price: 1,
+            value: runningCash,
+            currency: baseCurrency || null,
+          });
+          debugTimelineEntries[index].totalValue = entry.value;
+        }
+        const dateKey = entry.date || null;
+        if (dateKey && cashByDate.has(dateKey)) {
+          runningCash -= cashByDate.get(dateKey);
+        }
+      }
+    }
+  }
+
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const summaryEntries = debugTimelineEntries.length ? debugTimelineEntries : timeline;
+    const timelineSummaries = summarizeTimelineForDebug(summaryEntries);
+    if (timelineSummaries.length) {
+      const startLabel = timeline.length ? timeline[0].date : 'n/a';
+      const endLabel = timeline.length ? timeline[timeline.length - 1].date : 'n/a';
+      performanceDebug(
+        'Account value timeline (' +
+          timeline.length +
+          ' entries, ' +
+          'range ' +
+          startLabel +
+          ' → ' +
+          endLabel +
+          ') ' +
+          (baseCurrency ? '[' + baseCurrency + ']' : '') +
+          ':\n' +
+          timelineSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Account value timeline is empty.');
+    }
+  }
+
   if (PERFORMANCE_DEBUG_ENABLED) {
     const cashFlowSummaries = summarizeCashFlowsForDebug(cashFlows);
     if (cashFlowSummaries.length) {
@@ -2249,7 +2335,12 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
     }
   }
 
-  const totals = computeAggregatedMetrics(timeline, cashFlows);
+  const totals = computeAggregatedMetrics(
+    timeline,
+    cashFlows.filter(function (flow) {
+      return (flow.type || '') !== 'execution';
+    })
+  );
   if (PERFORMANCE_DEBUG_ENABLED) {
     const totalsSummaries = summarizeAggregatedTotalsForDebug(totals);
     if (totalsSummaries.length) {
@@ -2283,6 +2374,7 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
       currencyDiagnostics: {
         symbolCurrencyCount: symbolCurrencyMap.size,
       },
+      cashBaseline: Number.isFinite(cashBaseline) ? cashBaseline : null,
     },
   };
 }
@@ -2857,9 +2949,10 @@ app.get('/api/account-performance', async function (req, res) {
       executionOptions.endTime = endTimeParam;
     }
 
-    const [positions, executions] = await Promise.all([
+    const [positions, executions, balances] = await Promise.all([
       fetchPositions(login, accountNumber),
       fetchExecutions(login, accountNumber, executionOptions),
+      fetchBalances(login, accountNumber),
     ]);
 
     const transfers = Array.isArray(targetAccount.performanceTransfers) ? targetAccount.performanceTransfers : [];
@@ -2868,6 +2961,7 @@ app.get('/api/account-performance', async function (req, res) {
       executions,
       transfers,
       positions,
+      balances,
       account: targetAccount,
     });
 

@@ -111,6 +111,10 @@ function summarizeCashFlows(cashFlows, startDate, endDate) {
     if (!Number.isFinite(amount) || amount === 0) {
       return;
     }
+    const type = flow.type ? String(flow.type).toLowerCase() : null;
+    if (type === 'execution') {
+      return;
+    }
     const timestamp = parseTimestamp(flow.timestamp);
     if (!timestamp) {
       return;

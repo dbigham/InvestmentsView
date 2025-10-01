@@ -13,43 +13,83 @@ function PerformanceChart({ data }) {
     return <p className="performance-dialog__chart-empty">Not enough data to render a chart.</p>;
   }
 
-  const values = data.map((entry) => Number(entry.value) || 0);
+  const points = data
+    .map((entry) => ({
+      date: entry.date,
+      value: Number(entry.value) || 0,
+    }))
+    .filter((entry) => Number.isFinite(entry.value));
+
+  if (points.length < 2) {
+    return <p className="performance-dialog__chart-empty">Not enough data to render a chart.</p>;
+  }
+
+  const values = points.map((entry) => entry.value);
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  const width = 100;
-  const height = 60;
-  const topPadding = 6;
-  const bottomPadding = 10;
-  const innerHeight = height - topPadding - bottomPadding;
+  const width = 120;
+  const height = 72;
+  const padding = { top: 8, right: 32, bottom: 16, left: 10 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const range = maxValue - minValue;
+  const domainPadding = range === 0 ? Math.max(1, Math.abs(maxValue) * 0.05) : range * 0.1;
+  const domainMin = minValue - domainPadding;
+  const domainMax = maxValue + domainPadding;
+  const domainRange = domainMax - domainMin || 1;
 
-  const normalizedPoints = values.map((value, index) => {
-    const x = data.length === 1 ? width / 2 : (index / (data.length - 1)) * width;
-    let ratio = 0.5;
-    if (maxValue !== minValue) {
-      ratio = (value - minValue) / (maxValue - minValue);
+  const xForIndex = (index) => {
+    if (points.length === 1) {
+      return padding.left + innerWidth / 2;
     }
-    const y = height - bottomPadding - ratio * innerHeight;
-    return { x, y };
-  });
+    return padding.left + (innerWidth * index) / (points.length - 1);
+  };
 
-  const path = normalizedPoints
+  const yForValue = (value) => {
+    const ratio = (value - domainMin) / domainRange;
+    const clamped = Math.max(0, Math.min(1, ratio));
+    return padding.top + innerHeight * (1 - clamped);
+  };
+
+  const svgPoints = points.map((point, index) => ({
+    x: xForIndex(index),
+    y: yForValue(point.value),
+    value: point.value,
+  }));
+
+  const path = svgPoints
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
     .join(' ');
 
-  const areaPath = `${path} L ${width} ${height - bottomPadding} L 0 ${height - bottomPadding} Z`;
-  const lastPoint = normalizedPoints[normalizedPoints.length - 1];
+  const tickCount = 4;
+  const gridLines = Array.from({ length: tickCount + 1 }, (_, index) => {
+    const value = domainMin + (domainRange * index) / tickCount;
+    return { value, y: yForValue(value) };
+  });
+
+  const lastPoint = svgPoints[svgPoints.length - 1];
 
   return (
     <svg className="performance-dialog__chart-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Account value over time">
-      <defs>
-        <linearGradient id="performance-chart-gradient" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="rgba(55, 125, 255, 0.35)" />
-          <stop offset="100%" stopColor="rgba(55, 125, 255, 0.05)" />
-        </linearGradient>
-      </defs>
-      <path d={areaPath} fill="url(#performance-chart-gradient)" />
-      <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={lastPoint.x} cy={lastPoint.y} r={1.8} fill="var(--color-accent)" />
+      <rect className="performance-chart__surface" x="0" y="0" width={width} height={height} rx="4" />
+      <g className="performance-chart__grid" aria-hidden="true">
+        {gridLines.map((line, index) => (
+          <g key={`grid-${index}`}>
+            <line
+              className="performance-chart__grid-line"
+              x1={padding.left}
+              y1={line.y}
+              x2={width - padding.right}
+              y2={line.y}
+            />
+            <text className="performance-chart__grid-label" x={width - padding.right + 4} y={line.y + 3}>
+              {formatMoney(line.value)}
+            </text>
+          </g>
+        ))}
+      </g>
+      <path className="performance-chart__path" d={path} />
+      <circle className="performance-chart__dot" cx={lastPoint.x} cy={lastPoint.y} r="1.6" />
     </svg>
   );
 }
