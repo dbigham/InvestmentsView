@@ -527,8 +527,8 @@ textarea {
 }
 
 .performance-dialog__controls select:focus-visible {
-  outline: 2px solid #1b2733;
-  outline-offset: 2px;
+  outline: none;
+  border-color: var(--color-border-active);
 }
 
 .performance-dialog__close {
@@ -621,6 +621,33 @@ textarea {
 .performance-dialog__chart-svg {
   width: 100%;
   height: auto;
+  display: block;
+}
+
+.performance-chart__surface {
+  fill: transparent;
+}
+
+.performance-chart__grid-line {
+  stroke: rgba(136, 149, 167, 0.35);
+  stroke-width: 0.75;
+}
+
+.performance-chart__grid-label {
+  font-size: 9px;
+  fill: var(--color-text-muted);
+}
+
+.performance-chart__path {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.performance-chart__dot {
+  fill: var(--color-accent);
 }
 
 .performance-dialog__chart-empty {
