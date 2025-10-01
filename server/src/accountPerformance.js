@@ -201,7 +201,13 @@ function pickFirstNumber(source, fields, fallback = null) {
 
 function resolveExecutionTime(execution) {
   return (
-    parseDateTime(execution && (execution.executionTime || execution.transactTime || execution.tradeDate)) ||
+    parseDateTime(
+      execution &&
+        (execution.executionTime ||
+          execution.transactTime ||
+          execution.tradeDate ||
+          execution.timestamp)
+    ) ||
     parseDateTime(execution && execution.transactionTime)
   );
 }
