@@ -256,9 +256,10 @@ function normalizeExecution(execution) {
       ? resolvedCurrency.trim().toUpperCase()
       : 'CAD';
 
-  const signedContribution =
-    netAmount !== null && netAmount !== 0 ? netAmount : direction > 0 ? -gross : gross;
-  const amount = Math.abs(signedContribution) > 0 ? Math.abs(signedContribution) : gross;
+  const contributionMagnitude =
+    netAmount !== null && netAmount !== 0 ? Math.abs(netAmount) : gross;
+  const signedContribution = direction > 0 ? contributionMagnitude : -contributionMagnitude;
+  const amount = contributionMagnitude > 0 ? contributionMagnitude : gross;
 
   return {
     symbolId,
