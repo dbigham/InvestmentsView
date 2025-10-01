@@ -615,7 +615,7 @@ textarea {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface-alt);
-  padding: 12px 16px;
+  padding: 8px 12px;
 }
 
 .performance-dialog__chart-svg {
@@ -629,19 +629,19 @@ textarea {
 }
 
 .performance-chart__grid-line {
-  stroke: rgba(136, 149, 167, 0.35);
-  stroke-width: 0.75;
+  stroke: rgba(136, 149, 167, 0.28);
+  stroke-width: 0.45;
 }
 
 .performance-chart__grid-label {
-  font-size: 9px;
+  font-size: 7px;
   fill: var(--color-text-muted);
 }
 
 .performance-chart__path {
   fill: none;
   stroke: var(--color-accent);
-  stroke-width: 1.1;
+  stroke-width: 0.7;
   stroke-linecap: round;
   stroke-linejoin: round;
 }

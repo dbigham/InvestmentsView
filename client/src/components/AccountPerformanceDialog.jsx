@@ -27,9 +27,9 @@ function PerformanceChart({ data }) {
   const values = points.map((entry) => entry.value);
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  const width = 120;
-  const height = 72;
-  const padding = { top: 8, right: 32, bottom: 16, left: 10 };
+  const width = 128;
+  const height = 68;
+  const padding = { top: 6, right: 24, bottom: 12, left: 8 };
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
   const range = maxValue - minValue;
@@ -61,7 +61,7 @@ function PerformanceChart({ data }) {
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
     .join(' ');
 
-  const tickCount = 4;
+  const tickCount = 2;
   const gridLines = Array.from({ length: tickCount + 1 }, (_, index) => {
     const value = domainMin + (domainRange * index) / tickCount;
     return { value, y: yForValue(value) };
@@ -89,7 +89,7 @@ function PerformanceChart({ data }) {
         ))}
       </g>
       <path className="performance-chart__path" d={path} />
-      <circle className="performance-chart__dot" cx={lastPoint.x} cy={lastPoint.y} r="1.6" />
+      <circle className="performance-chart__dot" cx={lastPoint.x} cy={lastPoint.y} r="1.2" />
     </svg>
   );
 }
