@@ -479,7 +479,15 @@ async function questradeRequest(login, pathSegment, options = {}) {
   if (!login) {
     throw new Error('Questrade login context is required for API requests');
   }
-  const { method = 'GET', params, data, headers = {} } = options;
+  const {
+    method = 'GET',
+    params,
+    data,
+    headers = {},
+    trace,
+    traceLabel,
+    traceMetadata,
+  } = options;
   const tokenContext = await getTokenContext(login);
   const url = new URL(pathSegment, tokenContext.apiServer).toString();
 
@@ -496,8 +504,26 @@ async function questradeRequest(login, pathSegment, options = {}) {
     ),
   };
 
+  if (trace) {
+    trace.log('Issuing Questrade request.', {
+      label: traceLabel || null,
+      url,
+      method,
+      params: params || null,
+      metadata: traceMetadata || null,
+    });
+  }
+
   try {
     const response = await enqueueRequest(() => axios(baseConfig));
+    if (trace) {
+      trace.log('Received Questrade response.', {
+        label: traceLabel || null,
+        url,
+        status: response.status,
+      });
+      trace.log('Questrade response payload.', response.data);
+    }
     return response.data;
   } catch (error) {
     if (error.response && error.response.status === 401) {
@@ -515,13 +541,42 @@ async function questradeRequest(login, pathSegment, options = {}) {
           headers
         ),
       };
+      if (trace) {
+        trace.log('Retrying Questrade request after refreshing token.', {
+          label: traceLabel || null,
+          url: retryConfig.url,
+          method,
+          params: params || null,
+          metadata: traceMetadata || null,
+        });
+      }
       const retryResponse = await enqueueRequest(() => axios(retryConfig));
+      if (trace) {
+        trace.log('Received Questrade retry response.', {
+          label: traceLabel || null,
+          url: retryConfig.url,
+          status: retryResponse.status,
+        });
+        trace.log('Questrade retry response payload.', retryResponse.data);
+      }
       return retryResponse.data;
     }
-    console.error(
-      'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
-      error.response ? error.response.data : error.message
-    );
+    if (trace) {
+      trace.error('Questrade request failed.', {
+        label: traceLabel || null,
+        url,
+        status: error.response ? error.response.status : null,
+        message: error.message,
+      });
+      if (error.response && error.response.data) {
+        trace.error('Questrade error payload.', error.response.data);
+      }
+    } else {
+      console.error(
+        'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
+        error.response ? error.response.data : error.message
+      );
+    }
     throw error;
   }
 }
@@ -572,7 +627,7 @@ function formatQuestradeDateTime(value) {
 async function fetchExecutions(login, accountId, options = {}) {
   const results = [];
   const params = {};
-  const { startTime, endTime } = options;
+  const { startTime, endTime, trace } = options;
 
   const startSource = startTime ?? DEFAULT_EXECUTIONS_START_TIME;
   const normalizedStart = formatQuestradeDateTime(startSource);
@@ -589,9 +644,18 @@ async function fetchExecutions(login, accountId, options = {}) {
 
   do {
     const path = nextPath || '/v1/accounts/' + accountId + '/executions';
-    const requestOptions = nextPath ? {} : { params };
+    const requestOptions = nextPath
+      ? { trace, traceLabel: 'fetchExecutions', traceMetadata: { path } }
+      : { params, trace, traceLabel: 'fetchExecutions', traceMetadata: { path, params } };
     // eslint-disable-next-line no-await-in-loop
     const data = await questradeRequest(login, path, requestOptions);
+    if (trace) {
+      trace.log('Fetched executions page.', {
+        path,
+        entries: Array.isArray(data && data.executions) ? data.executions.length : 0,
+        hasNext: Boolean(data && data.next),
+      });
+    }
     const entries = Array.isArray(data && data.executions) ? data.executions : [];
     entries.forEach((entry) => results.push(entry));
     const next = data && data.next ? String(data.next).trim() : '';
@@ -1008,6 +1072,7 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
     const [executions, balances] = await Promise.all([
       fetchExecutions(login, accountNumber, {
         startTime: DEFAULT_EXECUTIONS_START_TIME,
+        trace,
       }),
       fetchBalances(login, accountNumber).catch(() => null),
     ]);
