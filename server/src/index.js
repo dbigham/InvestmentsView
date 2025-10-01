@@ -1259,49 +1259,91 @@ function buildPositionSnapshot(positions) {
   return snapshot;
 }
 
-function resolveCashBalanceFromBalances(balances, baseCurrency) {
+function collectCashBalances(balances) {
+  const amounts = new Map();
   if (!balances || typeof balances !== 'object') {
-    return null;
+    return amounts;
   }
-  const entries = [];
-  if (Array.isArray(balances.perCurrencyBalances)) {
-    entries.push.apply(entries, balances.perCurrencyBalances);
-  }
-  if (Array.isArray(balances.combinedBalances)) {
-    entries.push.apply(entries, balances.combinedBalances);
-  }
-  if (!entries.length) {
-    return null;
-  }
-  const targetCurrency = baseCurrency && typeof baseCurrency === 'string'
-    ? baseCurrency.trim().toUpperCase()
-    : null;
-  let total = 0;
-  let matched = false;
-  entries.forEach(function (entry) {
+  const record = function (entry) {
     if (!entry || typeof entry !== 'object') {
       return;
     }
     const currency = entry.currency && typeof entry.currency === 'string'
       ? entry.currency.trim().toUpperCase()
       : null;
-    if (targetCurrency && currency && currency !== targetCurrency) {
+    if (!currency) {
       return;
     }
     const cashValue = pickNumericValue(entry, 'cash');
-    if (!Number.isFinite(cashValue)) {
+    if (!Number.isFinite(cashValue) || Math.abs(cashValue) < 1e-9) {
       return;
     }
-    if (targetCurrency && !currency) {
-      return;
-    }
-    matched = true;
-    total += cashValue;
-  });
-  if (!matched) {
-    return null;
+    amounts.set(currency, (amounts.get(currency) || 0) + cashValue);
+  };
+
+  if (Array.isArray(balances.perCurrencyBalances) && balances.perCurrencyBalances.length) {
+    balances.perCurrencyBalances.forEach(record);
   }
-  return total;
+
+  if (Array.isArray(balances.combinedBalances) && balances.combinedBalances.length) {
+    balances.combinedBalances.forEach(function (entry) {
+      const currency = entry && typeof entry.currency === 'string' ? entry.currency.trim().toUpperCase() : null;
+      if (!currency || amounts.has(currency)) {
+        return;
+      }
+      record(entry);
+    });
+  }
+
+  return amounts;
+}
+
+function convertCashBalancesToBase(cashBalances, baseCurrency, fxCache, targetDateKey) {
+  const normalizedBase = baseCurrency && typeof baseCurrency === 'string'
+    ? baseCurrency.trim().toUpperCase()
+    : null;
+  const breakdown = [];
+  if (!(cashBalances instanceof Map) || cashBalances.size === 0) {
+    return { total: 0, breakdown, baseCurrency: normalizedBase };
+  }
+  let total = 0;
+  cashBalances.forEach(function (amount, currency) {
+    if (!Number.isFinite(amount)) {
+      return;
+    }
+    const normalizedCurrency = currency && typeof currency === 'string' ? currency.trim().toUpperCase() : null;
+    if (!normalizedCurrency) {
+      return;
+    }
+    let converted = amount;
+    let status = 'native';
+    if (normalizedBase && normalizedCurrency !== normalizedBase) {
+      const fxEntry = fxCache && fxCache.get(normalizedCurrency);
+      if (fxEntry && Array.isArray(fxEntry.series) && fxEntry.series.length) {
+        const maybeConverted = convertValueWithFx(amount, fxEntry.series, targetDateKey);
+        if (Number.isFinite(maybeConverted)) {
+          converted = maybeConverted;
+          status = 'converted';
+        } else {
+          status = 'fx-unresolved';
+          converted = 0;
+        }
+      } else {
+        status = 'fx-missing';
+        converted = 0;
+      }
+    }
+    if (Number.isFinite(converted)) {
+      total += converted;
+    }
+    breakdown.push({
+      currency: normalizedCurrency,
+      amount,
+      converted,
+      status,
+    });
+  });
+  return { total, breakdown, baseCurrency: normalizedBase };
 }
 
 function buildSymbolCurrencyMap(positions, executions, transfers, fallbackCurrency) {
@@ -1611,6 +1653,19 @@ async function buildPriceSeries(
       }
     });
   }
+  const extraFxSet = new Set();
+  if (Array.isArray(options.extraFxCurrencies)) {
+    options.extraFxCurrencies.forEach(function (currency) {
+      if (!currency || typeof currency !== 'string') {
+        return;
+      }
+      const normalized = currency.trim().toUpperCase();
+      if (!normalized || normalized === baseCurrency) {
+        return;
+      }
+      extraFxSet.add(normalized);
+    });
+  }
 
   const seriesMap = new Map();
   const fxCache = new Map();
@@ -1735,6 +1790,12 @@ async function buildPriceSeries(
       snapshotApplied: Number.isFinite(snapshotPrice),
       snapshotConversion,
     });
+  }
+
+  if (extraFxSet.size) {
+    for (const currency of extraFxSet) {
+      await ensureFxSeries(currency);
+    }
   }
 
   return { seriesMap, fxCache, diagnostics };
@@ -2010,7 +2071,7 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
 
   const transferEvents = normalizeTransferEvents(transfers);
   const positionSnapshot = buildPositionSnapshot(positions);
-  const cashBaseline = resolveCashBalanceFromBalances(balances, baseCurrency);
+  const cashBalances = collectCashBalances(balances);
   if (PERFORMANCE_DEBUG_ENABLED) {
     const snapshotCount = Object.keys(positionSnapshot).length;
     const snapshotSummaries = summarizePositionSnapshotForDebug(positionSnapshot);
@@ -2028,12 +2089,18 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
     } else {
       performanceDebug('Position snapshot baseline: none');
     }
-    performanceDebug(
-      'Cash baseline (base ' +
-        (baseCurrency || 'n/a') +
-        '): ' +
-        (Number.isFinite(cashBaseline) ? formatDecimal(cashBaseline, 2) : 'n/a')
-    );
+    if (cashBalances.size) {
+      performanceDebug(
+        'Cash balances by currency:\n' +
+          Array.from(cashBalances.entries())
+            .map(function ([currency, amount]) {
+              return '  ' + currency + ' ' + formatDecimal(amount, 2);
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Cash balances: none');
+    }
   }
   const now = new Date();
   const finalDateKey = now.toISOString().slice(0, 10);
@@ -2067,7 +2134,9 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
     earliestTimestamp = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
   }
 
-  ensureEventTimestamps(events, new Date(earliestTimestamp.getTime() - 24 * 3600 * 1000));
+  const adjustmentTimestamp = new Date(earliestTimestamp.getTime() - 24 * 3600 * 1000);
+
+  ensureEventTimestamps(events, adjustmentTimestamp);
 
   const netQuantities = new Map();
   events.forEach(function (event) {
@@ -2089,9 +2158,9 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
     }
   }
 
-  const adjustmentTimestamp = earliestTimestamp ? new Date(earliestTimestamp.getTime()) : new Date(now.getTime());
   const adjustmentEvents = [];
 
+  const snapshotSymbols = new Set(Object.keys(positionSnapshot));
   Object.keys(positionSnapshot).forEach(function (symbol) {
     const snapshot = positionSnapshot[symbol];
     const targetQuantity = snapshot && Number.isFinite(snapshot.quantity) ? snapshot.quantity : 0;
@@ -2113,6 +2182,23 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
       events.push(adjustment);
       adjustmentEvents.push(adjustment);
     }
+  });
+
+  netQuantities.forEach(function (quantity, symbol) {
+    if (!symbol || Math.abs(quantity) < 1e-6 || snapshotSymbols.has(symbol)) {
+      return;
+    }
+    const adjustment = {
+      symbol,
+      quantity: -quantity,
+      price: null,
+      cashFlow: 0,
+      timestamp: new Date(adjustmentTimestamp.getTime()),
+      type: 'adjustment',
+      currency: symbolCurrencyMap.get(symbol) || baseCurrency || null,
+    };
+    events.push(adjustment);
+    adjustmentEvents.push(adjustment);
   });
 
   if (PERFORMANCE_DEBUG_ENABLED && adjustmentEvents.length) {
@@ -2167,9 +2253,24 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
 
   const earliestEventTime = events.length ? events[0].timestamp || earliestTimestamp : earliestTimestamp;
   const startDate = earliestEventTime ? new Date(earliestEventTime.getTime()) : new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+  const extraFxCurrencies = [];
+  cashBalances.forEach(function (amount, currency) {
+    if (!Number.isFinite(amount)) {
+      return;
+    }
+    if (!currency || typeof currency !== 'string') {
+      return;
+    }
+    const normalized = currency.trim().toUpperCase();
+    if (normalized && normalized !== baseCurrency) {
+      extraFxCurrencies.push(normalized);
+    }
+  });
+
   const priceSeriesResult = await buildPriceSeries(sortedSymbols, startDate, now, finalDateKey, positionSnapshot, {
     baseCurrency,
     currencyBySymbol: symbolCurrencyMap,
+    extraFxCurrencies,
   });
   const priceSeries = priceSeriesResult.seriesMap;
   const fxCache = priceSeriesResult.fxCache;
@@ -2211,6 +2312,35 @@ async function generateAccountPerformance({ executions, transfers, positions, ba
                   fx.points +
                   ' status=' +
                   fx.status
+                );
+              })
+              .join('\n')
+          : '')
+    );
+  }
+
+  const cashConversion = convertCashBalancesToBase(cashBalances, baseCurrency, fxCache, finalDateKey);
+  const cashBaseline = Number.isFinite(cashConversion.total) ? cashConversion.total : 0;
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    performanceDebug(
+      'Cash baseline (base ' +
+        (cashConversion.baseCurrency || baseCurrency || 'n/a') +
+        '): ' +
+        formatDecimal(cashBaseline, 2) +
+        (cashConversion.breakdown.length
+          ? '\n  components:\n' +
+            cashConversion.breakdown
+              .map(function (entry) {
+                return (
+                  '    ' +
+                  entry.currency +
+                  ' ' +
+                  formatDecimal(entry.amount, 2) +
+                  ' → ' +
+                  formatDecimal(entry.converted, 2) +
+                  ' (' +
+                  entry.status +
+                  ')'
                 );
               })
               .join('\n')
