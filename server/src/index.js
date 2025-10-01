@@ -20,8 +20,20 @@ const { evaluateInvestmentModel } = require('./investmentModel');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const PERFORMANCE_DEBUG_ENABLED = process.env.PERFORMANCE_DEBUG !== 'false';
 const tokenCache = new NodeCache();
 const tokenFilePath = path.join(process.cwd(), 'token-store.json');
+
+function performanceDebug() {
+  if (!PERFORMANCE_DEBUG_ENABLED) {
+    return;
+  }
+  const args = Array.from(arguments);
+  if (!args.length) {
+    return;
+  }
+  console.log.apply(console, ['[performance-debug]'].concat(args));
+}
 
 function resolveLoginDisplay(login) {
   if (!login) {
@@ -821,14 +833,65 @@ function resolveExecutionSide(execution) {
   return null;
 }
 
+const EXECUTION_QUANTITY_KEYS = ['quantity', 'qty', 'filledQuantity', 'execQuantity'];
+const EXECUTION_PRICE_KEYS = ['price', 'avgPrice', 'pricePerUnit', 'pricePerShare'];
+const EXECUTION_FEE_KEYS = ['commission', 'totalCommission', 'commissionAndFees', 'fees'];
+const EXECUTION_TIMESTAMP_KEYS = ['transactTime', 'tradeDate', 'transactionTime', 'executionTime', 'fillTime', 'timestamp'];
+
+function formatDecimal(value, fractionDigits) {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const fixed = value.toFixed(fractionDigits);
+  return fixed.replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1');
+}
+
+function summarizeExecutionsForDebug(executions) {
+  if (!Array.isArray(executions) || !executions.length) {
+    return [];
+  }
+  return executions
+    .map(function (execution, index) {
+      if (!execution || typeof execution !== 'object') {
+        return null;
+      }
+      const symbol = execution.symbol ? String(execution.symbol).trim() : '(unknown)';
+      const side = resolveExecutionSide(execution) || '(unknown)';
+      const quantity = pickNumericCandidate(execution, EXECUTION_QUANTITY_KEYS);
+      const price = pickNumericCandidate(execution, EXECUTION_PRICE_KEYS);
+      const timestampCandidate = EXECUTION_TIMESTAMP_KEYS.map(function (key) {
+        return parseTimestamp(execution[key]);
+      }).find(Boolean);
+      const timestamp = timestampCandidate ? timestampCandidate.toISOString() : '(no timestamp)';
+      const fees = EXECUTION_FEE_KEYS.reduce(function (total, key) {
+        const value = pickNumericCandidate(execution, [key]);
+        if (Number.isFinite(value)) {
+          return total + value;
+        }
+        return total;
+      }, 0);
+      const quantityAbs = Number.isFinite(quantity) ? Math.abs(quantity) : null;
+      const gross = Number.isFinite(quantityAbs) && Number.isFinite(price) ? quantityAbs * price : null;
+      const sideLabel = side ? side.toUpperCase() : '(unknown)';
+      const reference = execution.id || execution.executionId || execution.orderId || execution.orderNumber || null;
+      const parts = [];
+      parts.push('#' + (reference || index + 1));
+      parts.push(timestamp);
+      parts.push(symbol);
+      parts.push(sideLabel);
+      parts.push('qty=' + formatDecimal(quantityAbs, 4));
+      parts.push('price=' + formatDecimal(price, 4));
+      parts.push('gross=' + formatDecimal(gross, 2));
+      parts.push('fees=' + formatDecimal(fees, 2));
+      return parts.join(' | ');
+    })
+    .filter(Boolean);
+}
+
 function normalizeExecutionEvents(executions) {
   if (!Array.isArray(executions)) {
     return [];
   }
-  const quantityKeys = ['quantity', 'qty', 'filledQuantity', 'execQuantity'];
-  const priceKeys = ['price', 'avgPrice', 'pricePerUnit', 'pricePerShare'];
-  const feeKeys = ['commission', 'totalCommission', 'commissionAndFees', 'fees'];
-  const timestampKeys = ['transactTime', 'tradeDate', 'transactionTime', 'executionTime', 'fillTime', 'timestamp'];
 
   const events = [];
 
@@ -844,20 +907,20 @@ function normalizeExecutionEvents(executions) {
     if (!side) {
       return;
     }
-    const quantityValue = pickNumericCandidate(execution, quantityKeys);
-    const priceValue = pickNumericCandidate(execution, priceKeys);
+    const quantityValue = pickNumericCandidate(execution, EXECUTION_QUANTITY_KEYS);
+    const priceValue = pickNumericCandidate(execution, EXECUTION_PRICE_KEYS);
     if (!Number.isFinite(quantityValue) || quantityValue === 0 || !Number.isFinite(priceValue)) {
       return;
     }
     const quantity = Math.abs(quantityValue);
     const price = priceValue;
-    const timestampCandidate = timestampKeys
+    const timestampCandidate = EXECUTION_TIMESTAMP_KEYS
       .map(function (key) {
         return parseTimestamp(execution[key]);
       })
       .find(Boolean);
     const timestamp = timestampCandidate || null;
-    const fees = feeKeys.reduce(function (total, key) {
+    const fees = EXECUTION_FEE_KEYS.reduce(function (total, key) {
       const value = pickNumericCandidate(execution, [key]);
       if (Number.isFinite(value)) {
         return total + value;
@@ -876,6 +939,12 @@ function normalizeExecutionEvents(executions) {
       type: 'execution',
       metadata: {
         side,
+        rawQuantity: quantity,
+        fees,
+        gross,
+        reference:
+          execution.id || execution.executionId || execution.orderId || execution.orderNumber || execution.tradeId || null,
+        sourceTimestamp: timestamp ? timestamp.toISOString() : null,
       },
     });
   });
@@ -915,6 +984,87 @@ function normalizeTransferEvents(transfers) {
       };
     })
     .filter(Boolean);
+}
+
+function summarizePerformanceEvents(events) {
+  if (!Array.isArray(events) || !events.length) {
+    return [];
+  }
+  return events.map(function (event, index) {
+    const dateKey = toDateKey(event.timestamp) || '(no date)';
+    const symbol = event.symbol || '(no symbol)';
+    const quantity = Number.isFinite(event.quantity) ? event.quantity : null;
+    const price = Number.isFinite(event.price) ? event.price : null;
+    const cashFlow = Number.isFinite(event.cashFlow) ? event.cashFlow : null;
+    const side = event.metadata && event.metadata.side ? event.metadata.side : null;
+    const ref = event.metadata && event.metadata.reference ? event.metadata.reference : index + 1;
+    const parts = [];
+    parts.push('#' + ref);
+    parts.push(dateKey);
+    parts.push(event.type || 'event');
+    parts.push(symbol);
+    if (side) {
+      parts.push(side.toUpperCase());
+    }
+    parts.push('qty=' + formatDecimal(quantity, 4));
+    parts.push('price=' + formatDecimal(price, 4));
+    parts.push('cash=' + formatDecimal(cashFlow, 2));
+    return parts.join(' | ');
+  });
+}
+
+function summarizeTimelineForDebug(entries) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return [];
+  }
+  return entries.map(function (entry) {
+    const date = entry.date || '(no date)';
+    const value = Number.isFinite(entry.totalValue) ? entry.totalValue : Number(entry.value);
+    let holdingsDescription = 'no holdings';
+    if (Array.isArray(entry.holdings) && entry.holdings.length) {
+      holdingsDescription = entry.holdings
+        .map(function (holding) {
+          const quantity = Number.isFinite(holding.quantity) ? holding.quantity : null;
+          const price = Number.isFinite(holding.price) ? holding.price : null;
+          const holdingValue = Number.isFinite(holding.value) ? holding.value : null;
+          return (
+            (holding.symbol || '(symbol)') +
+            ' qty=' +
+            formatDecimal(quantity, 4) +
+            ' @ ' +
+            formatDecimal(price, 4) +
+            ' -> ' +
+            formatDecimal(holdingValue, 2)
+          );
+        })
+        .join(', ');
+    }
+    return date + ': total=' + formatDecimal(value, 2) + ' | ' + holdingsDescription;
+  });
+}
+
+function summarizeCashFlowsForDebug(flows) {
+  if (!Array.isArray(flows) || !flows.length) {
+    return [];
+  }
+  return flows.map(function (flow, index) {
+    const timestamp = flow.timestamp || flow.date || '(no timestamp)';
+    const amount = Number.isFinite(flow.amount) ? flow.amount : null;
+    const type = flow.type || 'flow';
+    const symbol = flow.symbol || '(no symbol)';
+    return (
+      '#' +
+      (index + 1) +
+      ' ' +
+      timestamp +
+      ' ' +
+      type +
+      ' ' +
+      symbol +
+      ' amount=' +
+      formatDecimal(amount, 2)
+    );
+  });
 }
 
 function buildPositionSnapshot(positions) {
@@ -1025,7 +1175,8 @@ async function buildPriceSeries(symbols, startDate, endDate, finalDateKey, posit
   return seriesMap;
 }
 
-function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDateKey) {
+function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDateKey, options) {
+  const debug = options && options.debug;
   const changeMaps = new Map();
   const dateSet = new Set();
 
@@ -1067,8 +1218,10 @@ function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDa
 
   const quantityBySymbol = new Map();
   const timeline = [];
+  const debugDetails = debug ? [] : null;
 
   sortedDates.forEach(function (dateKey) {
+    const holdings = debug ? [] : null;
     symbols.forEach(function (symbol) {
       const symbolMap = changeMaps.get(symbol);
       if (symbolMap && symbolMap.has(dateKey)) {
@@ -1099,11 +1252,26 @@ function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDa
         return;
       }
       totalValue += quantity * cursor.lastPrice;
+      if (debug && holdings) {
+        holdings.push({
+          symbol,
+          quantity,
+          price: cursor.lastPrice,
+          value: quantity * cursor.lastPrice,
+        });
+      }
     });
 
-    timeline.push({ date: dateKey, value: Number.isFinite(totalValue) ? totalValue : 0 });
+    const value = Number.isFinite(totalValue) ? totalValue : 0;
+    timeline.push({ date: dateKey, value });
+    if (debug && debugDetails) {
+      debugDetails.push({ date: dateKey, totalValue: value, holdings: holdings || [] });
+    }
   });
 
+  if (debug && debugDetails) {
+    return { timeline, debugDetails };
+  }
   return timeline;
 }
 
@@ -1188,13 +1356,59 @@ function ensureEventTimestamps(events, fallbackTimestamp) {
 }
 
 async function generateAccountPerformance({ executions, transfers, positions, account }) {
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const executionSummaries = summarizeExecutionsForDebug(executions);
+    const count = Array.isArray(executions) ? executions.length : 0;
+    if (executionSummaries.length) {
+      performanceDebug(
+        'Executions fetched from Questrade (count=' +
+          count +
+          '):\n' +
+          executionSummaries.map(function (line) {
+            return '  ' + line;
+          }).join('\n')
+      );
+    } else {
+      performanceDebug('Executions fetched from Questrade (count=' + count + '): none');
+    }
+  }
   const executionEvents = normalizeExecutionEvents(executions);
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const normalizedSummaries = summarizePerformanceEvents(executionEvents);
+    if (normalizedSummaries.length) {
+      performanceDebug(
+        'Normalized execution events (count=' +
+          executionEvents.length +
+          '):\n' +
+          normalizedSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Normalized execution events (count=0): none');
+    }
+  }
   const transferEvents = normalizeTransferEvents(transfers);
   const positionSnapshot = buildPositionSnapshot(positions);
   const now = new Date();
   const finalDateKey = now.toISOString().slice(0, 10);
 
   const events = executionEvents.concat(transferEvents);
+  if (PERFORMANCE_DEBUG_ENABLED && transferEvents.length) {
+    const transferSummaries = summarizePerformanceEvents(transferEvents);
+    performanceDebug(
+      'Transfer events included (count=' +
+        transferEvents.length +
+        '):\n' +
+        transferSummaries
+          .map(function (line) {
+            return '  ' + line;
+          })
+          .join('\n')
+    );
+  }
   let earliestTimestamp = null;
   events.forEach(function (event) {
     if (!event.timestamp) {
@@ -1272,7 +1486,38 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
   const earliestEventTime = events.length ? events[0].timestamp || earliestTimestamp : earliestTimestamp;
   const startDate = earliestEventTime ? new Date(earliestEventTime.getTime()) : new Date(now.getTime() - 30 * 24 * 3600 * 1000);
   const priceSeries = await buildPriceSeries(sortedSymbols, startDate, now, finalDateKey, positionSnapshot);
-  const timeline = computeAccountPerformanceTimeline(events, priceSeries, sortedSymbols, finalDateKey);
+  const timelineResult = computeAccountPerformanceTimeline(events, priceSeries, sortedSymbols, finalDateKey, {
+    debug: PERFORMANCE_DEBUG_ENABLED,
+  });
+  const timeline = Array.isArray(timelineResult) ? timelineResult : timelineResult.timeline;
+  const debugTimelineEntries = !Array.isArray(timelineResult) && timelineResult && timelineResult.debugDetails
+    ? timelineResult.debugDetails
+    : [];
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const summaryEntries = debugTimelineEntries.length ? debugTimelineEntries : timeline;
+    const timelineSummaries = summarizeTimelineForDebug(summaryEntries);
+    if (timelineSummaries.length) {
+      const startLabel = timeline.length ? timeline[0].date : 'n/a';
+      const endLabel = timeline.length ? timeline[timeline.length - 1].date : 'n/a';
+      performanceDebug(
+        'Account value timeline (' +
+          timeline.length +
+          ' entries, ' +
+          'range ' +
+          startLabel +
+          ' → ' +
+          endLabel +
+          '):\n' +
+          timelineSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Account value timeline is empty.');
+    }
+  }
 
   const cashFlows = events
     .filter(function (event) {
@@ -1286,8 +1531,28 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
         type: event.type,
       };
     });
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const cashFlowSummaries = summarizeCashFlowsForDebug(cashFlows);
+    if (cashFlowSummaries.length) {
+      performanceDebug(
+        'Cash flows considered (' +
+          cashFlows.length +
+          '):\n' +
+          cashFlowSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
+      );
+    } else {
+      performanceDebug('Cash flows considered: none');
+    }
+  }
 
   const totals = computeAggregatedMetrics(timeline, cashFlows);
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    performanceDebug('Aggregated totals:', totals);
+  }
 
   return {
     timeline,
