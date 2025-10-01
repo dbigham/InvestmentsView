@@ -541,7 +541,33 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
-const DEFAULT_EXECUTIONS_START_TIME = '2000-01-01T00:00:00.000Z';
+const DEFAULT_EXECUTIONS_START_TIME = '2000-01-01T00:00:00-00:00';
+
+function formatQuestradeDateTime(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return null;
+    }
+    const iso = value.toISOString();
+    const match = iso.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d{3}Z$/);
+    if (match) {
+      return match[1] + '-00:00';
+    }
+    return iso;
+  }
+  const stringValue = String(value).trim();
+  if (!stringValue) {
+    return null;
+  }
+  const parsed = new Date(stringValue);
+  if (!Number.isNaN(parsed.getTime())) {
+    return formatQuestradeDateTime(parsed);
+  }
+  return stringValue;
+}
 
 async function fetchExecutions(login, accountId, options = {}) {
   const results = [];
@@ -549,18 +575,14 @@ async function fetchExecutions(login, accountId, options = {}) {
   const { startTime, endTime } = options;
 
   const startSource = startTime ?? DEFAULT_EXECUTIONS_START_TIME;
-  if (startSource) {
-    const start = new Date(startSource);
-    if (!Number.isNaN(start.getTime())) {
-      params.startTime = start.toISOString();
-    }
+  const normalizedStart = formatQuestradeDateTime(startSource);
+  if (normalizedStart) {
+    params.startTime = normalizedStart;
   }
 
-  if (endTime) {
-    const end = new Date(endTime);
-    if (!Number.isNaN(end.getTime())) {
-      params.endTime = end.toISOString();
-    }
+  const normalizedEnd = formatQuestradeDateTime(endTime);
+  if (normalizedEnd) {
+    params.endTime = normalizedEnd;
   }
 
   let nextPath = null;
@@ -980,9 +1002,13 @@ app.get('/api/accounts/:accountId/performance', async function (req, res) {
     trace.log('Fetching executions and balances from Questrade.', {
       loginId: login.id,
       accountNumber,
+      startTime: formatQuestradeDateTime(DEFAULT_EXECUTIONS_START_TIME),
+      endTime: null,
     });
     const [executions, balances] = await Promise.all([
-      fetchExecutions(login, accountNumber),
+      fetchExecutions(login, accountNumber, {
+        startTime: DEFAULT_EXECUTIONS_START_TIME,
+      }),
       fetchBalances(login, accountNumber).catch(() => null),
     ]);
     trace.log('Fetched upstream data.', {
