@@ -888,6 +888,34 @@ function summarizeExecutionsForDebug(executions) {
     .filter(Boolean);
 }
 
+function resolveExecutionCurrency(execution) {
+  if (!execution || typeof execution !== 'object') {
+    return null;
+  }
+  const currencyKeys = [
+    'currency',
+    'grossCurrency',
+    'netCurrency',
+    'settlementCurrency',
+    'priceCurrency',
+    'commissionCurrency',
+  ];
+  for (const key of currencyKeys) {
+    if (!key || !Object.prototype.hasOwnProperty.call(execution, key)) {
+      continue;
+    }
+    const value = execution[key];
+    if (!value || typeof value !== 'string') {
+      continue;
+    }
+    const normalized = value.trim().toUpperCase();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
 function normalizeExecutionEvents(executions) {
   if (!Array.isArray(executions)) {
     return [];
@@ -930,6 +958,8 @@ function normalizeExecutionEvents(executions) {
     const gross = quantity * price;
     const cashFlow = side === 'buy' ? -(gross + fees) : gross - fees;
     const quantityChange = side === 'buy' ? quantity : -quantity;
+    const currency = resolveExecutionCurrency(execution);
+
     events.push({
       symbol,
       quantity: quantityChange,
@@ -937,6 +967,7 @@ function normalizeExecutionEvents(executions) {
       cashFlow,
       timestamp: timestamp || null,
       type: 'execution',
+      currency: currency || null,
       metadata: {
         side,
         rawQuantity: quantity,
@@ -996,6 +1027,7 @@ function summarizePerformanceEvents(events) {
     const quantity = Number.isFinite(event.quantity) ? event.quantity : null;
     const price = Number.isFinite(event.price) ? event.price : null;
     const cashFlow = Number.isFinite(event.cashFlow) ? event.cashFlow : null;
+    const currency = event.currency || (event.metadata && event.metadata.currency) || null;
     const side = event.metadata && event.metadata.side ? event.metadata.side : null;
     const ref = event.metadata && event.metadata.reference ? event.metadata.reference : index + 1;
     const parts = [];
@@ -1009,6 +1041,9 @@ function summarizePerformanceEvents(events) {
     parts.push('qty=' + formatDecimal(quantity, 4));
     parts.push('price=' + formatDecimal(price, 4));
     parts.push('cash=' + formatDecimal(cashFlow, 2));
+    if (currency) {
+      parts.push('currency=' + currency);
+    }
     return parts.join(' | ');
   });
 }
@@ -1027,6 +1062,7 @@ function summarizeTimelineForDebug(entries) {
           const quantity = Number.isFinite(holding.quantity) ? holding.quantity : null;
           const price = Number.isFinite(holding.price) ? holding.price : null;
           const holdingValue = Number.isFinite(holding.value) ? holding.value : null;
+          const currency = holding.currency || null;
           return (
             (holding.symbol || '(symbol)') +
             ' qty=' +
@@ -1034,12 +1070,21 @@ function summarizeTimelineForDebug(entries) {
             ' @ ' +
             formatDecimal(price, 4) +
             ' -> ' +
-            formatDecimal(holdingValue, 2)
+            formatDecimal(holdingValue, 2) +
+            (currency ? ' ' + currency : '')
           );
         })
         .join(', ');
     }
-    return date + ': total=' + formatDecimal(value, 2) + ' | ' + holdingsDescription;
+    const currency = entry.currency || null;
+    return (
+      date +
+      ': total=' +
+      formatDecimal(value, 2) +
+      (currency ? ' ' + currency : '') +
+      ' | ' +
+      holdingsDescription
+    );
   });
 }
 
@@ -1050,20 +1095,30 @@ function summarizeCashFlowsForDebug(flows) {
   return flows.map(function (flow, index) {
     const timestamp = flow.timestamp || flow.date || '(no timestamp)';
     const amount = Number.isFinite(flow.amount) ? flow.amount : null;
+    const originalAmount = Number.isFinite(flow.originalAmount) ? flow.originalAmount : null;
+    const baseCurrency = flow.currency || null;
+    const originalCurrency = flow.originalCurrency || null;
     const type = flow.type || 'flow';
     const symbol = flow.symbol || '(no symbol)';
-    return (
-      '#' +
-      (index + 1) +
-      ' ' +
-      timestamp +
-      ' ' +
-      type +
-      ' ' +
-      symbol +
-      ' amount=' +
-      formatDecimal(amount, 2)
-    );
+    const status = flow.conversionStatus || null;
+    const parts = [
+      '#' + (index + 1),
+      timestamp,
+      type,
+      symbol,
+      'amount=' + formatDecimal(amount, 2) + (baseCurrency ? ' ' + baseCurrency : ''),
+    ];
+    if (originalAmount !== null && (!Number.isFinite(amount) || Math.abs(amount - originalAmount) > 0.0005 || (baseCurrency && originalCurrency && baseCurrency !== originalCurrency))) {
+      parts.push(
+        'original=' +
+          formatDecimal(originalAmount, 2) +
+          (originalCurrency ? ' ' + originalCurrency : '')
+      );
+    }
+    if (status) {
+      parts.push('status=' + status);
+    }
+    return parts.join(' ');
   });
 }
 
@@ -1092,6 +1147,251 @@ function buildPositionSnapshot(positions) {
     };
   });
   return snapshot;
+}
+
+function buildSymbolCurrencyMap(positions, executions, transfers, fallbackCurrency) {
+  const map = new Map();
+  const assign = function (symbol, currency) {
+    if (!symbol || typeof symbol !== 'string') {
+      return;
+    }
+    const trimmedSymbol = symbol.trim();
+    if (!trimmedSymbol) {
+      return;
+    }
+    if (!currency || typeof currency !== 'string') {
+      return;
+    }
+    const normalizedCurrency = currency.trim().toUpperCase();
+    if (!normalizedCurrency) {
+      return;
+    }
+    if (!map.has(trimmedSymbol)) {
+      map.set(trimmedSymbol, normalizedCurrency);
+    }
+  };
+
+  if (Array.isArray(positions)) {
+    positions.forEach(function (position) {
+      if (!position || typeof position !== 'object') {
+        return;
+      }
+      assign(position.symbol, position.currency || fallbackCurrency || null);
+    });
+  }
+
+  if (Array.isArray(executions)) {
+    executions.forEach(function (execution) {
+      if (!execution || typeof execution !== 'object') {
+        return;
+      }
+      const symbol = execution.symbol || execution.symbolId || null;
+      const currency = resolveExecutionCurrency(execution) || execution.currency || null;
+      if (symbol && currency) {
+        assign(String(symbol), currency);
+      }
+    });
+  }
+
+  if (Array.isArray(transfers)) {
+    transfers.forEach(function (transfer) {
+      if (!transfer || typeof transfer !== 'object') {
+        return;
+      }
+      assign(transfer.symbol, transfer.currency || fallbackCurrency || null);
+    });
+  }
+
+  return map;
+}
+
+function resolveFxPairSymbol(fromCurrency, toCurrency) {
+  if (!fromCurrency || !toCurrency) {
+    return null;
+  }
+  const from = fromCurrency.trim().toUpperCase();
+  const to = toCurrency.trim().toUpperCase();
+  if (!from || !to || from === to) {
+    return null;
+  }
+  return from + to + '=X';
+}
+
+async function fetchFxSeries(pairSymbol, startDate, endDate) {
+  if (!pairSymbol) {
+    return [];
+  }
+  const period1 = new Date(startDate.getTime() - 24 * 3600 * 1000);
+  const period2 = new Date(endDate.getTime() + 24 * 3600 * 1000);
+  try {
+    const history = await yahooFinance.historical(pairSymbol, {
+      period1,
+      period2,
+      interval: '1d',
+    });
+    if (!Array.isArray(history)) {
+      return [];
+    }
+    const dedup = new Map();
+    history.forEach(function (entry) {
+      if (!entry || !entry.date) {
+        return;
+      }
+      const date = entry.date instanceof Date ? entry.date : new Date(entry.date);
+      if (Number.isNaN(date.getTime())) {
+        return;
+      }
+      const rateCandidate = Number.isFinite(entry.adjClose) ? entry.adjClose : Number(entry.close);
+      if (!Number.isFinite(rateCandidate) || rateCandidate <= 0) {
+        return;
+      }
+      const key = date.toISOString().slice(0, 10);
+      dedup.set(key, rateCandidate);
+    });
+    return Array.from(dedup.entries())
+      .map(function ([date, rate]) {
+        return { date, rate };
+      })
+      .sort(function (a, b) {
+        return a.date.localeCompare(b.date);
+      });
+  } catch (error) {
+    console.warn('Failed to load FX history for pair ' + pairSymbol + ':', error.message);
+    return [];
+  }
+}
+
+function resolveFxRateForDate(series, targetDate) {
+  if (!Array.isArray(series) || !series.length) {
+    return null;
+  }
+  if (!targetDate) {
+    const fallback = series[series.length - 1];
+    return fallback && Number.isFinite(fallback.rate) ? fallback.rate : null;
+  }
+  let latestRate = null;
+  for (let index = 0; index < series.length; index += 1) {
+    const entry = series[index];
+    if (!entry || !entry.date) {
+      continue;
+    }
+    if (!Number.isFinite(entry.rate)) {
+      continue;
+    }
+    if (entry.date <= targetDate) {
+      latestRate = entry.rate;
+      continue;
+    }
+    if (entry.date > targetDate) {
+      if (latestRate !== null) {
+        return latestRate;
+      }
+      return entry.rate;
+    }
+  }
+  return latestRate;
+}
+
+function convertSeriesWithFx(history, fxSeries) {
+  if (!Array.isArray(history) || !history.length) {
+    return [];
+  }
+  if (!Array.isArray(fxSeries) || !fxSeries.length) {
+    return history
+      .filter(function (point) {
+        return point && point.date && Number.isFinite(point.price);
+      })
+      .map(function (point) {
+        return { date: point.date, price: point.price };
+      });
+  }
+  const sortedFx = fxSeries
+    .filter(function (entry) {
+      return entry && entry.date && Number.isFinite(entry.rate);
+    })
+    .sort(function (a, b) {
+      return a.date.localeCompare(b.date);
+    });
+  if (!sortedFx.length) {
+    return [];
+  }
+  const converted = [];
+  const rateCache = new Map();
+  history.forEach(function (point) {
+    if (!point || !point.date || !Number.isFinite(point.price)) {
+      return;
+    }
+    let rate = rateCache.get(point.date);
+    if (rate === undefined) {
+      rate = resolveFxRateForDate(sortedFx, point.date);
+      rateCache.set(point.date, rate);
+    }
+    if (!Number.isFinite(rate)) {
+      return;
+    }
+    converted.push({ date: point.date, price: point.price * rate });
+  });
+  return converted;
+}
+
+function convertValueWithFx(value, fxSeries, targetDate) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  if (!Array.isArray(fxSeries) || !fxSeries.length) {
+    return value;
+  }
+  const rate = resolveFxRateForDate(fxSeries, targetDate);
+  if (!Number.isFinite(rate)) {
+    return null;
+  }
+  return value * rate;
+}
+
+function convertCashFlowToBase(event, baseCurrency, fxCache) {
+  if (!event || !Number.isFinite(event.cashFlow) || Math.abs(event.cashFlow) < 0.00001) {
+    return null;
+  }
+  const originalAmount = event.cashFlow;
+  const originalCurrency = event.currency || null;
+  if (!baseCurrency || !originalCurrency || originalCurrency === baseCurrency) {
+    return {
+      amount: originalAmount,
+      currency: baseCurrency || originalCurrency || null,
+      originalAmount,
+      originalCurrency,
+      status: 'native',
+    };
+  }
+  const normalizedCurrency = originalCurrency.trim().toUpperCase();
+  const fxInfo = fxCache && fxCache.get(normalizedCurrency);
+  if (!fxInfo || !Array.isArray(fxInfo.series) || !fxInfo.series.length) {
+    return {
+      amount: originalAmount,
+      currency: originalCurrency,
+      originalAmount,
+      originalCurrency,
+      status: 'fx-missing',
+    };
+  }
+  const dateKey = toDateKey(event.timestamp) || null;
+  const rate = resolveFxRateForDate(fxInfo.series, dateKey);
+  if (!Number.isFinite(rate)) {
+    return {
+      amount: originalAmount,
+      currency: originalCurrency,
+      originalAmount,
+      originalCurrency,
+      status: 'fx-rate-missing',
+    };
+  }
+  return {
+    amount: originalAmount * rate,
+    currency: baseCurrency,
+    originalAmount,
+    originalCurrency,
+    status: 'converted',
+  };
 }
 
 async function fetchHistoricalPrices(symbol, startDate, endDate) {
@@ -1135,34 +1435,131 @@ async function fetchHistoricalPrices(symbol, startDate, endDate) {
   }
 }
 
-async function buildPriceSeries(symbols, startDate, endDate, finalDateKey, positionSnapshot) {
+async function buildPriceSeries(
+  symbols,
+  startDate,
+  endDate,
+  finalDateKey,
+  positionSnapshot,
+  options = {}
+) {
+  const baseCurrency = options.baseCurrency && typeof options.baseCurrency === 'string'
+    ? options.baseCurrency.trim().toUpperCase()
+    : null;
+  const currencyMapInput = options.currencyBySymbol;
+  const currencyBySymbol = currencyMapInput instanceof Map ? currencyMapInput : new Map();
+  if (!(currencyMapInput instanceof Map) && currencyMapInput && typeof currencyMapInput === 'object') {
+    Object.keys(currencyMapInput).forEach(function (key) {
+      const value = currencyMapInput[key];
+      if (typeof value === 'string' && value.trim()) {
+        currencyBySymbol.set(key, value.trim().toUpperCase());
+      }
+    });
+  }
+
   const seriesMap = new Map();
+  const fxCache = new Map();
+  const diagnostics = {
+    baseCurrency: baseCurrency || null,
+    symbols: [],
+    fxPairs: [],
+  };
+
+  const ensureFxSeries = async function (fromCurrency) {
+    if (!fromCurrency || !baseCurrency || fromCurrency === baseCurrency) {
+      return null;
+    }
+    const normalizedFrom = fromCurrency.trim().toUpperCase();
+    if (!normalizedFrom || normalizedFrom === baseCurrency) {
+      return null;
+    }
+    if (fxCache.has(normalizedFrom)) {
+      return fxCache.get(normalizedFrom);
+    }
+    const pairSymbol = resolveFxPairSymbol(normalizedFrom, baseCurrency);
+    let series = [];
+    let status = 'skipped';
+    if (pairSymbol) {
+      series = await fetchFxSeries(pairSymbol, startDate, endDate);
+      status = series.length ? 'ok' : 'empty';
+    } else {
+      status = 'unavailable';
+    }
+    const entry = {
+      series,
+      pairSymbol,
+      fromCurrency: normalizedFrom,
+      toCurrency: baseCurrency,
+      status,
+    };
+    fxCache.set(normalizedFrom, entry);
+    diagnostics.fxPairs.push({
+      fromCurrency: normalizedFrom,
+      toCurrency: baseCurrency,
+      pairSymbol,
+      points: series.length,
+      status,
+    });
+    return entry;
+  };
+
   for (const symbol of symbols) {
     const history = await fetchHistoricalPrices(symbol, startDate, endDate);
+    const instrumentCurrency = currencyBySymbol.get(symbol) || baseCurrency || null;
+    const fxInfo = await ensureFxSeries(instrumentCurrency);
+    const convertedHistory = fxInfo && Array.isArray(fxInfo.series) && fxInfo.series.length
+      ? convertSeriesWithFx(history, fxInfo.series)
+      : history
+          .filter(function (point) {
+            return point && point.date && Number.isFinite(point.price);
+          })
+          .map(function (point) {
+            return { date: point.date, price: point.price };
+          });
+
     const pointsMap = new Map();
-    history.forEach(function (entry) {
+    convertedHistory.forEach(function (entry) {
       if (!entry || !entry.date) {
         return;
       }
       pointsMap.set(entry.date, entry.price);
     });
+
     const snapshot = positionSnapshot[symbol];
+    let snapshotPrice = null;
+    let snapshotConversion = null;
     if (snapshot && finalDateKey) {
-      let resolvedPrice = null;
       if (Number.isFinite(snapshot.price) && snapshot.price > 0) {
-        resolvedPrice = snapshot.price;
+        snapshotPrice = snapshot.price;
       } else if (
         Number.isFinite(snapshot.marketValue) &&
         Number.isFinite(snapshot.quantity) &&
         Math.abs(snapshot.quantity) > 1e-9 &&
         snapshot.marketValue !== 0
       ) {
-        resolvedPrice = snapshot.marketValue / snapshot.quantity;
+        snapshotPrice = snapshot.marketValue / snapshot.quantity;
       }
-      if (Number.isFinite(resolvedPrice) && resolvedPrice > 0) {
-        pointsMap.set(finalDateKey, resolvedPrice);
+      if (Number.isFinite(snapshotPrice) && snapshotPrice > 0) {
+        let converted = snapshotPrice;
+        if (fxInfo && Array.isArray(fxInfo.series) && fxInfo.series.length) {
+          const maybeConverted = convertValueWithFx(snapshotPrice, fxInfo.series, finalDateKey);
+          if (Number.isFinite(maybeConverted) && maybeConverted > 0) {
+            converted = maybeConverted;
+            snapshotConversion = 'converted';
+          } else {
+            snapshotConversion = 'fx-fallback';
+          }
+        } else if (fxInfo && (!Array.isArray(fxInfo.series) || !fxInfo.series.length)) {
+          snapshotConversion = 'fx-missing';
+        } else {
+          snapshotConversion = 'native';
+        }
+        if (Number.isFinite(converted) && converted > 0) {
+          pointsMap.set(finalDateKey, converted);
+        }
       }
     }
+
     const ordered = Array.from(pointsMap.entries())
       .map(function ([date, price]) {
         return { date, price };
@@ -1170,13 +1567,29 @@ async function buildPriceSeries(symbols, startDate, endDate, finalDateKey, posit
       .sort(function (a, b) {
         return a.date.localeCompare(b.date);
       });
+
     seriesMap.set(symbol, ordered);
+
+    diagnostics.symbols.push({
+      symbol,
+      currency: instrumentCurrency || null,
+      pricePoints: history.length,
+      convertedPoints: ordered.length,
+      fxPair: fxInfo ? fxInfo.pairSymbol : null,
+      fxStatus: fxInfo ? fxInfo.status : baseCurrency ? 'base' : 'unknown',
+      snapshotApplied: Number.isFinite(snapshotPrice),
+      snapshotConversion,
+    });
   }
-  return seriesMap;
+
+  return { seriesMap, fxCache, diagnostics };
 }
 
 function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDateKey, options) {
   const debug = options && options.debug;
+  const baseCurrency = options && typeof options.baseCurrency === 'string' && options.baseCurrency
+    ? options.baseCurrency
+    : null;
   const changeMaps = new Map();
   const dateSet = new Set();
 
@@ -1258,14 +1671,24 @@ function computeAccountPerformanceTimeline(events, priceSeries, symbols, finalDa
           quantity,
           price: cursor.lastPrice,
           value: quantity * cursor.lastPrice,
+          currency: baseCurrency || null,
         });
       }
     });
 
     const value = Number.isFinite(totalValue) ? totalValue : 0;
-    timeline.push({ date: dateKey, value });
+    const entry = { date: dateKey, value };
+    if (baseCurrency) {
+      entry.currency = baseCurrency;
+    }
+    timeline.push(entry);
     if (debug && debugDetails) {
-      debugDetails.push({ date: dateKey, totalValue: value, holdings: holdings || [] });
+      debugDetails.push({
+        date: dateKey,
+        totalValue: value,
+        holdings: holdings || [],
+        currency: baseCurrency || null,
+      });
     }
   });
 
@@ -1364,14 +1787,17 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
         'Executions fetched from Questrade (count=' +
           count +
           '):\n' +
-          executionSummaries.map(function (line) {
-            return '  ' + line;
-          }).join('\n')
+          executionSummaries
+            .map(function (line) {
+              return '  ' + line;
+            })
+            .join('\n')
       );
     } else {
       performanceDebug('Executions fetched from Questrade (count=' + count + '): none');
     }
   }
+
   const executionEvents = normalizeExecutionEvents(executions);
   if (PERFORMANCE_DEBUG_ENABLED) {
     const normalizedSummaries = summarizePerformanceEvents(executionEvents);
@@ -1390,6 +1816,43 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
       performanceDebug('Normalized execution events (count=0): none');
     }
   }
+
+  const accountCurrency = account && typeof account.currency === 'string' ? account.currency.trim().toUpperCase() : null;
+  let baseCurrency = accountCurrency || null;
+  if (!baseCurrency && Array.isArray(positions)) {
+    const positionWithCurrency = positions.find(function (position) {
+      return position && typeof position.currency === 'string' && position.currency.trim();
+    });
+    if (positionWithCurrency && positionWithCurrency.currency) {
+      baseCurrency = positionWithCurrency.currency.trim().toUpperCase();
+    }
+  }
+  if (!baseCurrency && Array.isArray(executionEvents)) {
+    const eventWithCurrency = executionEvents.find(function (event) {
+      return event && typeof event.currency === 'string' && event.currency.trim();
+    });
+    if (eventWithCurrency && eventWithCurrency.currency) {
+      baseCurrency = eventWithCurrency.currency.trim().toUpperCase();
+    }
+  }
+  if (!baseCurrency) {
+    baseCurrency = 'CAD';
+  }
+
+  const symbolCurrencyMap = buildSymbolCurrencyMap(positions, executions, transfers, baseCurrency);
+  if (PERFORMANCE_DEBUG_ENABLED) {
+    const currencyMappings = Array.from(symbolCurrencyMap.entries()).map(function ([symbol, currency]) {
+      return symbol + ' → ' + currency;
+    });
+    performanceDebug(
+      'Performance currency context: base=' +
+        (baseCurrency || 'n/a') +
+        ', account=' +
+        (accountCurrency || 'n/a') +
+        (currencyMappings.length ? '\n  symbol currencies:\n    ' + currencyMappings.join('\n    ') : '')
+    );
+  }
+
   const transferEvents = normalizeTransferEvents(transfers);
   const positionSnapshot = buildPositionSnapshot(positions);
   const now = new Date();
@@ -1409,6 +1872,7 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
           .join('\n')
     );
   }
+
   let earliestTimestamp = null;
   events.forEach(function (event) {
     if (!event.timestamp) {
@@ -1436,6 +1900,9 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
     const current = netQuantities.get(symbol) || 0;
     const delta = targetQuantity - current;
     if (Math.abs(delta) > 1e-6) {
+      const adjustmentCurrency = snapshot && snapshot.currency
+        ? snapshot.currency.trim().toUpperCase()
+        : baseCurrency;
       events.push({
         symbol,
         quantity: delta,
@@ -1443,6 +1910,7 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
         cashFlow: 0,
         timestamp: new Date(now.getTime()),
         type: 'adjustment',
+        currency: adjustmentCurrency || null,
       });
     }
   });
@@ -1485,9 +1953,60 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
 
   const earliestEventTime = events.length ? events[0].timestamp || earliestTimestamp : earliestTimestamp;
   const startDate = earliestEventTime ? new Date(earliestEventTime.getTime()) : new Date(now.getTime() - 30 * 24 * 3600 * 1000);
-  const priceSeries = await buildPriceSeries(sortedSymbols, startDate, now, finalDateKey, positionSnapshot);
+  const priceSeriesResult = await buildPriceSeries(sortedSymbols, startDate, now, finalDateKey, positionSnapshot, {
+    baseCurrency,
+    currencyBySymbol: symbolCurrencyMap,
+  });
+  const priceSeries = priceSeriesResult.seriesMap;
+  const fxCache = priceSeriesResult.fxCache;
+  if (PERFORMANCE_DEBUG_ENABLED && priceSeriesResult.diagnostics) {
+    performanceDebug(
+      'Price series diagnostics (base ' +
+        (priceSeriesResult.diagnostics.baseCurrency || 'n/a') +
+        '):\n' +
+        priceSeriesResult.diagnostics.symbols
+          .map(function (entry) {
+            return (
+              '  ' +
+              entry.symbol +
+              ' currency=' +
+              (entry.currency || 'n/a') +
+              ' points=' +
+              entry.pricePoints +
+              ' converted=' +
+              entry.convertedPoints +
+              (entry.fxPair ? ' fx=' + entry.fxPair + ' (' + entry.fxStatus + ')' : ' fx=' + entry.fxStatus) +
+              (entry.snapshotApplied
+                ? ' snapshot=' + (entry.snapshotConversion || 'applied')
+                : '')
+            );
+          })
+          .join('\n') +
+        (priceSeriesResult.diagnostics.fxPairs.length
+          ? '\n  fx pairs:\n' +
+            priceSeriesResult.diagnostics.fxPairs
+              .map(function (fx) {
+                return (
+                  '    ' +
+                  fx.fromCurrency +
+                  '→' +
+                  (fx.toCurrency || 'n/a') +
+                  ' pair=' +
+                  (fx.pairSymbol || 'n/a') +
+                  ' points=' +
+                  fx.points +
+                  ' status=' +
+                  fx.status
+                );
+              })
+              .join('\n')
+          : '')
+    );
+  }
+
   const timelineResult = computeAccountPerformanceTimeline(events, priceSeries, sortedSymbols, finalDateKey, {
     debug: PERFORMANCE_DEBUG_ENABLED,
+    baseCurrency,
   });
   const timeline = Array.isArray(timelineResult) ? timelineResult : timelineResult.timeline;
   const debugTimelineEntries = !Array.isArray(timelineResult) && timelineResult && timelineResult.debugDetails
@@ -1507,7 +2026,9 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
           startLabel +
           ' → ' +
           endLabel +
-          '):\n' +
+          ') ' +
+          (baseCurrency ? '[' + baseCurrency + ']' : '') +
+          ':\n' +
           timelineSummaries
             .map(function (line) {
               return '  ' + line;
@@ -1524,13 +2045,30 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
       return Number.isFinite(event.cashFlow) && Math.abs(event.cashFlow) > 0.00001;
     })
     .map(function (event) {
-      return {
+      const converted = convertCashFlowToBase(event, baseCurrency, fxCache);
+      const amount = converted ? converted.amount : event.cashFlow;
+      const currency = converted ? converted.currency : baseCurrency;
+      const originalAmount = converted ? converted.originalAmount : event.cashFlow;
+      const originalCurrency = converted ? converted.originalCurrency || event.currency || null : event.currency || null;
+      const flow = {
         timestamp: event.timestamp ? event.timestamp.toISOString() : null,
-        amount: event.cashFlow,
+        amount,
         symbol: event.symbol,
         type: event.type,
       };
+      if (currency) {
+        flow.currency = currency;
+      }
+      if (originalAmount !== amount || (originalCurrency && currency && originalCurrency !== currency)) {
+        flow.originalAmount = originalAmount;
+        flow.originalCurrency = originalCurrency;
+      }
+      if (converted && converted.status && converted.status !== 'converted' && converted.status !== 'native') {
+        flow.conversionStatus = converted.status;
+      }
+      return flow;
     });
+
   if (PERFORMANCE_DEBUG_ENABLED) {
     const cashFlowSummaries = summarizeCashFlowsForDebug(cashFlows);
     if (cashFlowSummaries.length) {
@@ -1551,7 +2089,7 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
 
   const totals = computeAggregatedMetrics(timeline, cashFlows);
   if (PERFORMANCE_DEBUG_ENABLED) {
-    performanceDebug('Aggregated totals:', totals);
+    performanceDebug('Aggregated totals (' + (baseCurrency || 'n/a') + '):', totals);
   }
 
   return {
@@ -1563,6 +2101,11 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
       symbolCount: sortedSymbols.length,
       generatedAt: now.toISOString(),
       accountId: account ? account.id : null,
+      baseCurrency,
+      accountCurrency: accountCurrency || null,
+      currencyDiagnostics: {
+        symbolCurrencyCount: symbolCurrencyMap.size,
+      },
     },
   };
 }
