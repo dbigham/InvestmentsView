@@ -1894,6 +1894,9 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
     netQuantities.set(event.symbol, (netQuantities.get(event.symbol) || 0) + event.quantity);
   });
 
+  const adjustmentTimestamp = earliestTimestamp ? new Date(earliestTimestamp.getTime()) : new Date(now.getTime());
+  const adjustmentEvents = [];
+
   Object.keys(positionSnapshot).forEach(function (symbol) {
     const snapshot = positionSnapshot[symbol];
     const targetQuantity = snapshot && Number.isFinite(snapshot.quantity) ? snapshot.quantity : 0;
@@ -1903,17 +1906,33 @@ async function generateAccountPerformance({ executions, transfers, positions, ac
       const adjustmentCurrency = snapshot && snapshot.currency
         ? snapshot.currency.trim().toUpperCase()
         : baseCurrency;
-      events.push({
+      const adjustment = {
         symbol,
         quantity: delta,
         price: snapshot && Number.isFinite(snapshot.price) ? snapshot.price : null,
         cashFlow: 0,
-        timestamp: new Date(now.getTime()),
+        timestamp: new Date(adjustmentTimestamp.getTime()),
         type: 'adjustment',
         currency: adjustmentCurrency || null,
-      });
+      };
+      events.push(adjustment);
+      adjustmentEvents.push(adjustment);
     }
   });
+
+  if (PERFORMANCE_DEBUG_ENABLED && adjustmentEvents.length) {
+    const adjustmentSummaries = summarizePerformanceEvents(adjustmentEvents);
+    performanceDebug(
+      'Position adjustments applied (count=' +
+        adjustmentEvents.length +
+        '):\n' +
+        adjustmentSummaries
+          .map(function (line) {
+            return '  ' + line;
+          })
+          .join('\n')
+    );
+  }
 
   events.sort(function (a, b) {
     const timeA = a.timestamp ? a.timestamp.getTime() : 0;
