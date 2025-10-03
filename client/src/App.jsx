@@ -986,18 +986,20 @@ export default function App() {
   }, [accounts, selectedAccount]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
-  const accountFunding = data?.accountFunding ?? EMPTY_OBJECT;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
     if (!selectedAccountInfo) {
       return null;
     }
-    const entry = accountFunding[selectedAccountInfo.id];
-    if (entry && typeof entry === 'object') {
-      return entry;
+    const funding = data?.accountFunding;
+    if (funding && typeof funding === 'object') {
+      const entry = funding[selectedAccountInfo.id];
+      if (entry && typeof entry === 'object') {
+        return entry;
+      }
     }
     return null;
-  }, [selectedAccountInfo, accountFunding]);
+  }, [data?.accountFunding, selectedAccountInfo]);
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
