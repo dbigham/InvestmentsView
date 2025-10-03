@@ -238,6 +238,34 @@ function buildClipboardSummary({
   return lines.join('\n');
 }
 
+async function copyTextToClipboard(text) {
+  if (!text) {
+    return;
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof document !== 'undefined') {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return;
+  }
+
+  throw new Error('Clipboard API is not available.');
+}
+
+const CHATGPT_ESTIMATE_URL = 'https://chatgpt.com/?model=gpt-5-thinking';
+
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const lastAccountRef = useRef();
@@ -1498,12 +1526,12 @@ export default function App() {
   const isRefreshing = loading && hasData;
   const showContent = hasData;
 
-  const handleCopySummary = useCallback(async () => {
+  const getSummaryText = useCallback(() => {
     if (!showContent) {
-      return;
+      return null;
     }
 
-    const text = buildClipboardSummary({
+    return buildClipboardSummary({
       selectedAccountId: selectedAccount,
       accounts,
       balances: activeBalances,
@@ -1514,28 +1542,6 @@ export default function App() {
       asOf,
       currencyOption: activeCurrency,
     });
-
-    if (!text) {
-      return;
-    }
-
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else if (typeof document !== 'undefined') {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-    } catch (error) {
-      console.error('Failed to copy account summary', error);
-    }
   }, [
     showContent,
     selectedAccount,
@@ -1548,6 +1554,40 @@ export default function App() {
     asOf,
     activeCurrency,
   ]);
+
+  const handleCopySummary = useCallback(async () => {
+    const text = getSummaryText();
+    if (!text) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(text);
+    } catch (error) {
+      console.error('Failed to copy account summary', error);
+    }
+  }, [getSummaryText]);
+
+  const handleEstimateFutureCagr = useCallback(async () => {
+    if (typeof window !== 'undefined') {
+      window.open(CHATGPT_ESTIMATE_URL, '_blank', 'noopener');
+    }
+
+    const summary = getSummaryText();
+    if (!summary) {
+      return;
+    }
+
+    const prompt =
+      "Please review the general economic news for the last 1 year, 6 months, 1 month, 1 week, and 1 day, and then review the news and performance of the below companies for 1 year, 6 months, 1 week, and 1 day. Once you've digested all of the news, put that information to work coming up with your best estimate of the CAGR of this portfolio over the next 10 years.\n\nPortfolio:\n\n" +
+      summary;
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy CAGR estimate prompt', error);
+    }
+  }, [getSummaryText]);
 
   useEffect(() => {
     if (!autoRefreshEnabled) {
@@ -1662,6 +1702,7 @@ export default function App() {
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
+            onEstimateFutureCagr={handleEstimateFutureCagr}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
