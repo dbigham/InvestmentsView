@@ -229,7 +229,11 @@ export default function SummaryMetrics({
     : null;
   const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
 
-  const safeTotalEquity = Number.isFinite(totalEquity) ? totalEquity : null;
+  const safeTotalEquity = Number.isFinite(totalEquity)
+    ? totalEquity
+    : Number.isFinite(fundingSummary?.totalEquityCad)
+      ? fundingSummary.totalEquityCad
+      : null;
 
   const formatPnlPercent = (change) => {
     if (!Number.isFinite(change)) {
@@ -262,6 +266,7 @@ export default function SummaryMetrics({
 
   const dayPercent = formatPnlPercent(pnl?.dayPnl);
   const openPercent = formatPnlPercent(pnl?.openPnl);
+  const totalPercent = formatPnlPercent(totalPnlValue);
 
   return (
     <section className="equity-card">
@@ -364,7 +369,12 @@ export default function SummaryMetrics({
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
-          <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          <MetricRow
+            label="Total P&L"
+            value={formattedTotal}
+            extra={totalPercent ? `(${totalPercent})` : null}
+            tone={totalTone}
+          />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
         <dl className="equity-card__metric-column">
