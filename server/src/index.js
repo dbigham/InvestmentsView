@@ -1187,8 +1187,9 @@ async function fetchBankOfCanadaSeriesObservation(seriesId, dateKey) {
 
   try {
     const response = await axios.get(url, { timeout: BANK_OF_CANADA_TIMEOUT_MS });
-    const observations = Array.isArray(response && response.observations)
-      ? response.observations
+    const payload = response && response.data ? response.data : response;
+    const observations = Array.isArray(payload && payload.observations)
+      ? payload.observations
       : [];
     for (let index = observations.length - 1; index >= 0; index -= 1) {
       const observation = observations[index];
@@ -1271,7 +1272,7 @@ async function resolveExternalHistoricalFxRateMeta(sourceCurrency, targetCurrenc
       if (!isFiniteNumber(effectiveRate) || effectiveRate <= 0) {
         continue;
       }
-      return {
+      const meta = {
         rate: effectiveRate,
         source: 'bank-of-canada',
         dateKey: observation.dateKey || candidate.dateKey,
@@ -1284,6 +1285,10 @@ async function resolveExternalHistoricalFxRateMeta(sourceCurrency, targetCurrenc
           targetCurrency: normalizedTarget,
         },
       };
+      if (ENABLE_QUESTRADE_API_DEBUG) {
+        console.log('[FX][BankOfCanada] Resolved rate', meta);
+      }
+      return meta;
     }
   }
 
@@ -1293,7 +1298,7 @@ async function resolveExternalHistoricalFxRateMeta(sourceCurrency, targetCurrenc
     const toCadRate = toCad && isFiniteNumber(toCad.rate) && toCad.rate > 0 ? toCad.rate : null;
     const fromCadRate = fromCad && isFiniteNumber(fromCad.rate) && fromCad.rate > 0 ? fromCad.rate : null;
     if (toCadRate && fromCadRate) {
-      return {
+      const meta = {
         rate: toCadRate * fromCadRate,
         source: 'bank-of-canada:derived',
         dateKey: fromCad && fromCad.dateKey ? fromCad.dateKey : toCad ? toCad.dateKey : null,
@@ -1306,6 +1311,12 @@ async function resolveExternalHistoricalFxRateMeta(sourceCurrency, targetCurrenc
           targetCurrency: normalizedTarget,
         },
       };
+      if (ENABLE_QUESTRADE_API_DEBUG) {
+        console.log('[FX][BankOfCanada] Derived cross rate', meta, {
+          via: { toCad, fromCad },
+        });
+      }
+      return meta;
     }
   }
 
@@ -2183,10 +2194,22 @@ async function resolveHistoricalFxRate(login, sourceCurrency, targetCurrency, ti
         : `external:${normalizedSource}:${normalizedTarget}`;
       setCachedFxRate(cacheId, fallbackMeta.dateKey, fallbackMeta.rate);
     }
+    if (ENABLE_QUESTRADE_API_DEBUG) {
+      console.log('[FX][Fallback] Using external FX rate', {
+        source: fallbackMeta.source,
+        rate: fallbackMeta.rate,
+        dateKey: fallbackMeta.dateKey || null,
+        pair: `${normalizedSource}/${normalizedTarget}`,
+      });
+    }
     if (includeMetadata) {
       return fallbackMeta;
     }
     return fallbackMeta.rate;
+  }
+
+  if (ENABLE_QUESTRADE_API_DEBUG) {
+    console.warn('[FX][Fallback] Failed to resolve external FX rate for pair', `${normalizedSource}/${normalizedTarget}`);
   }
 
   if (includeMetadata) {
