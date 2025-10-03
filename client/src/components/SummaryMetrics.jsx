@@ -419,6 +419,7 @@ SummaryMetrics.propTypes = {
   fundingSummary: PropTypes.shape({
     netDepositsCad: PropTypes.number,
     totalPnlCad: PropTypes.number,
+    totalEquityCad: PropTypes.number,
   }),
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,

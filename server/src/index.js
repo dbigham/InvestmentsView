@@ -1953,6 +1953,79 @@ app.get('/api/summary', async function (req, res) {
           message
         );
       }
+    } else if (viewingAllAccounts && selectedContexts.length > 1) {
+      const aggregateTotals = {
+        netDepositsCad: 0,
+        netDepositsCount: 0,
+        totalPnlCad: 0,
+        totalPnlCount: 0,
+        totalEquityCad: 0,
+        totalEquityCount: 0,
+      };
+
+      for (const context of selectedContexts) {
+        try {
+          const fundingSummary = await computeNetDeposits(
+            context.login,
+            context.account,
+            perAccountCombinedBalances
+          );
+          if (fundingSummary) {
+            accountFundingSummaries[context.account.id] = fundingSummary;
+            const netDepositsCad =
+              fundingSummary && fundingSummary.netDeposits
+                ? fundingSummary.netDeposits.combinedCad
+                : null;
+            if (Number.isFinite(netDepositsCad)) {
+              aggregateTotals.netDepositsCad += netDepositsCad;
+              aggregateTotals.netDepositsCount += 1;
+            }
+
+            const totalPnlCad =
+              fundingSummary && fundingSummary.totalPnl ? fundingSummary.totalPnl.combinedCad : null;
+            if (Number.isFinite(totalPnlCad)) {
+              aggregateTotals.totalPnlCad += totalPnlCad;
+              aggregateTotals.totalPnlCount += 1;
+            }
+
+            const totalEquityCad = fundingSummary ? fundingSummary.totalEquityCad : null;
+            if (Number.isFinite(totalEquityCad)) {
+              aggregateTotals.totalEquityCad += totalEquityCad;
+              aggregateTotals.totalEquityCount += 1;
+            }
+          }
+        } catch (fundingError) {
+          const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
+          console.warn(
+            'Failed to compute net deposits for account ' + context.account.id + ':',
+            message
+          );
+        }
+      }
+
+      const aggregateEntry = {};
+      if (aggregateTotals.netDepositsCount > 0) {
+        aggregateEntry.netDeposits = { combinedCad: aggregateTotals.netDepositsCad };
+      }
+      if (aggregateTotals.totalPnlCount > 0) {
+        aggregateEntry.totalPnl = { combinedCad: aggregateTotals.totalPnlCad };
+      } else if (
+        aggregateTotals.netDepositsCount > 0 &&
+        aggregateTotals.totalEquityCount > 0 &&
+        Number.isFinite(aggregateTotals.totalEquityCad)
+      ) {
+        const derivedTotalPnl = aggregateTotals.totalEquityCad - aggregateTotals.netDepositsCad;
+        if (Number.isFinite(derivedTotalPnl)) {
+          aggregateEntry.totalPnl = { combinedCad: derivedTotalPnl };
+        }
+      }
+      if (aggregateTotals.totalEquityCount > 0) {
+        aggregateEntry.totalEquityCad = aggregateTotals.totalEquityCad;
+      }
+
+      if (Object.keys(aggregateEntry).length > 0) {
+        accountFundingSummaries.all = aggregateEntry;
+      }
     }
 
     const responseAccounts = allAccounts.map(function (account) {
