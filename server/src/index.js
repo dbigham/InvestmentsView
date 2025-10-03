@@ -766,12 +766,14 @@ function determineFundingDirection(activity) {
     'transfer in',
     'transfer-in',
     'transferin',
+    'transfer from',
     'journal in',
     'journaled in',
     'journal cash in',
     'journaled cash in',
     'cash in',
     'incoming',
+    'from account',
   ];
   const outKeywords = [
     'withdraw',
@@ -779,12 +781,14 @@ function determineFundingDirection(activity) {
     'transfer out',
     'transfer-out',
     'transferout',
+    'transfer to',
     'journal out',
     'journaled out',
     'journal cash out',
     'journaled cash out',
     'cash out',
     'outgoing',
+    'to account',
   ];
 
   const candidateFields = [
@@ -812,6 +816,22 @@ function determineFundingDirection(activity) {
   }
   if (matches(outKeywords)) {
     return 'out';
+  }
+
+  const normalizedAction = typeof activity.action === 'string' ? activity.action.trim().toUpperCase() : '';
+  if (normalizedAction) {
+    const actionDirectionMap = {
+      TF6: 'in',
+      TFO: 'out',
+      CON: 'in',
+      DEP: 'in',
+      WDL: 'out',
+      WDR: 'out',
+      WD: 'out',
+    };
+    if (actionDirectionMap[normalizedAction]) {
+      return actionDirectionMap[normalizedAction];
+    }
   }
 
   const normalizedType = typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
