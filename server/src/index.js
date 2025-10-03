@@ -1402,6 +1402,24 @@ function setCachedNetDeposits(key, value) {
   netDepositCache.set(key, { timestamp: Date.now(), value });
 }
 
+function convertMapToObject(map) {
+  const result = {};
+  if (!(map instanceof Map)) {
+    return result;
+  }
+  map.forEach((value, key) => {
+    if (typeof key !== 'string') {
+      return;
+    }
+    const normalizedKey = key.toUpperCase();
+    if (!isFiniteNumber(value) && value !== 0) {
+      return;
+    }
+    result[normalizedKey] = value;
+  });
+  return result;
+}
+
 async function fetchAccountNetDeposits(login, accountId, options = {}) {
   const cacheKey = getNetDepositCacheKey(login && login.id, accountId);
   const cached = getCachedNetDeposits(cacheKey);
@@ -1787,7 +1805,25 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
   const baseCurrency = options.baseCurrency || 'CAD';
   const perCurrencyResult = {};
   const combinedResult = {};
+  const netDepositPerCurrency = {};
+  const netDepositCounts = convertMapToObject(countsMap);
+  const combinedNetDeposits = {};
+  const perCurrencyEquity = {};
+  const combinedEquity = {};
   let hasValue = false;
+  let hasNetDepositData = false;
+
+  totalsMap.forEach((amount, currency) => {
+    const normalized = normalizeCurrencyCode(currency);
+    if (!normalized) {
+      return;
+    }
+    if (!isFiniteNumber(amount) && amount !== 0) {
+      return;
+    }
+    netDepositPerCurrency[normalized] = amount;
+    hasNetDepositData = true;
+  });
 
   if (balanceSummary.perCurrency && countsMap) {
     Object.entries(balanceSummary.perCurrency).forEach(([key, entry]) => {
@@ -1802,6 +1838,7 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
       const deposit = totalsMap.get(normalized) || 0;
       const totalPnl = equity - deposit;
       perCurrencyResult[normalized] = totalPnl;
+      perCurrencyEquity[normalized] = equity;
       hasValue = true;
     });
   }
@@ -1822,15 +1859,33 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
         convertedDeposits += convertAmountToCurrency(amount, sourceCurrency, normalized, rates, baseCurrency);
       });
       combinedResult[normalized] = equity - convertedDeposits;
+      combinedEquity[normalized] = equity;
+      if (hasNetDepositData) {
+        combinedNetDeposits[normalized] = convertedDeposits;
+      }
       hasValue = true;
     });
   }
 
-  if (!hasValue) {
+  if (!hasValue && !hasNetDepositData) {
     return null;
   }
 
-  return { perCurrency: perCurrencyResult, combined: combinedResult };
+  const result = {
+    perCurrency: perCurrencyResult,
+    combined: combinedResult,
+    netDeposits: {
+      perCurrency: netDepositPerCurrency,
+      combined: combinedNetDeposits,
+      counts: netDepositCounts,
+    },
+    equity: {
+      perCurrency: perCurrencyEquity,
+      combined: combinedEquity,
+    },
+  };
+
+  return result;
 }
 
 function mergePnL(positions, totalPnlValue = null) {
@@ -2289,6 +2344,14 @@ app.get('/api/summary', async function (req, res) {
             applyTotalPnlToBalanceSummary(accountSummary, totals);
             applyTotalPnlToBalanceSummary(balancesSummary, totals);
             computedTotalPnl = totals;
+            if (ENABLE_QUESTRADE_API_DEBUG) {
+              console.log('[Questrade][totalPnl]', context.account.number, {
+                perCurrency: totals.perCurrency,
+                combined: totals.combined,
+                netDeposits: totals.netDeposits,
+                equity: totals.equity,
+              });
+            }
           }
         } catch (totalError) {
           console.warn(
@@ -2319,6 +2382,20 @@ app.get('/api/summary', async function (req, res) {
     }
 
     const pnl = mergePnL(flattenedPositions, totalPnlOverride);
+    if (computedTotalPnl) {
+      if (computedTotalPnl.perCurrency || computedTotalPnl.combined) {
+        pnl.totalPnlBreakdown = {
+          perCurrency: computedTotalPnl.perCurrency || {},
+          combined: computedTotalPnl.combined || {},
+        };
+      }
+      if (computedTotalPnl.netDeposits) {
+        pnl.netDeposits = computedTotalPnl.netDeposits;
+      }
+      if (computedTotalPnl.equity) {
+        pnl.totalEquityBreakdown = computedTotalPnl.equity;
+      }
+    }
     const defaultAccountId = defaultAccount ? defaultAccount.id : null;
 
     const investmentModelEvaluations = {};

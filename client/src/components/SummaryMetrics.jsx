@@ -9,6 +9,50 @@ import {
   formatSignedPercent,
 } from '../utils/formatters';
 
+export function resolveScopedAmount(bucket, currencyOption) {
+  if (!bucket || typeof bucket !== 'object' || !currencyOption) {
+    return null;
+  }
+
+  const scope = currencyOption.scope || 'combined';
+  const currency = typeof currencyOption.currency === 'string' ? currencyOption.currency.toUpperCase() : null;
+  if (!currency) {
+    return null;
+  }
+
+  const sourceBucket =
+    scope === 'perCurrency'
+      ? bucket.perCurrency || bucket.currency || bucket
+      : bucket.combined || bucket.currency || bucket.perCurrency || bucket;
+
+  if (!sourceBucket || typeof sourceBucket !== 'object') {
+    return null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(sourceBucket, currency)) {
+    const value = sourceBucket[currency];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (value === 0) {
+      return 0;
+    }
+  }
+
+  for (const [key, value] of Object.entries(sourceBucket)) {
+    if (typeof key === 'string' && key.toUpperCase() === currency) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+      if (value === 0) {
+        return 0;
+      }
+    }
+  }
+
+  return null;
+}
+
 function MetricRow({ label, value, extra, tone, className, onActivate }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   const interactive = typeof onActivate === 'function';
@@ -212,13 +256,18 @@ export default function SummaryMetrics({
   const cash = balances?.cash ?? null;
   const buyingPower = balances?.buyingPower ?? null;
 
+  const scopedTotalPnl = resolveScopedAmount(pnl?.totalPnlBreakdown, currencyOption);
+  const totalPnlValue = scopedTotalPnl ?? pnl?.totalPnl ?? null;
+
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
-  const totalTone = classifyPnL(pnl?.totalPnl);
+  const totalTone = classifyPnL(totalPnlValue);
 
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
-  const formattedTotal = formatSignedMoney(pnl?.totalPnl ?? null);
+  const formattedTotal = formatSignedMoney(totalPnlValue ?? null);
+  const netDepositAmount = resolveScopedAmount(pnl?.netDeposits, currencyOption);
+  const formattedNetDeposits = formatSignedMoney(netDepositAmount ?? null);
 
   const safeTotalEquity = Number.isFinite(totalEquity) ? totalEquity : null;
 
@@ -356,6 +405,7 @@ export default function SummaryMetrics({
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
           <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
@@ -395,6 +445,19 @@ SummaryMetrics.propTypes = {
     dayPnl: PropTypes.number,
     openPnl: PropTypes.number,
     totalPnl: PropTypes.number,
+    totalPnlBreakdown: PropTypes.shape({
+      combined: PropTypes.objectOf(PropTypes.number),
+      perCurrency: PropTypes.objectOf(PropTypes.number),
+    }),
+    totalEquityBreakdown: PropTypes.shape({
+      combined: PropTypes.objectOf(PropTypes.number),
+      perCurrency: PropTypes.objectOf(PropTypes.number),
+    }),
+    netDeposits: PropTypes.shape({
+      combined: PropTypes.objectOf(PropTypes.number),
+      perCurrency: PropTypes.objectOf(PropTypes.number),
+      counts: PropTypes.objectOf(PropTypes.number),
+    }),
   }).isRequired,
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
