@@ -560,8 +560,122 @@ async function fetchBalances(login, accountId) {
 }
 
 const NET_DEPOSIT_ACTIVITY_WINDOW_DAYS = 30;
+const NET_DEPOSIT_ACTIVITY_START_PADDING_DAYS = 7;
 const NET_DEPOSIT_ACTIVITY_EPOCH = new Date(Date.UTC(2000, 0, 1));
 const NET_DEPOSIT_CACHE_TTL_MS = 15 * 60 * 1000;
+
+const ACCOUNT_PRIMARY_START_DATE_KEYS = [
+  'openedDate',
+  'openDate',
+  'createdDate',
+  'creationDate',
+  'createdOn',
+  'fundedDate',
+  'activationDate',
+  'effectiveDate',
+  'startDate',
+  'approvedDate',
+  'enrolledDate',
+  'clientSince',
+];
+
+const ACCOUNT_SECONDARY_START_DATE_KEYS = ['statusDate'];
+
+function parseDateValue(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isNaN(time) ? null : new Date(time);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const derived = new Date(value);
+    return Number.isNaN(derived.getTime()) ? null : derived;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function inferAccountStartDate(account) {
+  if (!account || typeof account !== 'object') {
+    return null;
+  }
+
+  const candidates = [];
+
+  const collectCandidates = function (keys) {
+    keys.forEach(function (key) {
+      const parsed = parseDateValue(account[key]);
+      if (parsed) {
+        candidates.push(parsed);
+      }
+    });
+  };
+
+  collectCandidates(ACCOUNT_PRIMARY_START_DATE_KEYS);
+
+  if (!candidates.length) {
+    collectCandidates(ACCOUNT_SECONDARY_START_DATE_KEYS);
+  }
+
+  if (!candidates.length) {
+    Object.keys(account).forEach(function (key) {
+      if (!/date/i.test(key)) {
+        return;
+      }
+      if (ACCOUNT_PRIMARY_START_DATE_KEYS.includes(key) || ACCOUNT_SECONDARY_START_DATE_KEYS.includes(key)) {
+        return;
+      }
+      const parsed = parseDateValue(account[key]);
+      if (parsed) {
+        candidates.push(parsed);
+      }
+    });
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  const filtered = candidates
+    .map(function (date) {
+      return Number.isNaN(date.getTime()) ? null : date;
+    })
+    .filter(Boolean)
+    .filter(function (date) {
+      return date.getTime() >= NET_DEPOSIT_ACTIVITY_EPOCH.getTime() - 365 * 24 * 60 * 60 * 1000;
+    })
+    .sort(function (a, b) {
+      return a.getTime() - b.getTime();
+    });
+
+  if (!filtered.length) {
+    return null;
+  }
+
+  return filtered[0];
+}
+
+function resolveActivityHistoryStart(candidate) {
+  const parsed = parseDateValue(candidate);
+  const baselineMs = NET_DEPOSIT_ACTIVITY_EPOCH.getTime();
+  if (!parsed) {
+    return new Date(baselineMs);
+  }
+  const now = Date.now();
+  const paddingMs = Math.max(0, NET_DEPOSIT_ACTIVITY_START_PADDING_DAYS) * 24 * 60 * 60 * 1000;
+  const clampedMs = Math.min(parsed.getTime(), now);
+  const adjustedMs = Math.max(baselineMs, clampedMs - paddingMs);
+  return new Date(adjustedMs);
+}
 
 const netDepositCache = new Map();
 
@@ -740,15 +854,28 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate) {
   }
 }
 
-async function fetchAllAccountActivities(login, accountId) {
+async function fetchAllAccountActivities(login, accountId, options = {}) {
   if (!login || !accountId) {
     return [];
   }
 
   const now = new Date();
-  const start = NET_DEPOSIT_ACTIVITY_EPOCH;
+  const start = resolveActivityHistoryStart(options && options.startDate);
   const windows = buildActivityWindows(start, now, NET_DEPOSIT_ACTIVITY_WINDOW_DAYS);
   const activities = [];
+
+  if (ENABLE_QUESTRADE_API_DEBUG) {
+    console.log(
+      '[Questrade][activitiesWindowPlan]',
+      accountId,
+      'start',
+      start.toISOString(),
+      'end',
+      now.toISOString(),
+      'windows',
+      windows.length
+    );
+  }
 
   for (const window of windows) {
     try {
@@ -819,14 +946,14 @@ function setCachedNetDeposits(key, value) {
   netDepositCache.set(key, { timestamp: Date.now(), value });
 }
 
-async function fetchAccountNetDeposits(login, accountId) {
+async function fetchAccountNetDeposits(login, accountId, options = {}) {
   const cacheKey = getNetDepositCacheKey(login && login.id, accountId);
   const cached = getCachedNetDeposits(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const activities = await fetchAllAccountActivities(login, accountId);
+  const activities = await fetchAllAccountActivities(login, accountId, options);
   const summary = accumulateNetDeposits(activities);
   setCachedNetDeposits(cacheKey, summary);
   return summary;
@@ -1465,6 +1592,11 @@ app.get('/api/summary', async function (req, res) {
           loginLabel: ownerLabel,
           loginEmail: login.email || null,
         });
+        const inferredStartDate = inferAccountStartDate(account);
+        if (inferredStartDate) {
+          normalizedAccount.activityHistoryStart = inferredStartDate.toISOString();
+          normalizedAccount.activityHistoryStartMs = inferredStartDate.getTime();
+        }
         const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
         if (displayName) {
           normalizedAccount.displayName = displayName;
@@ -1691,7 +1823,11 @@ app.get('/api/summary', async function (req, res) {
       const accountSummary = perAccountBalanceSummaries[context.account.id] || null;
       if (accountSummary && context.account && context.account.number) {
         try {
-          const netDeposits = await fetchAccountNetDeposits(context.login, context.account.number);
+          const netDepositStart =
+            context.account.activityHistoryStartMs || context.account.activityHistoryStart || null;
+          const netDeposits = await fetchAccountNetDeposits(context.login, context.account.number, {
+            startDate: netDepositStart,
+          });
           const totals = computeAccountTotalPnlSummary(accountSummary, netDeposits, { baseCurrency: 'CAD' });
           if (totals) {
             applyTotalPnlToBalanceSummary(accountSummary, totals);
