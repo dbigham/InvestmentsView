@@ -563,6 +563,12 @@ const NET_DEPOSIT_ACTIVITY_WINDOW_DAYS = 30;
 const NET_DEPOSIT_ACTIVITY_START_PADDING_DAYS = 7;
 const NET_DEPOSIT_ACTIVITY_EPOCH = new Date(Date.UTC(2000, 0, 1));
 const NET_DEPOSIT_CACHE_TTL_MS = 15 * 60 * 1000;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const NET_DEPOSIT_SEED_LOOKBACK_DAYS = 120;
+const NET_DEPOSIT_SEED_LOOKAHEAD_DAYS = 180;
+const NET_DEPOSIT_FALLBACK_EXPANSION_DAYS = 365;
+const ACCOUNT_ACTIVITY_SEED_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const ACCOUNT_ACTIVITY_START_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const ACCOUNT_PRIMARY_START_DATE_KEYS = [
   'openedDate',
@@ -601,6 +607,37 @@ function parseDateValue(value) {
     const parsed = new Date(trimmed);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
+  return null;
+}
+
+function resolveTimestampFromObject(entity, preferredKeys = []) {
+  if (!entity || typeof entity !== 'object') {
+    return null;
+  }
+
+  for (const key of preferredKeys) {
+    if (!(key in entity)) {
+      continue;
+    }
+    const parsed = parseDateValue(entity[key]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  for (const key of Object.keys(entity)) {
+    if (preferredKeys.includes(key)) {
+      continue;
+    }
+    if (!/date|time/i.test(key)) {
+      continue;
+    }
+    const parsed = parseDateValue(entity[key]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
   return null;
 }
 
@@ -678,6 +715,43 @@ function resolveActivityHistoryStart(candidate) {
 }
 
 const netDepositCache = new Map();
+const accountActivitySeedCache = new Map();
+const accountActivityStartCache = new Map();
+
+function getTimedCacheEntry(cache, key, ttlMs) {
+  if (!cache.has(key)) {
+    return null;
+  }
+  const entry = cache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (ttlMs > 0 && Date.now() - entry.timestamp > ttlMs) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setTimedCacheEntry(cache, key, value) {
+  cache.set(key, { value, timestamp: Date.now() });
+}
+
+function getCachedAccountActivitySeed(key) {
+  return getTimedCacheEntry(accountActivitySeedCache, key, ACCOUNT_ACTIVITY_SEED_CACHE_TTL_MS);
+}
+
+function setCachedAccountActivitySeed(key, value) {
+  setTimedCacheEntry(accountActivitySeedCache, key, value);
+}
+
+function getCachedAccountActivityStart(key) {
+  return getTimedCacheEntry(accountActivityStartCache, key, ACCOUNT_ACTIVITY_START_CACHE_TTL_MS);
+}
+
+function setCachedAccountActivityStart(key, value) {
+  setTimedCacheEntry(accountActivityStartCache, key, value);
+}
 
 function getNetDepositCacheKey(loginId, accountNumber) {
   return `${loginId || 'unknown'}:${accountNumber || 'unknown'}`;
@@ -703,6 +777,42 @@ function resolveActivityCurrency(activity) {
     }
   }
   return null;
+}
+
+function resolveActivityTimestamp(activity) {
+  const preferredKeys = [
+    'transactionDateTime',
+    'transactionDatetime',
+    'transactionTime',
+    'tradeDate',
+    'transactionDate',
+    'settlementDate',
+    'activityDate',
+    'processedTime',
+    'processedAt',
+    'executionTime',
+    'createdDate',
+    'createdTime',
+    'date',
+  ];
+  return resolveTimestampFromObject(activity, preferredKeys);
+}
+
+function resolveOrderTimestamp(order) {
+  const preferredKeys = [
+    'creationTime',
+    'creationDate',
+    'createdTime',
+    'createdAt',
+    'updateTime',
+    'updateDate',
+  ];
+  return resolveTimestampFromObject(order, preferredKeys);
+}
+
+function resolveExecutionTimestamp(execution) {
+  const preferredKeys = ['timestamp', 'executionTime', 'tradeDate', 'transactionDate'];
+  return resolveTimestampFromObject(execution, preferredKeys);
 }
 
 const NET_DEPOSIT_INFLOW_KEYWORDS = [
@@ -770,6 +880,30 @@ function classifyNetDepositActivity(activity) {
   return null;
 }
 
+function isPotentialNetDepositActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+
+  const classification = classifyNetDepositActivity(activity);
+  if (classification) {
+    return true;
+  }
+
+  const labels = [normalizeActivityLabel(activity.type), normalizeActivityLabel(activity.action)];
+  const description = normalizeActivityLabel(activity.description);
+  if (description) {
+    labels.push(description);
+  }
+
+  const keywords = NET_DEPOSIT_INFLOW_KEYWORDS.concat(NET_DEPOSIT_OUTFLOW_KEYWORDS);
+  return keywords.some(function (keyword) {
+    return labels.some(function (label) {
+      return label && label.includes(keyword);
+    });
+  });
+}
+
 function buildActivityWindows(startDate, endDate, windowDays) {
   const windows = [];
   if (!(startDate instanceof Date) || Number.isNaN(startDate.valueOf())) {
@@ -822,6 +956,62 @@ function isArgumentLengthError(error) {
   return Boolean(error && error.response && error.response.data && error.response.data.code === 1003);
 }
 
+async function fetchEarliestTimestampFromPagedEndpoint(
+  login,
+  initialPath,
+  params,
+  itemsKey,
+  timestampResolver,
+  options = {}
+) {
+  if (!login || !initialPath || !itemsKey || typeof timestampResolver !== 'function') {
+    return null;
+  }
+
+  let nextPath = initialPath;
+  let currentParams = params || null;
+  let earliest = null;
+  const maxPages = Math.max(options.maxPages || 20, 1);
+  let pagesFetched = 0;
+
+  while (nextPath && pagesFetched < maxPages) {
+    const trimmedPath = String(nextPath).trim();
+    if (!trimmedPath) {
+      break;
+    }
+
+    const requestOptions = currentParams ? { params: currentParams } : {};
+    let data;
+    try {
+      data = await questradeRequest(login, trimmedPath, requestOptions);
+    } catch (error) {
+      throw error;
+    }
+
+    pagesFetched += 1;
+    currentParams = null;
+
+    const items = Array.isArray(data && data[itemsKey]) ? data[itemsKey] : [];
+    for (const item of items) {
+      const timestamp = timestampResolver(item);
+      if (!(timestamp instanceof Date) || Number.isNaN(timestamp.valueOf())) {
+        continue;
+      }
+      if (!earliest || timestamp.getTime() < earliest.getTime()) {
+        earliest = timestamp;
+      }
+    }
+
+    if (data && typeof data.next === 'string' && data.next.trim()) {
+      nextPath = data.next.trim();
+    } else {
+      break;
+    }
+  }
+
+  return earliest;
+}
+
 async function fetchActivitiesWindow(login, accountId, startDate, endDate) {
   const params = {};
   const startTime = formatActivityTimestamp(startDate);
@@ -854,13 +1044,279 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate) {
   }
 }
 
+async function fetchEarliestOrderCreationTime(login, accountId) {
+  const params = {
+    startTime: formatActivityTimestamp(NET_DEPOSIT_ACTIVITY_EPOCH),
+    endTime: formatActivityTimestamp(new Date()),
+    stateFilter: 'All',
+  };
+  return fetchEarliestTimestampFromPagedEndpoint(
+    login,
+    '/v1/accounts/' + accountId + '/orders',
+    params,
+    'orders',
+    resolveOrderTimestamp,
+    { maxPages: 25 }
+  );
+}
+
+async function fetchEarliestExecutionTimestamp(login, accountId) {
+  const params = {
+    startTime: formatActivityTimestamp(NET_DEPOSIT_ACTIVITY_EPOCH),
+    endTime: formatActivityTimestamp(new Date()),
+  };
+  return fetchEarliestTimestampFromPagedEndpoint(
+    login,
+    '/v1/accounts/' + accountId + '/executions',
+    params,
+    'executions',
+    resolveExecutionTimestamp,
+    { maxPages: 25 }
+  );
+}
+
+async function fetchAccountActivitySeed(login, accountId) {
+  if (!login || !accountId) {
+    return null;
+  }
+
+  const cacheKey = getNetDepositCacheKey(login.id, accountId);
+  const cached = getCachedAccountActivitySeed(cacheKey);
+  if (cached !== null && cached !== undefined) {
+    if (cached === false) {
+      return null;
+    }
+    const cachedDate = new Date(cached);
+    return Number.isNaN(cachedDate.valueOf()) ? null : cachedDate;
+  }
+
+  let earliest = null;
+
+  try {
+    const orderSeed = await fetchEarliestOrderCreationTime(login, accountId);
+    if (orderSeed && (!earliest || orderSeed.getTime() < earliest.getTime())) {
+      earliest = orderSeed;
+    }
+  } catch (error) {
+    console.warn(
+      'Failed to fetch orders for account ' + accountId + ' (' + resolveLoginDisplay(login) + ') when seeding activities:',
+      error && error.message ? error.message : error
+    );
+  }
+
+  try {
+    const executionSeed = await fetchEarliestExecutionTimestamp(login, accountId);
+    if (executionSeed && (!earliest || executionSeed.getTime() < earliest.getTime())) {
+      earliest = executionSeed;
+    }
+  } catch (error) {
+    console.warn(
+      'Failed to fetch executions for account ' + accountId + ' (' + resolveLoginDisplay(login) + ') when seeding activities:',
+      error && error.message ? error.message : error
+    );
+  }
+
+  if (earliest) {
+    setCachedAccountActivitySeed(cacheKey, earliest.getTime());
+    return earliest;
+  }
+
+  setCachedAccountActivitySeed(cacheKey, false);
+  return null;
+}
+
+async function summarizeActivityWindow(login, accountId, startMs, endMs, cache) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return { hasFunding: false, earliestTimestamp: null };
+  }
+
+  const key = startMs + ':' + endMs;
+  if (cache && cache.has(key)) {
+    return cache.get(key);
+  }
+
+  const startDate = new Date(startMs);
+  const endDate = new Date(endMs);
+  const activities = await fetchActivitiesWindow(login, accountId, startDate, endDate);
+  let hasFunding = false;
+  let earliestTimestamp = null;
+
+  for (const activity of activities) {
+    if (!isPotentialNetDepositActivity(activity)) {
+      continue;
+    }
+    hasFunding = true;
+    const timestamp = resolveActivityTimestamp(activity);
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.valueOf())) {
+      continue;
+    }
+    const ms = timestamp.getTime();
+    if (!Number.isFinite(ms)) {
+      continue;
+    }
+    if (earliestTimestamp === null || ms < earliestTimestamp) {
+      earliestTimestamp = ms;
+    }
+  }
+
+  const summary = { hasFunding, earliestTimestamp };
+  if (cache) {
+    cache.set(key, summary);
+  }
+  return summary;
+}
+
+async function searchActivityRangeForFunding(login, accountId, rangeStartMs, rangeEndMs, cache) {
+  if (!Number.isFinite(rangeStartMs) || !Number.isFinite(rangeEndMs) || rangeEndMs < rangeStartMs) {
+    return null;
+  }
+
+  const startDate = new Date(rangeStartMs);
+  const endDate = new Date(rangeEndMs);
+  const windows = buildActivityWindows(startDate, endDate, NET_DEPOSIT_ACTIVITY_WINDOW_DAYS);
+
+  for (const window of windows) {
+    const windowStartMs = window.start.getTime();
+    const windowEndMs = window.end.getTime();
+    const summary = await summarizeActivityWindow(login, accountId, windowStartMs, windowEndMs, cache);
+    if (summary.hasFunding && summary.earliestTimestamp !== null && summary.earliestTimestamp !== undefined) {
+      return summary.earliestTimestamp;
+    }
+  }
+
+  return null;
+}
+
+async function resolveAccountActivityHistoryStart(login, accountId, options = {}) {
+  if (!login || !accountId) {
+    return resolveActivityHistoryStart(null);
+  }
+
+  const cacheKey = getNetDepositCacheKey(login.id, accountId);
+  const cachedStart = getCachedAccountActivityStart(cacheKey);
+  if (cachedStart !== null && cachedStart !== undefined) {
+    const cachedDate = new Date(cachedStart);
+    if (!Number.isNaN(cachedDate.valueOf())) {
+      return cachedDate;
+    }
+  }
+
+  const baselineMs = NET_DEPOSIT_ACTIVITY_EPOCH.getTime();
+  const nowMs = Date.now();
+  const directCandidate = parseDateValue(options.startDate);
+  const directMs = directCandidate ? directCandidate.getTime() : null;
+  const windowCache = new Map();
+
+  const seedDates = [];
+  if (Number.isFinite(directMs) && directMs >= baselineMs && directMs <= nowMs) {
+    seedDates.push(directMs);
+  }
+
+  const seed = await fetchAccountActivitySeed(login, accountId);
+  if (seed && seed.getTime() >= baselineMs && seed.getTime() <= nowMs) {
+    seedDates.push(seed.getTime());
+  }
+
+  const uniqueSeeds = Array.from(new Set(seedDates)).sort(function (a, b) {
+    return a - b;
+  });
+
+  const lookbackMs = Math.max(NET_DEPOSIT_SEED_LOOKBACK_DAYS, NET_DEPOSIT_ACTIVITY_WINDOW_DAYS) * MS_PER_DAY;
+  const lookaheadMs = Math.max(NET_DEPOSIT_SEED_LOOKAHEAD_DAYS, NET_DEPOSIT_ACTIVITY_WINDOW_DAYS) * MS_PER_DAY;
+  let earliestTimestampMs = null;
+
+  for (const seedMs of uniqueSeeds) {
+    const rangeStart = Math.max(baselineMs, seedMs - lookbackMs);
+    const rangeEnd = Math.min(nowMs, seedMs + lookaheadMs);
+    const found = await searchActivityRangeForFunding(login, accountId, rangeStart, rangeEnd, windowCache);
+    if (found !== null && found !== undefined) {
+      if (earliestTimestampMs === null || found < earliestTimestampMs) {
+        earliestTimestampMs = found;
+      }
+    }
+    if (earliestTimestampMs !== null && earliestTimestampMs <= rangeStart) {
+      break;
+    }
+  }
+
+  if (earliestTimestampMs === null) {
+    let fallbackEndMs;
+    if (uniqueSeeds.length) {
+      fallbackEndMs = Math.min(uniqueSeeds[0], nowMs);
+    } else if (Number.isFinite(directMs)) {
+      fallbackEndMs = Math.min(directMs, nowMs);
+    } else {
+      fallbackEndMs = nowMs;
+    }
+
+    if (!Number.isFinite(fallbackEndMs) || fallbackEndMs < baselineMs) {
+      fallbackEndMs = nowMs;
+    }
+
+    let fallbackStartMs = Math.max(baselineMs, fallbackEndMs - NET_DEPOSIT_FALLBACK_EXPANSION_DAYS * MS_PER_DAY);
+
+    while (fallbackEndMs > baselineMs) {
+      const found = await searchActivityRangeForFunding(login, accountId, fallbackStartMs, fallbackEndMs, windowCache);
+      if (found !== null && found !== undefined) {
+        earliestTimestampMs = found;
+        break;
+      }
+      if (fallbackStartMs <= baselineMs) {
+        break;
+      }
+      fallbackEndMs = fallbackStartMs - 1;
+      fallbackStartMs = Math.max(baselineMs, fallbackEndMs - NET_DEPOSIT_FALLBACK_EXPANSION_DAYS * MS_PER_DAY);
+    }
+  }
+
+  if (earliestTimestampMs === null && uniqueSeeds.length === 0 && !Number.isFinite(directMs)) {
+    const found = await searchActivityRangeForFunding(login, accountId, baselineMs, nowMs, windowCache);
+    if (found !== null && found !== undefined) {
+      earliestTimestampMs = found;
+    }
+  }
+
+  let resolvedStart = null;
+  if (earliestTimestampMs !== null && earliestTimestampMs !== undefined) {
+    resolvedStart = resolveActivityHistoryStart(new Date(earliestTimestampMs));
+  } else if (directCandidate) {
+    resolvedStart = resolveActivityHistoryStart(directCandidate);
+  } else if (uniqueSeeds.length) {
+    resolvedStart = resolveActivityHistoryStart(new Date(uniqueSeeds[0]));
+  } else {
+    resolvedStart = resolveActivityHistoryStart(null);
+  }
+
+  if (resolvedStart) {
+    setCachedAccountActivityStart(cacheKey, resolvedStart.getTime());
+  }
+
+  if (ENABLE_QUESTRADE_API_DEBUG && resolvedStart) {
+    const seedSummaries = uniqueSeeds.map(function (ms) {
+      return new Date(ms).toISOString();
+    });
+    console.log(
+      '[Questrade][activitiesSeed]',
+      accountId,
+      'seeds',
+      seedSummaries,
+      'start',
+      resolvedStart.toISOString(),
+      earliestTimestampMs ? 'firstActivity' : 'firstActivityMissing',
+      earliestTimestampMs ? new Date(earliestTimestampMs).toISOString() : 'none'
+    );
+  }
+
+  return resolvedStart;
+}
+
 async function fetchAllAccountActivities(login, accountId, options = {}) {
   if (!login || !accountId) {
     return [];
   }
 
   const now = new Date();
-  const start = resolveActivityHistoryStart(options && options.startDate);
+  const start = await resolveAccountActivityHistoryStart(login, accountId, options);
   const windows = buildActivityWindows(start, now, NET_DEPOSIT_ACTIVITY_WINDOW_DAYS);
   const activities = [];
 
