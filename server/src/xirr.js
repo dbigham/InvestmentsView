@@ -111,18 +111,52 @@ function xirr(cashFlows, guess = DEFAULT_GUESS) {
     return Number.NaN;
   }
 
+  const MIN_RATE = -0.999999;
+  const MAX_RATE = 1e6;
+
   let low = -0.9999;
   let high = 1.0;
   let fLow = xnpv(low, flows);
   let fHigh = xnpv(high, flows);
 
-  for (let i = 0; i < 50 && Number.isFinite(fLow) && Number.isFinite(fHigh) && fLow * fHigh > 0; i += 1) {
-    if (Math.abs(fLow) < Math.abs(fHigh)) {
-      high *= 2;
+  const isUsable = (value) =>
+    Number.isFinite(value) || value === Number.POSITIVE_INFINITY || value === Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < 100 && isUsable(fLow) && isUsable(fHigh) && fLow * fHigh > 0; i += 1) {
+    let expanded = false;
+
+    const canExpandLow = low > MIN_RATE + 1e-9;
+    const canExpandHigh = high < MAX_RATE;
+    const preferHigh =
+      canExpandHigh &&
+      (!canExpandLow || Math.abs(fHigh) <= Math.abs(fLow) || !Number.isFinite(fLow));
+
+    if (fLow * fHigh > 0 && canExpandHigh && preferHigh) {
+      const previousHigh = high;
+      if (high >= 0) {
+        high += 1 + Math.abs(high);
+      } else {
+        high *= 2;
+      }
+      if (high === previousHigh) {
+        high = previousHigh + 1;
+      }
+      high = Math.min(high, MAX_RATE);
       fHigh = xnpv(high, flows);
-    } else {
-      low = Math.max(-0.999999, low - (1 + Math.abs(low)));
-      fLow = xnpv(low, flows);
+      expanded = true;
+    }
+
+    if (fLow * fHigh > 0 && canExpandLow && (!preferHigh || !expanded)) {
+      const nextLow = Math.max(MIN_RATE, low - (1 + Math.abs(low)));
+      if (nextLow !== low) {
+        low = nextLow;
+        fLow = xnpv(low, flows);
+        expanded = true;
+      }
+    }
+
+    if (!expanded) {
+      break;
     }
   }
 
@@ -147,8 +181,8 @@ function xirr(cashFlows, guess = DEFAULT_GUESS) {
     if (!Number.isFinite(next)) {
       break;
     }
-    if (next <= -0.999999) {
-      rate = -0.999999;
+    if (next <= MIN_RATE) {
+      rate = MIN_RATE;
       break;
     }
     if (Math.abs(next - rate) < 1e-12) {
