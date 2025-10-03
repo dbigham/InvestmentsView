@@ -174,3 +174,17 @@ test('computeAnnualizedReturnFromCashFlows handles ISO strings and Date instance
   // Cross-checked with https://github.com/pyxirr/pyxirr (v0.10.7)
   almostEqual(rate, 0.14936255214275568, 1e-9);
 });
+
+test('computeAnnualizedReturnFromCashFlows accepts pre-normalized cash flows when requested', () => {
+  const normalized = normalizeCashFlowsForXirr([
+    { amount: -7500, date: '2020-01-01' },
+    { amount: 1000, date: '2020-06-01' },
+    { amount: 1200, date: '2020-09-01' },
+    { amount: 1300, date: '2021-01-01' },
+    { amount: 1400, date: '2021-06-01' },
+    { amount: 1500, date: '2022-01-01' },
+  ]);
+  const rate = computeAnnualizedReturnFromCashFlows(normalized, { preNormalized: true });
+  const baseline = computeAnnualizedReturnFromCashFlows(normalized);
+  almostEqual(rate, baseline, 1e-12);
+});
