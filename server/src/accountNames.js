@@ -256,6 +256,115 @@ const PORTAL_ID_KEYS = [
 
 const CHAT_URL_KEYS = ['chatURL', 'chatUrl'];
 
+const TRANSFER_QUANTITY_KEYS = ['quantity', 'shares', 'units'];
+
+function normalizeDateTime(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    if (Number.isNaN(time)) {
+      return null;
+    }
+    return new Date(time).toISOString();
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const derived = new Date(value);
+    if (Number.isNaN(derived.getTime())) {
+      return null;
+    }
+    return derived.toISOString();
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+    const dateOnly = normalizeDateOnly(trimmed);
+    if (dateOnly) {
+      return dateOnly + 'T00:00:00.000Z';
+    }
+  }
+  if (typeof value === 'object' && value) {
+    if (Object.prototype.hasOwnProperty.call(value, 'timestamp')) {
+      return normalizeDateTime(value.timestamp);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'date')) {
+      return normalizeDateTime(value.date);
+    }
+  }
+  return null;
+}
+
+function normalizeTransferEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const symbol = entry.symbol !== undefined && entry.symbol !== null ? String(entry.symbol).trim() : '';
+  if (!symbol) {
+    return null;
+  }
+  let quantityValue = null;
+  if (Object.prototype.hasOwnProperty.call(entry, 'quantity')) {
+    quantityValue = entry.quantity;
+  } else {
+    for (const key of TRANSFER_QUANTITY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(entry, key)) {
+        quantityValue = entry[key];
+        break;
+      }
+    }
+  }
+  const quantity = Number(quantityValue);
+  if (!Number.isFinite(quantity) || quantity === 0) {
+    return null;
+  }
+  const normalized = { symbol, quantity };
+  if (Object.prototype.hasOwnProperty.call(entry, 'price')) {
+    const price = Number(entry.price);
+    if (Number.isFinite(price)) {
+      normalized.price = price;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'currency')) {
+    const currency = entry.currency === undefined || entry.currency === null ? '' : String(entry.currency).trim();
+    if (currency) {
+      normalized.currency = currency;
+    }
+  }
+  const resolvedTimestamp = normalizeDateTime(entry.timestamp || entry.date);
+  if (resolvedTimestamp) {
+    normalized.timestamp = resolvedTimestamp;
+  }
+  return normalized;
+}
+
+function applyTransfersSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  if (!Array.isArray(value)) {
+    if (value === null || value === undefined) {
+      delete container.transfers;
+    }
+    return;
+  }
+  const transfers = value
+    .map((entry) => normalizeTransferEntry(entry))
+    .filter(Boolean);
+  if (transfers.length) {
+    container.transfers = transfers;
+  } else {
+    delete container.transfers;
+  }
+}
+
 function isLikelyAccountEntryObject(entry) {
   if (!entry || typeof entry !== 'object') {
     return false;
@@ -378,6 +487,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'lastRebalance')) {
       applyLastRebalanceSetting(settingsTarget, resolvedKey, entry.lastRebalance);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'transfers')) {
+      applyTransfersSetting(settingsTarget, resolvedKey, entry.transfers);
     }
   }
 

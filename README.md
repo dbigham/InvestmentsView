@@ -62,6 +62,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - Currency toggle that surfaces combined and per-currency balances if Questrade returns them.
 - Total equity card with today's and open P&L badges, cash, market value, and buying power.
 - Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
+- Account performance dialog that pulls execution history plus optional configured transfers to chart total value over time and compute Total P&L/CAGR across preset ranges.
 - Manual refresh button to force a new fetch from Questrade.
 - People overlay that converts every account to CAD and totals holdings for each household member.
 - Automatic handling of access-token refresh and persistence of the newest refresh token.

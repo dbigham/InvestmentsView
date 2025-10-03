@@ -15,6 +15,21 @@ function buildQqqTemperatureUrl() {
   return url.toString();
 }
 
+function buildPerformanceUrl(accountId, options = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/account-performance', base);
+  if (accountId) {
+    url.searchParams.set('accountId', accountId);
+  }
+  if (options.startTime) {
+    url.searchParams.set('startTime', options.startTime);
+  }
+  if (options.endTime) {
+    url.searchParams.set('endTime', options.endTime);
+  }
+  return url.toString();
+}
+
 export async function getSummary(accountId) {
   const response = await fetch(buildUrl(accountId));
   if (!response.ok) {
@@ -29,6 +44,18 @@ export async function getQqqTemperature() {
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || 'Failed to load QQQ temperature data');
+  }
+  return response.json();
+}
+
+export async function getAccountPerformance(accountId, options = {}) {
+  if (!accountId || accountId === 'all') {
+    throw new Error('An individual account identifier is required for performance data.');
+  }
+  const response = await fetch(buildPerformanceUrl(accountId, options));
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Failed to load account performance data');
   }
   return response.json();
 }
