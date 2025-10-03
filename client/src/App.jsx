@@ -1061,12 +1061,7 @@ export default function App() {
       return entry;
     }
     return null;
-  }, [
-    selectedAccount,
-    accountFunding,
-    filteredAccountIds,
-    selectedAccountInfo,
-  ]);
+  }, [selectedAccount, accountFunding, filteredAccountIds, selectedAccountInfo]);
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
