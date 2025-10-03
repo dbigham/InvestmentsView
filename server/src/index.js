@@ -708,30 +708,44 @@ function isFundingActivity(activity) {
   );
 }
 
+const EMBEDDED_NUMBER_PATTERN = '\\d+(?:,\\d{3})*(?:\\.\\d+)?';
+const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
+
+function parseNumericString(value) {
+  if (typeof value !== 'string' || !value) {
+    return null;
+  }
+  const normalized = value.replace(/,/g, '');
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric;
+}
+
 function extractAmountFromDescription(description) {
   if (typeof description !== 'string' || !description) {
     return null;
   }
 
-  const bookValueMatch = description.match(/BOOK\s+VALUE\s+([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/i);
+  const bookValueMatch = description.match(new RegExp('BOOK\\s+VALUE\\s+(' + EMBEDDED_NUMBER_PATTERN + ')', 'i'));
   if (bookValueMatch && bookValueMatch[1]) {
-    const normalizedBookValue = bookValueMatch[1].replace(/,/g, '');
-    const bookValue = Number(normalizedBookValue);
-    if (Number.isFinite(bookValue)) {
-      return bookValue;
+    const bookValue = parseNumericString(bookValueMatch[1]);
+    if (bookValue !== null) {
+      return { amount: bookValue, raw: bookValueMatch[1], source: 'bookValue' };
     }
   }
 
-  const decimalMatches = description.match(/[0-9]{1,3}(?:,[0-9]{3})*\.[0-9]+/g);
+  const decimalMatches = description.match(new RegExp(EMBEDDED_DECIMAL_PATTERN, 'g'));
   if (decimalMatches && decimalMatches.length > 0) {
-    const normalizedDecimal = decimalMatches[decimalMatches.length - 1].replace(/,/g, '');
-    const decimalValue = Number(normalizedDecimal);
-    if (Number.isFinite(decimalValue)) {
-      return decimalValue;
+    const rawDecimal = decimalMatches[decimalMatches.length - 1];
+    const decimalValue = parseNumericString(rawDecimal);
+    if (decimalValue !== null) {
+      return { amount: decimalValue, raw: rawDecimal, source: 'decimal' };
     }
   }
 
-  const genericMatches = description.match(/([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/g);
+  const genericMatches = description.match(new RegExp(EMBEDDED_NUMBER_PATTERN, 'g'));
   if (!genericMatches || !genericMatches.length) {
     return null;
   }
@@ -740,12 +754,11 @@ function extractAmountFromDescription(description) {
   if (!candidate) {
     return null;
   }
-  const normalized = candidate.replace(/,/g, '');
-  const numeric = Number(normalized);
-  if (!Number.isFinite(numeric)) {
+  const numeric = parseNumericString(candidate);
+  if (numeric === null) {
     return null;
   }
-  return numeric;
+  return { amount: numeric, raw: candidate, source: filtered.length ? 'filteredNumeric' : 'numeric' };
 }
 
 function resolveActivityAmount(activity) {
@@ -756,19 +769,26 @@ function resolveActivityAmount(activity) {
   for (const field of candidates) {
     const value = Number(activity[field]);
     if (Number.isFinite(value) && Math.abs(value) > 1e-8) {
-      return value;
+      return { amount: value, source: 'field', field };
     }
   }
   const quantity = Number(activity.quantity);
-  if (Number.isFinite(quantity) && Math.abs(quantity) > 1e-8) {
-    const price = Number(activity.price);
-    if (Number.isFinite(price) && Math.abs(price) > 1e-8) {
-      return quantity * price;
-    }
+  const price = Number(activity.price);
+  if (
+    Number.isFinite(quantity) &&
+    Math.abs(quantity) > 1e-8 &&
+    Number.isFinite(price) &&
+    Math.abs(price) > 1e-8
+  ) {
+    return { amount: quantity * price, source: 'quantityPrice', quantity, price };
   }
   const embedded = extractAmountFromDescription(activity.description);
   if (embedded !== null) {
-    return embedded;
+    return {
+      amount: embedded.amount,
+      source: 'description',
+      description: embedded,
+    };
   }
   return null;
 }
@@ -1089,44 +1109,63 @@ async function discoverEarliestFundingDate(login, accountId, accountKey) {
 }
 
 function resolveActivityAmountDetails(activity) {
-  const amount = resolveActivityAmount(activity);
-  if (amount === null) {
+  const amountInfo = resolveActivityAmount(activity);
+  if (!amountInfo) {
     return null;
   }
-  const direction = inferActivityDirection(activity, amount);
+  const direction = inferActivityDirection(activity, amountInfo.amount);
   if (!direction) {
     return null;
   }
-  const signedAmount = direction >= 0 ? Math.abs(amount) : -Math.abs(amount);
+  const signedAmount = direction >= 0 ? Math.abs(amountInfo.amount) : -Math.abs(amountInfo.amount);
   const currency = normalizeCurrency(activity.currency) || 'CAD';
   const timestamp = resolveActivityTimestamp(activity);
+  const descriptionResolution = amountInfo.description
+    ? {
+        amount: amountInfo.description.amount,
+        raw: amountInfo.description.raw || null,
+        source: amountInfo.description.source || null,
+        signedAmount:
+          direction >= 0
+            ? Math.abs(amountInfo.description.amount)
+            : -Math.abs(amountInfo.description.amount),
+      }
+    : null;
+
   return {
     amount: signedAmount,
     currency,
     timestamp,
+    resolution: {
+      source: amountInfo.source || null,
+      field: amountInfo.field || null,
+      quantity: amountInfo.quantity || null,
+      price: amountInfo.price || null,
+      description: descriptionResolution,
+    },
   };
 }
 
 async function convertAmountToCad(amount, currency, timestamp, accountKey) {
   if (!Number.isFinite(amount)) {
-    return null;
+    return { cadAmount: null, fxRate: null };
   }
   if (!currency || currency === 'CAD') {
-    return amount;
+    return { cadAmount: amount, fxRate: 1 };
   }
   if (currency === 'USD') {
     if (!timestamp) {
-      return null;
+      return { cadAmount: null, fxRate: null };
     }
     const rate = await resolveUsdToCadRate(timestamp, accountKey);
     if (!Number.isFinite(rate) || rate <= 0) {
       debugTotalPnl(accountKey, 'Missing FX rate for ' + formatDateOnly(timestamp));
-      return null;
+      return { cadAmount: null, fxRate: null };
     }
-    return amount * rate;
+    return { cadAmount: amount * rate, fxRate: rate };
   }
   debugTotalPnl(accountKey, 'Unsupported currency for net deposits: ' + currency);
-  return null;
+  return { cadAmount: null, fxRate: null };
 }
 
 async function computeNetDeposits(login, account, perAccountCombinedBalances) {
@@ -1154,8 +1193,9 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
       debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
       continue;
     }
-    const { amount, currency, timestamp } = details;
-    const cadAmount = await convertAmountToCad(amount, currency, timestamp, accountKey);
+    const { amount, currency, timestamp, resolution } = details;
+    const conversion = await convertAmountToCad(amount, currency, timestamp, accountKey);
+    const cadAmount = conversion.cadAmount;
     if (!perCurrencyTotals.has(currency)) {
       perCurrencyTotals.set(currency, 0);
     }
@@ -1169,6 +1209,21 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
       amount,
       currency,
       cadAmount,
+      usdAmount: currency === 'USD' ? amount : null,
+      fxRate: conversion.fxRate || null,
+      resolvedAmountSource: resolution && resolution.source ? resolution.source : null,
+      resolvedAmountField: resolution && resolution.field ? resolution.field : null,
+      resolvedQuantity: resolution && Number.isFinite(resolution.quantity) ? resolution.quantity : null,
+      resolvedPrice: resolution && Number.isFinite(resolution.price) ? resolution.price : null,
+      descriptionExtracted: !!(resolution && resolution.description),
+      descriptionExtractedAmount:
+        resolution && resolution.description ? resolution.description.amount : null,
+      descriptionExtractedAmountSigned:
+        resolution && resolution.description ? resolution.description.signedAmount : null,
+      descriptionExtractedRaw:
+        resolution && resolution.description ? resolution.description.raw || null : null,
+      descriptionExtractionStrategy:
+        resolution && resolution.description ? resolution.description.source || null : null,
       timestamp: timestamp ? formatDateOnly(timestamp) : null,
       type: activity.type || null,
       action: activity.action || null,
