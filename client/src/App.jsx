@@ -984,6 +984,10 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
+  const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
+  const balances = data?.balances || null;
+  const accountFunding = data?.accountFunding ?? EMPTY_OBJECT;
+  const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
     if (!selectedAccountInfo) {
       return null;
@@ -994,10 +998,6 @@ export default function App() {
     }
     return null;
   }, [selectedAccountInfo, accountFunding]);
-  const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
-  const balances = data?.balances || null;
-  const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
-  const accountFunding = data?.accountFunding ?? EMPTY_OBJECT;
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
