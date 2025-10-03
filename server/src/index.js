@@ -591,6 +591,43 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
   return computeAnnualizedReturnFromCashFlows(cashFlows, { onFailure });
 }
 
+function parseDateOnlyString(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parsed = new Date(`${trimmed}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseCashFlowEntryDate(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const candidateDate = entry.date || entry.timestamp;
+  if (candidateDate instanceof Date) {
+    return Number.isNaN(candidateDate.getTime()) ? null : candidateDate;
+  }
+  if (typeof candidateDate === 'string') {
+    const trimmed = candidateDate.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+    return parsed;
+  }
+  return null;
+}
+
 function addDays(baseDate, days) {
   if (!(baseDate instanceof Date) || Number.isNaN(baseDate.getTime())) {
     return null;
@@ -1191,7 +1228,7 @@ async function convertAmountToCad(amount, currency, timestamp, accountKey) {
   return { cadAmount: null, fxRate: null };
 }
 
-async function computeNetDeposits(login, account, perAccountCombinedBalances) {
+async function computeNetDeposits(login, account, perAccountCombinedBalances, options = {}) {
   if (!account || !account.id) {
     return null;
   }
@@ -1326,8 +1363,41 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     cashFlowEntries.push({ amount: totalEquityCad, date: nowIsoString });
   }
 
+  let effectiveCashFlows = cashFlowEntries;
+  let appliedCagrStartDate = null;
+
+  if (options.applyAccountCagrStartDate && typeof account.cagrStartDate === 'string') {
+    const parsedStartDate = parseDateOnlyString(account.cagrStartDate);
+    if (parsedStartDate) {
+      appliedCagrStartDate = parsedStartDate;
+      let aggregatedAmount = 0;
+      const filtered = [];
+      for (const entry of cashFlowEntries) {
+        if (!entry || typeof entry !== 'object') {
+          filtered.push(entry);
+          continue;
+        }
+        const amount = Number(entry.amount);
+        if (!Number.isFinite(amount)) {
+          filtered.push(entry);
+          continue;
+        }
+        const entryDate = parseCashFlowEntryDate(entry);
+        if (entryDate && entryDate < parsedStartDate) {
+          aggregatedAmount += amount;
+          continue;
+        }
+        filtered.push(entry);
+      }
+      if (aggregatedAmount !== 0) {
+        filtered.unshift({ amount: aggregatedAmount, date: parsedStartDate.toISOString() });
+      }
+      effectiveCashFlows = filtered;
+    }
+  }
+
   const annualizedReturnRate = !conversionIncomplete
-    ? computeAccountAnnualizedReturn(cashFlowEntries, accountKey)
+    ? computeAccountAnnualizedReturn(effectiveCashFlows, accountKey)
     : null;
 
   const incompleteReturnData = conversionIncomplete || missingCashFlowDates;
@@ -1340,7 +1410,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     crawlStart: formatDateOnly(crawlStart),
     asOf: formatDateOnly(now),
     netDepositAdjustmentCad: accountAdjustment || undefined,
-    cashFlowCount: cashFlowEntries.length || undefined,
+    cashFlowCount: effectiveCashFlows.length || undefined,
     annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : undefined,
     missingCashFlowDates: missingCashFlowDates || undefined,
   });
@@ -1354,17 +1424,21 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     annualizedReturn = {
       rate: annualizedReturnRate,
       method: 'xirr',
-      cashFlowCount: cashFlowEntries.length,
+      cashFlowCount: effectiveCashFlows.length,
       asOf: nowIsoString,
       incomplete: incompleteReturnData || undefined,
     };
-  } else if (incompleteReturnData && cashFlowEntries.length > 0) {
+  } else if (incompleteReturnData && effectiveCashFlows.length > 0) {
     annualizedReturn = {
       method: 'xirr',
-      cashFlowCount: cashFlowEntries.length,
+      cashFlowCount: effectiveCashFlows.length,
       asOf: nowIsoString,
       incomplete: true,
     };
+  }
+
+  if (annualizedReturn && appliedCagrStartDate) {
+    annualizedReturn.startDate = appliedCagrStartDate.toISOString().slice(0, 10);
   }
 
   return {
@@ -1377,7 +1451,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     },
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
     annualizedReturn,
-    cashFlowsCad: cashFlowEntries.length > 0 ? cashFlowEntries : undefined,
+    cashFlowsCad: effectiveCashFlows.length > 0 ? effectiveCashFlows : undefined,
     adjustments:
       accountAdjustment !== 0
         ? {
@@ -1811,6 +1885,21 @@ app.get('/api/summary', async function (req, res) {
           ) {
             normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
           }
+          if (typeof accountSettingsOverride.cagrStartDate === 'string') {
+            const trimmedDate = accountSettingsOverride.cagrStartDate.trim();
+            if (trimmedDate) {
+              normalizedAccount.cagrStartDate = trimmedDate;
+            }
+          } else if (
+            accountSettingsOverride.cagrStartDate &&
+            typeof accountSettingsOverride.cagrStartDate === 'object' &&
+            typeof accountSettingsOverride.cagrStartDate.date === 'string'
+          ) {
+            const trimmedDate = accountSettingsOverride.cagrStartDate.date.trim();
+            if (trimmedDate) {
+              normalizedAccount.cagrStartDate = trimmedDate;
+            }
+          }
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
         if (defaultBeneficiary) {
@@ -2016,7 +2105,8 @@ app.get('/api/summary', async function (req, res) {
         const fundingSummary = await computeNetDeposits(
           context.login,
           context.account,
-          perAccountCombinedBalances
+          perAccountCombinedBalances,
+          { applyAccountCagrStartDate: true }
         );
         if (fundingSummary) {
           accountFundingSummaries[context.account.id] = fundingSummary;
@@ -2045,7 +2135,8 @@ app.get('/api/summary', async function (req, res) {
           const fundingSummary = await computeNetDeposits(
             context.login,
             context.account,
-            perAccountCombinedBalances
+            perAccountCombinedBalances,
+            { applyAccountCagrStartDate: false }
           );
           if (fundingSummary) {
             accountFundingSummaries[context.account.id] = fundingSummary;
