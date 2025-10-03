@@ -229,6 +229,19 @@ export default function SummaryMetrics({
     : null;
   const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
 
+  const annualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
+    ? fundingSummary.annualizedReturnRate
+    : null;
+  const formattedCagr =
+    annualizedReturnRate === null
+      ? '—'
+      : formatSignedPercent(annualizedReturnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+  const cagrTone =
+    annualizedReturnRate > 0 ? 'positive' : annualizedReturnRate < 0 ? 'negative' : 'neutral';
+
   const safeTotalEquity = Number.isFinite(totalEquity)
     ? totalEquity
     : Number.isFinite(fundingSummary?.totalEquityCad)
@@ -375,6 +388,7 @@ export default function SummaryMetrics({
             extra={totalPercent ? `(${totalPercent})` : null}
             tone={totalTone}
           />
+          <MetricRow label="CAGR" value={formattedCagr} tone={cagrTone} />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
         <dl className="equity-card__metric-column">
@@ -420,6 +434,7 @@ SummaryMetrics.propTypes = {
     netDepositsCad: PropTypes.number,
     totalPnlCad: PropTypes.number,
     totalEquityCad: PropTypes.number,
+    annualizedReturnRate: PropTypes.number,
   }),
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
