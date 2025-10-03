@@ -779,6 +779,127 @@ function resolveActivityCurrency(activity) {
   return null;
 }
 
+function parseNumericValue(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const cleaned = value.trim();
+    if (!cleaned) {
+      return null;
+    }
+    const normalized = cleaned.replace(/[,\s]/g, '');
+    if (!normalized) {
+      return null;
+    }
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function resolveNumericField(source, fields) {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(source, field)) {
+      continue;
+    }
+    const value = parseNumericValue(source[field]);
+    if (value === null || value === undefined) {
+      continue;
+    }
+    return { field, value };
+  }
+  return null;
+}
+
+const NET_DEPOSIT_AMOUNT_FALLBACK_FIELDS = [
+  'grossAmount',
+  'grossAmountCad',
+  'grossAmountCdn',
+  'grossAmountUsd',
+  'grossAmountBase',
+  'settlementAmount',
+  'settlementAmountCad',
+  'settlementAmountCdn',
+  'settlementAmountUsd',
+  'amount',
+  'amountCad',
+  'amountCdn',
+  'amountUsd',
+  'tradeValue',
+  'tradeAmount',
+  'totalAmount',
+  'principal',
+  'proceeds',
+  'value',
+  'bookValue',
+  'bookValueCad',
+  'bookValueUsd',
+  'marketValue',
+  'marketValueCad',
+  'marketValueUsd',
+  'consideration',
+  'cashAmount',
+  'cash',
+  'debit',
+  'credit',
+];
+
+const NET_DEPOSIT_QUANTITY_FIELDS = ['quantity', 'qty', 'units', 'shares', 'shareQuantity'];
+const NET_DEPOSIT_PRICE_FIELDS = ['price', 'tradePrice', 'avgPrice', 'averagePrice', 'fillPrice', 'cost', 'costPerShare', 'bookPrice'];
+
+function resolveActivityAmountForNetDeposits(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return { amount: 0, source: null };
+  }
+
+  const direct = parseNumericValue(activity.netAmount);
+  if (isFiniteNumber(direct) && Math.abs(direct) > 1e-9) {
+    return { amount: direct, source: 'netAmount' };
+  }
+
+  const fallback = resolveNumericField(activity, NET_DEPOSIT_AMOUNT_FALLBACK_FIELDS);
+  if (fallback && isFiniteNumber(fallback.value) && Math.abs(fallback.value) > 1e-9) {
+    return { amount: fallback.value, source: fallback.field };
+  }
+
+  const quantityInfo = resolveNumericField(activity, NET_DEPOSIT_QUANTITY_FIELDS);
+  const priceInfo = resolveNumericField(activity, NET_DEPOSIT_PRICE_FIELDS);
+  if (
+    quantityInfo &&
+    priceInfo &&
+    isFiniteNumber(quantityInfo.value) &&
+    isFiniteNumber(priceInfo.value)
+  ) {
+    const estimated = quantityInfo.value * priceInfo.value;
+    if (isFiniteNumber(estimated) && Math.abs(estimated) > 1e-9) {
+      return {
+        amount: estimated,
+        source: 'quantity*price',
+        quantity: quantityInfo.value,
+        quantitySource: quantityInfo.field,
+        price: priceInfo.value,
+        priceSource: priceInfo.field,
+      };
+    }
+  }
+
+  const quantityOnly = quantityInfo && isFiniteNumber(quantityInfo.value) ? quantityInfo : null;
+  const priceOnly = priceInfo && isFiniteNumber(priceInfo.value) ? priceInfo : null;
+
+  return {
+    amount: 0,
+    source: null,
+    quantity: quantityOnly ? quantityOnly.value : null,
+    quantitySource: quantityOnly ? quantityOnly.field : null,
+    price: priceOnly ? priceOnly.value : null,
+    priceSource: priceOnly ? priceOnly.field : null,
+  };
+}
+
 function resolveActivityTimestamp(activity) {
   const preferredKeys = [
     'transactionDateTime',
@@ -1355,6 +1476,7 @@ function accumulateNetDeposits(activities) {
   const totals = new Map();
   const counts = new Map();
   const debugEntries = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
+  const skippedEntries = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
 
   activities.forEach((activity) => {
     const currency = resolveActivityCurrency(activity);
@@ -1367,8 +1489,25 @@ function accumulateNetDeposits(activities) {
       return;
     }
 
-    let amount = Number(activity && activity.netAmount);
-    if (!Number.isFinite(amount) || amount === 0) {
+    const amountInfo = resolveActivityAmountForNetDeposits(activity);
+    let amount = amountInfo ? amountInfo.amount : 0;
+    if (!isFiniteNumber(amount) || Math.abs(amount) <= 1e-9) {
+      if (skippedEntries) {
+        skippedEntries.push({
+          timestamp: resolveActivityTimestamp(activity),
+          currency: currency.toUpperCase(),
+          classification,
+          type: activity && activity.type ? String(activity.type) : null,
+          action: activity && activity.action ? String(activity.action) : null,
+          description: activity && activity.description ? String(activity.description) : null,
+          rawNetAmount: parseNumericValue(activity && activity.netAmount) || 0,
+          amountSource: amountInfo ? amountInfo.source || null : null,
+          quantity: amountInfo && isFiniteNumber(amountInfo.quantity) ? amountInfo.quantity : null,
+          quantitySource: amountInfo ? amountInfo.quantitySource || null : null,
+          price: amountInfo && isFiniteNumber(amountInfo.price) ? amountInfo.price : null,
+          priceSource: amountInfo ? amountInfo.priceSource || null : null,
+        });
+      }
       return;
     }
 
@@ -1388,16 +1527,22 @@ function accumulateNetDeposits(activities) {
         timestamp: resolveActivityTimestamp(activity),
         currency: normalizedCurrency,
         amount,
-        rawNetAmount: Number(activity && activity.netAmount) || 0,
+        rawNetAmount: parseNumericValue(activity && activity.netAmount) || 0,
         classification,
         type: activity && activity.type ? String(activity.type) : null,
         action: activity && activity.action ? String(activity.action) : null,
         description: activity && activity.description ? String(activity.description) : null,
+        amountSource: amountInfo ? amountInfo.source || null : null,
+        estimatedAmount: amountInfo && amountInfo.source !== 'netAmount' ? amountInfo.amount : null,
+        quantity: amountInfo && isFiniteNumber(amountInfo.quantity) ? amountInfo.quantity : null,
+        quantitySource: amountInfo ? amountInfo.quantitySource || null : null,
+        price: amountInfo && isFiniteNumber(amountInfo.price) ? amountInfo.price : null,
+        priceSource: amountInfo ? amountInfo.priceSource || null : null,
       });
     }
   });
 
-  return { totals, counts, details: debugEntries };
+  return { totals, counts, details: debugEntries, skipped: skippedEntries };
 }
 
 function getCachedNetDeposits(key) {
@@ -1453,11 +1598,40 @@ async function fetchAccountNetDeposits(login, accountId, options = {}) {
         type: entry.type,
         action: entry.action,
         description: entry.description,
+        amountSource: entry.amountSource || null,
+        rawNetAmount: entry.rawNetAmount || 0,
+        estimatedAmount: entry.estimatedAmount || null,
+        quantity: entry.quantity || null,
+        quantitySource: entry.quantitySource || null,
+        price: entry.price || null,
+        priceSource: entry.priceSource || null,
       };
     });
     console.log('[Questrade][netDepositEntries]', accountId, preview);
     if (summary.details.length > preview.length) {
       console.log('[Questrade][netDepositEntries]', accountId, '…', summary.details.length - preview.length, 'more entries');
+    }
+  }
+  if (ENABLE_QUESTRADE_API_DEBUG && summary && Array.isArray(summary.skipped) && summary.skipped.length) {
+    const skippedPreview = summary.skipped.slice(0, 20).map((entry) => {
+      return {
+        timestamp: entry.timestamp ? new Date(entry.timestamp).toISOString() : null,
+        currency: entry.currency,
+        classification: entry.classification,
+        type: entry.type,
+        action: entry.action,
+        description: entry.description,
+        rawNetAmount: entry.rawNetAmount || 0,
+        amountSource: entry.amountSource || null,
+        quantity: entry.quantity || null,
+        quantitySource: entry.quantitySource || null,
+        price: entry.price || null,
+        priceSource: entry.priceSource || null,
+      };
+    });
+    console.log('[Questrade][netDepositEntriesSkipped]', accountId, skippedPreview);
+    if (summary.skipped.length > skippedPreview.length) {
+      console.log('[Questrade][netDepositEntriesSkipped]', accountId, '…', summary.skipped.length - skippedPreview.length, 'more entries');
     }
   }
   setCachedNetDeposits(cacheKey, summary);
