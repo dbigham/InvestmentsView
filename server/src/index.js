@@ -559,7 +559,7 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
-const NET_DEPOSIT_ACTIVITY_WINDOW_DAYS = 31;
+const NET_DEPOSIT_ACTIVITY_WINDOW_DAYS = 30;
 const NET_DEPOSIT_ACTIVITY_EPOCH = new Date(Date.UTC(2000, 0, 1));
 const NET_DEPOSIT_CACHE_TTL_MS = 15 * 60 * 1000;
 
@@ -666,16 +666,32 @@ function buildActivityWindows(startDate, endDate, windowDays) {
   }
 
   const windowMs = Math.max(windowDays, 1) * 24 * 60 * 60 * 1000;
-  let cursor = new Date(startDate.getTime());
+  let cursorMs = startDate.getTime();
   const limit = endDate.getTime();
 
-  while (cursor.getTime() <= limit) {
-    const windowEnd = new Date(Math.min(limit, cursor.getTime() + windowMs));
-    windows.push({ start: new Date(cursor.getTime()), end: windowEnd });
-    if (windowEnd.getTime() >= limit) {
+  while (cursorMs <= limit) {
+    const remaining = limit - cursorMs;
+    let windowEndMs = cursorMs + windowMs;
+    let isFinalWindow = false;
+
+    if (remaining <= windowMs) {
+      windowEndMs = limit;
+      isFinalWindow = true;
+    } else {
+      windowEndMs = Math.min(limit, windowEndMs - 1);
+    }
+
+    if (windowEndMs < cursorMs) {
+      windowEndMs = cursorMs;
+    }
+
+    windows.push({ start: new Date(cursorMs), end: new Date(windowEndMs) });
+
+    if (isFinalWindow) {
       break;
     }
-    cursor = new Date(windowEnd.getTime() + 1);
+
+    cursorMs = windowEndMs + 1;
   }
 
   return windows;
