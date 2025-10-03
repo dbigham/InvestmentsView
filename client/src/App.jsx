@@ -988,9 +988,10 @@ export default function App() {
   }, [accounts, selectedAccount]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
+  const accountFundingSource = data?.accountFunding;
   const accountFunding = useMemo(
-    () => (data?.accountFunding && typeof data.accountFunding === 'object' ? data.accountFunding : EMPTY_OBJECT),
-    [data?.accountFunding]
+    () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
+    [accountFundingSource]
   );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
@@ -1059,6 +1060,7 @@ export default function App() {
     if (!selectedAccountInfo) {
       return null;
     }
+
     const entry = accountFunding[selectedAccountInfo.id];
     if (entry && typeof entry === 'object') {
       return entry;
