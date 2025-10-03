@@ -1354,6 +1354,7 @@ async function fetchAllAccountActivities(login, accountId, options = {}) {
 function accumulateNetDeposits(activities) {
   const totals = new Map();
   const counts = new Map();
+  const debugEntries = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
 
   activities.forEach((activity) => {
     const currency = resolveActivityCurrency(activity);
@@ -1381,9 +1382,22 @@ function accumulateNetDeposits(activities) {
     const currentTotal = totals.get(normalizedCurrency) || 0;
     totals.set(normalizedCurrency, currentTotal + amount);
     counts.set(normalizedCurrency, (counts.get(normalizedCurrency) || 0) + 1);
+
+    if (debugEntries) {
+      debugEntries.push({
+        timestamp: resolveActivityTimestamp(activity),
+        currency: normalizedCurrency,
+        amount,
+        rawNetAmount: Number(activity && activity.netAmount) || 0,
+        classification,
+        type: activity && activity.type ? String(activity.type) : null,
+        action: activity && activity.action ? String(activity.action) : null,
+        description: activity && activity.description ? String(activity.description) : null,
+      });
+    }
   });
 
-  return { totals, counts };
+  return { totals, counts, details: debugEntries };
 }
 
 function getCachedNetDeposits(key) {
@@ -1429,6 +1443,23 @@ async function fetchAccountNetDeposits(login, accountId, options = {}) {
 
   const activities = await fetchAllAccountActivities(login, accountId, options);
   const summary = accumulateNetDeposits(activities);
+  if (ENABLE_QUESTRADE_API_DEBUG && summary && Array.isArray(summary.details) && summary.details.length) {
+    const preview = summary.details.slice(0, 20).map((entry) => {
+      return {
+        timestamp: entry.timestamp ? new Date(entry.timestamp).toISOString() : null,
+        currency: entry.currency,
+        amount: entry.amount,
+        classification: entry.classification,
+        type: entry.type,
+        action: entry.action,
+        description: entry.description,
+      };
+    });
+    console.log('[Questrade][netDepositEntries]', accountId, preview);
+    if (summary.details.length > preview.length) {
+      console.log('[Questrade][netDepositEntries]', accountId, '…', summary.details.length - preview.length, 'more entries');
+    }
+  }
   setCachedNetDeposits(cacheKey, summary);
   return summary;
 }
