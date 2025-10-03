@@ -189,6 +189,19 @@ function applyNetDepositAdjustmentSetting(target, key, value) {
   container.netDepositAdjustment = normalized;
 }
 
+function applyCagrStartDateSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeDateOnly(value);
+  if (!normalized) {
+    delete container.cagrStartDate;
+    return;
+  }
+  container.cagrStartDate = normalized;
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -421,6 +434,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'netDepositAdjustment')) {
       applyNetDepositAdjustmentSetting(settingsTarget, resolvedKey, entry.netDepositAdjustment);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'cagrStartDate')) {
+      applyCagrStartDateSetting(settingsTarget, resolvedKey, entry.cagrStartDate);
     }
   }
 
