@@ -17,6 +17,11 @@ const {
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel } = require('./investmentModel');
+const {
+  CASH_FLOW_EPSILON,
+  DAY_IN_MS,
+  computeAnnualizedReturnFromCashFlows,
+} = require('./xirr');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -541,7 +546,6 @@ async function fetchBalances(login, accountId) {
 }
 
 const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL === 'true';
-const DAY_IN_MS = 24 * 60 * 60 * 1000;
 // Questrade's documentation cites a 31 day cap for the activities endpoint, but in
 // practice we receive "Argument length exceeds imposed limit" errors whenever the
 // requested range spans a full 31 calendar days. Keeping the window strictly under
@@ -568,200 +572,23 @@ function debugTotalPnl(accountId, message, payload) {
   }
 }
 
-const CASH_FLOW_EPSILON = 1e-8;
-
-function normalizeCashFlowsForXirr(cashFlows) {
-  if (!Array.isArray(cashFlows)) {
-    return [];
-  }
-  return cashFlows
-    .map((entry) => {
-      if (!entry || typeof entry !== 'object') {
-        return null;
+function computeAccountAnnualizedReturn(cashFlows, accountKey) {
+  const onFailure = DEBUG_TOTAL_PNL
+    ? (details) => {
+        debugTotalPnl(accountKey, 'Unable to compute XIRR for cash flows', {
+          cashFlowCount: details && Array.isArray(details.normalized) ? details.normalized.length : undefined,
+          hasPositive: details && Object.prototype.hasOwnProperty.call(details, 'hasPositive')
+            ? details.hasPositive
+            : undefined,
+          hasNegative: details && Object.prototype.hasOwnProperty.call(details, 'hasNegative')
+            ? details.hasNegative
+            : undefined,
+          reason: details ? details.reason : undefined,
+        });
       }
-      const numericAmount = Number(entry.amount);
-      if (!Number.isFinite(numericAmount) || Math.abs(numericAmount) < CASH_FLOW_EPSILON) {
-        return null;
-      }
-      let date = null;
-      if (entry.date instanceof Date) {
-        date = entry.date;
-      } else if (entry.timestamp instanceof Date) {
-        date = entry.timestamp;
-      } else if (typeof entry.date === 'string' && entry.date.trim()) {
-        const parsed = new Date(entry.date);
-        if (!Number.isNaN(parsed.getTime())) {
-          date = parsed;
-        }
-      } else if (typeof entry.timestamp === 'string' && entry.timestamp.trim()) {
-        const parsedTimestamp = new Date(entry.timestamp);
-        if (!Number.isNaN(parsedTimestamp.getTime())) {
-          date = parsedTimestamp;
-        }
-      }
-      if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-        return null;
-      }
-      return { amount: numericAmount, date };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.date - b.date);
-}
+    : undefined;
 
-function yearFraction(start, end) {
-  return (end.getTime() - start.getTime()) / DAY_IN_MS / 365;
-}
-
-function xnpv(rate, cashFlows) {
-  if (rate <= -0.999999) {
-    return Number.POSITIVE_INFINITY;
-  }
-  const baseDate = cashFlows[0].date;
-  return cashFlows.reduce((sum, entry) => {
-    const t = yearFraction(baseDate, entry.date);
-    return sum + entry.amount / Math.pow(1 + rate, t);
-  }, 0);
-}
-
-function dxnpv(rate, cashFlows) {
-  const baseDate = cashFlows[0].date;
-  return cashFlows.reduce((sum, entry) => {
-    const t = yearFraction(baseDate, entry.date);
-    return sum + (-t) * entry.amount / Math.pow(1 + rate, t + 1);
-  }, 0);
-}
-
-function computeXirr(cashFlows, initialGuess) {
-  if (!Array.isArray(cashFlows) || cashFlows.length < 2) {
-    return null;
-  }
-
-  const guess = typeof initialGuess === 'number' && Number.isFinite(initialGuess) ? initialGuess : 0.1;
-  let low = -0.9999;
-  let high = 1.0;
-  let fLow = xnpv(low, cashFlows);
-  let fHigh = xnpv(high, cashFlows);
-
-  for (let i = 0; i < 50 && fLow * fHigh > 0; i += 1) {
-    if (Math.abs(fLow) < Math.abs(fHigh)) {
-      high = high * 2;
-      fHigh = xnpv(high, cashFlows);
-    } else {
-      low = Math.max(-0.999999, low - (1 + Math.abs(low)));
-      fLow = xnpv(low, cashFlows);
-    }
-  }
-
-  if (fLow * fHigh > 0) {
-    return null;
-  }
-
-  let rate = guess;
-  for (let i = 0; i < 50; i += 1) {
-    const f = xnpv(rate, cashFlows);
-    if (!Number.isFinite(f)) {
-      break;
-    }
-    if (Math.abs(f) < 1e-10) {
-      return rate;
-    }
-    const df = dxnpv(rate, cashFlows);
-    if (!Number.isFinite(df) || Math.abs(df) < 1e-12) {
-      break;
-    }
-    const next = rate - f / df;
-    if (!Number.isFinite(next)) {
-      break;
-    }
-    if (next <= -0.999999) {
-      rate = -0.999999;
-      break;
-    }
-    if (Math.abs(next - rate) < 1e-12) {
-      const residual = xnpv(next, cashFlows);
-      if (Number.isFinite(residual) && Math.abs(residual) < 1e-10) {
-        return next;
-      }
-      break;
-    }
-    rate = next;
-  }
-
-  let lowBound = low;
-  let highBound = high;
-  let fLowBound = fLow;
-  let fHighBound = fHigh;
-
-  if (rate > lowBound && rate < highBound) {
-    const residual = xnpv(rate, cashFlows);
-    if (Number.isFinite(residual) && Math.abs(residual) < 1e-8) {
-      return rate;
-    }
-    if (residual > 0) {
-      fLowBound = residual;
-      lowBound = rate;
-    } else if (residual < 0) {
-      fHighBound = residual;
-      highBound = rate;
-    }
-  }
-
-  let mid = null;
-  for (let i = 0; i < 200; i += 1) {
-    mid = (lowBound + highBound) / 2;
-    const fMid = xnpv(mid, cashFlows);
-    if (!Number.isFinite(fMid)) {
-      break;
-    }
-    if (Math.abs(fMid) < 1e-10 || Math.abs(highBound - lowBound) < 1e-12) {
-      return mid;
-    }
-    if (fLowBound * fMid <= 0) {
-      highBound = mid;
-      fHighBound = fMid;
-    } else {
-      lowBound = mid;
-      fLowBound = fMid;
-    }
-  }
-
-  return mid;
-}
-
-function computeAnnualizedReturnFromCashFlows(cashFlows, accountKey) {
-  const normalized = normalizeCashFlowsForXirr(cashFlows);
-  if (normalized.length < 2) {
-    return null;
-  }
-
-  let hasPositive = false;
-  let hasNegative = false;
-  for (const entry of normalized) {
-    if (entry.amount > CASH_FLOW_EPSILON) {
-      hasPositive = true;
-    } else if (entry.amount < -CASH_FLOW_EPSILON) {
-      hasNegative = true;
-    }
-  }
-
-  if (!hasPositive || !hasNegative) {
-    return null;
-  }
-
-  const rate = computeXirr(normalized, 0.1);
-  if (Number.isFinite(rate)) {
-    return rate;
-  }
-
-  if (DEBUG_TOTAL_PNL) {
-    debugTotalPnl(accountKey, 'Unable to compute XIRR for cash flows', {
-      cashFlowCount: normalized.length,
-      hasPositive,
-      hasNegative,
-    });
-  }
-
-  return null;
+  return computeAnnualizedReturnFromCashFlows(cashFlows, { onFailure });
 }
 
 function addDays(baseDate, days) {
@@ -1500,7 +1327,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
   }
 
   const annualizedReturnRate = !conversionIncomplete
-    ? computeAnnualizedReturnFromCashFlows(cashFlowEntries, accountKey)
+    ? computeAccountAnnualizedReturn(cashFlowEntries, accountKey)
     : null;
 
   const incompleteReturnData = conversionIncomplete || missingCashFlowDates;
@@ -2317,10 +2144,7 @@ app.get('/api/summary', async function (req, res) {
         const aggregateAsOf = new Date().toISOString();
         let aggregateRate = null;
         if (!aggregateTotals.incomplete) {
-          const computedRate = computeAnnualizedReturnFromCashFlows(
-            aggregateTotals.cashFlowsCad,
-            'all'
-          );
+          const computedRate = computeAccountAnnualizedReturn(aggregateTotals.cashFlowsCad, 'all');
           if (Number.isFinite(computedRate)) {
             aggregateRate = computedRate;
           }
