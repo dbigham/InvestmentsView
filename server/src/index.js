@@ -4,6 +4,7 @@ const axios = require('axios');
 const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 require('dotenv').config();
 const {
   getAccountNameOverrides,
@@ -549,6 +550,10 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
+const ACTIVITIES_CACHE_DIR = path.join(process.cwd(), '.cache', 'activities');
+
+const activitiesMemoryCache = new Map();
+let activitiesCacheDirEnsured = false;
 
 function debugTotalPnl(accountId, message, payload) {
   if (!DEBUG_TOTAL_PNL) {
@@ -568,6 +573,29 @@ function addDays(baseDate, days) {
     return null;
   }
   return new Date(baseDate.getTime() + days * DAY_IN_MS);
+}
+
+function addMonths(baseDate, months) {
+  if (!(baseDate instanceof Date) || Number.isNaN(baseDate.getTime())) {
+    return null;
+  }
+  const year = baseDate.getUTCFullYear();
+  const month = baseDate.getUTCMonth();
+  const day = baseDate.getUTCDate();
+  const target = new Date(Date.UTC(year, month + months, 1));
+  const daysInTargetMonth = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  const clampedDay = Math.min(day, daysInTargetMonth);
+  return new Date(
+    Date.UTC(
+      target.getUTCFullYear(),
+      target.getUTCMonth(),
+      clampedDay,
+      baseDate.getUTCHours(),
+      baseDate.getUTCMinutes(),
+      baseDate.getUTCSeconds(),
+      baseDate.getUTCMilliseconds()
+    )
+  );
 }
 
 function clampDate(date, minDate) {
@@ -592,6 +620,60 @@ function formatDateParam(date) {
     return null;
   }
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function ensureActivitiesCacheDir() {
+  if (activitiesCacheDirEnsured) {
+    return;
+  }
+  try {
+    fs.mkdirSync(ACTIVITIES_CACHE_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('Failed to ensure activities cache directory:', error.message);
+  }
+  activitiesCacheDirEnsured = true;
+}
+
+function getActivitiesCacheKey(loginId, accountId, startParam, endParam) {
+  const rawKey = [loginId || 'unknown', accountId || 'unknown', startParam || '', endParam || ''].join('|');
+  return crypto.createHash('sha1').update(rawKey).digest('hex');
+}
+
+function getActivitiesCacheFilePath(cacheKey) {
+  return path.join(ACTIVITIES_CACHE_DIR, cacheKey + '.json');
+}
+
+function readActivitiesCache(cacheKey) {
+  try {
+    const filePath = getActivitiesCacheFilePath(cacheKey);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const contents = fs.readFileSync(filePath, 'utf-8');
+    if (!contents) {
+      return null;
+    }
+    const parsed = JSON.parse(contents);
+    if (parsed && Array.isArray(parsed.activities)) {
+      return parsed.activities;
+    }
+  } catch (error) {
+    console.warn('Failed to read activities cache entry:', error.message);
+  }
+  return null;
+}
+
+function writeActivitiesCache(cacheKey, activities) {
+  try {
+    ensureActivitiesCacheDir();
+    const payload = {
+      cachedAt: new Date().toISOString(),
+      activities: Array.isArray(activities) ? activities : [],
+    };
+    fs.writeFileSync(getActivitiesCacheFilePath(cacheKey), JSON.stringify(payload));
+  } catch (error) {
+    console.warn('Failed to persist activities cache entry:', error.message);
+  }
 }
 
 function resolveActivityTimestamp(activity) {
@@ -771,21 +853,51 @@ async function resolveUsdToCadRate(date, accountKey) {
   return null;
 }
 
-async function fetchActivitiesWindow(login, accountId, startDate, endDate) {
+async function fetchActivitiesWindow(login, accountId, startDate, endDate, accountKey) {
   const startParam = formatDateParam(startDate);
   const endParam = formatDateParam(endDate);
   if (!startParam || !endParam) {
     return [];
   }
+  const nowMs = Date.now();
+  const isHistorical = endDate instanceof Date && !Number.isNaN(endDate.getTime()) && endDate.getTime() < nowMs;
+  const cacheKey =
+    isHistorical && login
+      ? getActivitiesCacheKey(login.id, accountId, startParam, endParam)
+      : null;
+  if (isHistorical && cacheKey) {
+    if (activitiesMemoryCache.has(cacheKey)) {
+      debugTotalPnl(accountKey, 'Using cached activities window (memory)', {
+        start: startParam,
+        end: endParam,
+      });
+      return activitiesMemoryCache.get(cacheKey);
+    }
+    const cached = readActivitiesCache(cacheKey);
+    if (Array.isArray(cached)) {
+      activitiesMemoryCache.set(cacheKey, cached);
+      debugTotalPnl(accountKey, 'Using cached activities window (disk)', {
+        start: startParam,
+        end: endParam,
+      });
+      return cached;
+    }
+  }
+  debugTotalPnl(accountKey, 'Fetching activities window', {
+    start: startParam,
+    end: endParam,
+  });
   const params = {
     startTime: startParam,
     endTime: endParam,
   };
   const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
-  if (data && Array.isArray(data.activities)) {
-    return data.activities;
+  const activities = data && Array.isArray(data.activities) ? data.activities : [];
+  if (isHistorical && cacheKey) {
+    activitiesMemoryCache.set(cacheKey, activities);
+    writeActivitiesCache(cacheKey, activities);
   }
-  return [];
+  return activities;
 }
 
 async function fetchActivitiesRange(login, accountId, startDate, endDate, accountKey) {
@@ -793,6 +905,9 @@ async function fetchActivitiesRange(login, accountId, startDate, endDate, accoun
     return [];
   }
   if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
+    return [];
+  }
+  if (startDate > endDate) {
     return [];
   }
   const results = [];
@@ -804,11 +919,7 @@ async function fetchActivitiesRange(login, accountId, startDate, endDate, accoun
         cursor.getTime() + MAX_ACTIVITIES_WINDOW_DAYS * DAY_IN_MS - 1000
       )
     );
-    debugTotalPnl(accountKey, 'Fetching activities window', {
-      start: formatDateParam(cursor),
-      end: formatDateParam(windowEnd),
-    });
-    const windowActivities = await fetchActivitiesWindow(login, accountId, cursor, windowEnd);
+    const windowActivities = await fetchActivitiesWindow(login, accountId, cursor, windowEnd, accountKey);
     results.push(...windowActivities);
     const nextStart = new Date(windowEnd.getTime() + 1000);
     if (nextStart > endDate) {
@@ -837,45 +948,67 @@ function findEarliestFundingTimestamp(activities) {
 
 async function discoverEarliestFundingDate(login, accountId, accountKey) {
   const now = new Date();
-  let searchEnd = new Date(now.getTime());
-  let windowDays = MAX_ACTIVITIES_WINDOW_DAYS;
-  let earliest = null;
-  const maxLookbackDays = 365 * 20;
-  let attempts = 0;
+  const currentMonthStart = floorToMonthStart(now);
+  if (!currentMonthStart) {
+    debugTotalPnl(accountKey, 'Unable to determine current month start during discovery');
+    return null;
+  }
 
-  while (attempts < 50) {
-    attempts += 1;
-    const tentativeStart = clampDate(addDays(searchEnd, -windowDays), MIN_ACTIVITY_DATE);
-    if (!tentativeStart) {
+  let monthStart = currentMonthStart;
+  let earliest = null;
+  let consecutiveEmpty = 0;
+  let iterations = 0;
+  const MAX_MONTH_LOOKBACK = 600; // 50 years of monthly checks
+
+  while (monthStart && monthStart >= MIN_ACTIVITY_DATE && iterations < MAX_MONTH_LOOKBACK) {
+    iterations += 1;
+    const nextMonthStart = addMonths(monthStart, 1);
+    if (!nextMonthStart) {
       break;
     }
-    if (searchEnd <= MIN_ACTIVITY_DATE) {
+    let monthEnd = new Date(nextMonthStart.getTime() - 1000);
+    if (monthEnd > now) {
+      monthEnd = new Date(now.getTime());
+    }
+    if (monthEnd < monthStart) {
       break;
     }
-    debugTotalPnl(accountKey, 'Probing activities window', {
-      start: formatDateParam(tentativeStart),
-      end: formatDateParam(searchEnd),
-      days: windowDays,
-    });
-    const activities = await fetchActivitiesRange(login, accountId, tentativeStart, searchEnd, accountKey);
+    const monthLabel = {
+      start: formatDateOnly(monthStart),
+      end: formatDateOnly(monthEnd),
+    };
+    const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey);
     const funding = filterFundingActivities(activities);
     if (funding.length > 0) {
       const windowEarliest = findEarliestFundingTimestamp(funding);
       if (windowEarliest && (!earliest || windowEarliest < earliest)) {
         earliest = windowEarliest;
       }
-      searchEnd = new Date(tentativeStart.getTime() - 1000);
-      windowDays = Math.min(windowDays * 2, maxLookbackDays);
+      consecutiveEmpty = 0;
+      debugTotalPnl(accountKey, 'Funding month hit', Object.assign({ activities: funding.length }, monthLabel));
     } else {
-      if (tentativeStart.getTime() <= MIN_ACTIVITY_DATE.getTime() || windowDays >= maxLookbackDays) {
-        break;
-      }
-      searchEnd = tentativeStart;
-      windowDays = Math.min(windowDays * 2, maxLookbackDays);
+      consecutiveEmpty += 1;
+      debugTotalPnl(
+        accountKey,
+        'Funding month empty',
+        Object.assign({ consecutiveEmpty }, monthLabel)
+      );
     }
-    if (searchEnd <= MIN_ACTIVITY_DATE) {
+
+    if (earliest && consecutiveEmpty >= 12) {
+      debugTotalPnl(accountKey, 'Stopping discovery after 12 empty months beyond earliest');
       break;
     }
+    if (!earliest && consecutiveEmpty >= 12) {
+      debugTotalPnl(accountKey, 'Stopping discovery after 12 consecutive empty months with no funding');
+      break;
+    }
+
+    const previousMonthStart = addMonths(monthStart, -1);
+    if (!previousMonthStart || previousMonthStart < MIN_ACTIVITY_DATE) {
+      break;
+    }
+    monthStart = previousMonthStart;
   }
 
   if (earliest) {
