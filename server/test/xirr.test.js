@@ -98,6 +98,16 @@ test('xirr succeeds for very large positive returns by expanding the bracket', (
   almostEqual(result, 0.3568306378025747, 1e-9);
 });
 
+test('xirr expands brackets enough to handle multi-thousand percent annualized gains', () => {
+  const flows = [
+    { date: new Date('2025-09-25T00:00:00Z'), amount: -6354.888806000001 },
+    { date: new Date('2025-10-03T21:54:30.308Z'), amount: 6906.791947 },
+  ];
+  const result = xirr(flows);
+  // Cross-checked with https://github.com/pyxirr/pyxirr (v0.10.7)
+  almostEqual(result, 29.28118369919632, 1e-6);
+});
+
 test('xirr returns NaN when cash flows lack sign diversity or sufficient entries', () => {
   assert.ok(Number.isNaN(xirr([{ date: new Date('2020-01-01T00:00:00Z'), amount: 100 }])));
   assert.ok(Number.isNaN(xirr([{ date: new Date('2020-01-01T00:00:00Z'), amount: -100 }])));
@@ -173,4 +183,18 @@ test('computeAnnualizedReturnFromCashFlows handles ISO strings and Date instance
   const rate = computeAnnualizedReturnFromCashFlows(flows);
   // Cross-checked with https://github.com/pyxirr/pyxirr (v0.10.7)
   almostEqual(rate, 0.14936255214275568, 1e-9);
+});
+
+test('computeAnnualizedReturnFromCashFlows accepts pre-normalized cash flows when requested', () => {
+  const normalized = normalizeCashFlowsForXirr([
+    { amount: -7500, date: '2020-01-01' },
+    { amount: 1000, date: '2020-06-01' },
+    { amount: 1200, date: '2020-09-01' },
+    { amount: 1300, date: '2021-01-01' },
+    { amount: 1400, date: '2021-06-01' },
+    { amount: 1500, date: '2022-01-01' },
+  ]);
+  const rate = computeAnnualizedReturnFromCashFlows(normalized, { preNormalized: true });
+  const baseline = computeAnnualizedReturnFromCashFlows(normalized);
+  almostEqual(rate, baseline, 1e-12);
 });
