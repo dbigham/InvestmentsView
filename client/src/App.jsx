@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
-import SummaryMetrics from './components/SummaryMetrics';
+import SummaryMetrics, { resolveScopedAmount } from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
 import { getSummary, getQqqTemperature } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
@@ -223,7 +223,10 @@ function buildClipboardSummary({
   lines.push(`Total amount: ${formatMoney(totalAmount)}`);
   lines.push(`Today's P&L: ${formatSignedMoney(pnl?.dayPnl)}`);
   lines.push(`Open P&L: ${formatSignedMoney(pnl?.openPnl)}`);
-  lines.push(`Total P&L: ${formatSignedMoney(pnl?.totalPnl)}`);
+  const totalPnlAmount = resolveScopedAmount(pnl?.totalPnlBreakdown, currencyOption) ?? pnl?.totalPnl ?? null;
+  lines.push(`Total P&L: ${formatSignedMoney(totalPnlAmount)}`);
+  const netDepositAmount = resolveScopedAmount(pnl?.netDeposits, currencyOption);
+  lines.push(`Net deposits: ${formatSignedMoney(netDepositAmount ?? null)}`);
   lines.push(`Total equity: ${formatMoney(balances?.totalEquity)}`);
   lines.push(`Market value: ${formatMoney(balances?.marketValue)}`);
   lines.push(`Cash: ${formatMoney(balances?.cash)}`);
@@ -431,7 +434,14 @@ function resolveDisplayTotalEquity(balances) {
   return null;
 }
 
-const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
+const ZERO_PNL = Object.freeze({
+  dayPnl: 0,
+  openPnl: 0,
+  totalPnl: 0,
+  totalPnlBreakdown: null,
+  totalEquityBreakdown: null,
+  netDeposits: null,
+});
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -1234,27 +1244,44 @@ export default function App() {
     return positionPnlSummaries.perCurrency[activeCurrency.currency] || ZERO_PNL;
   }, [activeCurrency, positionPnlSummaries, currencyRates, baseCurrency]);
 
+  const rawServerPnl = data?.pnl || null;
+
   const activePnl = useMemo(() => {
     if (!activeCurrency) {
-      return ZERO_PNL;
+      return rawServerPnl ? Object.assign({}, ZERO_PNL, rawServerPnl) : ZERO_PNL;
     }
+
     const balanceEntry = balancePnlSummaries[activeCurrency.scope]?.[activeCurrency.currency] || null;
     const totalFromBalance = balanceEntry ? balanceEntry.totalPnl : null;
     const hasBalanceTotal = isFiniteNumber(totalFromBalance);
 
+    const base = rawServerPnl ? Object.assign({}, ZERO_PNL, rawServerPnl) : { ...ZERO_PNL };
+
     if (!balanceEntry) {
-      return {
-        dayPnl: fallbackPnl.dayPnl,
-        openPnl: fallbackPnl.openPnl,
-        totalPnl: null,
-      };
+      base.dayPnl = fallbackPnl.dayPnl;
+      base.openPnl = fallbackPnl.openPnl;
+      base.totalPnl = hasBalanceTotal ? totalFromBalance : null;
+      if (base.totalPnl === null && isFiniteNumber(fallbackPnl.totalPnl)) {
+        base.totalPnl = fallbackPnl.totalPnl;
+      }
+      return base;
     }
-    return {
-      dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
-      openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
-      totalPnl: hasBalanceTotal ? totalFromBalance : null,
-    };
-  }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
+
+    const resolvedDay = balanceEntry.dayPnl ?? fallbackPnl.dayPnl;
+    const resolvedOpen = balanceEntry.openPnl ?? fallbackPnl.openPnl;
+    base.dayPnl = isFiniteNumber(resolvedDay) ? resolvedDay : fallbackPnl.dayPnl;
+    base.openPnl = isFiniteNumber(resolvedOpen) ? resolvedOpen : fallbackPnl.openPnl;
+
+    if (hasBalanceTotal) {
+      base.totalPnl = totalFromBalance;
+    } else if (isFiniteNumber(fallbackPnl.totalPnl)) {
+      base.totalPnl = fallbackPnl.totalPnl;
+    } else {
+      base.totalPnl = null;
+    }
+
+    return base;
+  }, [activeCurrency, balancePnlSummaries, fallbackPnl, rawServerPnl]);
 
   const heatmapMarketValue = useMemo(() => {
     if (activeBalances && typeof activeBalances === 'object') {
