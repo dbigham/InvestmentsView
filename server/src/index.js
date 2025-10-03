@@ -4,6 +4,7 @@ const axios = require('axios');
 const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 require('dotenv').config();
 const {
   getAccountNameOverrides,
@@ -539,6 +540,778 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL !== 'false';
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+// Questrade's documentation cites a 31 day cap for the activities endpoint, but in
+// practice we receive "Argument length exceeds imposed limit" errors whenever the
+// requested range spans a full 31 calendar days. Keeping the window strictly under
+// that threshold avoids the 400 errors without materially increasing the number of
+// requests we make.
+const MAX_ACTIVITIES_WINDOW_DAYS = 30;
+const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
+const USD_TO_CAD_SERIES = 'DEXCAUS';
+const ACTIVITIES_CACHE_DIR = path.join(process.cwd(), '.cache', 'activities');
+
+const activitiesMemoryCache = new Map();
+let activitiesCacheDirEnsured = false;
+
+function debugTotalPnl(accountId, message, payload) {
+  if (!DEBUG_TOTAL_PNL) {
+    return;
+  }
+  const parts = ['[TOTAL_PNL]', accountId ? '(' + accountId + ')' : '', message];
+  const filtered = parts.filter(Boolean);
+  if (payload !== undefined) {
+    console.log(filtered.join(' '), payload);
+  } else {
+    console.log(filtered.join(' '));
+  }
+}
+
+function addDays(baseDate, days) {
+  if (!(baseDate instanceof Date) || Number.isNaN(baseDate.getTime())) {
+    return null;
+  }
+  return new Date(baseDate.getTime() + days * DAY_IN_MS);
+}
+
+function addMonths(baseDate, months) {
+  if (!(baseDate instanceof Date) || Number.isNaN(baseDate.getTime())) {
+    return null;
+  }
+  const year = baseDate.getUTCFullYear();
+  const month = baseDate.getUTCMonth();
+  const day = baseDate.getUTCDate();
+  const target = new Date(Date.UTC(year, month + months, 1));
+  const daysInTargetMonth = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  const clampedDay = Math.min(day, daysInTargetMonth);
+  return new Date(
+    Date.UTC(
+      target.getUTCFullYear(),
+      target.getUTCMonth(),
+      clampedDay,
+      baseDate.getUTCHours(),
+      baseDate.getUTCMinutes(),
+      baseDate.getUTCSeconds(),
+      baseDate.getUTCMilliseconds()
+    )
+  );
+}
+
+function clampDate(date, minDate) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  if (!(minDate instanceof Date) || Number.isNaN(minDate.getTime())) {
+    return new Date(date.getTime());
+  }
+  return date < minDate ? new Date(minDate.getTime()) : new Date(date.getTime());
+}
+
+function floorToMonthStart(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
+function formatDateParam(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function ensureActivitiesCacheDir() {
+  if (activitiesCacheDirEnsured) {
+    return;
+  }
+  try {
+    fs.mkdirSync(ACTIVITIES_CACHE_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('Failed to ensure activities cache directory:', error.message);
+  }
+  activitiesCacheDirEnsured = true;
+}
+
+function getActivitiesCacheKey(loginId, accountId, startParam, endParam) {
+  const rawKey = [loginId || 'unknown', accountId || 'unknown', startParam || '', endParam || ''].join('|');
+  return crypto.createHash('sha1').update(rawKey).digest('hex');
+}
+
+function getActivitiesCacheFilePath(cacheKey) {
+  return path.join(ACTIVITIES_CACHE_DIR, cacheKey + '.json');
+}
+
+function readActivitiesCache(cacheKey) {
+  try {
+    const filePath = getActivitiesCacheFilePath(cacheKey);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const contents = fs.readFileSync(filePath, 'utf-8');
+    if (!contents) {
+      return null;
+    }
+    const parsed = JSON.parse(contents);
+    if (parsed && Array.isArray(parsed.activities)) {
+      return parsed.activities;
+    }
+  } catch (error) {
+    console.warn('Failed to read activities cache entry:', error.message);
+  }
+  return null;
+}
+
+function writeActivitiesCache(cacheKey, activities) {
+  try {
+    ensureActivitiesCacheDir();
+    const payload = {
+      cachedAt: new Date().toISOString(),
+      activities: Array.isArray(activities) ? activities : [],
+    };
+    fs.writeFileSync(getActivitiesCacheFilePath(cacheKey), JSON.stringify(payload));
+  } catch (error) {
+    console.warn('Failed to persist activities cache entry:', error.message);
+  }
+}
+
+function resolveActivityTimestamp(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = ['transactionDate', 'tradeDate', 'settlementDate', 'date'];
+  for (const field of fields) {
+    if (activity[field]) {
+      const date = new Date(activity[field]);
+      if (!Number.isNaN(date.getTime())) {
+        return date;
+      }
+    }
+  }
+  return null;
+}
+
+const FUNDING_TYPE_REGEX = /(deposit|withdraw|transfer|journal)/i;
+
+function isFundingActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+  const type = typeof activity.type === 'string' ? activity.type : '';
+  const action = typeof activity.action === 'string' ? activity.action : '';
+  const description = typeof activity.description === 'string' ? activity.description : '';
+  return (
+    FUNDING_TYPE_REGEX.test(type) ||
+    FUNDING_TYPE_REGEX.test(action) ||
+    FUNDING_TYPE_REGEX.test(description)
+  );
+}
+
+const EMBEDDED_NUMBER_PATTERN = '\\d+(?:,\\d{3})*(?:\\.\\d+)?';
+const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
+
+function parseNumericString(value) {
+  if (typeof value !== 'string' || !value) {
+    return null;
+  }
+  const normalized = value.replace(/,/g, '');
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric;
+}
+
+function extractAmountFromDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return null;
+  }
+
+  const bookValueMatch = description.match(new RegExp('BOOK\\s+VALUE\\s+(' + EMBEDDED_NUMBER_PATTERN + ')', 'i'));
+  if (bookValueMatch && bookValueMatch[1]) {
+    const bookValue = parseNumericString(bookValueMatch[1]);
+    if (bookValue !== null) {
+      return { amount: bookValue, raw: bookValueMatch[1], source: 'bookValue' };
+    }
+  }
+
+  const decimalMatches = description.match(new RegExp(EMBEDDED_DECIMAL_PATTERN, 'g'));
+  if (decimalMatches && decimalMatches.length > 0) {
+    const rawDecimal = decimalMatches[decimalMatches.length - 1];
+    const decimalValue = parseNumericString(rawDecimal);
+    if (decimalValue !== null) {
+      return { amount: decimalValue, raw: rawDecimal, source: 'decimal' };
+    }
+  }
+
+  const genericMatches = description.match(new RegExp(EMBEDDED_NUMBER_PATTERN, 'g'));
+  if (!genericMatches || !genericMatches.length) {
+    return null;
+  }
+  const filtered = genericMatches.filter((value) => value && value.indexOf('.') !== -1);
+  const candidate = (filtered.length ? filtered[filtered.length - 1] : genericMatches[genericMatches.length - 1]) || null;
+  if (!candidate) {
+    return null;
+  }
+  const numeric = parseNumericString(candidate);
+  if (numeric === null) {
+    return null;
+  }
+  return { amount: numeric, raw: candidate, source: filtered.length ? 'filteredNumeric' : 'numeric' };
+}
+
+function resolveActivityAmount(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const candidates = ['netAmount', 'grossAmount'];
+  for (const field of candidates) {
+    const value = Number(activity[field]);
+    if (Number.isFinite(value) && Math.abs(value) > 1e-8) {
+      return { amount: value, source: 'field', field };
+    }
+  }
+  const quantity = Number(activity.quantity);
+  const price = Number(activity.price);
+  if (
+    Number.isFinite(quantity) &&
+    Math.abs(quantity) > 1e-8 &&
+    Number.isFinite(price) &&
+    Math.abs(price) > 1e-8
+  ) {
+    return { amount: quantity * price, source: 'quantityPrice', quantity, price };
+  }
+  const embedded = extractAmountFromDescription(activity.description);
+  if (embedded !== null) {
+    return {
+      amount: embedded.amount,
+      source: 'description',
+      description: embedded,
+    };
+  }
+  return null;
+}
+
+function inferActivityDirection(activity, fallbackAmount) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const candidates = ['netAmount', 'grossAmount'];
+  for (const field of candidates) {
+    const value = Number(activity[field]);
+    if (Number.isFinite(value) && Math.abs(value) > 1e-8) {
+      return value >= 0 ? 1 : -1;
+    }
+  }
+  const quantity = Number(activity.quantity);
+  if (Number.isFinite(quantity) && Math.abs(quantity) > 1e-8) {
+    return quantity >= 0 ? 1 : -1;
+  }
+  const action = typeof activity.action === 'string' ? activity.action.toLowerCase() : '';
+  const description = typeof activity.description === 'string' ? activity.description.toLowerCase() : '';
+  if (/(withdraw|to account|transfer out|debit|wire out)/.test(action) || /(withdraw|to account|debit|wire out)/.test(description)) {
+    return -1;
+  }
+  if (/(deposit|from account|transfer in|credit|wire in)/.test(action) || /(deposit|from account|credit|wire in)/.test(description)) {
+    return 1;
+  }
+  if (typeof fallbackAmount === 'number' && fallbackAmount < 0) {
+    return -1;
+  }
+  if (typeof fallbackAmount === 'number' && fallbackAmount > 0) {
+    return 1;
+  }
+  return null;
+}
+
+function normalizeCurrency(code) {
+  if (typeof code !== 'string') {
+    return null;
+  }
+  return code.trim().toUpperCase();
+}
+
+const usdCadRateCache = new Map();
+
+async function fetchUsdToCadRate(date) {
+  const keyDate = formatDateOnly(date);
+  if (!keyDate) {
+    return null;
+  }
+  if (usdCadRateCache.has(keyDate)) {
+    return usdCadRateCache.get(keyDate);
+  }
+
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing FRED_API_KEY environment variable');
+  }
+
+  const url = new URL('https://api.stlouisfed.org/fred/series/observations');
+  url.searchParams.set('series_id', USD_TO_CAD_SERIES);
+  url.searchParams.set('observation_start', keyDate);
+  url.searchParams.set('observation_end', keyDate);
+  url.searchParams.set('api_key', apiKey);
+  url.searchParams.set('file_type', 'json');
+
+  const response = await axios.get(url.toString());
+  const observations = response.data && response.data.observations;
+  if (Array.isArray(observations) && observations.length > 0) {
+    const value = Number(observations[0].value);
+    if (Number.isFinite(value) && value > 0) {
+      usdCadRateCache.set(keyDate, value);
+      return value;
+    }
+  }
+  usdCadRateCache.set(keyDate, null);
+  return null;
+}
+
+function formatDateOnly(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+async function resolveUsdToCadRate(date, accountKey) {
+  let cursor = new Date(date.getTime());
+  for (let i = 0; i < 7; i += 1) {
+    const attemptDate = addDays(cursor, -i);
+    if (!attemptDate) {
+      continue;
+    }
+    const rate = await fetchUsdToCadRate(attemptDate);
+    if (Number.isFinite(rate) && rate > 0) {
+      if (i > 0 && DEBUG_TOTAL_PNL) {
+        debugTotalPnl(
+          accountKey,
+          'Used prior FX date ' + formatDateOnly(attemptDate) + ' for ' + formatDateOnly(date)
+        );
+      }
+      return rate;
+    }
+  }
+  return null;
+}
+
+async function fetchActivitiesWindow(login, accountId, startDate, endDate, accountKey) {
+  const startParam = formatDateParam(startDate);
+  const endParam = formatDateParam(endDate);
+  if (!startParam || !endParam) {
+    return [];
+  }
+  const nowMs = Date.now();
+  const isHistorical = endDate instanceof Date && !Number.isNaN(endDate.getTime()) && endDate.getTime() < nowMs;
+  const cacheKey =
+    isHistorical && login
+      ? getActivitiesCacheKey(login.id, accountId, startParam, endParam)
+      : null;
+  if (isHistorical && cacheKey) {
+    if (activitiesMemoryCache.has(cacheKey)) {
+      debugTotalPnl(accountKey, 'Using cached activities window (memory)', {
+        start: startParam,
+        end: endParam,
+      });
+      return activitiesMemoryCache.get(cacheKey);
+    }
+    const cached = readActivitiesCache(cacheKey);
+    if (Array.isArray(cached)) {
+      activitiesMemoryCache.set(cacheKey, cached);
+      debugTotalPnl(accountKey, 'Using cached activities window (disk)', {
+        start: startParam,
+        end: endParam,
+      });
+      return cached;
+    }
+  }
+  debugTotalPnl(accountKey, 'Fetching activities window', {
+    start: startParam,
+    end: endParam,
+  });
+  const params = {
+    startTime: startParam,
+    endTime: endParam,
+  };
+  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
+  const activities = data && Array.isArray(data.activities) ? data.activities : [];
+  if (isHistorical && cacheKey) {
+    activitiesMemoryCache.set(cacheKey, activities);
+    writeActivitiesCache(cacheKey, activities);
+  }
+  return activities;
+}
+
+async function fetchActivitiesRange(login, accountId, startDate, endDate, accountKey) {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    return [];
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
+    return [];
+  }
+  if (startDate > endDate) {
+    return [];
+  }
+  const results = [];
+  let cursor = new Date(startDate.getTime());
+  while (cursor <= endDate) {
+    const windowEnd = new Date(
+      Math.min(
+        endDate.getTime(),
+        cursor.getTime() + MAX_ACTIVITIES_WINDOW_DAYS * DAY_IN_MS - 1000
+      )
+    );
+    const windowActivities = await fetchActivitiesWindow(login, accountId, cursor, windowEnd, accountKey);
+    results.push(...windowActivities);
+    const nextStart = new Date(windowEnd.getTime() + 1000);
+    if (nextStart > endDate) {
+      break;
+    }
+    cursor = nextStart;
+  }
+  debugTotalPnl(accountKey, 'Fetched activities count', results.length);
+  return results;
+}
+
+function filterFundingActivities(activities) {
+  return activities.filter((activity) => isFundingActivity(activity));
+}
+
+function buildActivityKey(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const idFields = ['id', 'activityId', 'transactionId'];
+  for (const field of idFields) {
+    if (activity[field]) {
+      return String(activity[field]);
+    }
+  }
+  const timestamp = resolveActivityTimestamp(activity);
+  const timestampPart = timestamp ? timestamp.toISOString() : '';
+  const parts = [timestampPart];
+  const keyFields = ['type', 'action', 'symbol', 'description', 'currency'];
+  keyFields.forEach((field) => {
+    if (activity[field]) {
+      parts.push(String(activity[field]));
+    }
+  });
+  const amountFields = ['netAmount', 'grossAmount', 'amount', 'quantity', 'price'];
+  amountFields.forEach((field) => {
+    if (activity[field] !== undefined && activity[field] !== null) {
+      parts.push(String(activity[field]));
+    }
+  });
+  return parts.join('|');
+}
+
+function dedupeActivities(activities) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return [];
+  }
+  const seen = new Set();
+  const result = [];
+  for (const activity of activities) {
+    const key = buildActivityKey(activity) || JSON.stringify(activity);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(activity);
+  }
+  return result;
+}
+
+function findEarliestFundingTimestamp(activities) {
+  let earliest = null;
+  activities.forEach((activity) => {
+    const timestamp = resolveActivityTimestamp(activity);
+    if (timestamp && (!earliest || timestamp < earliest)) {
+      earliest = timestamp;
+    }
+  });
+  return earliest;
+}
+
+async function discoverEarliestFundingDate(login, accountId, accountKey) {
+  const now = new Date();
+  const currentMonthStart = floorToMonthStart(now);
+  if (!currentMonthStart) {
+    debugTotalPnl(accountKey, 'Unable to determine current month start during discovery');
+    return null;
+  }
+
+  let monthStart = currentMonthStart;
+  let earliest = null;
+  let consecutiveEmpty = 0;
+  let iterations = 0;
+  const MAX_MONTH_LOOKBACK = 600; // 50 years of monthly checks
+
+  while (monthStart && monthStart >= MIN_ACTIVITY_DATE && iterations < MAX_MONTH_LOOKBACK) {
+    iterations += 1;
+    const nextMonthStart = addMonths(monthStart, 1);
+    if (!nextMonthStart) {
+      break;
+    }
+    let monthEnd = new Date(nextMonthStart.getTime() - 1000);
+    if (monthEnd > now) {
+      monthEnd = new Date(now.getTime());
+    }
+    if (monthEnd < monthStart) {
+      break;
+    }
+    const monthLabel = {
+      start: formatDateOnly(monthStart),
+      end: formatDateOnly(monthEnd),
+    };
+    const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey);
+    const funding = filterFundingActivities(activities);
+    if (funding.length > 0) {
+      const windowEarliest = findEarliestFundingTimestamp(funding);
+      if (windowEarliest && (!earliest || windowEarliest < earliest)) {
+        earliest = windowEarliest;
+      }
+      consecutiveEmpty = 0;
+      debugTotalPnl(accountKey, 'Funding month hit', Object.assign({ activities: funding.length }, monthLabel));
+    } else {
+      consecutiveEmpty += 1;
+      debugTotalPnl(
+        accountKey,
+        'Funding month empty',
+        Object.assign({ consecutiveEmpty }, monthLabel)
+      );
+    }
+
+    if (earliest && consecutiveEmpty >= 12) {
+      debugTotalPnl(accountKey, 'Stopping discovery after 12 empty months beyond earliest');
+      break;
+    }
+    if (!earliest && consecutiveEmpty >= 12) {
+      debugTotalPnl(accountKey, 'Stopping discovery after 12 consecutive empty months with no funding');
+      break;
+    }
+
+    const previousMonthStart = addMonths(monthStart, -1);
+    if (!previousMonthStart || previousMonthStart < MIN_ACTIVITY_DATE) {
+      break;
+    }
+    monthStart = previousMonthStart;
+  }
+
+  if (earliest) {
+    debugTotalPnl(accountKey, 'Earliest funding date discovered', formatDateOnly(earliest));
+    return earliest;
+  }
+
+  debugTotalPnl(accountKey, 'No funding activities found during discovery');
+  return null;
+}
+
+function resolveActivityAmountDetails(activity) {
+  const amountInfo = resolveActivityAmount(activity);
+  if (!amountInfo) {
+    return null;
+  }
+  const direction = inferActivityDirection(activity, amountInfo.amount);
+  if (!direction) {
+    return null;
+  }
+  const signedAmount = direction >= 0 ? Math.abs(amountInfo.amount) : -Math.abs(amountInfo.amount);
+  const currency = normalizeCurrency(activity.currency) || 'CAD';
+  const timestamp = resolveActivityTimestamp(activity);
+  const descriptionResolution = amountInfo.description
+    ? {
+        amount: amountInfo.description.amount,
+        raw: amountInfo.description.raw || null,
+        source: amountInfo.description.source || null,
+        signedAmount:
+          direction >= 0
+            ? Math.abs(amountInfo.description.amount)
+            : -Math.abs(amountInfo.description.amount),
+      }
+    : null;
+
+  return {
+    amount: signedAmount,
+    currency,
+    timestamp,
+    resolution: {
+      source: amountInfo.source || null,
+      field: amountInfo.field || null,
+      quantity: amountInfo.quantity || null,
+      price: amountInfo.price || null,
+      description: descriptionResolution,
+    },
+  };
+}
+
+async function convertAmountToCad(amount, currency, timestamp, accountKey) {
+  if (!Number.isFinite(amount)) {
+    return { cadAmount: null, fxRate: null };
+  }
+  if (!currency || currency === 'CAD') {
+    return { cadAmount: amount, fxRate: 1 };
+  }
+  if (currency === 'USD') {
+    if (!timestamp) {
+      return { cadAmount: null, fxRate: null };
+    }
+    const rate = await resolveUsdToCadRate(timestamp, accountKey);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      debugTotalPnl(accountKey, 'Missing FX rate for ' + formatDateOnly(timestamp));
+      return { cadAmount: null, fxRate: null };
+    }
+    return { cadAmount: amount * rate, fxRate: rate };
+  }
+  debugTotalPnl(accountKey, 'Unsupported currency for net deposits: ' + currency);
+  return { cadAmount: null, fxRate: null };
+}
+
+async function computeNetDeposits(login, account, perAccountCombinedBalances) {
+  if (!account || !account.id) {
+    return null;
+  }
+  const accountKey = account.id;
+  const accountNumber = account.number || account.accountNumber || account.id;
+  const earliestFunding = await discoverEarliestFundingDate(login, accountNumber, accountKey);
+  const now = new Date();
+  const paddedStart = earliestFunding ? addDays(floorToMonthStart(earliestFunding), -7) : addDays(now, -365);
+  const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
+  const activities = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
+  const fundingActivities = dedupeActivities(filterFundingActivities(activities));
+  debugTotalPnl(accountKey, 'Funding activities considered', fundingActivities.length);
+
+  const perCurrencyTotals = new Map();
+  let combinedCad = 0;
+  let conversionIncomplete = false;
+  const breakdown = [];
+
+  for (const activity of fundingActivities) {
+    const details = resolveActivityAmountDetails(activity);
+    if (!details) {
+      debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
+      continue;
+    }
+    const { amount, currency, timestamp, resolution } = details;
+    const conversion = await convertAmountToCad(amount, currency, timestamp, accountKey);
+    const cadAmount = conversion.cadAmount;
+    if (!perCurrencyTotals.has(currency)) {
+      perCurrencyTotals.set(currency, 0);
+    }
+    perCurrencyTotals.set(currency, perCurrencyTotals.get(currency) + amount);
+    if (Number.isFinite(cadAmount)) {
+      combinedCad += cadAmount;
+    } else if (currency !== 'CAD') {
+      conversionIncomplete = true;
+    }
+    breakdown.push({
+      amount,
+      currency,
+      cadAmount,
+      usdAmount: currency === 'USD' ? amount : null,
+      fxRate: conversion.fxRate || null,
+      resolvedAmountSource: resolution && resolution.source ? resolution.source : null,
+      resolvedAmountField: resolution && resolution.field ? resolution.field : null,
+      resolvedQuantity: resolution && Number.isFinite(resolution.quantity) ? resolution.quantity : null,
+      resolvedPrice: resolution && Number.isFinite(resolution.price) ? resolution.price : null,
+      descriptionExtracted: !!(resolution && resolution.description),
+      descriptionExtractedAmount:
+        resolution && resolution.description ? resolution.description.amount : null,
+      descriptionExtractedAmountSigned:
+        resolution && resolution.description ? resolution.description.signedAmount : null,
+      descriptionExtractedRaw:
+        resolution && resolution.description ? resolution.description.raw || null : null,
+      descriptionExtractionStrategy:
+        resolution && resolution.description ? resolution.description.source || null : null,
+      timestamp: timestamp ? formatDateOnly(timestamp) : null,
+      type: activity.type || null,
+      action: activity.action || null,
+      description: activity.description || null,
+    });
+  }
+
+  const accountAdjustment =
+    account && typeof account.netDepositAdjustment === 'number' && Number.isFinite(account.netDepositAdjustment)
+      ? account.netDepositAdjustment
+      : 0;
+
+  if (accountAdjustment !== 0) {
+    const existingCad = perCurrencyTotals.has('CAD') ? perCurrencyTotals.get('CAD') : 0;
+    perCurrencyTotals.set('CAD', existingCad + accountAdjustment);
+    combinedCad += accountAdjustment;
+    breakdown.push({
+      amount: accountAdjustment,
+      currency: 'CAD',
+      cadAmount: accountAdjustment,
+      usdAmount: null,
+      fxRate: 1,
+      resolvedAmountSource: 'accountOverride',
+      resolvedAmountField: 'netDepositAdjustment',
+      resolvedQuantity: null,
+      resolvedPrice: null,
+      descriptionExtracted: false,
+      descriptionExtractedAmount: null,
+      descriptionExtractedAmountSigned: null,
+      descriptionExtractedRaw: null,
+      descriptionExtractionStrategy: null,
+      timestamp: null,
+      type: 'Adjustment',
+      action: 'netDepositAdjustment',
+      description: 'Manual net deposit adjustment applied from account settings.',
+    });
+  }
+
+  const perCurrencyObject = {};
+  for (const [currency, value] of perCurrencyTotals.entries()) {
+    perCurrencyObject[currency] = value;
+  }
+
+  const combinedCadValue = conversionIncomplete ? null : combinedCad;
+
+  const combinedBalances = perAccountCombinedBalances && perAccountCombinedBalances[account.id];
+  const cadBalance = combinedBalances ? combinedBalances.CAD || combinedBalances.cad : null;
+  const totalEquityCad = cadBalance && Number.isFinite(Number(cadBalance.totalEquity))
+    ? Number(cadBalance.totalEquity)
+    : null;
+
+  const totalPnlCad =
+    Number.isFinite(totalEquityCad) && Number.isFinite(combinedCadValue)
+      ? totalEquityCad - combinedCadValue
+      : null;
+
+  debugTotalPnl(accountKey, 'Net deposits summary', {
+    perCurrency: perCurrencyObject,
+    combinedCad: combinedCadValue,
+    totalEquityCad,
+    totalPnlCad,
+    crawlStart: formatDateOnly(crawlStart),
+    asOf: formatDateOnly(now),
+    netDepositAdjustmentCad: accountAdjustment || undefined,
+  });
+
+  if (DEBUG_TOTAL_PNL) {
+    debugTotalPnl(accountKey, 'Funding breakdown entries', breakdown);
+  }
+
+  return {
+    netDeposits: {
+      perCurrency: perCurrencyObject,
+      combinedCad: Number.isFinite(combinedCadValue) ? combinedCadValue : null,
+    },
+    totalPnl: {
+      combinedCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+    },
+    totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+    adjustments:
+      accountAdjustment !== 0
+        ? {
+            netDepositsCad: accountAdjustment,
+          }
+        : undefined,
+  };
+}
+
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -957,6 +1730,12 @@ app.get('/api/summary', async function (req, res) {
               normalizedAccount.investmentModelLastRebalance = trimmedDate;
             }
           }
+          if (
+            typeof accountSettingsOverride.netDepositAdjustment === 'number' &&
+            Number.isFinite(accountSettingsOverride.netDepositAdjustment)
+          ) {
+            normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
+          }
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
         if (defaultBeneficiary) {
@@ -1155,6 +1934,27 @@ app.get('/api/summary', async function (req, res) {
       }
     }
 
+    const accountFundingSummaries = {};
+    if (selectedContexts.length === 1) {
+      const context = selectedContexts[0];
+      try {
+        const fundingSummary = await computeNetDeposits(
+          context.login,
+          context.account,
+          perAccountCombinedBalances
+        );
+        if (fundingSummary) {
+          accountFundingSummaries[context.account.id] = fundingSummary;
+        }
+      } catch (fundingError) {
+        const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
+        console.warn(
+          'Failed to compute net deposits for account ' + context.account.id + ':',
+          message
+        );
+      }
+    }
+
     const responseAccounts = allAccounts.map(function (account) {
       return {
         id: account.id,
@@ -1193,6 +1993,7 @@ app.get('/api/summary', async function (req, res) {
       balances: balancesSummary,
       accountBalances: perAccountCombinedBalances,
       investmentModelEvaluations,
+      accountFunding: accountFundingSummaries,
       asOf: new Date().toISOString(),
     });
   } catch (error) {

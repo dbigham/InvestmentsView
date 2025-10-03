@@ -192,6 +192,7 @@ export default function SummaryMetrics({
   onCurrencyChange,
   balances,
   pnl,
+  fundingSummary,
   asOf,
   onRefresh,
   displayTotalEquity,
@@ -212,15 +213,27 @@ export default function SummaryMetrics({
   const cash = balances?.cash ?? null;
   const buyingPower = balances?.buyingPower ?? null;
 
+  const totalPnlValue = Number.isFinite(pnl?.totalPnl)
+    ? pnl.totalPnl
+    : Number.isFinite(fundingSummary?.totalPnlCad)
+      ? fundingSummary.totalPnlCad
+      : null;
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
-  const totalTone = classifyPnL(pnl?.totalPnl);
-
+  const totalTone = classifyPnL(totalPnlValue);
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
-  const formattedTotal = formatSignedMoney(pnl?.totalPnl ?? null);
+  const formattedTotal = formatSignedMoney(totalPnlValue);
+  const netDepositsValue = Number.isFinite(fundingSummary?.netDepositsCad)
+    ? fundingSummary.netDepositsCad
+    : null;
+  const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
 
-  const safeTotalEquity = Number.isFinite(totalEquity) ? totalEquity : null;
+  const safeTotalEquity = Number.isFinite(totalEquity)
+    ? totalEquity
+    : Number.isFinite(fundingSummary?.totalEquityCad)
+      ? fundingSummary.totalEquityCad
+      : null;
 
   const formatPnlPercent = (change) => {
     if (!Number.isFinite(change)) {
@@ -253,6 +266,7 @@ export default function SummaryMetrics({
 
   const dayPercent = formatPnlPercent(pnl?.dayPnl);
   const openPercent = formatPnlPercent(pnl?.openPnl);
+  const totalPercent = formatPnlPercent(totalPnlValue);
 
   return (
     <section className="equity-card">
@@ -355,7 +369,13 @@ export default function SummaryMetrics({
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
-          <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          <MetricRow
+            label="Total P&L"
+            value={formattedTotal}
+            extra={totalPercent ? `(${totalPercent})` : null}
+            tone={totalTone}
+          />
+          {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
@@ -396,6 +416,10 @@ SummaryMetrics.propTypes = {
     openPnl: PropTypes.number,
     totalPnl: PropTypes.number,
   }).isRequired,
+  fundingSummary: PropTypes.shape({
+    netDepositsCad: PropTypes.number,
+    totalPnlCad: PropTypes.number,
+  }),
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
@@ -432,4 +456,5 @@ SummaryMetrics.defaultProps = {
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
+  fundingSummary: null,
 };
