@@ -362,7 +362,7 @@ export default function SummaryMetrics({
           {hasNetDeposits && (
             <>
               <div className="equity-card__metric-separator" aria-hidden="true">
-                <span>…</span>
+                <span>....................</span>
               </div>
               <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />
             </>
