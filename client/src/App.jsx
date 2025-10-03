@@ -928,35 +928,37 @@ export default function App() {
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const filteredAccountIds = useMemo(
+    () => (Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds : []),
+    [data?.filteredAccountIds]
+  );
   const selectedAccount = useMemo(() => {
     if (activeAccountId === 'default') {
-      const filtered = Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds : [];
-      if (filtered.length === 1) {
-        return filtered[0];
+      if (filteredAccountIds.length === 1) {
+        return filteredAccountIds[0];
       }
-      if (filtered.length > 1) {
+      if (filteredAccountIds.length > 1) {
         return 'all';
       }
     }
     return selectedAccountState;
-  }, [activeAccountId, data?.filteredAccountIds, selectedAccountState]);
+  }, [activeAccountId, filteredAccountIds, selectedAccountState]);
 
   useEffect(() => {
     if (activeAccountId !== 'default') {
       return;
     }
-    const filtered = Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds : [];
-    if (filtered.length === 1) {
-      const resolvedId = filtered[0];
+    if (filteredAccountIds.length === 1) {
+      const resolvedId = filteredAccountIds[0];
       if (resolvedId && selectedAccountState !== resolvedId) {
         setSelectedAccountState(resolvedId);
       }
       return;
     }
-    if (filtered.length > 1 && selectedAccountState !== 'all') {
+    if (filteredAccountIds.length > 1 && selectedAccountState !== 'all') {
       setSelectedAccountState('all');
     }
-  }, [activeAccountId, data?.filteredAccountIds, selectedAccountState, setSelectedAccountState]);
+  }, [activeAccountId, filteredAccountIds, selectedAccountState, setSelectedAccountState]);
 
   const handleAccountChange = useCallback(
     (value) => {
@@ -989,6 +991,68 @@ export default function App() {
   const accountFunding = data?.accountFunding ?? EMPTY_OBJECT;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
+    if (selectedAccount === 'all') {
+      const aggregateEntry = accountFunding.all;
+      if (aggregateEntry && typeof aggregateEntry === 'object') {
+        return aggregateEntry;
+      }
+
+      if (!filteredAccountIds.length) {
+        return null;
+      }
+
+      let netDepositsTotal = 0;
+      let netDepositsCount = 0;
+      let totalPnlTotal = 0;
+      let totalPnlCount = 0;
+      let totalEquityTotal = 0;
+      let totalEquityCount = 0;
+
+      filteredAccountIds.forEach((accountId) => {
+        const entry = accountFunding[accountId];
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const netDepositsCad = entry?.netDeposits?.combinedCad;
+        if (isFiniteNumber(netDepositsCad)) {
+          netDepositsTotal += netDepositsCad;
+          netDepositsCount += 1;
+        }
+        const totalPnlCad = entry?.totalPnl?.combinedCad;
+        if (isFiniteNumber(totalPnlCad)) {
+          totalPnlTotal += totalPnlCad;
+          totalPnlCount += 1;
+        }
+        const totalEquityCad = entry?.totalEquityCad;
+        if (isFiniteNumber(totalEquityCad)) {
+          totalEquityTotal += totalEquityCad;
+          totalEquityCount += 1;
+        }
+      });
+
+      if (netDepositsCount === 0 && totalPnlCount === 0 && totalEquityCount === 0) {
+        return null;
+      }
+
+      const aggregate = {};
+      if (netDepositsCount > 0) {
+        aggregate.netDeposits = { combinedCad: netDepositsTotal };
+      }
+      if (totalPnlCount > 0) {
+        aggregate.totalPnl = { combinedCad: totalPnlTotal };
+      } else if (netDepositsCount > 0 && totalEquityCount > 0) {
+        const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
+        if (isFiniteNumber(derivedTotalPnl)) {
+          aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+        }
+      }
+      if (totalEquityCount > 0) {
+        aggregate.totalEquityCad = totalEquityTotal;
+      }
+
+      return Object.keys(aggregate).length > 0 ? aggregate : null;
+    }
+
     if (!selectedAccountInfo) {
       return null;
     }
@@ -997,7 +1061,12 @@ export default function App() {
       return entry;
     }
     return null;
-  }, [selectedAccountInfo, accountFunding]);
+  }, [
+    selectedAccount,
+    accountFunding,
+    filteredAccountIds,
+    selectedAccountInfo,
+  ]);
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
@@ -1231,9 +1300,11 @@ export default function App() {
     }
     const netDepositsCad = selectedAccountFunding?.netDeposits?.combinedCad;
     const totalPnlCad = selectedAccountFunding?.totalPnl?.combinedCad;
+    const totalEquityCad = selectedAccountFunding?.totalEquityCad;
     return {
       netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
       totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
+      totalEquityCad: isFiniteNumber(totalEquityCad) ? totalEquityCad : null,
     };
   }, [selectedAccountFunding, activeCurrency]);
   const displayTotalEquity = useMemo(() => {
