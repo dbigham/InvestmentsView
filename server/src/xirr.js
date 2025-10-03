@@ -205,8 +205,12 @@ function xirr(cashFlows, guess = DEFAULT_GUESS) {
 }
 
 function computeAnnualizedReturnFromCashFlows(cashFlows, options = {}) {
-  const { guess, onFailure } = options || {};
-  const normalized = normalizeCashFlowsForXirr(cashFlows);
+  const { guess, onFailure, preNormalized } = options || {};
+  const normalized = preNormalized
+    ? Array.isArray(cashFlows)
+      ? cashFlows.slice()
+      : []
+    : normalizeCashFlowsForXirr(cashFlows);
   if (normalized.length < 2) {
     if (typeof onFailure === 'function') {
       onFailure({ reason: 'insufficient_data', normalized });
