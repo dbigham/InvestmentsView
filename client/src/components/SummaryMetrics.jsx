@@ -59,7 +59,7 @@ MetricRow.defaultProps = {
   onActivate: null,
 };
 
-function ActionMenu({ onCopySummary, disabled, chatUrl }) {
+function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const containerRef = useRef(null);
@@ -67,6 +67,7 @@ function ActionMenu({ onCopySummary, disabled, chatUrl }) {
   const normalizedChatUrl = typeof chatUrl === 'string' ? chatUrl.trim() : '';
   const hasChatLink = Boolean(normalizedChatUrl);
   const hasCopyAction = typeof onCopySummary === 'function';
+  const hasEstimateAction = typeof onEstimateCagr === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -122,6 +123,21 @@ function ActionMenu({ onCopySummary, disabled, chatUrl }) {
     }
   };
 
+  const handleEstimateCagr = async () => {
+    if (!onEstimateCagr || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onEstimateCagr();
+    } catch (error) {
+      console.error('Failed to prepare CAGR estimate prompt', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -168,6 +184,19 @@ function ActionMenu({ onCopySummary, disabled, chatUrl }) {
               </button>
             </li>
           )}
+          {hasEstimateAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleEstimateCagr}
+                disabled={busy}
+              >
+                Estimate Future CAGR
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </div>
@@ -176,12 +205,14 @@ function ActionMenu({ onCopySummary, disabled, chatUrl }) {
 
 ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
+  onEstimateCagr: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
 
 ActionMenu.defaultProps = {
   onCopySummary: null,
+  onEstimateCagr: null,
   disabled: false,
   chatUrl: null,
 };
@@ -203,6 +234,7 @@ export default function SummaryMetrics({
   isRefreshing,
   isAutoRefreshing,
   onCopySummary,
+  onEstimateFutureCagr,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -337,7 +369,13 @@ export default function SummaryMetrics({
               People
             </button>
           )}
-          {(onCopySummary || chatUrl) && <ActionMenu onCopySummary={onCopySummary} chatUrl={chatUrl} />}
+          {(onCopySummary || onEstimateFutureCagr || chatUrl) && (
+            <ActionMenu
+              onCopySummary={onCopySummary}
+              onEstimateCagr={onEstimateFutureCagr}
+              chatUrl={chatUrl}
+            />
+          )}
           <TimePill
             asOf={asOf}
             onRefresh={onRefresh}
@@ -446,6 +484,7 @@ SummaryMetrics.propTypes = {
   isRefreshing: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
+  onEstimateFutureCagr: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -469,6 +508,7 @@ SummaryMetrics.defaultProps = {
   isRefreshing: false,
   isAutoRefreshing: false,
   onCopySummary: null,
+  onEstimateFutureCagr: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
