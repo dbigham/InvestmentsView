@@ -38,6 +38,8 @@ const requestQueue = [];
 let isProcessingQueue = false;
 let nextAvailableTime = Date.now();
 
+const ENABLE_QUESTRADE_API_DEBUG = process.env.QUESTRADE_API_DEBUG !== 'false';
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -499,7 +501,14 @@ async function questradeRequest(login, pathSegment, options = {}) {
   };
 
   try {
+    if (ENABLE_QUESTRADE_API_DEBUG) {
+      const serializedParams = params ? JSON.stringify(params) : '';
+      console.log('[Questrade][request]', method.toUpperCase(), url, serializedParams);
+    }
     const response = await enqueueRequest(() => axios(baseConfig));
+    if (ENABLE_QUESTRADE_API_DEBUG) {
+      console.log('[Questrade][response]', method.toUpperCase(), url, 'status', response.status);
+    }
     return response.data;
   } catch (error) {
     if (error.response && error.response.status === 401) {
@@ -517,7 +526,14 @@ async function questradeRequest(login, pathSegment, options = {}) {
           headers
         ),
       };
+      if (ENABLE_QUESTRADE_API_DEBUG) {
+        const serializedParams = params ? JSON.stringify(params) : '';
+        console.log('[Questrade][retry]', method.toUpperCase(), retryConfig.url, serializedParams);
+      }
       const retryResponse = await enqueueRequest(() => axios(retryConfig));
+      if (ENABLE_QUESTRADE_API_DEBUG) {
+        console.log('[Questrade][response]', method.toUpperCase(), retryConfig.url, 'status', retryResponse.status);
+      }
       return retryResponse.data;
     }
     console.error(
@@ -665,16 +681,47 @@ function buildActivityWindows(startDate, endDate, windowDays) {
   return windows;
 }
 
-async function fetchActivitiesWindow(login, accountId, startTime, endTime) {
+function formatActivityTimestamp(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.valueOf())) {
+    return null;
+  }
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function isArgumentLengthError(error) {
+  return Boolean(error && error.response && error.response.data && error.response.data.code === 1003);
+}
+
+async function fetchActivitiesWindow(login, accountId, startDate, endDate) {
   const params = {};
+  const startTime = formatActivityTimestamp(startDate);
+  const endTime = formatActivityTimestamp(endDate);
   if (startTime) {
     params.startTime = startTime;
   }
   if (endTime) {
     params.endTime = endTime;
   }
-  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
-  return Array.isArray(data.activities) ? data.activities : [];
+  try {
+    const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
+    return Array.isArray(data.activities) ? data.activities : [];
+  } catch (error) {
+    if (isArgumentLengthError(error) && startDate instanceof Date && endDate instanceof Date) {
+      const startMs = startDate.getTime();
+      const endMs = endDate.getTime();
+      if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs - startMs > 24 * 60 * 60 * 1000) {
+        const midpointMs = Math.floor((startMs + endMs) / 2);
+        if (midpointMs > startMs && midpointMs < endMs) {
+          const midpoint = new Date(midpointMs);
+          const firstBatch = await fetchActivitiesWindow(login, accountId, startDate, midpoint);
+          const secondStart = new Date(midpoint.getTime() + 1);
+          const secondBatch = await fetchActivitiesWindow(login, accountId, secondStart, endDate);
+          return firstBatch.concat(secondBatch);
+        }
+      }
+    }
+    throw error;
+  }
 }
 
 async function fetchAllAccountActivities(login, accountId) {
@@ -689,7 +736,7 @@ async function fetchAllAccountActivities(login, accountId) {
 
   for (const window of windows) {
     try {
-      const batch = await fetchActivitiesWindow(login, accountId, window.start.toISOString(), window.end.toISOString());
+      const batch = await fetchActivitiesWindow(login, accountId, window.start, window.end);
       if (batch.length) {
         activities.push(...batch);
       }
