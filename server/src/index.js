@@ -712,17 +712,40 @@ function extractAmountFromDescription(description) {
   if (typeof description !== 'string' || !description) {
     return null;
   }
-  const match = description.match(/([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/g);
-  if (!match || !match.length) {
+
+  const bookValueMatch = description.match(/BOOK\s+VALUE\s+([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/i);
+  if (bookValueMatch && bookValueMatch[1]) {
+    const normalizedBookValue = bookValueMatch[1].replace(/,/g, '');
+    const bookValue = Number(normalizedBookValue);
+    if (Number.isFinite(bookValue)) {
+      return bookValue;
+    }
+  }
+
+  const decimalMatches = description.match(/[0-9]{1,3}(?:,[0-9]{3})*\.[0-9]+/g);
+  if (decimalMatches && decimalMatches.length > 0) {
+    const normalizedDecimal = decimalMatches[decimalMatches.length - 1].replace(/,/g, '');
+    const decimalValue = Number(normalizedDecimal);
+    if (Number.isFinite(decimalValue)) {
+      return decimalValue;
+    }
+  }
+
+  const genericMatches = description.match(/([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/g);
+  if (!genericMatches || !genericMatches.length) {
     return null;
   }
-  const raw = match[match.length - 1];
-  const normalized = raw.replace(/,/g, '');
-  const value = Number(normalized);
-  if (!Number.isFinite(value)) {
+  const filtered = genericMatches.filter((value) => value && value.indexOf('.') !== -1);
+  const candidate = (filtered.length ? filtered[filtered.length - 1] : genericMatches[genericMatches.length - 1]) || null;
+  if (!candidate) {
     return null;
   }
-  return value;
+  const normalized = candidate.replace(/,/g, '');
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric;
 }
 
 function resolveActivityAmount(activity) {
@@ -935,6 +958,51 @@ function filterFundingActivities(activities) {
   return activities.filter((activity) => isFundingActivity(activity));
 }
 
+function buildActivityKey(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const idFields = ['id', 'activityId', 'transactionId'];
+  for (const field of idFields) {
+    if (activity[field]) {
+      return String(activity[field]);
+    }
+  }
+  const timestamp = resolveActivityTimestamp(activity);
+  const timestampPart = timestamp ? timestamp.toISOString() : '';
+  const parts = [timestampPart];
+  const keyFields = ['type', 'action', 'symbol', 'description', 'currency'];
+  keyFields.forEach((field) => {
+    if (activity[field]) {
+      parts.push(String(activity[field]));
+    }
+  });
+  const amountFields = ['netAmount', 'grossAmount', 'amount', 'quantity', 'price'];
+  amountFields.forEach((field) => {
+    if (activity[field] !== undefined && activity[field] !== null) {
+      parts.push(String(activity[field]));
+    }
+  });
+  return parts.join('|');
+}
+
+function dedupeActivities(activities) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return [];
+  }
+  const seen = new Set();
+  const result = [];
+  for (const activity of activities) {
+    const key = buildActivityKey(activity) || JSON.stringify(activity);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(activity);
+  }
+  return result;
+}
+
 function findEarliestFundingTimestamp(activities) {
   let earliest = null;
   activities.forEach((activity) => {
@@ -1072,7 +1140,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
   const paddedStart = earliestFunding ? addDays(floorToMonthStart(earliestFunding), -7) : addDays(now, -365);
   const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
   const activities = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
-  const fundingActivities = filterFundingActivities(activities);
+  const fundingActivities = dedupeActivities(filterFundingActivities(activities));
   debugTotalPnl(accountKey, 'Funding activities considered', fundingActivities.length);
 
   const perCurrencyTotals = new Map();
