@@ -22,6 +22,21 @@ const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
 const tokenFilePath = path.join(process.cwd(), 'token-store.json');
 
+const ENABLE_TOTAL_PNL_DEBUG = (() => {
+  const raw = process.env.DEBUG_TOTAL_PNL;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return true;
+  }
+  const normalized = String(raw).trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+})();
+
+const ACTIVITY_WINDOW_DAYS = 30;
+const MAX_ACTIVITY_WINDOWS = 540; // Approximately 45 years of monthly windows.
+const FRED_SERIES_ID_USD_CAD = 'DEXCAUS';
+const fredRateCache = new Map();
+const fredPendingRequests = new Map();
+
 function resolveLoginDisplay(login) {
   if (!login) {
     return null;
@@ -537,6 +552,509 @@ async function fetchPositions(login, accountId) {
 async function fetchBalances(login, accountId) {
   const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/balances');
   return data || {};
+}
+
+function extractNumeric(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const numeric = Number(trimmed.replace(/[^0-9.+-]/g, ''));
+    if (!Number.isNaN(numeric) && Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function resolveActivityCurrency(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = [
+    'netAmountCurrency',
+    'currency',
+    'tradeCurrency',
+    'symbolCurrency',
+    'settlementCurrency',
+    'accountCurrency',
+  ];
+  for (const field of fields) {
+    const value = activity[field];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim().toUpperCase();
+    }
+  }
+  return null;
+}
+
+function resolveActivityFxRate(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = ['fxRate', 'exchangeRate', 'conversionRate', 'rate'];
+  for (const field of fields) {
+    const value = extractNumeric(activity[field]);
+    if (value !== null && value > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function resolveActivityNetAmount(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = ['netAmount', 'grossAmount', 'amount', 'cash', 'netCash'];
+  for (const field of fields) {
+    const value = extractNumeric(activity[field]);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function parseActivityDate(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = ['transactionDate', 'tradeDate', 'settlementDate', 'recordDate', 'date'];
+  for (const field of fields) {
+    const value = activity[field];
+    if (!value) {
+      continue;
+    }
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      return date;
+    }
+  }
+  return null;
+}
+
+function formatDateKey(date) {
+  if (!(date instanceof Date)) {
+    return null;
+  }
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return year + '-' + month + '-' + day;
+}
+
+function addDays(date, days) {
+  const base = date instanceof Date ? new Date(date.getTime()) : new Date(date);
+  if (Number.isNaN(base.getTime())) {
+    return null;
+  }
+  base.setUTCDate(base.getUTCDate() + days);
+  return base;
+}
+
+function formatIsoParam(date) {
+  if (date instanceof Date) {
+    return date.toISOString();
+  }
+  if (typeof date === 'string') {
+    const parsed = new Date(date);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return null;
+}
+
+async function fetchAccountActivities(login, accountId, startDate, endDate) {
+  const params = {};
+  const start = formatIsoParam(startDate);
+  const end = formatIsoParam(endDate);
+  if (start) {
+    params.startTime = start;
+  }
+  if (end) {
+    params.endTime = end;
+  }
+  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
+  if (!data || !Array.isArray(data.activities)) {
+    return [];
+  }
+  return data.activities;
+}
+
+function determineFundingDirection(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const inKeywords = [
+    'deposit',
+    'transfer in',
+    'transfer-in',
+    'transferin',
+    'journal in',
+    'journaled in',
+    'journal cash in',
+    'journaled cash in',
+    'cash in',
+    'incoming',
+  ];
+  const outKeywords = [
+    'withdraw',
+    'withdrawal',
+    'transfer out',
+    'transfer-out',
+    'transferout',
+    'journal out',
+    'journaled out',
+    'journal cash out',
+    'journaled cash out',
+    'cash out',
+    'outgoing',
+  ];
+
+  const candidateFields = [
+    activity.type,
+    activity.action,
+    activity.transactionSubType,
+    activity.description,
+    activity.journalType,
+  ];
+
+  const matches = function (keywords) {
+    return candidateFields.some(function (field) {
+      if (typeof field !== 'string') {
+        return false;
+      }
+      const normalized = field.toLowerCase();
+      return keywords.some(function (keyword) {
+        return normalized.includes(keyword);
+      });
+    });
+  };
+
+  if (matches(inKeywords)) {
+    return 'in';
+  }
+  if (matches(outKeywords)) {
+    return 'out';
+  }
+
+  const normalizedType = typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
+  if (normalizedType.includes('deposit') || normalizedType.includes('transfer') || normalizedType.includes('withdraw')) {
+    const netAmount = resolveActivityNetAmount(activity);
+    if (netAmount !== null) {
+      if (netAmount > 0) {
+        return 'in';
+      }
+      if (netAmount < 0) {
+        return 'out';
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildActivityKey(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  if (activity.transactionId) {
+    return 'id:' + activity.transactionId;
+  }
+  const components = [activity.type, activity.action, activity.transactionDate, activity.tradeDate, activity.description];
+  const serialized = components
+    .map(function (value) {
+      return value == null ? '' : String(value);
+    })
+    .join('|');
+  const netAmount = resolveActivityNetAmount(activity);
+  const suffix = Number.isFinite(netAmount) ? ':' + netAmount.toFixed(4) : '';
+  return serialized + suffix;
+}
+
+async function fetchFredRateRange(startDate, endDate, debugInfo) {
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+  const startKey = formatDateKey(startDate);
+  const endKey = formatDateKey(endDate);
+  if (!startKey || !endKey) {
+    return null;
+  }
+  const requestKey = startKey + ':' + endKey;
+  if (fredPendingRequests.has(requestKey)) {
+    return fredPendingRequests.get(requestKey);
+  }
+  const requestPromise = axios
+    .get('https://api.stlouisfed.org/fred/series/observations', {
+      params: {
+        series_id: FRED_SERIES_ID_USD_CAD,
+        observation_start: startKey,
+        observation_end: endKey,
+        api_key: apiKey,
+        file_type: 'json',
+      },
+    })
+    .then(function (response) {
+      const observations = Array.isArray(response.data && response.data.observations)
+        ? response.data.observations
+        : [];
+      let latest = null;
+      observations.forEach(function (observation) {
+        const dateKey = observation && observation.date ? String(observation.date).slice(0, 10) : null;
+        const numeric = observation ? extractNumeric(observation.value) : null;
+        if (dateKey && numeric !== null && numeric > 0) {
+          fredRateCache.set(dateKey, numeric);
+          latest = { date: dateKey, value: numeric };
+        }
+      });
+      if (debugInfo && ENABLE_TOTAL_PNL_DEBUG) {
+        debugInfo.fxLookups.push({
+          request: { start: startKey, end: endKey },
+          observations: observations.length,
+          latest: latest || null,
+        });
+      }
+      return latest;
+    })
+    .catch(function (error) {
+      if (ENABLE_TOTAL_PNL_DEBUG && debugInfo) {
+        debugInfo.errors.push({
+          scope: 'fred',
+          message: error && error.message ? error.message : 'Failed to fetch FRED data',
+          request: { start: startKey, end: endKey },
+        });
+      }
+      return null;
+    })
+    .finally(function () {
+      fredPendingRequests.delete(requestKey);
+    });
+  fredPendingRequests.set(requestKey, requestPromise);
+  return requestPromise;
+}
+
+async function resolveUsdToCadRate(date, debugInfo) {
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+  const normalizedDate = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(normalizedDate.getTime())) {
+    return null;
+  }
+  const requestedKey = formatDateKey(normalizedDate);
+  if (requestedKey && fredRateCache.has(requestedKey)) {
+    return fredRateCache.get(requestedKey);
+  }
+
+  const MAX_LOOKBACK_DAYS = 365;
+  for (let offset = 0; offset <= MAX_LOOKBACK_DAYS; offset += 7) {
+    const windowEnd = addDays(normalizedDate, -offset);
+    if (!windowEnd) {
+      continue;
+    }
+    const windowStart = addDays(windowEnd, -7);
+    if (!windowStart) {
+      continue;
+    }
+    const latest = await fetchFredRateRange(windowStart, windowEnd, debugInfo);
+    if (latest && latest.value) {
+      if (requestedKey && !fredRateCache.has(requestedKey)) {
+        fredRateCache.set(requestedKey, latest.value);
+      }
+      return latest.value;
+    }
+  }
+
+  return null;
+}
+
+async function loadFundingActivities(login, accountId, debugInfo) {
+  const now = new Date();
+  const collected = [];
+  const seenKeys = new Set();
+  let windowEnd = new Date(now.getTime() + 1000);
+  let foundFunding = false;
+
+  for (let index = 0; index < MAX_ACTIVITY_WINDOWS; index += 1) {
+    const windowStart = addDays(windowEnd, -ACTIVITY_WINDOW_DAYS);
+    if (!windowStart) {
+      break;
+    }
+    const activities = await fetchAccountActivities(login, accountId, windowStart, windowEnd);
+    const fundingEntries = [];
+    activities.forEach(function (activity) {
+      const direction = determineFundingDirection(activity);
+      if (!direction) {
+        return;
+      }
+      const key = buildActivityKey(activity);
+      if (key && seenKeys.has(key)) {
+        return;
+      }
+      if (key) {
+        seenKeys.add(key);
+      }
+      fundingEntries.push({ direction, activity });
+    });
+
+    if (ENABLE_TOTAL_PNL_DEBUG && debugInfo) {
+      debugInfo.windows.push({
+        start: formatIsoParam(windowStart),
+        end: formatIsoParam(windowEnd),
+        totalActivities: activities.length,
+        fundingActivities: fundingEntries.length,
+      });
+    }
+
+    if (fundingEntries.length) {
+      collected.push.apply(collected, fundingEntries);
+      foundFunding = true;
+    } else if (foundFunding) {
+      break;
+    }
+
+    windowEnd = windowStart;
+    if (windowEnd.getUTCFullYear() < 1998) {
+      break;
+    }
+  }
+
+  return collected;
+}
+
+async function computeAccountFundingSummary({ login, account, combinedBalances }) {
+  if (!login || !account) {
+    return null;
+  }
+
+  const debugInfo = ENABLE_TOTAL_PNL_DEBUG
+    ? { accountId: account.id, windows: [], activities: [], fxLookups: [], errors: [] }
+    : null;
+
+  const fundingEntries = await loadFundingActivities(login, account.number, debugInfo);
+  if (!fundingEntries.length) {
+    if (ENABLE_TOTAL_PNL_DEBUG) {
+      console.log('[total-pnl] No funding activities found for account', account.number);
+    }
+    return { status: 'no_data', debug: debugInfo };
+  }
+
+  const perCurrency = Object.create(null);
+  let combinedCad = 0;
+
+  for (const entry of fundingEntries) {
+    const activity = entry.activity;
+    const direction = entry.direction === 'out' ? 'out' : 'in';
+    const rawAmount = resolveActivityNetAmount(activity);
+    if (rawAmount === null) {
+      if (debugInfo) {
+        debugInfo.errors.push({
+          scope: 'activity',
+          message: 'Missing net amount for funding activity',
+          activity,
+        });
+      }
+      continue;
+    }
+    const currency = resolveActivityCurrency(activity) || 'CAD';
+    const amount = direction === 'out' ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+    if (!perCurrency[currency]) {
+      perCurrency[currency] = { currency, netDeposits: 0, entries: [] };
+    }
+    perCurrency[currency].netDeposits += amount;
+
+    let cadEquivalent = null;
+    let fxRateUsed = null;
+    if (currency === 'CAD') {
+      cadEquivalent = amount;
+      fxRateUsed = 1;
+    } else if (currency === 'USD') {
+      fxRateUsed = resolveActivityFxRate(activity);
+      if (fxRateUsed === null || !(fxRateUsed > 0)) {
+        const activityDate = parseActivityDate(activity) || new Date();
+        fxRateUsed = await resolveUsdToCadRate(activityDate, debugInfo);
+      }
+      if (fxRateUsed && fxRateUsed > 0) {
+        cadEquivalent = amount * fxRateUsed;
+      }
+    }
+
+    if (cadEquivalent !== null) {
+      combinedCad += cadEquivalent;
+    } else if (debugInfo) {
+      debugInfo.errors.push({
+        scope: 'conversion',
+        message: 'Unable to convert funding activity to CAD',
+        activity,
+        currency,
+      });
+    }
+
+    if (debugInfo) {
+      debugInfo.activities.push({
+        direction,
+        currency,
+        amount,
+        cadEquivalent,
+        fxRate: fxRateUsed,
+        date: formatIsoParam(parseActivityDate(activity)),
+        description: activity && activity.description ? String(activity.description) : null,
+        type: activity && activity.type ? String(activity.type) : null,
+        action: activity && activity.action ? String(activity.action) : null,
+      });
+    }
+  }
+
+  const summary = {
+    status: 'ok',
+    perCurrency: {},
+    combined: {},
+  };
+
+  Object.keys(perCurrency).forEach(function (currency) {
+    const bucket = perCurrency[currency];
+    summary.perCurrency[currency] = {
+      currency,
+      netDeposits: bucket.netDeposits,
+    };
+  });
+
+  const combinedCadEntry = { currency: 'CAD', netDeposits: combinedCad, totalEquity: null, totalPnl: null };
+  if (combinedBalances && typeof combinedBalances === 'object') {
+    const cadKey = Object.keys(combinedBalances).find(function (key) {
+      return key && key.toUpperCase() === 'CAD';
+    });
+    if (cadKey) {
+      const cadBalance = combinedBalances[cadKey];
+      const totalEquity = extractNumeric(cadBalance && cadBalance.totalEquity);
+      if (totalEquity !== null) {
+        combinedCadEntry.totalEquity = totalEquity;
+        if (Number.isFinite(combinedCad)) {
+          combinedCadEntry.totalPnl = totalEquity - combinedCad;
+        }
+      }
+    }
+  }
+
+  summary.combined.CAD = combinedCadEntry;
+
+  if (debugInfo) {
+    summary.debug = debugInfo;
+    if (ENABLE_TOTAL_PNL_DEBUG) {
+      console.log('[total-pnl] Funding summary for account', account.number, JSON.stringify(summary, null, 2));
+    }
+  }
+
+  return summary;
 }
 
 
@@ -1128,6 +1646,7 @@ app.get('/api/summary', async function (req, res) {
 
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
+    pnl.totalPnl = null;
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
 
@@ -1152,6 +1671,33 @@ app.get('/api/summary', async function (req, res) {
             investmentModelEvaluations[account.id] = { status: 'error', message };
           }
         }
+      }
+    }
+
+    const accountFundingSummaries = {};
+    if (selectedContexts.length === 1) {
+      const context = selectedContexts[0];
+      try {
+        const combinedBalance = perAccountCombinedBalances[context.account.id] || null;
+        const fundingSummary = await computeAccountFundingSummary({
+          login: context.login,
+          account: context.account,
+          combinedBalances: combinedBalance,
+        });
+        if (fundingSummary) {
+          accountFundingSummaries[context.account.id] = fundingSummary;
+          if (fundingSummary.status === 'ok' && fundingSummary.combined) {
+            const cadEntry = fundingSummary.combined.CAD || fundingSummary.combined.Cad || fundingSummary.combined.cad || null;
+            const totalPnlValue = cadEntry && typeof cadEntry.totalPnl === 'number' ? cadEntry.totalPnl : null;
+            if (Number.isFinite(totalPnlValue)) {
+              pnl.totalPnl = totalPnlValue;
+            }
+          }
+        }
+      } catch (fundingError) {
+        const message = fundingError && fundingError.message ? fundingError.message : 'Failed to compute funding summary.';
+        console.warn('Funding summary error for account ' + context.account.number + ':', message);
+        accountFundingSummaries[context.account.id] = { status: 'error', message };
       }
     }
 
@@ -1192,6 +1738,7 @@ app.get('/api/summary', async function (req, res) {
       pnl: pnl,
       balances: balancesSummary,
       accountBalances: perAccountCombinedBalances,
+      accountFundingSummaries,
       investmentModelEvaluations,
       asOf: new Date().toISOString(),
     });
