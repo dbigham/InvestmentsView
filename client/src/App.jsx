@@ -7,12 +7,7 @@ import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
-import {
-  formatDateTime,
-  formatMoney,
-  formatNumber,
-  formatSignedMoney,
-} from './utils/formatters';
+import { formatMoney, formatNumber } from './utils/formatters';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -38,55 +33,7 @@ function formatPortfolioShare(value) {
   return `${formatNumber(numeric, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
-function resolveAccountSummary(selectedAccountId, accounts) {
-  if (selectedAccountId && selectedAccountId !== 'all') {
-    const account = accounts.find((entry) => entry.id === selectedAccountId || entry.number === selectedAccountId);
-    if (account) {
-      const owner = account.ownerLabel ? String(account.ownerLabel).trim() : '—';
-      const number = account.number ? String(account.number).trim() : '—';
-      const nameParts = [];
-      if (account.displayName) {
-        nameParts.push(String(account.displayName).trim());
-      }
-      if (!nameParts.length && account.clientAccountType) {
-        nameParts.push(String(account.clientAccountType).trim());
-      }
-      if (!nameParts.length && account.type) {
-        nameParts.push(String(account.type).trim());
-      }
-      if (!nameParts.length && number !== '—') {
-        nameParts.push(`Account ${number}`);
-      }
-      return {
-        owner: owner || '—',
-        name: nameParts.join(' ') || 'Account',
-        number,
-      };
-    }
-  }
-
-  const owners = Array.from(
-    new Set(
-      accounts
-        .map((account) => (account && account.ownerLabel ? String(account.ownerLabel).trim() : null))
-        .filter(Boolean)
-    )
-  );
-  let ownerLabel = '—';
-  if (owners.length === 1) {
-    ownerLabel = owners[0];
-  } else if (owners.length > 1) {
-    ownerLabel = `All owners (${owners.join(', ')})`;
-  }
-
-  return {
-    owner: ownerLabel,
-    name: 'All accounts',
-    number: accounts.length > 1 ? `${accounts.length} accounts combined` : accounts[0]?.number ?? '—',
-  };
-}
-
-function buildPositionsTable(positions) {
+function buildPositionsAllocationTable(positions) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return 'No positions';
   }
@@ -98,49 +45,34 @@ function buildPositionsTable(positions) {
       getValue: (row) => (row.symbol ? String(row.symbol).trim() : '—'),
     },
     {
-      key: 'description',
-      label: 'Name',
-      getValue: (row) => (row.description ? String(row.description).trim() : '—'),
-    },
-    {
-      key: 'openQuantity',
-      label: 'Qty',
-      getValue: (row) => formatQuantity(row.openQuantity),
-    },
-    {
-      key: 'averageEntryPrice',
-      label: 'Avg price',
-      getValue: (row) => formatMoney(row.averageEntryPrice),
-    },
-    {
-      key: 'currentPrice',
-      label: 'Price',
-      getValue: (row) => formatMoney(row.currentPrice),
-    },
-    {
-      key: 'currentMarketValue',
-      label: 'Market value',
-      getValue: (row) => formatMoney(row.currentMarketValue),
-    },
-    {
-      key: 'dayPnl',
-      label: "Today's P&L",
-      getValue: (row) => formatSignedMoney(row.dayPnl),
-    },
-    {
-      key: 'openPnl',
-      label: 'Open P&L',
-      getValue: (row) => formatSignedMoney(row.openPnl),
-    },
-    {
       key: 'portfolioShare',
-      label: '% portfolio',
+      label: '% of portfolio',
       getValue: (row) => formatPortfolioShare(row.portfolioShare),
     },
     {
-      key: 'currency',
-      label: 'Currency',
-      getValue: (row) => (row.currency ? String(row.currency).trim().toUpperCase() : '—'),
+      key: 'shares',
+      label: 'Shares',
+      getValue: (row) => {
+        const formattedQuantity = formatQuantity(row.openQuantity);
+        if (formattedQuantity === '—') {
+          return '—';
+        }
+        const numericQuantity = Number(row.openQuantity);
+        const isSingular = Number.isFinite(numericQuantity) && Math.abs(numericQuantity - 1) < 1e-9;
+        return `${formattedQuantity} ${isSingular ? 'share' : 'shares'}`;
+      },
+    },
+    {
+      key: 'currentValue',
+      label: 'Current value',
+      getValue: (row) => {
+        const formattedValue = formatMoney(row.currentMarketValue);
+        if (formattedValue === '—') {
+          return '—';
+        }
+        const currency = row.currency ? String(row.currency).trim().toUpperCase() : '';
+        return currency ? `${formattedValue} ${currency}` : formattedValue;
+      },
     },
   ];
 
@@ -190,53 +122,37 @@ function buildPositionsTable(positions) {
   return lines.join('\n');
 }
 
-function buildClipboardSummary({
-  selectedAccountId,
-  accounts,
-  balances,
-  displayTotalEquity,
-  usdToCadRate,
-  pnl,
-  positions,
-  asOf,
-  currencyOption,
-}) {
-  if (!Array.isArray(accounts) || accounts.length === 0) {
-    return null;
-  }
-
-  const summary = resolveAccountSummary(selectedAccountId, accounts);
-  const lines = [];
-  lines.push('Account summary');
-  lines.push(`Owner: ${summary.owner}`);
-  lines.push(`Account: ${summary.name}`);
-  lines.push(`Account number: ${summary.number}`);
-  if (currencyOption) {
-    lines.push(`View: ${currencyOption.label}`);
-  }
-  if (asOf) {
-    lines.push(`As of: ${formatDateTime(asOf)}`);
-  }
-  lines.push('');
-  lines.push('Totals');
-  const totalAmount = displayTotalEquity ?? (balances ? balances.totalEquity : null);
-  lines.push(`Total amount: ${formatMoney(totalAmount)}`);
-  lines.push(`Today's P&L: ${formatSignedMoney(pnl?.dayPnl)}`);
-  lines.push(`Open P&L: ${formatSignedMoney(pnl?.openPnl)}`);
-  lines.push(`Total P&L: ${formatSignedMoney(pnl?.totalPnl)}`);
-  lines.push(`Total equity: ${formatMoney(balances?.totalEquity)}`);
-  lines.push(`Market value: ${formatMoney(balances?.marketValue)}`);
-  lines.push(`Cash: ${formatMoney(balances?.cash)}`);
-  lines.push(`Buying power: ${formatMoney(balances?.buyingPower)}`);
-  if (usdToCadRate !== null && usdToCadRate !== undefined) {
-    lines.push(`USD → CAD: ${formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`);
-  }
-  lines.push('');
-  lines.push('Positions');
-  lines.push(buildPositionsTable(positions));
-
-  return lines.join('\n');
+function buildClipboardSummary({ positions }) {
+  return buildPositionsAllocationTable(positions);
 }
+
+async function copyTextToClipboard(text) {
+  if (!text) {
+    return;
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof document !== 'undefined') {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return;
+  }
+
+  throw new Error('Clipboard API is not available.');
+}
+
+const CHATGPT_ESTIMATE_URL = 'https://chatgpt.com/?model=gpt-5-thinking';
 
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
@@ -1498,12 +1414,12 @@ export default function App() {
   const isRefreshing = loading && hasData;
   const showContent = hasData;
 
-  const handleCopySummary = useCallback(async () => {
+  const getSummaryText = useCallback(() => {
     if (!showContent) {
-      return;
+      return null;
     }
 
-    const text = buildClipboardSummary({
+    return buildClipboardSummary({
       selectedAccountId: selectedAccount,
       accounts,
       balances: activeBalances,
@@ -1514,28 +1430,6 @@ export default function App() {
       asOf,
       currencyOption: activeCurrency,
     });
-
-    if (!text) {
-      return;
-    }
-
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else if (typeof document !== 'undefined') {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-    } catch (error) {
-      console.error('Failed to copy account summary', error);
-    }
   }, [
     showContent,
     selectedAccount,
@@ -1548,6 +1442,40 @@ export default function App() {
     asOf,
     activeCurrency,
   ]);
+
+  const handleCopySummary = useCallback(async () => {
+    const text = getSummaryText();
+    if (!text) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(text);
+    } catch (error) {
+      console.error('Failed to copy account summary', error);
+    }
+  }, [getSummaryText]);
+
+  const handleEstimateFutureCagr = useCallback(async () => {
+    if (typeof window !== 'undefined') {
+      window.open(CHATGPT_ESTIMATE_URL, '_blank', 'noopener');
+    }
+
+    const summary = getSummaryText();
+    if (!summary) {
+      return;
+    }
+
+    const prompt =
+      "Please review the general economic news for the last 1 year, 6 months, 1 month, 1 week, and 1 day, and then review the news and performance of the below companies for 1 year, 6 months, 1 week, and 1 day. Once you've digested all of the news, put that information to work coming up with your best estimate of the CAGR of this portfolio over the next 10 years.\n\nPortfolio:\n\n" +
+      summary;
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy CAGR estimate prompt', error);
+    }
+  }, [getSummaryText]);
 
   useEffect(() => {
     if (!autoRefreshEnabled) {
@@ -1662,6 +1590,7 @@ export default function App() {
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
+            onEstimateFutureCagr={handleEstimateFutureCagr}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
