@@ -7,12 +7,7 @@ import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
-import {
-  formatDateTime,
-  formatMoney,
-  formatNumber,
-  formatSignedMoney,
-} from './utils/formatters';
+import { formatMoney, formatNumber } from './utils/formatters';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -38,55 +33,7 @@ function formatPortfolioShare(value) {
   return `${formatNumber(numeric, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
-function resolveAccountSummary(selectedAccountId, accounts) {
-  if (selectedAccountId && selectedAccountId !== 'all') {
-    const account = accounts.find((entry) => entry.id === selectedAccountId || entry.number === selectedAccountId);
-    if (account) {
-      const owner = account.ownerLabel ? String(account.ownerLabel).trim() : '—';
-      const number = account.number ? String(account.number).trim() : '—';
-      const nameParts = [];
-      if (account.displayName) {
-        nameParts.push(String(account.displayName).trim());
-      }
-      if (!nameParts.length && account.clientAccountType) {
-        nameParts.push(String(account.clientAccountType).trim());
-      }
-      if (!nameParts.length && account.type) {
-        nameParts.push(String(account.type).trim());
-      }
-      if (!nameParts.length && number !== '—') {
-        nameParts.push(`Account ${number}`);
-      }
-      return {
-        owner: owner || '—',
-        name: nameParts.join(' ') || 'Account',
-        number,
-      };
-    }
-  }
-
-  const owners = Array.from(
-    new Set(
-      accounts
-        .map((account) => (account && account.ownerLabel ? String(account.ownerLabel).trim() : null))
-        .filter(Boolean)
-    )
-  );
-  let ownerLabel = '—';
-  if (owners.length === 1) {
-    ownerLabel = owners[0];
-  } else if (owners.length > 1) {
-    ownerLabel = `All owners (${owners.join(', ')})`;
-  }
-
-  return {
-    owner: ownerLabel,
-    name: 'All accounts',
-    number: accounts.length > 1 ? `${accounts.length} accounts combined` : accounts[0]?.number ?? '—',
-  };
-}
-
-function buildPositionsTable(positions) {
+function buildPositionsAllocationTable(positions) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return 'No positions';
   }
@@ -98,49 +45,34 @@ function buildPositionsTable(positions) {
       getValue: (row) => (row.symbol ? String(row.symbol).trim() : '—'),
     },
     {
-      key: 'description',
-      label: 'Name',
-      getValue: (row) => (row.description ? String(row.description).trim() : '—'),
-    },
-    {
-      key: 'openQuantity',
-      label: 'Qty',
-      getValue: (row) => formatQuantity(row.openQuantity),
-    },
-    {
-      key: 'averageEntryPrice',
-      label: 'Avg price',
-      getValue: (row) => formatMoney(row.averageEntryPrice),
-    },
-    {
-      key: 'currentPrice',
-      label: 'Price',
-      getValue: (row) => formatMoney(row.currentPrice),
-    },
-    {
-      key: 'currentMarketValue',
-      label: 'Market value',
-      getValue: (row) => formatMoney(row.currentMarketValue),
-    },
-    {
-      key: 'dayPnl',
-      label: "Today's P&L",
-      getValue: (row) => formatSignedMoney(row.dayPnl),
-    },
-    {
-      key: 'openPnl',
-      label: 'Open P&L',
-      getValue: (row) => formatSignedMoney(row.openPnl),
-    },
-    {
       key: 'portfolioShare',
-      label: '% portfolio',
+      label: '% of portfolio',
       getValue: (row) => formatPortfolioShare(row.portfolioShare),
     },
     {
-      key: 'currency',
-      label: 'Currency',
-      getValue: (row) => (row.currency ? String(row.currency).trim().toUpperCase() : '—'),
+      key: 'shares',
+      label: 'Shares',
+      getValue: (row) => {
+        const formattedQuantity = formatQuantity(row.openQuantity);
+        if (formattedQuantity === '—') {
+          return '—';
+        }
+        const numericQuantity = Number(row.openQuantity);
+        const isSingular = Number.isFinite(numericQuantity) && Math.abs(numericQuantity - 1) < 1e-9;
+        return `${formattedQuantity} ${isSingular ? 'share' : 'shares'}`;
+      },
+    },
+    {
+      key: 'currentValue',
+      label: 'Current value',
+      getValue: (row) => {
+        const formattedValue = formatMoney(row.currentMarketValue);
+        if (formattedValue === '—') {
+          return '—';
+        }
+        const currency = row.currency ? String(row.currency).trim().toUpperCase() : '';
+        return currency ? `${formattedValue} ${currency}` : formattedValue;
+      },
     },
   ];
 
@@ -190,52 +122,8 @@ function buildPositionsTable(positions) {
   return lines.join('\n');
 }
 
-function buildClipboardSummary({
-  selectedAccountId,
-  accounts,
-  balances,
-  displayTotalEquity,
-  usdToCadRate,
-  pnl,
-  positions,
-  asOf,
-  currencyOption,
-}) {
-  if (!Array.isArray(accounts) || accounts.length === 0) {
-    return null;
-  }
-
-  const summary = resolveAccountSummary(selectedAccountId, accounts);
-  const lines = [];
-  lines.push('Account summary');
-  lines.push(`Owner: ${summary.owner}`);
-  lines.push(`Account: ${summary.name}`);
-  lines.push(`Account number: ${summary.number}`);
-  if (currencyOption) {
-    lines.push(`View: ${currencyOption.label}`);
-  }
-  if (asOf) {
-    lines.push(`As of: ${formatDateTime(asOf)}`);
-  }
-  lines.push('');
-  lines.push('Totals');
-  const totalAmount = displayTotalEquity ?? (balances ? balances.totalEquity : null);
-  lines.push(`Total amount: ${formatMoney(totalAmount)}`);
-  lines.push(`Today's P&L: ${formatSignedMoney(pnl?.dayPnl)}`);
-  lines.push(`Open P&L: ${formatSignedMoney(pnl?.openPnl)}`);
-  lines.push(`Total P&L: ${formatSignedMoney(pnl?.totalPnl)}`);
-  lines.push(`Total equity: ${formatMoney(balances?.totalEquity)}`);
-  lines.push(`Market value: ${formatMoney(balances?.marketValue)}`);
-  lines.push(`Cash: ${formatMoney(balances?.cash)}`);
-  lines.push(`Buying power: ${formatMoney(balances?.buyingPower)}`);
-  if (usdToCadRate !== null && usdToCadRate !== undefined) {
-    lines.push(`USD → CAD: ${formatNumber(usdToCadRate, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`);
-  }
-  lines.push('');
-  lines.push('Positions');
-  lines.push(buildPositionsTable(positions));
-
-  return lines.join('\n');
+function buildClipboardSummary({ positions }) {
+  return buildPositionsAllocationTable(positions);
 }
 
 async function copyTextToClipboard(text) {
