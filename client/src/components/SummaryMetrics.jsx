@@ -192,6 +192,7 @@ export default function SummaryMetrics({
   onCurrencyChange,
   balances,
   pnl,
+  netDeposits,
   asOf,
   onRefresh,
   displayTotalEquity,
@@ -219,6 +220,8 @@ export default function SummaryMetrics({
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
   const formattedTotal = formatSignedMoney(pnl?.totalPnl ?? null);
+  const hasNetDeposits = Number.isFinite(netDeposits);
+  const formattedNetDeposits = formatSignedMoney(hasNetDeposits ? netDeposits : null);
 
   const safeTotalEquity = Number.isFinite(totalEquity) ? totalEquity : null;
 
@@ -356,6 +359,14 @@ export default function SummaryMetrics({
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
           <MetricRow label="Total P&L" value={formattedTotal} tone={totalTone} />
+          {hasNetDeposits && (
+            <>
+              <div className="equity-card__metric-separator" aria-hidden="true">
+                <span>....................</span>
+              </div>
+              <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />
+            </>
+          )}
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
@@ -396,6 +407,7 @@ SummaryMetrics.propTypes = {
     openPnl: PropTypes.number,
     totalPnl: PropTypes.number,
   }).isRequired,
+  netDeposits: PropTypes.number,
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
@@ -432,4 +444,5 @@ SummaryMetrics.defaultProps = {
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
+  netDeposits: null,
 };

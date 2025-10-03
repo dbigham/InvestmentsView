@@ -197,6 +197,7 @@ function buildClipboardSummary({
   displayTotalEquity,
   usdToCadRate,
   pnl,
+  netDeposits,
   positions,
   asOf,
   currencyOption,
@@ -224,6 +225,9 @@ function buildClipboardSummary({
   lines.push(`Today's P&L: ${formatSignedMoney(pnl?.dayPnl)}`);
   lines.push(`Open P&L: ${formatSignedMoney(pnl?.openPnl)}`);
   lines.push(`Total P&L: ${formatSignedMoney(pnl?.totalPnl)}`);
+  if (netDeposits !== null && netDeposits !== undefined) {
+    lines.push(`Net deposits: ${formatSignedMoney(netDeposits)}`);
+  }
   lines.push(`Total equity: ${formatMoney(balances?.totalEquity)}`);
   lines.push(`Market value: ${formatMoney(balances?.marketValue)}`);
   lines.push(`Cash: ${formatMoney(balances?.cash)}`);
@@ -987,6 +991,7 @@ export default function App() {
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
+  const accountFundingSummaries = data?.accountFundingSummaries ?? EMPTY_OBJECT;
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
@@ -1256,6 +1261,51 @@ export default function App() {
     };
   }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
 
+  const selectedAccountFunding = useMemo(() => {
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    return accountFundingSummaries[selectedAccountInfo.id] || null;
+  }, [selectedAccountInfo, accountFundingSummaries]);
+
+  const combinedFundingEntry = useMemo(() => {
+    if (!selectedAccountInfo || !selectedAccountFunding || selectedAccountFunding.status !== 'ok') {
+      return null;
+    }
+    if (!activeCurrency || activeCurrency.scope !== 'combined') {
+      return null;
+    }
+    return pickBalanceEntry(selectedAccountFunding.combined, activeCurrency.currency) || null;
+  }, [selectedAccountInfo, selectedAccountFunding, activeCurrency]);
+
+  const totalPnlOverride = useMemo(() => {
+    if (!combinedFundingEntry) {
+      return null;
+    }
+    const value = combinedFundingEntry.totalPnl;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }, [combinedFundingEntry]);
+
+  const netDepositsValue = useMemo(() => {
+    if (!combinedFundingEntry) {
+      return null;
+    }
+    const value = combinedFundingEntry.netDeposits;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }, [combinedFundingEntry]);
+
+  const summaryPnl = useMemo(() => {
+    const baseTotal = typeof activePnl.totalPnl === 'number' && Number.isFinite(activePnl.totalPnl)
+      ? activePnl.totalPnl
+      : null;
+    const effectiveTotal = totalPnlOverride !== null && totalPnlOverride !== undefined ? totalPnlOverride : baseTotal;
+    return {
+      dayPnl: activePnl.dayPnl,
+      openPnl: activePnl.openPnl,
+      totalPnl: effectiveTotal,
+    };
+  }, [activePnl, totalPnlOverride]);
+
   const heatmapMarketValue = useMemo(() => {
     if (activeBalances && typeof activeBalances === 'object') {
       const balanceTotalEquity = coerceNumber(activeBalances.totalEquity);
@@ -1406,7 +1456,8 @@ export default function App() {
       balances: activeBalances,
       displayTotalEquity,
       usdToCadRate,
-      pnl: activePnl,
+      pnl: summaryPnl,
+      netDeposits: netDepositsValue,
       positions: orderedPositions,
       asOf,
       currencyOption: activeCurrency,
@@ -1440,7 +1491,8 @@ export default function App() {
     activeBalances,
     displayTotalEquity,
     usdToCadRate,
-    activePnl,
+    summaryPnl,
+    netDepositsValue,
     orderedPositions,
     asOf,
     activeCurrency,
@@ -1547,7 +1599,8 @@ export default function App() {
             currencyOptions={currencyOptions}
             onCurrencyChange={setCurrencyView}
             balances={activeBalances}
-            pnl={activePnl}
+            pnl={summaryPnl}
+            netDeposits={netDepositsValue}
             asOf={asOf}
             onRefresh={handleRefresh}
             displayTotalEquity={displayTotalEquity}

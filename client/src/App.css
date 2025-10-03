@@ -743,6 +743,18 @@ textarea {
   border-bottom: 1px dotted var(--color-border-strong);
 }
 
+.equity-card__metric-separator {
+  padding: 8px 0 4px;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  letter-spacing: 4px;
+}
+
+.equity-card__metric-separator span {
+  display: inline-block;
+}
+
 
 .equity-card__metric-row[data-interactive='true'] {
   cursor: pointer;
