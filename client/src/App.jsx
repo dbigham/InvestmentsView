@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
-import SummaryMetrics from './components/SummaryMetrics';
+import SummaryMetrics, { resolveScopedAmount } from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
 import { getSummary, getQqqTemperature } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
@@ -223,7 +223,10 @@ function buildClipboardSummary({
   lines.push(`Total amount: ${formatMoney(totalAmount)}`);
   lines.push(`Today's P&L: ${formatSignedMoney(pnl?.dayPnl)}`);
   lines.push(`Open P&L: ${formatSignedMoney(pnl?.openPnl)}`);
-  lines.push(`Total P&L: ${formatSignedMoney(pnl?.totalPnl)}`);
+  const totalPnlAmount = resolveScopedAmount(pnl?.totalPnlBreakdown, currencyOption) ?? pnl?.totalPnl ?? null;
+  lines.push(`Total P&L: ${formatSignedMoney(totalPnlAmount)}`);
+  const netDepositAmount = resolveScopedAmount(pnl?.netDeposits, currencyOption);
+  lines.push(`Net deposits: ${formatSignedMoney(netDepositAmount ?? null)}`);
   lines.push(`Total equity: ${formatMoney(balances?.totalEquity)}`);
   lines.push(`Market value: ${formatMoney(balances?.marketValue)}`);
   lines.push(`Cash: ${formatMoney(balances?.cash)}`);
