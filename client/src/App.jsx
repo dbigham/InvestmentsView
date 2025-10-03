@@ -988,7 +988,10 @@ export default function App() {
   }, [accounts, selectedAccount]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
-  const accountFunding = data?.accountFunding ?? EMPTY_OBJECT;
+  const accountFunding = useMemo(
+    () => (data?.accountFunding && typeof data.accountFunding === 'object' ? data.accountFunding : EMPTY_OBJECT),
+    [data?.accountFunding]
+  );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
     if (selectedAccount === 'all') {
