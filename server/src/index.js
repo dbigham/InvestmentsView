@@ -635,6 +635,68 @@ function parseBookValueFromDescription(description) {
   return numeric;
 }
 
+function normalizeTransferDescription(description) {
+  if (typeof description !== 'string') {
+    return null;
+  }
+  let normalized = description.toLowerCase();
+  normalized = normalized.replace(/book value[^0-9+-]*[-+]?[0-9.,]+/gi, ' ');
+  normalized = normalized.replace(/\b(to|from)\s+account\b.*$/gi, ' ');
+  normalized = normalized.replace(/\s+/g, ' ').trim();
+  return normalized || null;
+}
+
+function buildTransferPairKey(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const dateKey = formatDateKey(parseActivityDate(activity));
+  const quantity = resolveActivityQuantity(activity);
+  const normalizedQuantity = quantity !== null ? Math.abs(quantity).toFixed(6) : '';
+  const symbolId = activity.symbolId ? String(activity.symbolId).trim() : '';
+  const symbol = typeof activity.symbol === 'string' ? activity.symbol.trim().toUpperCase() : '';
+  const descriptionKey = normalizeTransferDescription(activity.description);
+  const components = [];
+  if (dateKey) {
+    components.push('date:' + dateKey);
+  }
+  if (symbolId) {
+    components.push('sid:' + symbolId);
+  } else if (symbol) {
+    components.push('sym:' + symbol);
+  }
+  if (normalizedQuantity) {
+    components.push('qty:' + normalizedQuantity);
+  }
+  if (descriptionKey) {
+    components.push('desc:' + descriptionKey);
+  }
+  if (activity.transactionId) {
+    components.push('tx:' + String(activity.transactionId));
+  }
+  if (activity.activityId) {
+    components.push('act:' + String(activity.activityId));
+  }
+  if (!components.length) {
+    return null;
+  }
+  return components.join('|');
+}
+
+function resolveActivityQuantity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const quantityFields = ['quantity', 'qty', 'units', 'shares'];
+  for (const field of quantityFields) {
+    const value = extractNumeric(activity[field]);
+    if (value !== null && value !== 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
 function estimateFundingActivityValue(activity) {
   if (!activity || typeof activity !== 'object') {
     return null;
@@ -668,17 +730,9 @@ function estimateFundingActivityValue(activity) {
     return { amount: Math.abs(descriptionValue), source: 'description_book_value' };
   }
 
-  const quantityFields = ['quantity', 'qty', 'units', 'shares'];
-  const priceFields = ['price', 'tradePrice', 'bookPrice', 'grossPrice', 'averagePrice'];
-  let quantity = null;
-  for (const field of quantityFields) {
-    const value = extractNumeric(activity[field]);
-    if (value !== null && value !== 0) {
-      quantity = value;
-      break;
-    }
-  }
+  const quantity = resolveActivityQuantity(activity);
   if (quantity !== null) {
+    const priceFields = ['price', 'tradePrice', 'bookPrice', 'grossPrice', 'averagePrice'];
     for (const field of priceFields) {
       const price = extractNumeric(activity[field]);
       if (price !== null && price !== 0) {
@@ -1054,21 +1108,71 @@ async function computeAccountFundingSummary({ login, account, combinedBalances }
     return { status: 'no_data', debug: debugInfo };
   }
 
-  const perCurrency = Object.create(null);
-  let combinedCad = 0;
-
-  for (const entry of fundingEntries) {
+  const preparedEntries = fundingEntries.map(function (entry) {
     const activity = entry.activity;
     const direction = entry.direction === 'out' ? 'out' : 'in';
     let rawAmount = resolveActivityNetAmount(activity);
+    if (rawAmount !== null) {
+      const normalized = Math.abs(rawAmount);
+      rawAmount = normalized > 0 ? normalized : null;
+    }
     let estimationDetails = null;
-    if (rawAmount === null || rawAmount === 0) {
+    if (rawAmount === null) {
       const estimation = estimateFundingActivityValue(activity);
       if (estimation && typeof estimation.amount === 'number' && estimation.amount !== 0) {
-        rawAmount = estimation.amount;
+        rawAmount = Math.abs(estimation.amount);
         estimationDetails = estimation;
       }
     }
+    const pairKey = buildTransferPairKey(activity);
+    return { direction, activity, rawAmount, estimation: estimationDetails, pairKey };
+  });
+
+  const pairingBuckets = new Map();
+  preparedEntries.forEach(function (entry) {
+    if (!entry.pairKey) {
+      return;
+    }
+    if (!pairingBuckets.has(entry.pairKey)) {
+      pairingBuckets.set(entry.pairKey, { resolved: [], pending: [] });
+    }
+    const bucket = pairingBuckets.get(entry.pairKey);
+    if (entry.rawAmount && entry.rawAmount > 0) {
+      bucket.resolved.push(entry);
+    } else {
+      bucket.pending.push(entry);
+    }
+  });
+
+  pairingBuckets.forEach(function (bucket) {
+    if (!bucket.pending.length || !bucket.resolved.length) {
+      return;
+    }
+    const resolvedAmount = bucket.resolved
+      .map(function (entry) {
+        return entry.rawAmount;
+      })
+      .reduce(function (sum, value) {
+        return sum + value;
+      }, 0) / bucket.resolved.length;
+    if (!(resolvedAmount > 0)) {
+      return;
+    }
+    bucket.pending.forEach(function (entry) {
+      if (!entry.rawAmount || entry.rawAmount === 0) {
+        entry.rawAmount = resolvedAmount;
+        entry.estimation = { amount: resolvedAmount, source: 'paired_transfer' };
+      }
+    });
+  });
+
+  const perCurrency = Object.create(null);
+  let combinedCad = 0;
+
+  for (const entry of preparedEntries) {
+    const activity = entry.activity;
+    const direction = entry.direction;
+    const rawAmount = entry.rawAmount;
     if (rawAmount === null || rawAmount === 0) {
       if (debugInfo) {
         debugInfo.errors.push({
@@ -1126,8 +1230,11 @@ async function computeAccountFundingSummary({ login, account, combinedBalances }
         action: activity && activity.action ? String(activity.action) : null,
         rawAmount,
       };
-      if (estimationDetails) {
-        debugEntry.estimated = estimationDetails;
+      if (entry.estimation) {
+        debugEntry.estimated = entry.estimation;
+      }
+      if (entry.pairKey) {
+        debugEntry.pairKey = entry.pairKey;
       }
       debugInfo.activities.push(debugEntry);
     }
