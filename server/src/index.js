@@ -1231,6 +1231,37 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     });
   }
 
+  const accountAdjustment =
+    account && typeof account.netDepositAdjustment === 'number' && Number.isFinite(account.netDepositAdjustment)
+      ? account.netDepositAdjustment
+      : 0;
+
+  if (accountAdjustment !== 0) {
+    const existingCad = perCurrencyTotals.has('CAD') ? perCurrencyTotals.get('CAD') : 0;
+    perCurrencyTotals.set('CAD', existingCad + accountAdjustment);
+    combinedCad += accountAdjustment;
+    breakdown.push({
+      amount: accountAdjustment,
+      currency: 'CAD',
+      cadAmount: accountAdjustment,
+      usdAmount: null,
+      fxRate: 1,
+      resolvedAmountSource: 'accountOverride',
+      resolvedAmountField: 'netDepositAdjustment',
+      resolvedQuantity: null,
+      resolvedPrice: null,
+      descriptionExtracted: false,
+      descriptionExtractedAmount: null,
+      descriptionExtractedAmountSigned: null,
+      descriptionExtractedRaw: null,
+      descriptionExtractionStrategy: null,
+      timestamp: null,
+      type: 'Adjustment',
+      action: 'netDepositAdjustment',
+      description: 'Manual net deposit adjustment applied from account settings.',
+    });
+  }
+
   const perCurrencyObject = {};
   for (const [currency, value] of perCurrencyTotals.entries()) {
     perCurrencyObject[currency] = value;
@@ -1256,6 +1287,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     totalPnlCad,
     crawlStart: formatDateOnly(crawlStart),
     asOf: formatDateOnly(now),
+    netDepositAdjustmentCad: accountAdjustment || undefined,
   });
 
   if (DEBUG_TOTAL_PNL) {
@@ -1271,6 +1303,12 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
       combinedCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
     },
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+    adjustments:
+      accountAdjustment !== 0
+        ? {
+            netDepositsCad: accountAdjustment,
+          }
+        : undefined,
   };
 }
 
@@ -1691,6 +1729,12 @@ app.get('/api/summary', async function (req, res) {
             if (trimmedDate) {
               normalizedAccount.investmentModelLastRebalance = trimmedDate;
             }
+          }
+          if (
+            typeof accountSettingsOverride.netDepositAdjustment === 'number' &&
+            Number.isFinite(accountSettingsOverride.netDepositAdjustment)
+          ) {
+            normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
           }
         }
         const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;

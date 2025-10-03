@@ -116,6 +116,33 @@ function ensureAccountSettingsEntry(target, key) {
   return container;
 }
 
+function normalizeNumberLike(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const sanitized = trimmed.replace(/,/g, '').replace(/\s+/g, '');
+    const parsed = Number.parseFloat(sanitized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, 'amount')) {
+      return normalizeNumberLike(value.amount);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+      return normalizeNumberLike(value.value);
+    }
+  }
+  return null;
+}
+
 function applyShowDetailsSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -147,6 +174,19 @@ function applyInvestmentModelSetting(target, key, value) {
     return;
   }
   container.investmentModel = normalized;
+}
+
+function applyNetDepositAdjustmentSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeNumberLike(value);
+  if (normalized === null) {
+    delete container.netDepositAdjustment;
+    return;
+  }
+  container.netDepositAdjustment = normalized;
 }
 
 function normalizeDateOnly(value) {
@@ -378,6 +418,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'lastRebalance')) {
       applyLastRebalanceSetting(settingsTarget, resolvedKey, entry.lastRebalance);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'netDepositAdjustment')) {
+      applyNetDepositAdjustmentSetting(settingsTarget, resolvedKey, entry.netDepositAdjustment);
     }
   }
 
