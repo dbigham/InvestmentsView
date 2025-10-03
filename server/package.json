@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon --ignore token-store.json --ignore data/qqq-cache/** src/index.js",
-    "seed-token": "node scripts/seed-refresh.js"
+    "seed-token": "node scripts/seed-refresh.js",
+    "test": "node --test"
   },
   "dependencies": {
     "axios": "^1.12.2",
