@@ -984,9 +984,20 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
+  const selectedAccountFunding = useMemo(() => {
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    const entry = accountFunding[selectedAccountInfo.id];
+    if (entry && typeof entry === 'object') {
+      return entry;
+    }
+    return null;
+  }, [selectedAccountInfo, accountFunding]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
+  const accountFunding = data?.accountFunding ?? EMPTY_OBJECT;
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
@@ -1211,6 +1222,20 @@ export default function App() {
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
+  const fundingSummaryForDisplay = useMemo(() => {
+    if (!selectedAccountFunding) {
+      return null;
+    }
+    if (!activeCurrency || activeCurrency.scope !== 'combined' || activeCurrency.currency !== 'CAD') {
+      return null;
+    }
+    const netDepositsCad = selectedAccountFunding?.netDeposits?.combinedCad;
+    const totalPnlCad = selectedAccountFunding?.totalPnl?.combinedCad;
+    return {
+      netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
+      totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
+    };
+  }, [selectedAccountFunding, activeCurrency]);
   const displayTotalEquity = useMemo(() => {
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
@@ -1252,9 +1277,14 @@ export default function App() {
     return {
       dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
       openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
-      totalPnl: hasBalanceTotal ? totalFromBalance : null,
+      totalPnl:
+        fundingSummaryForDisplay && isFiniteNumber(fundingSummaryForDisplay.totalPnlCad)
+          ? fundingSummaryForDisplay.totalPnlCad
+          : hasBalanceTotal
+            ? totalFromBalance
+            : null,
     };
-  }, [activeCurrency, balancePnlSummaries, fallbackPnl]);
+  }, [activeCurrency, balancePnlSummaries, fallbackPnl, fundingSummaryForDisplay]);
 
   const heatmapMarketValue = useMemo(() => {
     if (activeBalances && typeof activeBalances === 'object') {
@@ -1548,6 +1578,7 @@ export default function App() {
             onCurrencyChange={setCurrencyView}
             balances={activeBalances}
             pnl={activePnl}
+            fundingSummary={fundingSummaryForDisplay}
             asOf={asOf}
             onRefresh={handleRefresh}
             displayTotalEquity={displayTotalEquity}

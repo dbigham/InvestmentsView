@@ -539,6 +539,480 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL !== 'false';
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const MAX_ACTIVITIES_WINDOW_DAYS = 31;
+const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
+const USD_TO_CAD_SERIES = 'DEXCAUS';
+
+function debugTotalPnl(accountId, message, payload) {
+  if (!DEBUG_TOTAL_PNL) {
+    return;
+  }
+  const parts = ['[TOTAL_PNL]', accountId ? '(' + accountId + ')' : '', message];
+  const filtered = parts.filter(Boolean);
+  if (payload !== undefined) {
+    console.log(filtered.join(' '), payload);
+  } else {
+    console.log(filtered.join(' '));
+  }
+}
+
+function addDays(baseDate, days) {
+  if (!(baseDate instanceof Date) || Number.isNaN(baseDate.getTime())) {
+    return null;
+  }
+  return new Date(baseDate.getTime() + days * DAY_IN_MS);
+}
+
+function clampDate(date, minDate) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  if (!(minDate instanceof Date) || Number.isNaN(minDate.getTime())) {
+    return new Date(date.getTime());
+  }
+  return date < minDate ? new Date(minDate.getTime()) : new Date(date.getTime());
+}
+
+function floorToMonthStart(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
+function formatDateParam(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function resolveActivityTimestamp(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = ['transactionDate', 'tradeDate', 'settlementDate', 'date'];
+  for (const field of fields) {
+    if (activity[field]) {
+      const date = new Date(activity[field]);
+      if (!Number.isNaN(date.getTime())) {
+        return date;
+      }
+    }
+  }
+  return null;
+}
+
+const FUNDING_TYPE_REGEX = /(deposit|withdraw|transfer|journal)/i;
+
+function isFundingActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+  const type = typeof activity.type === 'string' ? activity.type : '';
+  const action = typeof activity.action === 'string' ? activity.action : '';
+  const description = typeof activity.description === 'string' ? activity.description : '';
+  return (
+    FUNDING_TYPE_REGEX.test(type) ||
+    FUNDING_TYPE_REGEX.test(action) ||
+    FUNDING_TYPE_REGEX.test(description)
+  );
+}
+
+function extractAmountFromDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return null;
+  }
+  const match = description.match(/([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/g);
+  if (!match || !match.length) {
+    return null;
+  }
+  const raw = match[match.length - 1];
+  const normalized = raw.replace(/,/g, '');
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+}
+
+function resolveActivityAmount(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const candidates = ['netAmount', 'grossAmount'];
+  for (const field of candidates) {
+    const value = Number(activity[field]);
+    if (Number.isFinite(value) && Math.abs(value) > 1e-8) {
+      return value;
+    }
+  }
+  const quantity = Number(activity.quantity);
+  if (Number.isFinite(quantity) && Math.abs(quantity) > 1e-8) {
+    const price = Number(activity.price);
+    if (Number.isFinite(price) && Math.abs(price) > 1e-8) {
+      return quantity * price;
+    }
+  }
+  const embedded = extractAmountFromDescription(activity.description);
+  if (embedded !== null) {
+    return embedded;
+  }
+  return null;
+}
+
+function inferActivityDirection(activity, fallbackAmount) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const candidates = ['netAmount', 'grossAmount'];
+  for (const field of candidates) {
+    const value = Number(activity[field]);
+    if (Number.isFinite(value) && Math.abs(value) > 1e-8) {
+      return value >= 0 ? 1 : -1;
+    }
+  }
+  const quantity = Number(activity.quantity);
+  if (Number.isFinite(quantity) && Math.abs(quantity) > 1e-8) {
+    return quantity >= 0 ? 1 : -1;
+  }
+  const action = typeof activity.action === 'string' ? activity.action.toLowerCase() : '';
+  const description = typeof activity.description === 'string' ? activity.description.toLowerCase() : '';
+  if (/(withdraw|to account|transfer out|debit|wire out)/.test(action) || /(withdraw|to account|debit|wire out)/.test(description)) {
+    return -1;
+  }
+  if (/(deposit|from account|transfer in|credit|wire in)/.test(action) || /(deposit|from account|credit|wire in)/.test(description)) {
+    return 1;
+  }
+  if (typeof fallbackAmount === 'number' && fallbackAmount < 0) {
+    return -1;
+  }
+  if (typeof fallbackAmount === 'number' && fallbackAmount > 0) {
+    return 1;
+  }
+  return null;
+}
+
+function normalizeCurrency(code) {
+  if (typeof code !== 'string') {
+    return null;
+  }
+  return code.trim().toUpperCase();
+}
+
+const usdCadRateCache = new Map();
+
+async function fetchUsdToCadRate(date) {
+  const keyDate = formatDateOnly(date);
+  if (!keyDate) {
+    return null;
+  }
+  if (usdCadRateCache.has(keyDate)) {
+    return usdCadRateCache.get(keyDate);
+  }
+
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing FRED_API_KEY environment variable');
+  }
+
+  const url = new URL('https://api.stlouisfed.org/fred/series/observations');
+  url.searchParams.set('series_id', USD_TO_CAD_SERIES);
+  url.searchParams.set('observation_start', keyDate);
+  url.searchParams.set('observation_end', keyDate);
+  url.searchParams.set('api_key', apiKey);
+  url.searchParams.set('file_type', 'json');
+
+  const response = await axios.get(url.toString());
+  const observations = response.data && response.data.observations;
+  if (Array.isArray(observations) && observations.length > 0) {
+    const value = Number(observations[0].value);
+    if (Number.isFinite(value) && value > 0) {
+      usdCadRateCache.set(keyDate, value);
+      return value;
+    }
+  }
+  usdCadRateCache.set(keyDate, null);
+  return null;
+}
+
+function formatDateOnly(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+async function resolveUsdToCadRate(date, accountKey) {
+  let cursor = new Date(date.getTime());
+  for (let i = 0; i < 7; i += 1) {
+    const attemptDate = addDays(cursor, -i);
+    if (!attemptDate) {
+      continue;
+    }
+    const rate = await fetchUsdToCadRate(attemptDate);
+    if (Number.isFinite(rate) && rate > 0) {
+      if (i > 0 && DEBUG_TOTAL_PNL) {
+        debugTotalPnl(
+          accountKey,
+          'Used prior FX date ' + formatDateOnly(attemptDate) + ' for ' + formatDateOnly(date)
+        );
+      }
+      return rate;
+    }
+  }
+  return null;
+}
+
+async function fetchActivitiesWindow(login, accountId, startDate, endDate) {
+  const startParam = formatDateParam(startDate);
+  const endParam = formatDateParam(endDate);
+  if (!startParam || !endParam) {
+    return [];
+  }
+  const params = {
+    startTime: startParam,
+    endTime: endParam,
+  };
+  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
+  if (data && Array.isArray(data.activities)) {
+    return data.activities;
+  }
+  return [];
+}
+
+async function fetchActivitiesRange(login, accountId, startDate, endDate, accountKey) {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    return [];
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
+    return [];
+  }
+  const results = [];
+  let cursor = new Date(startDate.getTime());
+  while (cursor <= endDate) {
+    const windowEnd = new Date(
+      Math.min(
+        endDate.getTime(),
+        cursor.getTime() + MAX_ACTIVITIES_WINDOW_DAYS * DAY_IN_MS - 1000
+      )
+    );
+    debugTotalPnl(accountKey, 'Fetching activities window', {
+      start: formatDateParam(cursor),
+      end: formatDateParam(windowEnd),
+    });
+    const windowActivities = await fetchActivitiesWindow(login, accountId, cursor, windowEnd);
+    results.push(...windowActivities);
+    const nextStart = new Date(windowEnd.getTime() + 1000);
+    if (nextStart > endDate) {
+      break;
+    }
+    cursor = nextStart;
+  }
+  debugTotalPnl(accountKey, 'Fetched activities count', results.length);
+  return results;
+}
+
+function filterFundingActivities(activities) {
+  return activities.filter((activity) => isFundingActivity(activity));
+}
+
+function findEarliestFundingTimestamp(activities) {
+  let earliest = null;
+  activities.forEach((activity) => {
+    const timestamp = resolveActivityTimestamp(activity);
+    if (timestamp && (!earliest || timestamp < earliest)) {
+      earliest = timestamp;
+    }
+  });
+  return earliest;
+}
+
+async function discoverEarliestFundingDate(login, accountId, accountKey) {
+  const now = new Date();
+  let searchEnd = new Date(now.getTime());
+  let windowDays = MAX_ACTIVITIES_WINDOW_DAYS;
+  let earliest = null;
+  const maxLookbackDays = 365 * 20;
+  let attempts = 0;
+
+  while (attempts < 50) {
+    attempts += 1;
+    const tentativeStart = clampDate(addDays(searchEnd, -windowDays), MIN_ACTIVITY_DATE);
+    if (!tentativeStart) {
+      break;
+    }
+    if (searchEnd <= MIN_ACTIVITY_DATE) {
+      break;
+    }
+    debugTotalPnl(accountKey, 'Probing activities window', {
+      start: formatDateParam(tentativeStart),
+      end: formatDateParam(searchEnd),
+      days: windowDays,
+    });
+    const activities = await fetchActivitiesRange(login, accountId, tentativeStart, searchEnd, accountKey);
+    const funding = filterFundingActivities(activities);
+    if (funding.length > 0) {
+      const windowEarliest = findEarliestFundingTimestamp(funding);
+      if (windowEarliest && (!earliest || windowEarliest < earliest)) {
+        earliest = windowEarliest;
+      }
+      searchEnd = new Date(tentativeStart.getTime() - 1000);
+      windowDays = Math.min(windowDays * 2, maxLookbackDays);
+    } else {
+      if (tentativeStart.getTime() <= MIN_ACTIVITY_DATE.getTime() || windowDays >= maxLookbackDays) {
+        break;
+      }
+      searchEnd = tentativeStart;
+      windowDays = Math.min(windowDays * 2, maxLookbackDays);
+    }
+    if (searchEnd <= MIN_ACTIVITY_DATE) {
+      break;
+    }
+  }
+
+  if (earliest) {
+    debugTotalPnl(accountKey, 'Earliest funding date discovered', formatDateOnly(earliest));
+    return earliest;
+  }
+
+  debugTotalPnl(accountKey, 'No funding activities found during discovery');
+  return null;
+}
+
+function resolveActivityAmountDetails(activity) {
+  const amount = resolveActivityAmount(activity);
+  if (amount === null) {
+    return null;
+  }
+  const direction = inferActivityDirection(activity, amount);
+  if (!direction) {
+    return null;
+  }
+  const signedAmount = direction >= 0 ? Math.abs(amount) : -Math.abs(amount);
+  const currency = normalizeCurrency(activity.currency) || 'CAD';
+  const timestamp = resolveActivityTimestamp(activity);
+  return {
+    amount: signedAmount,
+    currency,
+    timestamp,
+  };
+}
+
+async function convertAmountToCad(amount, currency, timestamp, accountKey) {
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+  if (!currency || currency === 'CAD') {
+    return amount;
+  }
+  if (currency === 'USD') {
+    if (!timestamp) {
+      return null;
+    }
+    const rate = await resolveUsdToCadRate(timestamp, accountKey);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      debugTotalPnl(accountKey, 'Missing FX rate for ' + formatDateOnly(timestamp));
+      return null;
+    }
+    return amount * rate;
+  }
+  debugTotalPnl(accountKey, 'Unsupported currency for net deposits: ' + currency);
+  return null;
+}
+
+async function computeNetDeposits(login, account, perAccountCombinedBalances) {
+  if (!account || !account.id) {
+    return null;
+  }
+  const accountKey = account.id;
+  const accountNumber = account.number || account.accountNumber || account.id;
+  const earliestFunding = await discoverEarliestFundingDate(login, accountNumber, accountKey);
+  const now = new Date();
+  const paddedStart = earliestFunding ? addDays(floorToMonthStart(earliestFunding), -7) : addDays(now, -365);
+  const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
+  const activities = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
+  const fundingActivities = filterFundingActivities(activities);
+  debugTotalPnl(accountKey, 'Funding activities considered', fundingActivities.length);
+
+  const perCurrencyTotals = new Map();
+  let combinedCad = 0;
+  let conversionIncomplete = false;
+  const breakdown = [];
+
+  for (const activity of fundingActivities) {
+    const details = resolveActivityAmountDetails(activity);
+    if (!details) {
+      debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
+      continue;
+    }
+    const { amount, currency, timestamp } = details;
+    const cadAmount = await convertAmountToCad(amount, currency, timestamp, accountKey);
+    if (!perCurrencyTotals.has(currency)) {
+      perCurrencyTotals.set(currency, 0);
+    }
+    perCurrencyTotals.set(currency, perCurrencyTotals.get(currency) + amount);
+    if (Number.isFinite(cadAmount)) {
+      combinedCad += cadAmount;
+    } else if (currency !== 'CAD') {
+      conversionIncomplete = true;
+    }
+    breakdown.push({
+      amount,
+      currency,
+      cadAmount,
+      timestamp: timestamp ? formatDateOnly(timestamp) : null,
+      type: activity.type || null,
+      action: activity.action || null,
+      description: activity.description || null,
+    });
+  }
+
+  const perCurrencyObject = {};
+  for (const [currency, value] of perCurrencyTotals.entries()) {
+    perCurrencyObject[currency] = value;
+  }
+
+  const combinedCadValue = conversionIncomplete ? null : combinedCad;
+
+  const combinedBalances = perAccountCombinedBalances && perAccountCombinedBalances[account.id];
+  const cadBalance = combinedBalances ? combinedBalances.CAD || combinedBalances.cad : null;
+  const totalEquityCad = cadBalance && Number.isFinite(Number(cadBalance.totalEquity))
+    ? Number(cadBalance.totalEquity)
+    : null;
+
+  const totalPnlCad =
+    Number.isFinite(totalEquityCad) && Number.isFinite(combinedCadValue)
+      ? totalEquityCad - combinedCadValue
+      : null;
+
+  debugTotalPnl(accountKey, 'Net deposits summary', {
+    perCurrency: perCurrencyObject,
+    combinedCad: combinedCadValue,
+    totalEquityCad,
+    totalPnlCad,
+    crawlStart: formatDateOnly(crawlStart),
+    asOf: formatDateOnly(now),
+  });
+
+  if (DEBUG_TOTAL_PNL) {
+    debugTotalPnl(accountKey, 'Funding breakdown entries', breakdown);
+  }
+
+  return {
+    netDeposits: {
+      perCurrency: perCurrencyObject,
+      combinedCad: Number.isFinite(combinedCadValue) ? combinedCadValue : null,
+    },
+    totalPnl: {
+      combinedCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+    },
+    totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+  };
+}
+
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -1155,6 +1629,27 @@ app.get('/api/summary', async function (req, res) {
       }
     }
 
+    const accountFundingSummaries = {};
+    if (selectedContexts.length === 1) {
+      const context = selectedContexts[0];
+      try {
+        const fundingSummary = await computeNetDeposits(
+          context.login,
+          context.account,
+          perAccountCombinedBalances
+        );
+        if (fundingSummary) {
+          accountFundingSummaries[context.account.id] = fundingSummary;
+        }
+      } catch (fundingError) {
+        const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
+        console.warn(
+          'Failed to compute net deposits for account ' + context.account.id + ':',
+          message
+        );
+      }
+    }
+
     const responseAccounts = allAccounts.map(function (account) {
       return {
         id: account.id,
@@ -1193,6 +1688,7 @@ app.get('/api/summary', async function (req, res) {
       balances: balancesSummary,
       accountBalances: perAccountCombinedBalances,
       investmentModelEvaluations,
+      accountFunding: accountFundingSummaries,
       asOf: new Date().toISOString(),
     });
   } catch (error) {
