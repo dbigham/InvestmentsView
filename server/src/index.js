@@ -835,7 +835,16 @@ function determineFundingDirection(activity) {
   }
 
   const normalizedType = typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
-  if (normalizedType.includes('deposit') || normalizedType.includes('transfer') || normalizedType.includes('withdraw')) {
+  const normalizedDescription = typeof activity.description === 'string' ? activity.description.toLowerCase() : '';
+  const looksLikeFunding =
+    normalizedType.includes('deposit') ||
+    normalizedType.includes('transfer') ||
+    normalizedType.includes('withdraw') ||
+    normalizedType.includes('journal') ||
+    normalizedDescription.includes('transfer') ||
+    normalizedDescription.includes('journal');
+
+  if (looksLikeFunding) {
     const netAmount = resolveActivityNetAmount(activity);
     if (netAmount !== null) {
       if (netAmount > 0) {
@@ -843,6 +852,13 @@ function determineFundingDirection(activity) {
       }
       if (netAmount < 0) {
         return 'out';
+      }
+    }
+    const quantityFields = ['quantity', 'qty', 'units', 'shares'];
+    for (const field of quantityFields) {
+      const quantity = extractNumeric(activity[field]);
+      if (quantity !== null && quantity !== 0) {
+        return quantity > 0 ? 'in' : 'out';
       }
     }
   }
