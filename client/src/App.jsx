@@ -1301,10 +1301,12 @@ export default function App() {
     const netDepositsCad = selectedAccountFunding?.netDeposits?.combinedCad;
     const totalPnlCad = selectedAccountFunding?.totalPnl?.combinedCad;
     const totalEquityCad = selectedAccountFunding?.totalEquityCad;
+    const annualizedReturnRate = selectedAccountFunding?.annualizedReturn?.rate;
     return {
       netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
       totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
       totalEquityCad: isFiniteNumber(totalEquityCad) ? totalEquityCad : null,
+      annualizedReturnRate: isFiniteNumber(annualizedReturnRate) ? annualizedReturnRate : null,
     };
   }, [selectedAccountFunding, activeCurrency]);
   const displayTotalEquity = useMemo(() => {

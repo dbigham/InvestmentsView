@@ -17,6 +17,11 @@ const {
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel } = require('./investmentModel');
+const {
+  CASH_FLOW_EPSILON,
+  DAY_IN_MS,
+  computeAnnualizedReturnFromCashFlows,
+} = require('./xirr');
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -540,8 +545,7 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
-const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL !== 'false';
-const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL === 'true';
 // Questrade's documentation cites a 31 day cap for the activities endpoint, but in
 // practice we receive "Argument length exceeds imposed limit" errors whenever the
 // requested range spans a full 31 calendar days. Keeping the window strictly under
@@ -566,6 +570,25 @@ function debugTotalPnl(accountId, message, payload) {
   } else {
     console.log(filtered.join(' '));
   }
+}
+
+function computeAccountAnnualizedReturn(cashFlows, accountKey) {
+  const onFailure = DEBUG_TOTAL_PNL
+    ? (details) => {
+        debugTotalPnl(accountKey, 'Unable to compute XIRR for cash flows', {
+          cashFlowCount: details && Array.isArray(details.normalized) ? details.normalized.length : undefined,
+          hasPositive: details && Object.prototype.hasOwnProperty.call(details, 'hasPositive')
+            ? details.hasPositive
+            : undefined,
+          hasNegative: details && Object.prototype.hasOwnProperty.call(details, 'hasNegative')
+            ? details.hasNegative
+            : undefined,
+          reason: details ? details.reason : undefined,
+        });
+      }
+    : undefined;
+
+  return computeAnnualizedReturnFromCashFlows(cashFlows, { onFailure });
 }
 
 function addDays(baseDate, days) {
@@ -1176,6 +1199,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
   const accountNumber = account.number || account.accountNumber || account.id;
   const earliestFunding = await discoverEarliestFundingDate(login, accountNumber, accountKey);
   const now = new Date();
+  const nowIsoString = now.toISOString();
   const paddedStart = earliestFunding ? addDays(floorToMonthStart(earliestFunding), -7) : addDays(now, -365);
   const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
   const activities = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
@@ -1186,6 +1210,8 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
   let combinedCad = 0;
   let conversionIncomplete = false;
   const breakdown = [];
+  const cashFlowEntries = [];
+  let missingCashFlowDates = false;
 
   for (const activity of fundingActivities) {
     const details = resolveActivityAmountDetails(activity);
@@ -1202,6 +1228,13 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     perCurrencyTotals.set(currency, perCurrencyTotals.get(currency) + amount);
     if (Number.isFinite(cadAmount)) {
       combinedCad += cadAmount;
+      if (timestamp instanceof Date && !Number.isNaN(timestamp.getTime())) {
+        if (Math.abs(cadAmount) >= CASH_FLOW_EPSILON) {
+          cashFlowEntries.push({ amount: -cadAmount, date: timestamp.toISOString() });
+        }
+      } else if (Math.abs(cadAmount) >= CASH_FLOW_EPSILON) {
+        missingCashFlowDates = true;
+      }
     } else if (currency !== 'CAD') {
       conversionIncomplete = true;
     }
@@ -1260,6 +1293,15 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
       action: 'netDepositAdjustment',
       description: 'Manual net deposit adjustment applied from account settings.',
     });
+
+    const adjustmentDate = (earliestFunding && earliestFunding instanceof Date)
+      ? earliestFunding
+      : crawlStart instanceof Date && !Number.isNaN(crawlStart.getTime())
+        ? crawlStart
+        : now;
+    if (Math.abs(accountAdjustment) >= CASH_FLOW_EPSILON && adjustmentDate instanceof Date) {
+      cashFlowEntries.push({ amount: -accountAdjustment, date: adjustmentDate.toISOString() });
+    }
   }
 
   const perCurrencyObject = {};
@@ -1280,6 +1322,16 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
       ? totalEquityCad - combinedCadValue
       : null;
 
+  if (Number.isFinite(totalEquityCad) && Math.abs(totalEquityCad) >= CASH_FLOW_EPSILON) {
+    cashFlowEntries.push({ amount: totalEquityCad, date: nowIsoString });
+  }
+
+  const annualizedReturnRate = !conversionIncomplete
+    ? computeAccountAnnualizedReturn(cashFlowEntries, accountKey)
+    : null;
+
+  const incompleteReturnData = conversionIncomplete || missingCashFlowDates;
+
   debugTotalPnl(accountKey, 'Net deposits summary', {
     perCurrency: perCurrencyObject,
     combinedCad: combinedCadValue,
@@ -1288,10 +1340,31 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
     crawlStart: formatDateOnly(crawlStart),
     asOf: formatDateOnly(now),
     netDepositAdjustmentCad: accountAdjustment || undefined,
+    cashFlowCount: cashFlowEntries.length || undefined,
+    annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : undefined,
+    missingCashFlowDates: missingCashFlowDates || undefined,
   });
 
   if (DEBUG_TOTAL_PNL) {
     debugTotalPnl(accountKey, 'Funding breakdown entries', breakdown);
+  }
+
+  let annualizedReturn = undefined;
+  if (Number.isFinite(annualizedReturnRate)) {
+    annualizedReturn = {
+      rate: annualizedReturnRate,
+      method: 'xirr',
+      cashFlowCount: cashFlowEntries.length,
+      asOf: nowIsoString,
+      incomplete: incompleteReturnData || undefined,
+    };
+  } else if (incompleteReturnData && cashFlowEntries.length > 0) {
+    annualizedReturn = {
+      method: 'xirr',
+      cashFlowCount: cashFlowEntries.length,
+      asOf: nowIsoString,
+      incomplete: true,
+    };
   }
 
   return {
@@ -1303,6 +1376,8 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances) {
       combinedCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
     },
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+    annualizedReturn,
+    cashFlowsCad: cashFlowEntries.length > 0 ? cashFlowEntries : undefined,
     adjustments:
       accountAdjustment !== 0
         ? {
@@ -1961,6 +2036,8 @@ app.get('/api/summary', async function (req, res) {
         totalPnlCount: 0,
         totalEquityCad: 0,
         totalEquityCount: 0,
+        cashFlowsCad: [],
+        incomplete: false,
       };
 
       for (const context of selectedContexts) {
@@ -1993,6 +2070,46 @@ app.get('/api/summary', async function (req, res) {
               aggregateTotals.totalEquityCad += totalEquityCad;
               aggregateTotals.totalEquityCount += 1;
             }
+
+            if (Array.isArray(fundingSummary.cashFlowsCad)) {
+              fundingSummary.cashFlowsCad.forEach((entry) => {
+                if (!entry || typeof entry !== 'object') {
+                  return;
+                }
+                const amount = Number(entry.amount);
+                if (!Number.isFinite(amount) || Math.abs(amount) < CASH_FLOW_EPSILON) {
+                  return;
+                }
+                let isoDate = null;
+                if (entry.date instanceof Date) {
+                  isoDate = entry.date.toISOString();
+                } else if (typeof entry.date === 'string' && entry.date.trim()) {
+                  const parsed = new Date(entry.date);
+                  if (!Number.isNaN(parsed.getTime())) {
+                    isoDate = parsed.toISOString();
+                  }
+                } else if (entry.timestamp instanceof Date) {
+                  isoDate = entry.timestamp.toISOString();
+                } else if (typeof entry.timestamp === 'string' && entry.timestamp.trim()) {
+                  const parsedTimestamp = new Date(entry.timestamp);
+                  if (!Number.isNaN(parsedTimestamp.getTime())) {
+                    isoDate = parsedTimestamp.toISOString();
+                  }
+                }
+                if (!isoDate) {
+                  return;
+                }
+                aggregateTotals.cashFlowsCad.push({ amount, date: isoDate });
+              });
+            }
+
+            if (
+              fundingSummary &&
+              fundingSummary.annualizedReturn &&
+              fundingSummary.annualizedReturn.incomplete
+            ) {
+              aggregateTotals.incomplete = true;
+            }
           }
         } catch (fundingError) {
           const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
@@ -2023,10 +2140,43 @@ app.get('/api/summary', async function (req, res) {
         aggregateEntry.totalEquityCad = aggregateTotals.totalEquityCad;
       }
 
+      if (aggregateTotals.cashFlowsCad.length > 0) {
+        const aggregateAsOf = new Date().toISOString();
+        let aggregateRate = null;
+        if (!aggregateTotals.incomplete) {
+          const computedRate = computeAccountAnnualizedReturn(aggregateTotals.cashFlowsCad, 'all');
+          if (Number.isFinite(computedRate)) {
+            aggregateRate = computedRate;
+          }
+        }
+        if (Number.isFinite(aggregateRate)) {
+          aggregateEntry.annualizedReturn = {
+            rate: aggregateRate,
+            method: 'xirr',
+            cashFlowCount: aggregateTotals.cashFlowsCad.length,
+            asOf: aggregateAsOf,
+            incomplete: aggregateTotals.incomplete || undefined,
+          };
+        } else if (aggregateTotals.incomplete) {
+          aggregateEntry.annualizedReturn = {
+            method: 'xirr',
+            cashFlowCount: aggregateTotals.cashFlowsCad.length,
+            asOf: aggregateAsOf,
+            incomplete: true,
+          };
+        }
+      }
+
       if (Object.keys(aggregateEntry).length > 0) {
         accountFundingSummaries.all = aggregateEntry;
       }
     }
+
+    Object.values(accountFundingSummaries).forEach((entry) => {
+      if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsCad')) {
+        delete entry.cashFlowsCad;
+      }
+    });
 
     const responseAccounts = allAccounts.map(function (account) {
       return {
