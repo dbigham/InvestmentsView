@@ -572,9 +572,13 @@ const ACCOUNT_ACTIVITY_START_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const FX_RATE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const FX_CANDLE_LOOKBACK_DAYS = 3;
 const FX_CANDLE_LOOKAHEAD_DAYS = 3;
+const BANK_OF_CANADA_BASE_URL = 'https://www.bankofcanada.ca/valet/observations/';
+const BANK_OF_CANADA_TIMEOUT_MS = 5000;
+const BANK_OF_CANADA_LOOKBACK_DAYS = 7;
 
 const fxSymbolCache = new Map();
 const fxRateCache = new Map();
+const bankOfCanadaRateCache = new Map();
 
 const ACCOUNT_PRIMARY_START_DATE_KEYS = [
   'openedDate',
@@ -795,6 +799,28 @@ function setCachedFxRate(symbolId, dateKey, value) {
   fxRateCache.set(key, { timestamp: Date.now(), value });
 }
 
+function getBankOfCanadaCacheKey(seriesId, dateKey) {
+  return `${seriesId || 'unknown'}:${dateKey || 'unknown'}`;
+}
+
+function getCachedBankOfCanadaRate(seriesId, dateKey) {
+  const key = getBankOfCanadaCacheKey(seriesId, dateKey);
+  const entry = bankOfCanadaRateCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.timestamp > FX_RATE_CACHE_TTL_MS) {
+    bankOfCanadaRateCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedBankOfCanadaRate(seriesId, dateKey, value) {
+  const key = getBankOfCanadaCacheKey(seriesId, dateKey);
+  bankOfCanadaRateCache.set(key, { timestamp: Date.now(), value });
+}
+
 function getNetDepositCacheKey(loginId, accountNumber) {
   return `${loginId || 'unknown'}:${accountNumber || 'unknown'}`;
 }
@@ -1001,6 +1027,25 @@ function formatFxDateKey(date) {
   return start.toISOString().slice(0, 10);
 }
 
+function buildFxDateCandidates(baseDate, lookbackDays) {
+  const candidates = [];
+  const base = baseDate instanceof Date && !Number.isNaN(baseDate.valueOf()) ? baseDate : new Date();
+  const unique = new Set();
+  const totalDays = Math.max(lookbackDays || 0, 0);
+
+  for (let offset = 0; offset <= totalDays; offset += 1) {
+    const candidate = new Date(base.getTime() - offset * MS_PER_DAY);
+    const dateKey = formatFxDateKey(candidate);
+    if (!dateKey || unique.has(dateKey)) {
+      continue;
+    }
+    unique.add(dateKey);
+    candidates.push({ date: candidate, dateKey });
+  }
+
+  return candidates;
+}
+
 function inferFxOrientation(text, sourceCurrency, targetCurrency) {
   if (typeof text !== 'string' || !text.trim()) {
     return null;
@@ -1109,6 +1154,162 @@ function findFxSymbolMatch(symbols, sourceCurrency, targetCurrency, orientationH
     chosen.orientation = 'direct';
   }
   return chosen;
+}
+
+function buildBankOfCanadaSeriesInfo(sourceCurrency, targetCurrency) {
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency);
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency);
+  if (!normalizedSource || !normalizedTarget) {
+    return null;
+  }
+  if (normalizedSource === normalizedTarget) {
+    return null;
+  }
+  if (normalizedSource === 'CAD') {
+    return { seriesId: `FXCAD${normalizedTarget}`, invert: false };
+  }
+  if (normalizedTarget === 'CAD') {
+    return { seriesId: `FX${normalizedSource}CAD`, invert: false };
+  }
+  return null;
+}
+
+async function fetchBankOfCanadaSeriesObservation(seriesId, dateKey) {
+  if (!seriesId || !dateKey) {
+    return null;
+  }
+  const cached = getCachedBankOfCanadaRate(seriesId, dateKey);
+  if (cached) {
+    return cached;
+  }
+
+  const url = `${BANK_OF_CANADA_BASE_URL}${encodeURIComponent(seriesId)}?start_date=${dateKey}&end_date=${dateKey}`;
+
+  try {
+    const response = await axios.get(url, { timeout: BANK_OF_CANADA_TIMEOUT_MS });
+    const observations = Array.isArray(response && response.observations)
+      ? response.observations
+      : [];
+    for (let index = observations.length - 1; index >= 0; index -= 1) {
+      const observation = observations[index];
+      if (!observation || typeof observation !== 'object') {
+        continue;
+      }
+      const container = observation[seriesId];
+      const value =
+        container && typeof container === 'object'
+          ? parseNumericValue(container.v ?? container.value ?? container.val)
+          : parseNumericValue(container);
+      if (!isFiniteNumber(value) || value <= 0) {
+        continue;
+      }
+      const observationDateKey =
+        typeof observation.d === 'string' && observation.d ? observation.d : dateKey;
+      const meta = { rate: value, dateKey: observationDateKey };
+      setCachedBankOfCanadaRate(seriesId, dateKey, meta);
+      if (observationDateKey && observationDateKey !== dateKey) {
+        setCachedBankOfCanadaRate(seriesId, observationDateKey, meta);
+      }
+      return meta;
+    }
+  } catch (error) {
+    if (ENABLE_QUESTRADE_API_DEBUG) {
+      console.warn(
+        '[FX][BankOfCanada] Failed to fetch series',
+        seriesId,
+        'for',
+        dateKey + ':',
+        error && error.message ? error.message : error
+      );
+    }
+  }
+
+  return null;
+}
+
+async function resolveExternalHistoricalFxRateMeta(sourceCurrency, targetCurrency, timestamp, visited) {
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency);
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency);
+  if (!normalizedSource || !normalizedTarget) {
+    return null;
+  }
+
+  const visitKey = `${normalizedSource}->${normalizedTarget}`;
+  const tracker = visited instanceof Set ? visited : new Set();
+  if (tracker.has(visitKey)) {
+    return null;
+  }
+  tracker.add(visitKey);
+
+  if (normalizedSource === normalizedTarget) {
+    return {
+      rate: 1,
+      source: 'identity',
+      dateKey: formatFxDateKey(timestamp instanceof Date ? timestamp : new Date()),
+      symbolInfo: {
+        symbolId: null,
+        symbol: null,
+        orientation: 'identity',
+        provider: 'bank-of-canada',
+        sourceCurrency: normalizedSource,
+        targetCurrency: normalizedTarget,
+      },
+    };
+  }
+
+  const baseDate = timestamp instanceof Date && !Number.isNaN(timestamp.valueOf()) ? timestamp : new Date();
+  const candidates = buildFxDateCandidates(baseDate, BANK_OF_CANADA_LOOKBACK_DAYS);
+  const seriesInfo = buildBankOfCanadaSeriesInfo(normalizedSource, normalizedTarget);
+
+  if (seriesInfo) {
+    for (const candidate of candidates) {
+      const observation = await fetchBankOfCanadaSeriesObservation(seriesInfo.seriesId, candidate.dateKey);
+      if (!observation || !isFiniteNumber(observation.rate) || observation.rate <= 0) {
+        continue;
+      }
+      const effectiveRate = seriesInfo.invert ? 1 / observation.rate : observation.rate;
+      if (!isFiniteNumber(effectiveRate) || effectiveRate <= 0) {
+        continue;
+      }
+      return {
+        rate: effectiveRate,
+        source: 'bank-of-canada',
+        dateKey: observation.dateKey || candidate.dateKey,
+        symbolInfo: {
+          symbolId: null,
+          symbol: seriesInfo.seriesId,
+          orientation: seriesInfo.invert ? 'inverse' : 'direct',
+          provider: 'bank-of-canada',
+          sourceCurrency: normalizedSource,
+          targetCurrency: normalizedTarget,
+        },
+      };
+    }
+  }
+
+  if (normalizedSource !== 'CAD' && normalizedTarget !== 'CAD') {
+    const toCad = await resolveExternalHistoricalFxRateMeta(normalizedSource, 'CAD', baseDate, tracker);
+    const fromCad = await resolveExternalHistoricalFxRateMeta('CAD', normalizedTarget, baseDate, tracker);
+    const toCadRate = toCad && isFiniteNumber(toCad.rate) && toCad.rate > 0 ? toCad.rate : null;
+    const fromCadRate = fromCad && isFiniteNumber(fromCad.rate) && fromCad.rate > 0 ? fromCad.rate : null;
+    if (toCadRate && fromCadRate) {
+      return {
+        rate: toCadRate * fromCadRate,
+        source: 'bank-of-canada:derived',
+        dateKey: fromCad && fromCad.dateKey ? fromCad.dateKey : toCad ? toCad.dateKey : null,
+        symbolInfo: {
+          symbolId: null,
+          symbol: 'BANK-OF-CANADA-VIA-CAD',
+          orientation: 'derived',
+          provider: 'bank-of-canada',
+          sourceCurrency: normalizedSource,
+          targetCurrency: normalizedTarget,
+        },
+      };
+    }
+  }
+
+  return null;
 }
 
 const NET_DEPOSIT_INFLOW_KEYWORDS = [
@@ -1913,68 +2114,86 @@ async function resolveHistoricalFxRate(login, sourceCurrency, targetCurrency, ti
   }
 
   const symbolInfo = await resolveFxSymbolInfo(login, normalizedSource, normalizedTarget);
-  if (!symbolInfo) {
-    return includeMetadata ? { rate: null, source: 'missing-symbol', dateKey: null, symbolInfo: null } : null;
-  }
+  let resolvedSymbolInfo = symbolInfo || null;
 
-  const candidateDates = [];
-  if (timestamp instanceof Date && !Number.isNaN(timestamp.valueOf())) {
-    candidateDates.push({ date: timestamp, tag: 'historical' });
-  }
-  const now = new Date();
-  const nowTag = candidateDates.length ? 'fallback-latest' : 'historical';
-  candidateDates.push({ date: now, tag: nowTag });
-
-  for (const candidate of candidateDates) {
-    const dayKey = formatFxDateKey(candidate.date);
-    if (!dayKey) {
-      continue;
+  if (symbolInfo) {
+    const candidateDates = [];
+    if (timestamp instanceof Date && !Number.isNaN(timestamp.valueOf())) {
+      candidateDates.push({ date: timestamp, tag: 'historical' });
     }
-    const cached = getCachedFxRate(symbolInfo.symbolId, dayKey);
-    if (cached !== null && cached !== undefined) {
+    const now = new Date();
+    const nowTag = candidateDates.length ? 'fallback-latest' : 'historical';
+    candidateDates.push({ date: now, tag: nowTag });
+
+    for (const candidate of candidateDates) {
+      const dayKey = formatFxDateKey(candidate.date);
+      if (!dayKey) {
+        continue;
+      }
+      const cached = getCachedFxRate(symbolInfo.symbolId, dayKey);
+      if (cached !== null && cached !== undefined) {
+        if (includeMetadata) {
+          return {
+            rate: cached,
+            source: candidate.tag,
+            dateKey: dayKey,
+            symbolInfo,
+          };
+        }
+        return cached;
+      }
+      const dayStart = getUtcStartOfDay(candidate.date);
+      const dayEnd = getUtcEndOfDay(candidate.date);
+      if (!dayStart || !dayEnd) {
+        continue;
+      }
+      const rangeStart = new Date(dayStart.getTime() - FX_CANDLE_LOOKBACK_DAYS * MS_PER_DAY);
+      const rangeEnd = new Date(dayEnd.getTime() + FX_CANDLE_LOOKAHEAD_DAYS * MS_PER_DAY);
+      const candles = await fetchFxCandles(login, symbolInfo.symbolId, rangeStart, rangeEnd);
+      const candle = selectFxCandle(candles, candidate.date);
+      const close = extractCandleClose(candle);
+      if (!isFiniteNumber(close) || close <= 0) {
+        continue;
+      }
+      let rate = close;
+      if (symbolInfo.orientation === 'inverse') {
+        rate = 1 / close;
+      }
+      if (!isFiniteNumber(rate) || rate <= 0) {
+        continue;
+      }
+      setCachedFxRate(symbolInfo.symbolId, dayKey, rate);
       if (includeMetadata) {
         return {
-          rate: cached,
+          rate,
           source: candidate.tag,
           dateKey: dayKey,
           symbolInfo,
         };
       }
-      return cached;
+      return rate;
     }
-    const dayStart = getUtcStartOfDay(candidate.date);
-    const dayEnd = getUtcEndOfDay(candidate.date);
-    if (!dayStart || !dayEnd) {
-      continue;
-    }
-    const rangeStart = new Date(dayStart.getTime() - FX_CANDLE_LOOKBACK_DAYS * MS_PER_DAY);
-    const rangeEnd = new Date(dayEnd.getTime() + FX_CANDLE_LOOKAHEAD_DAYS * MS_PER_DAY);
-    const candles = await fetchFxCandles(login, symbolInfo.symbolId, rangeStart, rangeEnd);
-    const candle = selectFxCandle(candles, candidate.date);
-    const close = extractCandleClose(candle);
-    if (!isFiniteNumber(close) || close <= 0) {
-      continue;
-    }
-    let rate = close;
-    if (symbolInfo.orientation === 'inverse') {
-      rate = 1 / close;
-    }
-    if (!isFiniteNumber(rate) || rate <= 0) {
-      continue;
-    }
-    setCachedFxRate(symbolInfo.symbolId, dayKey, rate);
-    if (includeMetadata) {
-      return {
-        rate,
-        source: candidate.tag,
-        dateKey: dayKey,
-        symbolInfo,
-      };
-    }
-    return rate;
   }
 
-  return includeMetadata ? { rate: null, source: 'unavailable', dateKey: null, symbolInfo } : null;
+  const fallbackMeta = await resolveExternalHistoricalFxRateMeta(normalizedSource, normalizedTarget, timestamp);
+  if (fallbackMeta && isFiniteNumber(fallbackMeta.rate) && fallbackMeta.rate > 0) {
+    if (fallbackMeta.dateKey) {
+      const cacheId = fallbackMeta.symbolInfo && fallbackMeta.symbolInfo.symbol
+        ? `external:${fallbackMeta.symbolInfo.symbol}`
+        : `external:${normalizedSource}:${normalizedTarget}`;
+      setCachedFxRate(cacheId, fallbackMeta.dateKey, fallbackMeta.rate);
+    }
+    if (includeMetadata) {
+      return fallbackMeta;
+    }
+    return fallbackMeta.rate;
+  }
+
+  if (includeMetadata) {
+    const failureSource = symbolInfo ? 'unavailable' : 'missing-symbol';
+    return { rate: null, source: failureSource, dateKey: null, symbolInfo: resolvedSymbolInfo };
+  }
+  return null;
 }
 
 async function augmentNetDepositSummaryWithHistoricalConversions(login, summary, options = {}) {
