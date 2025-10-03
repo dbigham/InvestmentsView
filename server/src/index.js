@@ -541,7 +541,12 @@ async function fetchBalances(login, accountId) {
 
 const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL !== 'false';
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
-const MAX_ACTIVITIES_WINDOW_DAYS = 31;
+// Questrade's documentation cites a 31 day cap for the activities endpoint, but in
+// practice we receive "Argument length exceeds imposed limit" errors whenever the
+// requested range spans a full 31 calendar days. Keeping the window strictly under
+// that threshold avoids the 400 errors without materially increasing the number of
+// requests we make.
+const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
 
