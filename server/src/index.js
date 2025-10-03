@@ -610,13 +610,83 @@ function resolveActivityNetAmount(activity) {
   if (!activity || typeof activity !== 'object') {
     return null;
   }
-  const fields = ['netAmount', 'grossAmount', 'amount', 'cash', 'netCash'];
+  const fields = ['netAmount', 'grossAmount', 'amount', 'cash', 'netCash', 'bookValue', 'marketValue', 'transferValue', 'transferAmount'];
   for (const field of fields) {
     const value = extractNumeric(activity[field]);
     if (value !== null) {
       return value;
     }
   }
+  return null;
+}
+
+function parseBookValueFromDescription(description) {
+  if (typeof description !== 'string' || !description.trim()) {
+    return null;
+  }
+  const match = description.match(/book value[^0-9+-]*([-+]?[0-9.,]+)/i);
+  if (!match || !match[1]) {
+    return null;
+  }
+  const numeric = extractNumeric(match[1]);
+  if (numeric === null) {
+    return null;
+  }
+  return numeric;
+}
+
+function estimateFundingActivityValue(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+
+  const currency = resolveActivityCurrency(activity);
+  const normalizedCurrency = currency ? currency.toUpperCase() : null;
+
+  const directFieldCandidates = [
+    ['bookValue', 'book_value_field'],
+    ['marketValue', 'market_value_field'],
+    ['settlementAmount', 'settlement_amount_field'],
+    ['transferValue', 'transfer_value_field'],
+    ['transferAmount', 'transfer_amount_field'],
+  ];
+
+  if (!normalizedCurrency || normalizedCurrency === 'CAD') {
+    directFieldCandidates.push(['bookValueInBase', 'book_value_in_base_field']);
+    directFieldCandidates.push(['marketValueInBase', 'market_value_in_base_field']);
+  }
+
+  for (const [field, source] of directFieldCandidates) {
+    const value = extractNumeric(activity[field]);
+    if (value !== null && value !== 0) {
+      return { amount: Math.abs(value), source };
+    }
+  }
+
+  const descriptionValue = parseBookValueFromDescription(activity.description);
+  if (descriptionValue !== null && descriptionValue !== 0) {
+    return { amount: Math.abs(descriptionValue), source: 'description_book_value' };
+  }
+
+  const quantityFields = ['quantity', 'qty', 'units', 'shares'];
+  const priceFields = ['price', 'tradePrice', 'bookPrice', 'grossPrice', 'averagePrice'];
+  let quantity = null;
+  for (const field of quantityFields) {
+    const value = extractNumeric(activity[field]);
+    if (value !== null && value !== 0) {
+      quantity = value;
+      break;
+    }
+  }
+  if (quantity !== null) {
+    for (const field of priceFields) {
+      const price = extractNumeric(activity[field]);
+      if (price !== null && price !== 0) {
+        return { amount: Math.abs(quantity * price), source: 'quantity_price_estimate' };
+      }
+    }
+  }
+
   return null;
 }
 
@@ -954,8 +1024,16 @@ async function computeAccountFundingSummary({ login, account, combinedBalances }
   for (const entry of fundingEntries) {
     const activity = entry.activity;
     const direction = entry.direction === 'out' ? 'out' : 'in';
-    const rawAmount = resolveActivityNetAmount(activity);
-    if (rawAmount === null) {
+    let rawAmount = resolveActivityNetAmount(activity);
+    let estimationDetails = null;
+    if (rawAmount === null || rawAmount === 0) {
+      const estimation = estimateFundingActivityValue(activity);
+      if (estimation && typeof estimation.amount === 'number' && estimation.amount !== 0) {
+        rawAmount = estimation.amount;
+        estimationDetails = estimation;
+      }
+    }
+    if (rawAmount === null || rawAmount === 0) {
       if (debugInfo) {
         debugInfo.errors.push({
           scope: 'activity',
@@ -1000,7 +1078,7 @@ async function computeAccountFundingSummary({ login, account, combinedBalances }
     }
 
     if (debugInfo) {
-      debugInfo.activities.push({
+      const debugEntry = {
         direction,
         currency,
         amount,
@@ -1010,7 +1088,12 @@ async function computeAccountFundingSummary({ login, account, combinedBalances }
         description: activity && activity.description ? String(activity.description) : null,
         type: activity && activity.type ? String(activity.type) : null,
         action: activity && activity.action ? String(activity.action) : null,
-      });
+        rawAmount,
+      };
+      if (estimationDetails) {
+        debugEntry.estimated = estimationDetails;
+      }
+      debugInfo.activities.push(debugEntry);
     }
   }
 
