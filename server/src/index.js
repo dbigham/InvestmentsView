@@ -569,6 +569,12 @@ const NET_DEPOSIT_SEED_LOOKAHEAD_DAYS = 180;
 const NET_DEPOSIT_FALLBACK_EXPANSION_DAYS = 365;
 const ACCOUNT_ACTIVITY_SEED_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const ACCOUNT_ACTIVITY_START_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const FX_RATE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const FX_CANDLE_LOOKBACK_DAYS = 3;
+const FX_CANDLE_LOOKAHEAD_DAYS = 3;
+
+const fxSymbolCache = new Map();
+const fxRateCache = new Map();
 
 const ACCOUNT_PRIMARY_START_DATE_KEYS = [
   'openedDate',
@@ -753,6 +759,42 @@ function setCachedAccountActivityStart(key, value) {
   setTimedCacheEntry(accountActivityStartCache, key, value);
 }
 
+function getFxSymbolCacheKey(sourceCurrency, targetCurrency) {
+  return `${sourceCurrency || 'UNKNOWN'}:${targetCurrency || 'UNKNOWN'}`;
+}
+
+function setCachedFxSymbol(sourceCurrency, targetCurrency, value) {
+  const key = getFxSymbolCacheKey(sourceCurrency, targetCurrency);
+  fxSymbolCache.set(key, value || null);
+}
+
+function getCachedFxSymbol(sourceCurrency, targetCurrency) {
+  const key = getFxSymbolCacheKey(sourceCurrency, targetCurrency);
+  return fxSymbolCache.has(key) ? fxSymbolCache.get(key) : null;
+}
+
+function getFxRateCacheKey(symbolId, dateKey) {
+  return `${symbolId || 'unknown'}:${dateKey || 'unknown'}`;
+}
+
+function getCachedFxRate(symbolId, dateKey) {
+  const key = getFxRateCacheKey(symbolId, dateKey);
+  const entry = fxRateCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.timestamp > FX_RATE_CACHE_TTL_MS) {
+    fxRateCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedFxRate(symbolId, dateKey, value) {
+  const key = getFxRateCacheKey(symbolId, dateKey);
+  fxRateCache.set(key, { timestamp: Date.now(), value });
+}
+
 function getNetDepositCacheKey(loginId, accountNumber) {
   return `${loginId || 'unknown'}:${accountNumber || 'unknown'}`;
 }
@@ -934,6 +976,139 @@ function resolveOrderTimestamp(order) {
 function resolveExecutionTimestamp(execution) {
   const preferredKeys = ['timestamp', 'executionTime', 'tradeDate', 'transactionDate'];
   return resolveTimestampFromObject(execution, preferredKeys);
+}
+
+function getUtcStartOfDay(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.valueOf())) {
+    return null;
+  }
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function getUtcEndOfDay(date) {
+  const start = getUtcStartOfDay(date);
+  if (!start) {
+    return null;
+  }
+  return new Date(start.getTime() + MS_PER_DAY - 1);
+}
+
+function formatFxDateKey(date) {
+  const start = getUtcStartOfDay(date);
+  if (!start) {
+    return null;
+  }
+  return start.toISOString().slice(0, 10);
+}
+
+function inferFxOrientation(text, sourceCurrency, targetCurrency) {
+  if (typeof text !== 'string' || !text.trim()) {
+    return null;
+  }
+  const normalized = text.toUpperCase();
+  const condensed = normalized.replace(/[^A-Z]/g, '');
+  const sourceIndex = condensed.indexOf(sourceCurrency);
+  const targetIndex = condensed.indexOf(targetCurrency);
+  if (sourceIndex === -1 || targetIndex === -1) {
+    return null;
+  }
+  if (sourceIndex === targetIndex) {
+    return null;
+  }
+  return sourceIndex < targetIndex ? 'direct' : 'inverse';
+}
+
+function buildFxSymbolSearchQueries(sourceCurrency, targetCurrency) {
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency);
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency);
+  if (!normalizedSource || !normalizedTarget) {
+    return [];
+  }
+  const basePatterns = [
+    `${normalizedSource}.${normalizedTarget}`,
+    `${normalizedSource}${normalizedTarget}`,
+    `${normalizedSource}/${normalizedTarget}`,
+    `${normalizedSource}-${normalizedTarget}`,
+    `${normalizedTarget}.${normalizedSource}`,
+    `${normalizedTarget}${normalizedSource}`,
+    `${normalizedTarget}/${normalizedSource}`,
+    `${normalizedTarget}-${normalizedSource}`,
+  ];
+  const suffixes = ['', '.FX', '.TO'];
+  const queries = new Set();
+  basePatterns.forEach((pattern) => {
+    suffixes.forEach((suffix) => {
+      const candidate = (pattern + suffix).replace(/\s+/g, '');
+      if (candidate) {
+        queries.add(candidate);
+      }
+    });
+  });
+  return Array.from(queries);
+}
+
+function findFxSymbolMatch(symbols, sourceCurrency, targetCurrency, orientationHint = null) {
+  if (!Array.isArray(symbols)) {
+    return null;
+  }
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency);
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency);
+  if (!normalizedSource || !normalizedTarget) {
+    return null;
+  }
+
+  const matches = [];
+  symbols.forEach((symbol) => {
+    if (!symbol || typeof symbol !== 'object') {
+      return;
+    }
+    const symbolId = symbol.symbolId ?? symbol.id ?? null;
+    if (symbolId === null || symbolId === undefined) {
+      return;
+    }
+    const symbolText = typeof symbol.symbol === 'string' ? symbol.symbol.toUpperCase() : '';
+    const description = typeof symbol.description === 'string' ? symbol.description.toUpperCase() : '';
+    const symbolDescription =
+      typeof symbol.symbolDescription === 'string' ? symbol.symbolDescription.toUpperCase() : '';
+    const symbolName = typeof symbol.symbolName === 'string' ? symbol.symbolName.toUpperCase() : '';
+    const combined = [symbolText, description, symbolDescription, symbolName].filter(Boolean).join(' ');
+    if (!combined.includes(normalizedSource) || !combined.includes(normalizedTarget)) {
+      return;
+    }
+    const securityType = typeof symbol.securityType === 'string' ? symbol.securityType.toUpperCase() : '';
+    const orientation =
+      inferFxOrientation(symbolText, normalizedSource, normalizedTarget) ||
+      inferFxOrientation(description, normalizedSource, normalizedTarget) ||
+      inferFxOrientation(symbolDescription, normalizedSource, normalizedTarget) ||
+      inferFxOrientation(symbolName, normalizedSource, normalizedTarget) ||
+      orientationHint ||
+      null;
+    const rank =
+      (orientation ? 2 : 0) +
+      (securityType && /CURRENCY|FOREX|FX/.test(securityType) ? 1 : 0) +
+      (symbolText && symbolText.includes('.') ? 0.1 : 0);
+    matches.push({
+      symbolId,
+      symbol: symbol.symbol || null,
+      orientation,
+      securityType,
+      rank,
+    });
+  });
+
+  if (!matches.length) {
+    return null;
+  }
+
+  matches.sort((a, b) => b.rank - a.rank);
+  const chosen = matches[0];
+  if (!chosen.orientation && orientationHint) {
+    chosen.orientation = orientationHint;
+  }
+  if (!chosen.orientation) {
+    chosen.orientation = 'direct';
+  }
+  return chosen;
 }
 
 const NET_DEPOSIT_INFLOW_KEYWORDS = [
@@ -1475,6 +1650,7 @@ async function fetchAllAccountActivities(login, accountId, options = {}) {
 function accumulateNetDeposits(activities) {
   const totals = new Map();
   const counts = new Map();
+  const entries = [];
   const debugEntries = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
   const skippedEntries = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
 
@@ -1522,6 +1698,17 @@ function accumulateNetDeposits(activities) {
     totals.set(normalizedCurrency, currentTotal + amount);
     counts.set(normalizedCurrency, (counts.get(normalizedCurrency) || 0) + 1);
 
+    const timestamp = resolveActivityTimestamp(activity);
+    const timestampMs =
+      timestamp instanceof Date && !Number.isNaN(timestamp.valueOf()) ? timestamp.getTime() : null;
+    entries.push({
+      timestamp: timestampMs,
+      currency: normalizedCurrency,
+      amount,
+      classification,
+      amountSource: amountInfo ? amountInfo.source || null : null,
+    });
+
     if (debugEntries) {
       debugEntries.push({
         timestamp: resolveActivityTimestamp(activity),
@@ -1542,7 +1729,359 @@ function accumulateNetDeposits(activities) {
     }
   });
 
-  return { totals, counts, details: debugEntries, skipped: skippedEntries };
+  return { totals, counts, entries, details: debugEntries, skipped: skippedEntries };
+}
+
+async function resolveFxSymbolInfo(login, sourceCurrency, targetCurrency) {
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency);
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency);
+  if (!normalizedSource || !normalizedTarget) {
+    return null;
+  }
+  if (normalizedSource === normalizedTarget) {
+    return {
+      symbolId: null,
+      symbol: null,
+      orientation: 'identity',
+      sourceCurrency: normalizedSource,
+      targetCurrency: normalizedTarget,
+    };
+  }
+
+  const cached = getCachedFxSymbol(normalizedSource, normalizedTarget);
+  if (cached !== null && cached !== undefined) {
+    return cached;
+  }
+
+  const queries = buildFxSymbolSearchQueries(normalizedSource, normalizedTarget);
+  for (const query of queries) {
+    const params = { prefix: query };
+    let data;
+    try {
+      data = await questradeRequest(login, '/v1/symbols/search', { params });
+    } catch (error) {
+      continue;
+    }
+    const symbols = Array.isArray(data && data.symbols) ? data.symbols : [];
+    const orientationHint = inferFxOrientation(query, normalizedSource, normalizedTarget);
+    const match = findFxSymbolMatch(symbols, normalizedSource, normalizedTarget, orientationHint);
+    if (match) {
+      const resolved = Object.assign({}, match, {
+        sourceCurrency: normalizedSource,
+        targetCurrency: normalizedTarget,
+      });
+      setCachedFxSymbol(normalizedSource, normalizedTarget, resolved);
+      return resolved;
+    }
+  }
+
+  setCachedFxSymbol(normalizedSource, normalizedTarget, null);
+  return null;
+}
+
+async function fetchFxCandles(login, symbolId, startDate, endDate) {
+  if (!login || symbolId === null || symbolId === undefined) {
+    return [];
+  }
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.valueOf())) {
+    return [];
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.valueOf())) {
+    return [];
+  }
+
+  const params = { interval: 'OneDay' };
+  const startTime = formatActivityTimestamp(startDate);
+  const endTime = formatActivityTimestamp(endDate);
+  if (startTime) {
+    params.startTime = startTime;
+  }
+  if (endTime) {
+    params.endTime = endTime;
+  }
+
+  try {
+    const data = await questradeRequest(login, '/v1/markets/candles/' + symbolId, { params });
+    return Array.isArray(data && data.candles) ? data.candles : [];
+  } catch (error) {
+    if (ENABLE_QUESTRADE_API_DEBUG) {
+      console.warn(
+        'Failed to fetch FX candles for symbol ' + symbolId + ':',
+        error && error.message ? error.message : error
+      );
+    }
+    return [];
+  }
+}
+
+function resolveCandleTimestamp(candle) {
+  const preferred = ['start', 'startTime', 'time', 'date', 'timestamp', 'begin'];
+  return resolveTimestampFromObject(candle, preferred);
+}
+
+function extractCandleClose(candle) {
+  if (!candle || typeof candle !== 'object') {
+    return null;
+  }
+  const fields = ['close', 'closePrice', 'last', 'value', 'price'];
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(candle, field)) {
+      continue;
+    }
+    const value = parseNumericValue(candle[field]);
+    if (isFiniteNumber(value) && value > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function selectFxCandle(candles, targetDate) {
+  if (!Array.isArray(candles) || !candles.length) {
+    return null;
+  }
+  const targetStart = getUtcStartOfDay(targetDate);
+  const targetEnd = getUtcEndOfDay(targetDate);
+  if (!targetStart || !targetEnd) {
+    return candles[0] || null;
+  }
+  const startMs = targetStart.getTime();
+  const endMs = targetEnd.getTime();
+  let exact = null;
+  let exactMs = null;
+  let before = null;
+  let beforeMs = null;
+  let after = null;
+  let afterMs = null;
+
+  candles.forEach((candle) => {
+    const timestamp = resolveCandleTimestamp(candle);
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.valueOf())) {
+      return;
+    }
+    const ms = timestamp.getTime();
+    if (ms >= startMs && ms <= endMs) {
+      if (exact === null || ms < exactMs) {
+        exact = candle;
+        exactMs = ms;
+      }
+      return;
+    }
+    if (ms < startMs) {
+      if (before === null || ms > beforeMs) {
+        before = candle;
+        beforeMs = ms;
+      }
+      return;
+    }
+    if (ms > endMs) {
+      if (after === null || ms < afterMs) {
+        after = candle;
+        afterMs = ms;
+      }
+    }
+  });
+
+  return exact || before || after || candles[0] || null;
+}
+
+async function resolveHistoricalFxRate(login, sourceCurrency, targetCurrency, timestamp, options = {}) {
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency);
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency);
+  const includeMetadata = Boolean(options && options.returnMetadata);
+
+  if (!normalizedSource || !normalizedTarget) {
+    return includeMetadata ? { rate: null, source: 'invalid-currency', dateKey: null, symbolInfo: null } : null;
+  }
+
+  if (normalizedSource === normalizedTarget) {
+    if (includeMetadata) {
+      return {
+        rate: 1,
+        source: 'identity',
+        dateKey: formatFxDateKey(timestamp instanceof Date ? timestamp : new Date()),
+        symbolInfo: {
+          symbolId: null,
+          symbol: null,
+          orientation: 'identity',
+          sourceCurrency: normalizedSource,
+          targetCurrency: normalizedTarget,
+        },
+      };
+    }
+    return 1;
+  }
+
+  const symbolInfo = await resolveFxSymbolInfo(login, normalizedSource, normalizedTarget);
+  if (!symbolInfo) {
+    return includeMetadata ? { rate: null, source: 'missing-symbol', dateKey: null, symbolInfo: null } : null;
+  }
+
+  const candidateDates = [];
+  if (timestamp instanceof Date && !Number.isNaN(timestamp.valueOf())) {
+    candidateDates.push({ date: timestamp, tag: 'historical' });
+  }
+  const now = new Date();
+  const nowTag = candidateDates.length ? 'fallback-latest' : 'historical';
+  candidateDates.push({ date: now, tag: nowTag });
+
+  for (const candidate of candidateDates) {
+    const dayKey = formatFxDateKey(candidate.date);
+    if (!dayKey) {
+      continue;
+    }
+    const cached = getCachedFxRate(symbolInfo.symbolId, dayKey);
+    if (cached !== null && cached !== undefined) {
+      if (includeMetadata) {
+        return {
+          rate: cached,
+          source: candidate.tag,
+          dateKey: dayKey,
+          symbolInfo,
+        };
+      }
+      return cached;
+    }
+    const dayStart = getUtcStartOfDay(candidate.date);
+    const dayEnd = getUtcEndOfDay(candidate.date);
+    if (!dayStart || !dayEnd) {
+      continue;
+    }
+    const rangeStart = new Date(dayStart.getTime() - FX_CANDLE_LOOKBACK_DAYS * MS_PER_DAY);
+    const rangeEnd = new Date(dayEnd.getTime() + FX_CANDLE_LOOKAHEAD_DAYS * MS_PER_DAY);
+    const candles = await fetchFxCandles(login, symbolInfo.symbolId, rangeStart, rangeEnd);
+    const candle = selectFxCandle(candles, candidate.date);
+    const close = extractCandleClose(candle);
+    if (!isFiniteNumber(close) || close <= 0) {
+      continue;
+    }
+    let rate = close;
+    if (symbolInfo.orientation === 'inverse') {
+      rate = 1 / close;
+    }
+    if (!isFiniteNumber(rate) || rate <= 0) {
+      continue;
+    }
+    setCachedFxRate(symbolInfo.symbolId, dayKey, rate);
+    if (includeMetadata) {
+      return {
+        rate,
+        source: candidate.tag,
+        dateKey: dayKey,
+        symbolInfo,
+      };
+    }
+    return rate;
+  }
+
+  return includeMetadata ? { rate: null, source: 'unavailable', dateKey: null, symbolInfo } : null;
+}
+
+async function augmentNetDepositSummaryWithHistoricalConversions(login, summary, options = {}) {
+  if (!summary || typeof summary !== 'object') {
+    return summary;
+  }
+
+  const baseCurrency = normalizeCurrencyCode(options.baseCurrency, 'CAD') || 'CAD';
+  const entries = Array.isArray(summary.entries) ? summary.entries : [];
+  const convertedTotals = new Map();
+  const fxDetails = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
+  const fxSkipped = ENABLE_QUESTRADE_API_DEBUG ? [] : null;
+  const localRateCache = new Map();
+
+  for (const entry of entries) {
+    const amount = entry && entry.amount;
+    const currency = normalizeCurrencyCode(entry && entry.currency);
+    if (!isFiniteNumber(amount) || Math.abs(amount) <= 1e-9 || !currency) {
+      continue;
+    }
+
+    if (currency === baseCurrency) {
+      convertedTotals.set(baseCurrency, (convertedTotals.get(baseCurrency) || 0) + amount);
+      if (fxDetails) {
+        fxDetails.push({
+          timestamp: Number.isFinite(entry.timestamp) ? new Date(entry.timestamp).toISOString() : null,
+          sourceCurrency: currency,
+          targetCurrency: baseCurrency,
+          amount,
+          rate: 1,
+          convertedAmount: amount,
+          rateSource: 'identity',
+          dateKey: entry.timestamp ? formatFxDateKey(new Date(entry.timestamp)) : null,
+          symbol: null,
+          symbolId: null,
+          orientation: 'identity',
+        });
+      }
+      continue;
+    }
+
+    const timestamp = Number.isFinite(entry.timestamp) ? new Date(entry.timestamp) : null;
+    const dateKey = timestamp ? formatFxDateKey(timestamp) : null;
+    const dateCacheKey = dateKey ? `${currency}:${baseCurrency}:${dateKey}` : null;
+    const latestCacheKey = `${currency}:${baseCurrency}:latest`;
+
+    let meta = null;
+    if (dateCacheKey && localRateCache.has(dateCacheKey)) {
+      meta = localRateCache.get(dateCacheKey);
+    } else if (localRateCache.has(latestCacheKey)) {
+      meta = localRateCache.get(latestCacheKey);
+    }
+
+    if (!meta) {
+      meta = await resolveHistoricalFxRate(login, currency, baseCurrency, timestamp, { returnMetadata: true });
+      const targetCacheKey = dateCacheKey || latestCacheKey;
+      localRateCache.set(targetCacheKey, meta);
+      if (dateCacheKey && meta && meta.source === 'fallback-latest') {
+        localRateCache.set(latestCacheKey, meta);
+      }
+    }
+
+    const effectiveRate = meta && isFiniteNumber(meta.rate) && meta.rate > 0 ? meta.rate : null;
+    if (!effectiveRate) {
+      if (fxSkipped) {
+        fxSkipped.push({
+          timestamp: timestamp ? timestamp.toISOString() : null,
+          sourceCurrency: currency,
+          targetCurrency: baseCurrency,
+          amount,
+          reason: meta && meta.source ? meta.source : 'missing-rate',
+        });
+      }
+      continue;
+    }
+
+    convertedTotals.set(baseCurrency, (convertedTotals.get(baseCurrency) || 0) + amount * effectiveRate);
+
+    if (fxDetails) {
+      fxDetails.push({
+        timestamp: timestamp ? timestamp.toISOString() : null,
+        sourceCurrency: currency,
+        targetCurrency: baseCurrency,
+        amount,
+        rate: effectiveRate,
+        convertedAmount: amount * effectiveRate,
+        rateSource: meta.source || 'historical',
+        dateKey: meta.dateKey || dateKey,
+        symbol: meta.symbolInfo ? meta.symbolInfo.symbol : null,
+        symbolId: meta.symbolInfo ? meta.symbolInfo.symbolId : null,
+        orientation: meta.symbolInfo ? meta.symbolInfo.orientation : null,
+      });
+    }
+  }
+
+  if (!convertedTotals.has(baseCurrency)) {
+    convertedTotals.set(baseCurrency, 0);
+  }
+
+  summary.historicalConvertedTotals = convertedTotals;
+  if (fxDetails) {
+    summary.fxDetails = fxDetails;
+  }
+  if (fxSkipped) {
+    summary.fxSkipped = fxSkipped;
+  }
+  return summary;
 }
 
 function getCachedNetDeposits(key) {
@@ -1588,6 +2127,8 @@ async function fetchAccountNetDeposits(login, accountId, options = {}) {
 
   const activities = await fetchAllAccountActivities(login, accountId, options);
   const summary = accumulateNetDeposits(activities);
+  const baseCurrency = normalizeCurrencyCode(options.baseCurrency, 'CAD') || 'CAD';
+  await augmentNetDepositSummaryWithHistoricalConversions(login, summary, { baseCurrency });
   if (ENABLE_QUESTRADE_API_DEBUG && summary && Array.isArray(summary.details) && summary.details.length) {
     const preview = summary.details.slice(0, 20).map((entry) => {
       return {
@@ -1632,6 +2173,38 @@ async function fetchAccountNetDeposits(login, accountId, options = {}) {
     console.log('[Questrade][netDepositEntriesSkipped]', accountId, skippedPreview);
     if (summary.skipped.length > skippedPreview.length) {
       console.log('[Questrade][netDepositEntriesSkipped]', accountId, '…', summary.skipped.length - skippedPreview.length, 'more entries');
+    }
+  }
+  if (ENABLE_QUESTRADE_API_DEBUG && summary && Array.isArray(summary.fxDetails) && summary.fxDetails.length) {
+    const fxPreview = summary.fxDetails.slice(0, 20).map((entry) => ({
+      timestamp: entry.timestamp,
+      sourceCurrency: entry.sourceCurrency,
+      targetCurrency: entry.targetCurrency,
+      amount: entry.amount,
+      rate: entry.rate,
+      convertedAmount: entry.convertedAmount,
+      rateSource: entry.rateSource,
+      dateKey: entry.dateKey || null,
+      symbol: entry.symbol || null,
+      symbolId: entry.symbolId || null,
+      orientation: entry.orientation || null,
+    }));
+    console.log('[Questrade][netDepositFx]', accountId, fxPreview);
+    if (summary.fxDetails.length > fxPreview.length) {
+      console.log('[Questrade][netDepositFx]', accountId, '…', summary.fxDetails.length - fxPreview.length, 'more entries');
+    }
+  }
+  if (ENABLE_QUESTRADE_API_DEBUG && summary && Array.isArray(summary.fxSkipped) && summary.fxSkipped.length) {
+    const skippedFxPreview = summary.fxSkipped.slice(0, 20).map((entry) => ({
+      timestamp: entry.timestamp,
+      sourceCurrency: entry.sourceCurrency,
+      targetCurrency: entry.targetCurrency,
+      amount: entry.amount,
+      reason: entry.reason,
+    }));
+    console.log('[Questrade][netDepositFxSkipped]', accountId, skippedFxPreview);
+    if (summary.fxSkipped.length > skippedFxPreview.length) {
+      console.log('[Questrade][netDepositFxSkipped]', accountId, '…', summary.fxSkipped.length - skippedFxPreview.length, 'more entries');
     }
   }
   setCachedNetDeposits(cacheKey, summary);
@@ -2008,6 +2581,7 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
     return null;
   }
   const baseCurrency = options.baseCurrency || 'CAD';
+  const normalizedBaseCurrency = normalizeCurrencyCode(baseCurrency, 'CAD') || 'CAD';
   const perCurrencyResult = {};
   const combinedResult = {};
   const netDepositPerCurrency = {};
@@ -2017,6 +2591,10 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
   const combinedEquity = {};
   let hasValue = false;
   let hasNetDepositData = false;
+  const historicalCombinedMap =
+    netDeposits && netDeposits.historicalConvertedTotals instanceof Map
+      ? netDeposits.historicalConvertedTotals
+      : null;
 
   totalsMap.forEach((amount, currency) => {
     const normalized = normalizeCurrencyCode(currency);
@@ -2049,7 +2627,7 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
   }
 
   if (balanceSummary.combined) {
-    const rates = buildCurrencyRateMapFromSummary(balanceSummary, baseCurrency);
+    let rates = null;
     Object.entries(balanceSummary.combined).forEach(([key, entry]) => {
       const normalized = normalizeCurrencyCode(key);
       if (!normalized) {
@@ -2059,10 +2637,27 @@ function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}
       if (!isFiniteNumber(equity)) {
         return;
       }
-      let convertedDeposits = 0;
-      totalsMap.forEach((amount, sourceCurrency) => {
-        convertedDeposits += convertAmountToCurrency(amount, sourceCurrency, normalized, rates, baseCurrency);
-      });
+      let convertedDeposits = null;
+      if (
+        normalized === normalizedBaseCurrency &&
+        historicalCombinedMap &&
+        historicalCombinedMap.has(normalizedBaseCurrency)
+      ) {
+        const candidate = historicalCombinedMap.get(normalizedBaseCurrency);
+        if (isFiniteNumber(candidate)) {
+          convertedDeposits = candidate;
+        }
+      }
+      if (!isFiniteNumber(convertedDeposits)) {
+        if (!rates) {
+          rates = buildCurrencyRateMapFromSummary(balanceSummary, baseCurrency);
+        }
+        let fallbackDeposits = 0;
+        totalsMap.forEach((amount, sourceCurrency) => {
+          fallbackDeposits += convertAmountToCurrency(amount, sourceCurrency, normalized, rates, baseCurrency);
+        });
+        convertedDeposits = fallbackDeposits;
+      }
       combinedResult[normalized] = equity - convertedDeposits;
       combinedEquity[normalized] = equity;
       if (hasNetDepositData) {
@@ -2541,10 +3136,12 @@ app.get('/api/summary', async function (req, res) {
         try {
           const netDepositStart =
             context.account.activityHistoryStartMs || context.account.activityHistoryStart || null;
+          const baseCurrency = 'CAD';
           const netDeposits = await fetchAccountNetDeposits(context.login, context.account.number, {
             startDate: netDepositStart,
+            baseCurrency,
           });
-          const totals = computeAccountTotalPnlSummary(accountSummary, netDeposits, { baseCurrency: 'CAD' });
+          const totals = computeAccountTotalPnlSummary(accountSummary, netDeposits, { baseCurrency });
           if (totals) {
             applyTotalPnlToBalanceSummary(accountSummary, totals);
             applyTotalPnlToBalanceSummary(balancesSummary, totals);
