@@ -42,6 +42,10 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function updateRateLimitFromHeaders(headers) {
   if (!headers) {
     return;
@@ -539,6 +543,232 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+const NET_DEPOSIT_ACTIVITY_WINDOW_DAYS = 31;
+const NET_DEPOSIT_ACTIVITY_EPOCH = new Date(Date.UTC(2000, 0, 1));
+const NET_DEPOSIT_CACHE_TTL_MS = 15 * 60 * 1000;
+
+const netDepositCache = new Map();
+
+function getNetDepositCacheKey(loginId, accountNumber) {
+  return `${loginId || 'unknown'}:${accountNumber || 'unknown'}`;
+}
+
+function normalizeActivityLabel(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function resolveActivityCurrency(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const candidates = [activity.currency, activity.currencyPrimary, activity.currencySecondary];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim().toUpperCase();
+    }
+  }
+  return null;
+}
+
+const NET_DEPOSIT_INFLOW_KEYWORDS = [
+  'deposit',
+  'transferin',
+  'transfercashin',
+  'cashtransferin',
+  'journalcashin',
+  'jrnlcashin',
+  'journalin',
+  'cashin',
+  'incomingtransfer',
+  'fundsreceived',
+  'billpayment',
+  'dripcashin',
+  'paymentreceived',
+];
+
+const NET_DEPOSIT_OUTFLOW_KEYWORDS = [
+  'withdraw',
+  'withdrawal',
+  'transferout',
+  'transfercashout',
+  'cashtransferout',
+  'journalcashout',
+  'jrnlcashout',
+  'journalout',
+  'cashout',
+  'outgoingtransfer',
+  'fundssent',
+  'paymentmade',
+];
+
+function classifyNetDepositActivity(activity) {
+  const labels = [normalizeActivityLabel(activity && activity.type), normalizeActivityLabel(activity && activity.action)];
+  const description = normalizeActivityLabel(activity && activity.description);
+  if (description) {
+    labels.push(description);
+  }
+
+  const hasKeyword = (keywords) => {
+    return keywords.some((keyword) => labels.some((label) => label && label.includes(keyword)));
+  };
+
+  if (hasKeyword(NET_DEPOSIT_INFLOW_KEYWORDS)) {
+    return 'inflow';
+  }
+  if (hasKeyword(NET_DEPOSIT_OUTFLOW_KEYWORDS)) {
+    return 'outflow';
+  }
+
+  const baseLabel = labels.find((label) => label);
+  if (!baseLabel) {
+    return null;
+  }
+
+  if (baseLabel.includes('transfer') || baseLabel.includes('journal')) {
+    const netAmount = Number(activity && activity.netAmount);
+    if (!Number.isFinite(netAmount) || netAmount === 0) {
+      return null;
+    }
+    return netAmount > 0 ? 'inflow' : 'outflow';
+  }
+
+  return null;
+}
+
+function buildActivityWindows(startDate, endDate, windowDays) {
+  const windows = [];
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.valueOf())) {
+    return windows;
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.valueOf())) {
+    return windows;
+  }
+
+  const windowMs = Math.max(windowDays, 1) * 24 * 60 * 60 * 1000;
+  let cursor = new Date(startDate.getTime());
+  const limit = endDate.getTime();
+
+  while (cursor.getTime() <= limit) {
+    const windowEnd = new Date(Math.min(limit, cursor.getTime() + windowMs));
+    windows.push({ start: new Date(cursor.getTime()), end: windowEnd });
+    if (windowEnd.getTime() >= limit) {
+      break;
+    }
+    cursor = new Date(windowEnd.getTime() + 1);
+  }
+
+  return windows;
+}
+
+async function fetchActivitiesWindow(login, accountId, startTime, endTime) {
+  const params = {};
+  if (startTime) {
+    params.startTime = startTime;
+  }
+  if (endTime) {
+    params.endTime = endTime;
+  }
+  const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
+  return Array.isArray(data.activities) ? data.activities : [];
+}
+
+async function fetchAllAccountActivities(login, accountId) {
+  if (!login || !accountId) {
+    return [];
+  }
+
+  const now = new Date();
+  const start = NET_DEPOSIT_ACTIVITY_EPOCH;
+  const windows = buildActivityWindows(start, now, NET_DEPOSIT_ACTIVITY_WINDOW_DAYS);
+  const activities = [];
+
+  for (const window of windows) {
+    try {
+      const batch = await fetchActivitiesWindow(login, accountId, window.start.toISOString(), window.end.toISOString());
+      if (batch.length) {
+        activities.push(...batch);
+      }
+    } catch (error) {
+      console.warn(
+        'Failed to fetch activities for account ' + accountId + ' (' + resolveLoginDisplay(login) + '):',
+        error.message || error
+      );
+      throw error;
+    }
+  }
+
+  return activities;
+}
+
+function accumulateNetDeposits(activities) {
+  const totals = new Map();
+  const counts = new Map();
+
+  activities.forEach((activity) => {
+    const currency = resolveActivityCurrency(activity);
+    if (!currency) {
+      return;
+    }
+
+    const classification = classifyNetDepositActivity(activity);
+    if (!classification) {
+      return;
+    }
+
+    let amount = Number(activity && activity.netAmount);
+    if (!Number.isFinite(amount) || amount === 0) {
+      return;
+    }
+
+    if (classification === 'inflow' && amount < 0) {
+      amount = -amount;
+    } else if (classification === 'outflow' && amount > 0) {
+      amount = -amount;
+    }
+
+    const normalizedCurrency = currency.toUpperCase();
+    const currentTotal = totals.get(normalizedCurrency) || 0;
+    totals.set(normalizedCurrency, currentTotal + amount);
+    counts.set(normalizedCurrency, (counts.get(normalizedCurrency) || 0) + 1);
+  });
+
+  return { totals, counts };
+}
+
+function getCachedNetDeposits(key) {
+  const entry = netDepositCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.timestamp > NET_DEPOSIT_CACHE_TTL_MS) {
+    netDepositCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedNetDeposits(key, value) {
+  netDepositCache.set(key, { timestamp: Date.now(), value });
+}
+
+async function fetchAccountNetDeposits(login, accountId) {
+  const cacheKey = getNetDepositCacheKey(login && login.id, accountId);
+  const cached = getCachedNetDeposits(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const activities = await fetchAllAccountActivities(login, accountId);
+  const summary = accumulateNetDeposits(activities);
+  setCachedNetDeposits(cacheKey, summary);
+  return summary;
+}
+
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -706,8 +936,259 @@ function finalizeBalances(summary) {
   return summary;
 }
 
-function mergePnL(positions) {
-  return positions.reduce(
+function normalizeCurrencyCode(currency, fallback = null) {
+  if (typeof currency !== 'string') {
+    return fallback;
+  }
+  const trimmed = currency.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  return trimmed.toUpperCase();
+}
+
+function findBalanceEntryKey(bucket, currency) {
+  if (!bucket || !currency) {
+    return null;
+  }
+  const normalized = normalizeCurrencyCode(currency);
+  if (!normalized) {
+    return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(bucket, normalized)) {
+    return normalized;
+  }
+  for (const key of Object.keys(bucket)) {
+    if (typeof key === 'string' && key.toUpperCase() === normalized) {
+      return key;
+    }
+  }
+  return null;
+}
+
+function getBalanceEntry(bucket, currency) {
+  const key = findBalanceEntryKey(bucket, currency);
+  if (!key) {
+    return null;
+  }
+  return bucket[key] || null;
+}
+
+function deriveExchangeRate(perEntry, combinedEntry, baseCombinedEntry) {
+  if (!perEntry && !combinedEntry) {
+    return null;
+  }
+
+  const directFields = ['exchangeRate', 'fxRate', 'conversionRate', 'rate'];
+  for (const field of directFields) {
+    const candidate = (perEntry && perEntry[field]) ?? (combinedEntry && combinedEntry[field]) ?? null;
+    if (isFiniteNumber(candidate) && candidate > 0) {
+      return candidate;
+    }
+  }
+
+  if (baseCombinedEntry && combinedEntry) {
+    const baseFields = ['totalEquity', 'marketValue', 'cash', 'buyingPower'];
+    for (const field of baseFields) {
+      const baseValue = baseCombinedEntry[field];
+      const currencyValue = combinedEntry[field];
+      if (!isFiniteNumber(baseValue) || !isFiniteNumber(currencyValue)) {
+        continue;
+      }
+      if (Math.abs(currencyValue) <= 1e-9) {
+        continue;
+      }
+      const ratio = baseValue / currencyValue;
+      if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
+        return Math.abs(ratio);
+      }
+    }
+  }
+
+  const ratioSources = [
+    ['totalEquity', 'totalEquity'],
+    ['marketValue', 'marketValue'],
+  ];
+
+  for (const [perField, combinedField] of ratioSources) {
+    const perValue = perEntry ? perEntry[perField] : null;
+    const combinedValue = combinedEntry ? combinedEntry[combinedField] : null;
+    if (!isFiniteNumber(perValue) || !isFiniteNumber(combinedValue)) {
+      continue;
+    }
+    if (Math.abs(perValue) <= 1e-9 || Math.abs(combinedValue) <= 1e-9) {
+      continue;
+    }
+    const ratio = combinedValue / perValue;
+    if (isFiniteNumber(ratio) && Math.abs(ratio) > 1e-9) {
+      return Math.abs(ratio);
+    }
+  }
+
+  return null;
+}
+
+function buildCurrencyRateMapFromSummary(summary, baseCurrency = 'CAD') {
+  const normalizedBase = normalizeCurrencyCode(baseCurrency, 'CAD') || 'CAD';
+  const rates = new Map();
+  rates.set(normalizedBase, 1);
+
+  if (!summary || typeof summary !== 'object') {
+    return rates;
+  }
+
+  const combined = summary.combined || {};
+  const perCurrency = summary.perCurrency || {};
+  const baseCombinedEntry = getBalanceEntry(combined, normalizedBase);
+  const allKeys = new Set([...Object.keys(combined || {}), ...Object.keys(perCurrency || {})]);
+
+  allKeys.forEach((key) => {
+    if (!key) {
+      return;
+    }
+    const normalizedKey = normalizeCurrencyCode(key, normalizedBase);
+    if (!normalizedKey || rates.has(normalizedKey)) {
+      return;
+    }
+    const perEntry = getBalanceEntry(perCurrency, normalizedKey);
+    const combinedEntry = getBalanceEntry(combined, normalizedKey);
+    const derived = deriveExchangeRate(perEntry, combinedEntry, baseCombinedEntry);
+    if (derived && derived > 0) {
+      rates.set(normalizedKey, derived);
+      return;
+    }
+    if (normalizedKey === normalizedBase) {
+      rates.set(normalizedKey, 1);
+    }
+  });
+
+  return rates;
+}
+
+function convertAmountToCurrency(value, sourceCurrency, targetCurrency, currencyRates, baseCurrency = 'CAD') {
+  if (!isFiniteNumber(value)) {
+    return 0;
+  }
+  const normalizedBase = normalizeCurrencyCode(baseCurrency, 'CAD') || 'CAD';
+  const normalizedSource = normalizeCurrencyCode(sourceCurrency, normalizedBase) || normalizedBase;
+  const normalizedTarget = normalizeCurrencyCode(targetCurrency, normalizedBase) || normalizedBase;
+
+  const sourceRate = currencyRates && currencyRates.get(normalizedSource);
+  let baseValue = null;
+  if (isFiniteNumber(sourceRate) && sourceRate > 0) {
+    baseValue = value * sourceRate;
+  } else if (normalizedSource === normalizedBase) {
+    baseValue = value;
+  }
+
+  if (baseValue === null) {
+    return 0;
+  }
+
+  if (normalizedTarget === normalizedBase) {
+    return baseValue;
+  }
+
+  const targetRate = currencyRates && currencyRates.get(normalizedTarget);
+  if (isFiniteNumber(targetRate) && targetRate > 0) {
+    return baseValue / targetRate;
+  }
+
+  return baseValue;
+}
+
+function applyTotalPnlToBalanceSummary(summary, totals) {
+  if (!summary || typeof summary !== 'object' || !totals) {
+    return;
+  }
+
+  if (totals.perCurrency && summary.perCurrency) {
+    Object.entries(totals.perCurrency).forEach(([currency, value]) => {
+      if (!isFiniteNumber(value) && value !== 0) {
+        return;
+      }
+      const key = findBalanceEntryKey(summary.perCurrency, currency);
+      if (!key || !summary.perCurrency[key] || typeof summary.perCurrency[key] !== 'object') {
+        return;
+      }
+      summary.perCurrency[key].totalPnl = value;
+    });
+  }
+
+  if (totals.combined && summary.combined) {
+    Object.entries(totals.combined).forEach(([currency, value]) => {
+      if (!isFiniteNumber(value) && value !== 0) {
+        return;
+      }
+      const key = findBalanceEntryKey(summary.combined, currency);
+      if (!key || !summary.combined[key] || typeof summary.combined[key] !== 'object') {
+        return;
+      }
+      summary.combined[key].totalPnl = value;
+    });
+  }
+}
+
+function computeAccountTotalPnlSummary(balanceSummary, netDeposits, options = {}) {
+  if (!balanceSummary || typeof balanceSummary !== 'object' || !netDeposits) {
+    return null;
+  }
+  const totalsMap = netDeposits.totals instanceof Map ? netDeposits.totals : null;
+  const countsMap = netDeposits.counts instanceof Map ? netDeposits.counts : null;
+  if (!totalsMap || totalsMap.size === 0) {
+    return null;
+  }
+  const baseCurrency = options.baseCurrency || 'CAD';
+  const perCurrencyResult = {};
+  const combinedResult = {};
+  let hasValue = false;
+
+  if (balanceSummary.perCurrency && countsMap) {
+    Object.entries(balanceSummary.perCurrency).forEach(([key, entry]) => {
+      const normalized = normalizeCurrencyCode(key);
+      if (!normalized || !countsMap.has(normalized)) {
+        return;
+      }
+      const equity = entry && entry.totalEquity;
+      if (!isFiniteNumber(equity)) {
+        return;
+      }
+      const deposit = totalsMap.get(normalized) || 0;
+      const totalPnl = equity - deposit;
+      perCurrencyResult[normalized] = totalPnl;
+      hasValue = true;
+    });
+  }
+
+  if (balanceSummary.combined) {
+    const rates = buildCurrencyRateMapFromSummary(balanceSummary, baseCurrency);
+    Object.entries(balanceSummary.combined).forEach(([key, entry]) => {
+      const normalized = normalizeCurrencyCode(key);
+      if (!normalized) {
+        return;
+      }
+      const equity = entry && entry.totalEquity;
+      if (!isFiniteNumber(equity)) {
+        return;
+      }
+      let convertedDeposits = 0;
+      totalsMap.forEach((amount, sourceCurrency) => {
+        convertedDeposits += convertAmountToCurrency(amount, sourceCurrency, normalized, rates, baseCurrency);
+      });
+      combinedResult[normalized] = equity - convertedDeposits;
+      hasValue = true;
+    });
+  }
+
+  if (!hasValue) {
+    return null;
+  }
+
+  return { perCurrency: perCurrencyResult, combined: combinedResult };
+}
+
+function mergePnL(positions, totalPnlValue = null) {
+  const summary = positions.reduce(
     function (acc, position) {
       acc.dayPnl += position.dayPnl || 0;
       acc.openPnl += position.openPnl || 0;
@@ -715,6 +1196,12 @@ function mergePnL(positions) {
     },
     { dayPnl: 0, openPnl: 0 }
   );
+  if (isFiniteNumber(totalPnlValue) || totalPnlValue === 0) {
+    summary.totalPnl = totalPnlValue;
+  } else {
+    summary.totalPnl = null;
+  }
+  return summary;
 }
 
 function buildInvestmentModelPositions(positions, accountId) {
@@ -1081,10 +1568,15 @@ app.get('/api/summary', async function (req, res) {
       })
     );
     const perAccountCombinedBalances = {};
+    const perAccountBalanceSummaries = {};
     selectedContexts.forEach(function (context, index) {
-      const combined = summarizeAccountCombinedBalances(balancesResults[index]);
-      if (combined) {
-        perAccountCombinedBalances[context.account.id] = combined;
+      const accountBalancesSummary = mergeBalances([balancesResults[index]]);
+      finalizeBalances(accountBalancesSummary);
+      if (accountBalancesSummary && accountBalancesSummary.combined) {
+        perAccountCombinedBalances[context.account.id] = accountBalancesSummary.combined;
+      }
+      if (accountBalancesSummary) {
+        perAccountBalanceSummaries[context.account.id] = accountBalancesSummary;
       }
     });
     const flattenedPositions = positionsResults
@@ -1127,10 +1619,51 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
-    const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
 
+    let computedTotalPnl = null;
+    if (selectedContexts.length === 1) {
+      const context = selectedContexts[0];
+      const accountSummary = perAccountBalanceSummaries[context.account.id] || null;
+      if (accountSummary && context.account && context.account.number) {
+        try {
+          const netDeposits = await fetchAccountNetDeposits(context.login, context.account.number);
+          const totals = computeAccountTotalPnlSummary(accountSummary, netDeposits, { baseCurrency: 'CAD' });
+          if (totals) {
+            applyTotalPnlToBalanceSummary(accountSummary, totals);
+            applyTotalPnlToBalanceSummary(balancesSummary, totals);
+            computedTotalPnl = totals;
+          }
+        } catch (totalError) {
+          console.warn(
+            'Failed to compute total P&L for account ' + context.account.id + ':',
+            totalError && totalError.message ? totalError.message : totalError
+          );
+        }
+      }
+    }
+
+    let totalPnlOverride = null;
+    if (computedTotalPnl && computedTotalPnl.combined) {
+      const cadKey = findBalanceEntryKey(balancesSummary.combined, 'CAD');
+      if (cadKey) {
+        const cadEntry = balancesSummary.combined[cadKey];
+        if (cadEntry && isFiniteNumber(cadEntry.totalPnl)) {
+          totalPnlOverride = cadEntry.totalPnl;
+        }
+      }
+      if (totalPnlOverride === null) {
+        for (const value of Object.values(computedTotalPnl.combined)) {
+          if (isFiniteNumber(value)) {
+            totalPnlOverride = value;
+            break;
+          }
+        }
+      }
+    }
+
+    const pnl = mergePnL(flattenedPositions, totalPnlOverride);
     const defaultAccountId = defaultAccount ? defaultAccount.id : null;
 
     const investmentModelEvaluations = {};
