@@ -405,11 +405,11 @@ function buildStyle2HeatmapNodes(positions, metricKey) {
     .slice()
     .sort((a, b) => b.weight - a.weight);
 
-  const totalPositiveOpen = itemsForLayout.reduce(
+  const totalPositiveOpen = prepared.reduce(
     (sum, item) => (item.openPnl > 0 ? sum + item.openPnl : sum),
     0
   );
-  const totalNegativeOpen = itemsForLayout.reduce(
+  const totalNegativeOpen = prepared.reduce(
     (sum, item) => (item.openPnl < 0 ? sum + Math.abs(item.openPnl) : sum),
     0
   );
