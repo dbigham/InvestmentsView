@@ -9,7 +9,7 @@ import {
   formatSignedPercent,
 } from '../utils/formatters';
 
-function MetricRow({ label, value, extra, tone, className, onActivate }) {
+function MetricRow({ label, value, extra, tone, className, onActivate, tooltip }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   const interactive = typeof onActivate === 'function';
 
@@ -33,9 +33,15 @@ function MetricRow({ label, value, extra, tone, className, onActivate }) {
       }
     : {};
 
+  const labelContent = tooltip ? (
+    <span title={tooltip}>{label}</span>
+  ) : (
+    label
+  );
+
   return (
     <div className={rowClass} {...interactiveProps}>
-      <dt>{label}</dt>
+      <dt>{labelContent}</dt>
       <dd>
         <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
         {extra && <span className="equity-card__metric-extra">{extra}</span>}
@@ -51,12 +57,14 @@ MetricRow.propTypes = {
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
   className: PropTypes.string,
   onActivate: PropTypes.func,
+  tooltip: PropTypes.string,
 };
 
 MetricRow.defaultProps = {
   extra: null,
   className: '',
   onActivate: null,
+  tooltip: null,
 };
 
 function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
@@ -426,7 +434,12 @@ export default function SummaryMetrics({
             extra={totalPercent ? `(${totalPercent})` : null}
             tone={totalTone}
           />
-          <MetricRow label="CAGR" value={formattedCagr} tone={cagrTone} />
+          <MetricRow
+            label="Annualized return"
+            tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
+            value={formattedCagr}
+            tone={cagrTone}
+          />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
         <dl className="equity-card__metric-column">
