@@ -243,7 +243,9 @@ function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
   return placedNodes;
 }
 
-function buildHeatmapNodes(positions, metricKey) {
+const STYLE_TWO_MIN_SHARE = 0.005;
+
+function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
   const prepared = positions
     .map((position) => {
       const marketValue = isFiniteNumber(position.normalizedMarketValue)
@@ -282,6 +284,59 @@ function buildHeatmapNodes(positions, metricKey) {
     return [];
   }
 
+  const score = (value) => {
+    if (value > 0) return 0;
+    if (value === 0) return 1;
+    return 2;
+  };
+
+  if (styleMode === 'style2') {
+    const withMetricWeight = prepared
+      .map((item) => ({
+        ...item,
+        weight: Math.abs(item.metricValue),
+      }))
+      .filter((item) => item.weight > 0);
+
+    if (!withMetricWeight.length) {
+      return [];
+    }
+
+    const totalAbs = withMetricWeight.reduce((sum, item) => sum + item.weight, 0);
+    if (totalAbs <= 0) {
+      return [];
+    }
+
+    const filtered = withMetricWeight.filter((item) => item.weight / totalAbs >= STYLE_TWO_MIN_SHARE);
+    const pool = filtered.length ? filtered : withMetricWeight.slice(0, 1);
+
+    const sorted = pool
+      .slice()
+      .sort((a, b) => {
+        const aScore = score(a.metricValue);
+        const bScore = score(b.metricValue);
+        if (aScore !== bScore) {
+          return aScore - bScore;
+        }
+        if (aScore === 0) {
+          return b.weight - a.weight;
+        }
+        if (aScore === 2) {
+          if (a.weight !== b.weight) {
+            return a.weight - b.weight;
+          }
+          return Math.abs(a.metricValue) - Math.abs(b.metricValue);
+        }
+        return b.weight - a.weight;
+      });
+
+    const layout = buildTreemapLayout(sorted);
+    return layout.map((item) => ({
+      ...item,
+      share: null,
+    }));
+  }
+
   const totalWeight = prepared.reduce((sum, item) => sum + item.weight, 0);
   if (totalWeight <= 0) {
     return [];
@@ -295,11 +350,6 @@ function buildHeatmapNodes(positions, metricKey) {
   const sorted = normalized
     .slice()
     .sort((a, b) => {
-      const score = (value) => {
-        if (value > 0) return 0;
-        if (value === 0) return 1;
-        return 2;
-      };
       const aScore = score(a.metricValue);
       const bScore = score(b.metricValue);
       if (aScore !== bScore) {
@@ -398,7 +448,11 @@ export default function PnlHeatmapDialog({
   const toPercent = (fraction) => `${(fraction * 100).toFixed(4)}%`;
   const formatPx = (value) => `${Number.parseFloat(value.toFixed(3))}`;
 
-  const nodes = useMemo(() => buildHeatmapNodes(positions, metricKey), [positions, metricKey]);
+  const [styleMode, setStyleMode] = useState('style1');
+  const nodes = useMemo(
+    () => buildHeatmapNodes(positions, metricKey, styleMode),
+    [positions, metricKey, styleMode]
+  );
   const [colorMode, setColorMode] = useState('percent');
   const handleTileClick = useCallback((event, symbol) => {
     if (!symbol) {
@@ -431,6 +485,24 @@ export default function PnlHeatmapDialog({
       { marketValue: 0, pnl: 0 }
     );
   }, [positions, metricKey]);
+
+  const styleTwoTotals = useMemo(() => {
+    if (styleMode !== 'style2') {
+      return { positive: 0, negative: 0 };
+    }
+    return nodes.reduce(
+      (acc, node) => {
+        if (!isFiniteNumber(node.metricValue) || node.metricValue === 0) {
+          return acc;
+        }
+        if (node.metricValue > 0) {
+          return { ...acc, positive: acc.positive + node.metricValue };
+        }
+        return { ...acc, negative: acc.negative + Math.abs(node.metricValue) };
+      },
+      { positive: 0, negative: 0 }
+    );
+  }, [nodes, styleMode]);
 
   const resolvedMarketValue = isFiniteNumber(totalMarketValue) ? totalMarketValue : totals.marketValue;
 
@@ -488,6 +560,28 @@ export default function PnlHeatmapDialog({
                   Open P&L
                 </button>
               </div>
+              <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Select heat map style">
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    styleMode === 'style1' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setStyleMode('style1')}
+                  aria-pressed={styleMode === 'style1'}
+                >
+                  Style 1
+                </button>
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    styleMode === 'style2' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setStyleMode('style2')}
+                  aria-pressed={styleMode === 'style2'}
+                >
+                  Style 2
+                </button>
+              </div>
               <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Color tiles by">
                 <button
                   type="button"
@@ -496,6 +590,7 @@ export default function PnlHeatmapDialog({
                   }`}
                   onClick={() => setColorMode('percent')}
                   aria-pressed={colorMode === 'percent'}
+                  disabled={styleMode === 'style2'}
                 >
                   % change
                 </button>
@@ -506,6 +601,7 @@ export default function PnlHeatmapDialog({
                   }`}
                   onClick={() => setColorMode('value')}
                   aria-pressed={colorMode === 'value'}
+                  disabled={styleMode === 'style2'}
                 >
                   {currencyLabel} change
                 </button>
@@ -520,13 +616,18 @@ export default function PnlHeatmapDialog({
           {nodes.length ? (
             <div className="pnl-heatmap-board" role="presentation">
               {nodes.map((node) => {
+                const isStyleTwo = styleMode === 'style2';
                 const percentChangeValue = isFiniteNumber(node.percentChange) ? node.percentChange : 0;
                 const percentIntensity = Math.min(
                   1,
                   Math.abs(percentChangeValue) / Math.max(percentColorThreshold, 1)
                 );
                 const resolvedIntensity = clamp(percentIntensity, 0, 1);
-                const backgroundColor = resolveTileColor(percentChangeValue, resolvedIntensity);
+                const backgroundColor = isStyleTwo
+                  ? node.metricValue >= 0
+                    ? '#2f8f2f'
+                    : '#b23b3b'
+                  : resolveTileColor(percentChangeValue, resolvedIntensity);
                 const textColor = 'rgba(255, 255, 255, 0.98)';
                 const pnlDisplay = formatSignedMoney(node.metricValue);
                 const shareLabel =
@@ -540,10 +641,31 @@ export default function PnlHeatmapDialog({
                     })
                   : null;
                 const valueDisplay = isFiniteNumber(node.metricValue) ? pnlDisplay : null;
-                const detailDisplay =
-                  colorMode === 'value'
-                    ? valueDisplay ?? '—'
-                    : percentDisplay ?? '—';
+                const styleTwoDisplay = (() => {
+                  if (!isStyleTwo) {
+                    return null;
+                  }
+                  if (node.metricValue > 0 && styleTwoTotals.positive > 0) {
+                    const portion = (node.metricValue / styleTwoTotals.positive) * 100;
+                    return formatPercent(portion, {
+                      minimumFractionDigits: 1,
+                      maximumFractionDigits: 1,
+                    });
+                  }
+                  if (node.metricValue < 0 && styleTwoTotals.negative > 0) {
+                    const portion = (Math.abs(node.metricValue) / styleTwoTotals.negative) * 100;
+                    return formatPercent(portion, {
+                      minimumFractionDigits: 1,
+                      maximumFractionDigits: 1,
+                    });
+                  }
+                  return '—';
+                })();
+                const detailDisplay = isStyleTwo
+                  ? styleTwoDisplay
+                  : colorMode === 'value'
+                  ? valueDisplay ?? '—'
+                  : percentDisplay ?? '—';
                 const priceDisplay = isFiniteNumber(node.currentPrice)
                   ? formatMoney(node.currentPrice, {
                       minimumFractionDigits: 2,
@@ -574,11 +696,19 @@ export default function PnlHeatmapDialog({
                 const pnlLine = percentDisplay
                   ? `${metricLabel}: ${pnlDisplay} (${percentDisplay})`
                   : `${metricLabel}: ${pnlDisplay}`;
+                const styleTwoLine = isStyleTwo
+                  ? node.metricValue > 0 && styleTwoTotals.positive > 0
+                    ? `Share of total gain: ${styleTwoDisplay}`
+                    : node.metricValue < 0 && styleTwoTotals.negative > 0
+                    ? `Share of total loss: ${styleTwoDisplay}`
+                    : null
+                  : null;
                 const tooltipLines = [
                   node.description ? `${node.symbol} — ${node.description}` : node.symbol,
                   pnlLine,
                   priceLine,
-                  shareLabel ? `Portfolio share: ${shareLabel}` : null,
+                  !isStyleTwo && shareLabel ? `Portfolio share: ${shareLabel}` : null,
+                  styleTwoLine,
                 ]
                   .filter(Boolean)
                   .join('\n');
