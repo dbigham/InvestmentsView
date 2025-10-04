@@ -547,7 +547,7 @@ async function fetchBalances(login, accountId) {
 }
 
 const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL === 'true';
-const DEBUG_XIRR = process.env.DEBUG_XIRR !== 'false';
+const DEBUG_XIRR = process.env.DEBUG_XIRR === 'true';
 // Questrade's documentation cites a 31 day cap for the activities endpoint, but in
 // practice we receive "Argument length exceeds imposed limit" errors whenever the
 // requested range spans a full 31 calendar days. Keeping the window strictly under
