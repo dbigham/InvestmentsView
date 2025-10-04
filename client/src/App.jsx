@@ -423,6 +423,241 @@ function convertCombinedPnl(perCurrencySummary, currencyRates, targetCurrency, b
   return result;
 }
 
+function findBalanceEntryForCurrency(balances, currency) {
+  if (!balances || !currency) {
+    return null;
+  }
+
+  const normalizedCurrency = String(currency).trim().toUpperCase();
+  const scopes = ['perCurrency', 'combined'];
+
+  for (const scope of scopes) {
+    const bucket = balances[scope];
+    if (!bucket || typeof bucket !== 'object') {
+      continue;
+    }
+
+    if (bucket[normalizedCurrency]) {
+      return bucket[normalizedCurrency];
+    }
+
+    const matchedKey = Object.keys(bucket).find((key) => {
+      return key && String(key).trim().toUpperCase() === normalizedCurrency;
+    });
+    if (matchedKey) {
+      return bucket[matchedKey];
+    }
+
+    const matchedEntry = Object.values(bucket).find((entry) => {
+      return (
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.currency === 'string' &&
+        entry.currency.trim().toUpperCase() === normalizedCurrency
+      );
+    });
+    if (matchedEntry) {
+      return matchedEntry;
+    }
+  }
+
+  return null;
+}
+
+function resolveCashForCurrency(balances, currency) {
+  const entry = findBalanceEntryForCurrency(balances, currency);
+  if (!entry || typeof entry !== 'object') {
+    return 0;
+  }
+
+  const cashFields = ['cash', 'buyingPower', 'available', 'availableCash'];
+  for (const field of cashFields) {
+    const value = coerceNumber(entry[field]);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrency = 'CAD' }) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return null;
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const cadCashRaw = resolveCashForCurrency(balances, 'CAD');
+  const usdCashRaw = resolveCashForCurrency(balances, 'USD');
+  const cadCash = Number.isFinite(cadCashRaw) ? cadCashRaw : 0;
+  const usdCash = Number.isFinite(usdCashRaw) ? usdCashRaw : 0;
+
+  const cadInBase = normalizeCurrencyAmount(cadCash, 'CAD', currencyRates, normalizedBase);
+  const usdInBase = normalizeCurrencyAmount(usdCash, 'USD', currencyRates, normalizedBase);
+  const totalInvestableCad = cadInBase + usdInBase;
+
+  if (!Number.isFinite(totalInvestableCad) || totalInvestableCad <= 0) {
+    return null;
+  }
+
+  const investablePositions = positions.filter((position) => {
+    if (!position) {
+      return false;
+    }
+    const symbol = position.symbol ? String(position.symbol).trim() : '';
+    if (!symbol) {
+      return false;
+    }
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    if (currency !== 'CAD' && currency !== 'USD') {
+      return false;
+    }
+    const normalizedValue = Number(position.normalizedMarketValue);
+    if (!Number.isFinite(normalizedValue) || normalizedValue <= 0) {
+      return false;
+    }
+    const price = Number(position.currentPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      return false;
+    }
+    return true;
+  });
+
+  if (!investablePositions.length) {
+    return null;
+  }
+
+  const totalNormalizedValue = investablePositions.reduce((sum, position) => {
+    const value = Number(position.normalizedMarketValue);
+    return Number.isFinite(value) && value > 0 ? sum + value : sum;
+  }, 0);
+
+  if (!Number.isFinite(totalNormalizedValue) || totalNormalizedValue <= 0) {
+    return null;
+  }
+
+  const lines = [];
+  lines.push('Invest cash evenly plan');
+  lines.push('');
+  lines.push('Available cash:');
+  lines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
+  lines.push(`  USD: ${formatMoney(usdCash)} USD`);
+  lines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
+  lines.push('');
+  lines.push('Purchases:');
+
+  let totalCadNeeded = 0;
+  let totalUsdNeeded = 0;
+
+  const USD_SHARE_PRECISION = 4;
+  const usdRate = currencyRates?.get('USD');
+  const hasUsdRate = Number.isFinite(usdRate) && usdRate > 0;
+
+  investablePositions.forEach((position) => {
+    const symbol = String(position.symbol).trim();
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    const price = Number(position.currentPrice);
+    const normalizedValue = Number(position.normalizedMarketValue);
+    const weight = normalizedValue / totalNormalizedValue;
+    const targetCadAmount = totalInvestableCad * (Number.isFinite(weight) ? weight : 0);
+
+    let targetCurrencyAmount = targetCadAmount;
+    if (currency !== normalizedBase) {
+      targetCurrencyAmount = convertAmountToCurrency(
+        targetCadAmount,
+        normalizedBase,
+        currency,
+        currencyRates,
+        normalizedBase
+      );
+    }
+
+    if (!Number.isFinite(targetCurrencyAmount) || targetCurrencyAmount <= 0) {
+      targetCurrencyAmount = 0;
+    }
+
+    let shares = 0;
+    let spentCurrency = 0;
+    let note = '';
+
+    if (price > 0 && targetCurrencyAmount > 0) {
+      if (currency === 'CAD') {
+        shares = Math.floor(targetCurrencyAmount / price);
+        spentCurrency = shares * price;
+        if (shares === 0) {
+          note = ' (insufficient for 1 share)';
+        }
+      } else {
+        const factor = Math.pow(10, USD_SHARE_PRECISION);
+        shares = Math.floor((targetCurrencyAmount / price) * factor) / factor;
+        spentCurrency = shares * price;
+        if (shares === 0) {
+          note = ' (insufficient for minimum fractional share)';
+        }
+      }
+    }
+
+    if (!Number.isFinite(shares)) {
+      shares = 0;
+    }
+    if (!Number.isFinite(spentCurrency) || spentCurrency < 0) {
+      spentCurrency = 0;
+    }
+
+    if (currency === 'CAD') {
+      totalCadNeeded += spentCurrency;
+    } else if (currency === 'USD') {
+      totalUsdNeeded += spentCurrency;
+    }
+
+    const shareDigits =
+      currency === 'CAD'
+        ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+        : { minimumFractionDigits: USD_SHARE_PRECISION, maximumFractionDigits: USD_SHARE_PRECISION };
+
+    const formattedAmount = `${formatMoney(spentCurrency)} ${currency}`;
+    const formattedShares = formatNumber(shares, shareDigits);
+    const formattedPrice = price > 0 ? `${formatMoney(price)} ${currency}` : '—';
+
+    lines.push(`  ${symbol} (${currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${note}`);
+  });
+
+  const cadRemaining = cadCash - totalCadNeeded;
+  const usdRemaining = usdCash - totalUsdNeeded;
+
+  lines.push('');
+  lines.push('Totals:');
+  lines.push(
+    `  CAD purchases: ${formatMoney(totalCadNeeded)} CAD (remaining cash: ${formatMoney(cadRemaining)} CAD)`
+  );
+  lines.push(
+    `  USD purchases: ${formatMoney(totalUsdNeeded)} USD (remaining cash: ${formatMoney(usdRemaining)} USD)`
+  );
+
+  const cadShortfall = totalCadNeeded > cadCash ? totalCadNeeded - cadCash : 0;
+  const usdShortfall = totalUsdNeeded > usdCash ? totalUsdNeeded - usdCash : 0;
+
+  if (cadShortfall > 0.01) {
+    const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
+    lines.push(
+      `  Convert ${formatMoney(cadShortfall)} CAD${
+        usdEquivalent ? ` (≈ ${formatMoney(usdEquivalent)} USD)` : ''
+      } from USD to CAD`
+    );
+  }
+
+  if (usdShortfall > 0.01) {
+    const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
+    lines.push(
+      `  Convert ${cadEquivalent ? `${formatMoney(cadEquivalent)} CAD` : 'additional CAD'} into ${formatMoney(
+        usdShortfall
+      )} USD`
+    );
+  }
+
+  return lines.join('\n');
+}
+
 function pickBalanceEntry(bucket, currency) {
   if (!bucket || !currency) {
     return null;
@@ -1477,6 +1712,36 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const handlePlanInvestEvenly = useCallback(async () => {
+    const plan = buildInvestEvenlyPlan({
+      positions: orderedPositions,
+      balances,
+      currencyRates,
+      baseCurrency,
+    });
+
+    if (!plan) {
+      if (typeof window !== 'undefined') {
+        window.alert('Unable to build an invest evenly plan. Ensure cash balances and prices are available.');
+      }
+      return;
+    }
+
+    console.log('Invest cash evenly plan:\n' + plan);
+
+    try {
+      await copyTextToClipboard(plan);
+      if (typeof window !== 'undefined') {
+        window.alert('Invest cash evenly plan copied to clipboard.');
+      }
+    } catch (error) {
+      console.error('Failed to copy invest evenly plan', error);
+      if (typeof window !== 'undefined') {
+        window.alert(plan);
+      }
+    }
+  }, [orderedPositions, balances, currencyRates, baseCurrency]);
+
   useEffect(() => {
     if (!autoRefreshEnabled) {
       return undefined;
@@ -1591,6 +1856,7 @@ export default function App() {
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
+            onPlanInvestEvenly={handlePlanInvestEvenly}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
