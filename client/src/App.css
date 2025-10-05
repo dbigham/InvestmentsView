@@ -814,6 +814,29 @@ textarea {
   font-weight: 500;
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.invest-plan-cash__input {
+  width: 100%;
+  max-width: 160px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.invest-plan-cash__input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(56, 155, 60, 0.25);
 }
 
 .invest-plan-purchases-wrapper {
