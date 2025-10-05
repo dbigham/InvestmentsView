@@ -148,6 +148,11 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
         : spendCurrency === 'CAD'
         ? conversion.cadAmount
         : conversion.usdAmount;
+      const targetAmount = Number.isFinite(conversion.actualReceiveAmount)
+        ? conversion.actualReceiveAmount
+        : conversion.targetCurrency === 'CAD'
+        ? conversion.cadAmount
+        : conversion.usdAmount;
       const amountCopy = Number.isFinite(spendAmount) && spendAmount > 0
         ? formatCopyNumber(spendAmount, 2)
         : null;
@@ -158,6 +163,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
         ...conversion,
         spendCurrency,
         spendAmount,
+        targetAmount,
         amountCopy,
         shareCopy,
       };
@@ -232,12 +238,10 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
               <ul className="invest-plan-conversions">
                 {conversionRows.map((conversion) => {
                   const amountLabel = formatCurrencyLabel(conversion.spendAmount, conversion.spendCurrency);
-                  const targetLabel = conversion.targetCurrency
-                    ? formatCurrencyLabel(
-                        conversion.targetCurrency === 'CAD' ? conversion.cadAmount : conversion.usdAmount,
-                        conversion.targetCurrency
-                      )
-                    : null;
+                  const targetLabel =
+                    conversion.targetCurrency && Number.isFinite(conversion.targetAmount)
+                      ? formatCurrencyLabel(conversion.targetAmount, conversion.targetCurrency)
+                      : null;
                   const directionLabel =
                     conversion.type === 'CAD_TO_USD' ? 'Convert CAD → USD' : 'Convert USD → CAD';
                   return (
@@ -436,6 +440,8 @@ const conversionShape = PropTypes.shape({
   shares: PropTypes.number,
   sharePrecision: PropTypes.number,
   spendAmount: PropTypes.number,
+  actualSpendAmount: PropTypes.number,
+  actualReceiveAmount: PropTypes.number,
   currency: PropTypes.string,
   targetCurrency: PropTypes.string,
 });

@@ -656,22 +656,44 @@ function buildInvestEvenlyPlan({
     summaryText: '',
   };
 
-  const summaryLines = [];
-  summaryLines.push('Invest cash evenly plan');
-  summaryLines.push('');
-  summaryLines.push('Available cash:');
-  summaryLines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
-  summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
-  summaryLines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
-  summaryLines.push('');
-  summaryLines.push('Purchases:');
-
   let totalCadNeeded = 0;
   let totalUsdNeeded = 0;
 
   const USD_SHARE_PRECISION = 4;
   const usdRate = currencyRates?.get('USD');
   const hasUsdRate = Number.isFinite(usdRate) && usdRate > 0;
+
+  const computePurchaseAllocation = (targetAmount, currency, price) => {
+    let shares = 0;
+    let spentCurrency = 0;
+    let note = '';
+
+    if (price > 0 && targetAmount > 0) {
+      if (currency === 'CAD') {
+        shares = Math.floor(targetAmount / price);
+        spentCurrency = shares * price;
+        if (shares === 0) {
+          note = 'Insufficient for 1 share';
+        }
+      } else {
+        const factor = Math.pow(10, USD_SHARE_PRECISION);
+        shares = Math.floor((targetAmount / price) * factor) / factor;
+        spentCurrency = shares * price;
+        if (shares === 0) {
+          note = 'Insufficient for minimum fractional share';
+        }
+      }
+    }
+
+    if (!Number.isFinite(shares)) {
+      shares = 0;
+    }
+    if (!Number.isFinite(spentCurrency) || spentCurrency < 0) {
+      spentCurrency = 0;
+    }
+
+    return { shares, spentCurrency, note };
+  };
 
   investablePositions.forEach((position) => {
     const symbol = String(position.symbol).trim();
@@ -696,54 +718,17 @@ function buildInvestEvenlyPlan({
       targetCurrencyAmount = 0;
     }
 
-    let shares = 0;
-    let spentCurrency = 0;
-    let note = '';
-
-    if (price > 0 && targetCurrencyAmount > 0) {
-      if (currency === 'CAD') {
-        shares = Math.floor(targetCurrencyAmount / price);
-        spentCurrency = shares * price;
-        if (shares === 0) {
-          note = 'Insufficient for 1 share';
-        }
-      } else {
-        const factor = Math.pow(10, USD_SHARE_PRECISION);
-        shares = Math.floor((targetCurrencyAmount / price) * factor) / factor;
-        spentCurrency = shares * price;
-        if (shares === 0) {
-          note = 'Insufficient for minimum fractional share';
-        }
-      }
-    }
-
-    if (!Number.isFinite(shares)) {
-      shares = 0;
-    }
-    if (!Number.isFinite(spentCurrency) || spentCurrency < 0) {
-      spentCurrency = 0;
-    }
+    const { shares, spentCurrency, note } = computePurchaseAllocation(
+      targetCurrencyAmount,
+      currency,
+      price
+    );
 
     if (currency === 'CAD') {
       totalCadNeeded += spentCurrency;
     } else if (currency === 'USD') {
       totalUsdNeeded += spentCurrency;
     }
-
-    const shareDigits =
-      currency === 'CAD'
-        ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
-        : { minimumFractionDigits: USD_SHARE_PRECISION, maximumFractionDigits: USD_SHARE_PRECISION };
-
-    const formattedAmount = `${formatMoney(spentCurrency)} ${currency}`;
-    const formattedShares = formatNumber(shares, shareDigits);
-    const formattedPrice = price > 0 ? `${formatMoney(price)} ${currency}` : '—';
-
-    summaryLines.push(
-      `  ${symbol} (${currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${
-        note ? ` (${note})` : ''
-      }`
-    );
 
     plan.purchases.push({
       symbol,
@@ -759,25 +744,6 @@ function buildInvestEvenlyPlan({
     });
   });
 
-  const cadRemaining = cadCash - totalCadNeeded;
-  const usdRemaining = usdCash - totalUsdNeeded;
-
-  plan.totals = {
-    cadNeeded: totalCadNeeded,
-    usdNeeded: totalUsdNeeded,
-    cadRemaining,
-    usdRemaining,
-  };
-
-  summaryLines.push('');
-  summaryLines.push('Totals:');
-  summaryLines.push(
-    `  CAD purchases: ${formatMoney(totalCadNeeded)} CAD (remaining cash: ${formatMoney(cadRemaining)} CAD)`
-  );
-  summaryLines.push(
-    `  USD purchases: ${formatMoney(totalUsdNeeded)} USD (remaining cash: ${formatMoney(usdRemaining)} USD)`
-  );
-
   const cadShortfall = totalCadNeeded > cadCash ? totalCadNeeded - cadCash : 0;
   const usdShortfall = totalUsdNeeded > usdCash ? totalUsdNeeded - usdCash : 0;
 
@@ -786,20 +752,39 @@ function buildInvestEvenlyPlan({
   const dlrToOverride = resolvePriceOverride(normalizedPriceOverrides, 'DLR.TO');
   const dlrUOverride = resolvePriceOverride(normalizedPriceOverrides, 'DLR.U.TO');
 
+  const dlrToPrice =
+    coercePositiveNumber(dlrToOverride?.price) ??
+    coercePositiveNumber(dlrToDetails?.price) ??
+    (hasUsdRate ? usdRate * DLR_SHARE_VALUE_USD : null);
+  const dlrUPrice =
+    coercePositiveNumber(dlrUOverride?.price) ??
+    coercePositiveNumber(dlrUDetails?.price) ??
+    DLR_SHARE_VALUE_USD;
+
+  let cadAvailableAfterConversions = cadCash;
+  let usdAvailableAfterConversions = usdCash;
+
   if (usdShortfall > 0.01) {
     const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
-    const dlrPrice =
-      coercePositiveNumber(dlrToOverride?.price) ??
-      coercePositiveNumber(dlrToDetails?.price) ??
-      (hasUsdRate ? usdRate * DLR_SHARE_VALUE_USD : null);
     let dlrShares = null;
     let dlrSpendCad = cadEquivalent;
+    let actualUsdReceived = null;
     const dlrDescription = dlrToOverride?.description ?? dlrToDetails?.description ?? null;
     const dlrCurrency = dlrToOverride?.currency ?? dlrToDetails?.currency ?? 'CAD';
 
-    if (dlrPrice && cadEquivalent !== null) {
-      dlrShares = Math.floor(cadEquivalent / dlrPrice);
-      dlrSpendCad = dlrShares * dlrPrice;
+    if (dlrToPrice && cadEquivalent !== null) {
+      dlrShares = Math.floor(cadEquivalent / dlrToPrice);
+      dlrSpendCad = dlrShares * dlrToPrice;
+      if (dlrShares > 0 && dlrUPrice) {
+        actualUsdReceived = dlrShares * dlrUPrice;
+      }
+    }
+
+    if (Number.isFinite(dlrSpendCad)) {
+      cadAvailableAfterConversions -= dlrSpendCad;
+    }
+    if (Number.isFinite(actualUsdReceived)) {
+      usdAvailableAfterConversions += actualUsdReceived;
     }
 
     plan.conversions.push({
@@ -808,39 +793,38 @@ function buildInvestEvenlyPlan({
       description: dlrDescription,
       cadAmount: cadEquivalent,
       usdAmount: usdShortfall,
-      sharePrice: dlrPrice,
+      sharePrice: dlrToPrice,
       shares: dlrShares,
       sharePrecision: 0,
       spendAmount: dlrSpendCad,
       currency: dlrCurrency || 'CAD',
       targetCurrency: 'USD',
+      actualSpendAmount: dlrSpendCad,
+      actualReceiveAmount: actualUsdReceived,
     });
-
-    summaryLines.push(
-      `  Convert ${cadEquivalent ? `${formatMoney(cadEquivalent)} CAD` : 'additional CAD'} into ${formatMoney(
-        usdShortfall
-      )} USD via DLR.TO${
-        dlrShares && dlrShares > 0
-          ? ` (${formatNumber(dlrShares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
-          : ''
-      }`
-    );
   }
 
   if (cadShortfall > 0.01) {
     const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
-    const dlrUPrice =
-      coercePositiveNumber(dlrUOverride?.price) ??
-      coercePositiveNumber(dlrUDetails?.price) ??
-      DLR_SHARE_VALUE_USD;
     let dlrUShares = null;
     let dlrSpendUsd = usdEquivalent;
+    let actualCadReceived = null;
     const dlrUDescription = dlrUOverride?.description ?? dlrUDetails?.description ?? null;
     const dlrUCurrency = dlrUOverride?.currency ?? dlrUDetails?.currency ?? 'USD';
 
     if (dlrUPrice && usdEquivalent !== null) {
       dlrUShares = Math.floor(usdEquivalent / dlrUPrice);
       dlrSpendUsd = dlrUShares * dlrUPrice;
+      if (dlrUShares > 0 && dlrToPrice) {
+        actualCadReceived = dlrUShares * dlrToPrice;
+      }
+    }
+
+    if (Number.isFinite(dlrSpendUsd)) {
+      usdAvailableAfterConversions -= dlrSpendUsd;
+    }
+    if (Number.isFinite(actualCadReceived)) {
+      cadAvailableAfterConversions += actualCadReceived;
     }
 
     plan.conversions.push({
@@ -855,18 +839,144 @@ function buildInvestEvenlyPlan({
       spendAmount: dlrSpendUsd,
       currency: dlrUCurrency || 'USD',
       targetCurrency: 'CAD',
+      actualSpendAmount: dlrSpendUsd,
+      actualReceiveAmount: actualCadReceived,
     });
+  }
 
+  if (!Number.isFinite(cadAvailableAfterConversions)) {
+    cadAvailableAfterConversions = 0;
+  }
+  if (!Number.isFinite(usdAvailableAfterConversions)) {
+    usdAvailableAfterConversions = 0;
+  }
+
+  const totalCadPlanned = plan.purchases
+    .filter((purchase) => purchase.currency === 'CAD')
+    .reduce((sum, purchase) => sum + (Number.isFinite(purchase.amount) ? purchase.amount : 0), 0);
+  const totalUsdPlanned = plan.purchases
+    .filter((purchase) => purchase.currency === 'USD')
+    .reduce((sum, purchase) => sum + (Number.isFinite(purchase.amount) ? purchase.amount : 0), 0);
+
+  const cadScale =
+    totalCadPlanned > 0 && cadAvailableAfterConversions < totalCadPlanned
+      ? Math.max(cadAvailableAfterConversions, 0) / totalCadPlanned
+      : 1;
+  const usdScale =
+    totalUsdPlanned > 0 && usdAvailableAfterConversions < totalUsdPlanned
+      ? Math.max(usdAvailableAfterConversions, 0) / totalUsdPlanned
+      : 1;
+
+  let updatedCadTotal = 0;
+  let updatedUsdTotal = 0;
+
+  plan.purchases.forEach((purchase) => {
+    let scaledTarget = purchase.targetAmount ?? 0;
+    if (purchase.currency === 'CAD' && cadScale < 0.9999) {
+      scaledTarget *= cadScale;
+    } else if (purchase.currency === 'USD' && usdScale < 0.9999) {
+      scaledTarget *= usdScale;
+    }
+
+    const { shares, spentCurrency, note } = computePurchaseAllocation(
+      scaledTarget,
+      purchase.currency,
+      purchase.price
+    );
+
+    purchase.amount = spentCurrency;
+    purchase.shares = shares;
+    purchase.note = note || null;
+
+    if (purchase.currency === 'CAD') {
+      updatedCadTotal += spentCurrency;
+    } else if (purchase.currency === 'USD') {
+      updatedUsdTotal += spentCurrency;
+    }
+  });
+
+  const cadRemaining = cadAvailableAfterConversions - updatedCadTotal;
+  const usdRemaining = usdAvailableAfterConversions - updatedUsdTotal;
+
+  plan.totals = {
+    cadNeeded: updatedCadTotal,
+    usdNeeded: updatedUsdTotal,
+    cadRemaining,
+    usdRemaining,
+  };
+
+  const summaryLines = [];
+  summaryLines.push('Invest cash evenly plan');
+  summaryLines.push('');
+  summaryLines.push('Available cash:');
+  summaryLines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
+  summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
+  summaryLines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
+
+  if (plan.conversions.length) {
+    summaryLines.push('');
+    summaryLines.push('FX conversions:');
+    plan.conversions.forEach((conversion) => {
+      if (conversion.type === 'CAD_TO_USD') {
+        const spendCad = Number.isFinite(conversion.actualSpendAmount)
+          ? conversion.actualSpendAmount
+          : conversion.cadAmount;
+        const receiveUsd = Number.isFinite(conversion.actualReceiveAmount)
+          ? conversion.actualReceiveAmount
+          : conversion.usdAmount;
+        const sharesText =
+          conversion.shares && conversion.shares > 0
+            ? ` (${formatNumber(conversion.shares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
+            : '';
+        const spendLabel = Number.isFinite(spendCad) ? `${formatMoney(spendCad)} CAD` : 'CAD';
+        const receiveLabel = Number.isFinite(receiveUsd)
+          ? `${formatMoney(receiveUsd)} USD`
+          : 'USD';
+        summaryLines.push(
+          `  Convert ${spendLabel} into ${receiveLabel} via DLR.TO${sharesText}`
+        );
+      } else if (conversion.type === 'USD_TO_CAD') {
+        const spendUsd = Number.isFinite(conversion.actualSpendAmount)
+          ? conversion.actualSpendAmount
+          : conversion.usdAmount;
+        const receiveCad = Number.isFinite(conversion.actualReceiveAmount)
+          ? conversion.actualReceiveAmount
+          : conversion.cadAmount;
+        const sharesText =
+          conversion.shares && conversion.shares > 0
+            ? ` (${formatNumber(conversion.shares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
+            : '';
+        const spendLabel = Number.isFinite(spendUsd) ? `${formatMoney(spendUsd)} USD` : 'USD';
+        const receiveLabel = Number.isFinite(receiveCad)
+          ? `${formatMoney(receiveCad)} CAD`
+          : 'CAD';
+        summaryLines.push(`  Convert ${receiveLabel} from ${spendLabel} via DLR.U.TO${sharesText}`);
+      }
+    });
+  }
+
+  summaryLines.push('');
+  summaryLines.push('Purchases:');
+  plan.purchases.forEach((purchase) => {
+    const shareDigits =
+      purchase.currency === 'CAD'
+        ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+        : { minimumFractionDigits: USD_SHARE_PRECISION, maximumFractionDigits: USD_SHARE_PRECISION };
+    const formattedAmount = `${formatMoney(purchase.amount)} ${purchase.currency}`;
+    const formattedShares = formatNumber(purchase.shares, shareDigits);
+    const formattedPrice =
+      purchase.price > 0 ? `${formatMoney(purchase.price)} ${purchase.currency}` : '—';
     summaryLines.push(
-      `  Convert ${formatMoney(cadShortfall)} CAD${
-        usdEquivalent ? ` (≈ ${formatMoney(usdEquivalent)} USD)` : ''
-      } from USD via DLR.U.TO${
-        dlrUShares && dlrUShares > 0
-          ? ` (${formatNumber(dlrUShares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
-          : ''
+      `  ${purchase.symbol} (${purchase.currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${
+        purchase.note ? ` (${purchase.note})` : ''
       }`
     );
-  }
+  });
+
+  summaryLines.push('');
+  summaryLines.push('Totals:');
+  summaryLines.push(`  CAD purchases: ${formatMoney(updatedCadTotal)} CAD`);
+  summaryLines.push(`  USD purchases: ${formatMoney(updatedUsdTotal)} USD`);
 
   plan.summaryText = summaryLines.join('\n');
   return plan;
