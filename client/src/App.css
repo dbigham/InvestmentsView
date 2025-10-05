@@ -710,6 +710,13 @@ textarea {
   color: var(--color-negative);
 }
 
+.return-details-dialog__metric-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
 .return-details-dialog__metric-extra {
   font-size: 13px;
   color: var(--color-text-secondary);

@@ -882,6 +882,14 @@ function addMonths(baseDate, months) {
   );
 }
 
+function isTradingDay(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return false;
+  }
+  const day = date.getUTCDay();
+  return day !== 0 && day !== 6;
+}
+
 function clampDate(date, minDate) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return null;
@@ -1496,7 +1504,10 @@ function buildTrailingReturnSummaries(history, finalTimestamp, totalEquity) {
   }
 
   const finalNetDeposits = Number.isFinite(finalEntry.netDeposits) ? finalEntry.netDeposits : 0;
+  const earliestEntry = history[0];
+  const earliestTimestamp = Number.isFinite(earliestEntry?.timestamp) ? earliestEntry.timestamp : null;
   const summaries = {};
+  const gapToleranceMs = DAY_IN_MS;
 
   TRAILING_PERIODS.forEach((period) => {
     const months = Number(period.months);
@@ -1505,8 +1516,22 @@ function buildTrailingReturnSummaries(history, finalTimestamp, totalEquity) {
     }
     const startDate = addMonths(new Date(resolvedFinalTimestamp), -months);
     const startTime = startDate.getTime();
+    if (!Number.isFinite(startTime)) {
+      return;
+    }
+    if (
+      Number.isFinite(earliestTimestamp) &&
+      startTime < earliestTimestamp - gapToleranceMs
+    ) {
+      return;
+    }
     const startEntry = findHistoryEntryOnOrBefore(history, startTime) || history[0];
     if (!startEntry) {
+      return;
+    }
+
+    const startTimestamp = Number(startEntry.timestamp);
+    if (!Number.isFinite(startTimestamp)) {
       return;
     }
 
@@ -1522,12 +1547,28 @@ function buildTrailingReturnSummaries(history, finalTimestamp, totalEquity) {
         ? pnlChange / startValue
         : null;
 
+    let annualizedReturnRate = null;
+    if (Number.isFinite(returnRate)) {
+      const durationMs = resolvedFinalTimestamp - startTimestamp;
+      if (durationMs > 0) {
+        const durationYears = durationMs / (365.25 * DAY_IN_MS);
+        const base = 1 + returnRate;
+        if (durationYears > 0 && base > 0) {
+          const computed = Math.pow(base, 1 / durationYears) - 1;
+          if (Number.isFinite(computed)) {
+            annualizedReturnRate = computed;
+          }
+        }
+      }
+    }
+
     summaries[period.key] = {
       label: period.label,
       startDate: startEntry.date,
       endDate: finalEntry.date,
       pnlCad: Number.isFinite(pnlChange) ? pnlChange : null,
       returnRate: Number.isFinite(returnRate) ? returnRate : null,
+      annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : null,
     };
   });
 
@@ -1582,29 +1623,77 @@ function buildFundingPerformanceSummary(cashFlows, totalPnlCad, totalEquityCad) 
   const endTime = finalEntry.date.getTime();
   const totalDuration = Math.max(1, endTime - startTime);
 
-  const history = [];
-  let runningNetDeposits = 0;
+  const dateEntries = [];
   for (let cursor = startTime; cursor <= endTime; cursor += DAY_IN_MS) {
     const currentDate = new Date(cursor);
     const iso = currentDate.toISOString().slice(0, 10);
-    const dailyContribution = contributionsByDay.get(iso);
-    if (Number.isFinite(dailyContribution) && Math.abs(dailyContribution) >= CASH_FLOW_EPSILON) {
-      runningNetDeposits += dailyContribution;
-    }
-    const ratio = Math.min(1, Math.max(0, (cursor - startTime) / totalDuration));
-    const pnlValue = resolvedTotalPnl * ratio;
-    const accountValue = runningNetDeposits + pnlValue;
-    const percent =
-      Number.isFinite(accountValue) && Math.abs(accountValue) > CASH_FLOW_EPSILON ? pnlValue / accountValue : null;
-    history.push({
-      date: iso,
+    const contribution = contributionsByDay.get(iso);
+    dateEntries.push({
       timestamp: cursor,
-      netDeposits: runningNetDeposits,
-      pnlCad: pnlValue,
-      accountValue,
-      pnlPercent: Number.isFinite(percent) ? percent : null,
+      date: iso,
+      contribution: Number.isFinite(contribution) ? contribution : 0,
+      isTradingDay: isTradingDay(currentDate),
     });
   }
+
+  const normalizedForIrr = schedule;
+  const inferredAnnualizedRate = computeAnnualizedReturnFromCashFlows(normalizedForIrr, {
+    preNormalized: true,
+  });
+  let dailyGrowthRate = null;
+  if (Number.isFinite(inferredAnnualizedRate)) {
+    const base = 1 + inferredAnnualizedRate;
+    if (base > 0) {
+      const computedDaily = Math.pow(base, 1 / 365.25) - 1;
+      if (Number.isFinite(computedDaily)) {
+        dailyGrowthRate = computedDaily;
+      }
+    }
+  }
+
+  const history = [];
+  let runningNetDeposits = 0;
+  let accountValue = 0;
+
+  const toleranceContribution = CASH_FLOW_EPSILON;
+
+  dateEntries.forEach((entry, index) => {
+    const contribution = Number(entry.contribution) || 0;
+    if (Math.abs(contribution) >= toleranceContribution) {
+      runningNetDeposits += contribution;
+      accountValue += contribution;
+    }
+
+    let pnlValue;
+    if (Number.isFinite(dailyGrowthRate)) {
+      accountValue *= 1 + dailyGrowthRate;
+      pnlValue = accountValue - runningNetDeposits;
+    } else {
+      const ratio = Math.min(1, Math.max(0, (entry.timestamp - startTime) / totalDuration));
+      pnlValue = resolvedTotalPnl * ratio;
+      accountValue = runningNetDeposits + pnlValue;
+    }
+
+    const percent =
+      Number.isFinite(accountValue) && Math.abs(accountValue) > CASH_FLOW_EPSILON ? pnlValue / accountValue : null;
+
+    const shouldRecord =
+      index === 0 ||
+      index === dateEntries.length - 1 ||
+      entry.isTradingDay ||
+      Math.abs(contribution) >= toleranceContribution;
+
+    if (shouldRecord) {
+      history.push({
+        date: entry.date,
+        timestamp: entry.timestamp,
+        netDeposits: runningNetDeposits,
+        pnlCad: Number.isFinite(pnlValue) ? pnlValue : null,
+        accountValue: Number.isFinite(accountValue) ? accountValue : null,
+        pnlPercent: Number.isFinite(percent) ? percent : null,
+      });
+    }
+  });
 
   if (history.length > 0) {
     const lastEntry = history[history.length - 1];
@@ -1617,6 +1706,7 @@ function buildFundingPerformanceSummary(cashFlows, totalPnlCad, totalEquityCad) 
         : null;
     lastEntry.pnlPercent = Number.isFinite(percent) ? percent : null;
     lastEntry.timestamp = endTime;
+    lastEntry.date = new Date(endTime).toISOString().slice(0, 10);
   }
 
   const trailingReturns = buildTrailingReturnSummaries(history, endTime, resolvedTotalEquity);

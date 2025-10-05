@@ -1947,6 +1947,9 @@ export default function App() {
           endDate: typeof value.endDate === 'string' ? value.endDate : null,
           pnlCad: Number.isFinite(value.pnlCad) ? value.pnlCad : null,
           returnRate: Number.isFinite(value.returnRate) ? value.returnRate : null,
+          annualizedReturnRate: Number.isFinite(value.annualizedReturnRate)
+            ? value.annualizedReturnRate
+            : null,
         };
       });
       if (Object.keys(trailingReturns).length === 0) {

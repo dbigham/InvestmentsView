@@ -8,7 +8,7 @@ import {
   formatSignedPercent,
 } from '../utils/formatters';
 
-const PERIOD_OPTIONS = [
+const BASE_PERIOD_OPTIONS = [
   { key: 'annualized', label: 'Annualized' },
   { key: '1M', label: '1M', months: 1 },
   { key: '6M', label: '6M', months: 6 },
@@ -70,6 +70,32 @@ export default function ReturnBreakdownDialog({
   const [selectedPeriod, setSelectedPeriod] = useState('annualized');
   const [valueMode, setValueMode] = useState('value');
 
+  const periodOptions = useMemo(() => {
+    const options = [];
+    const trailing = trailingReturns && typeof trailingReturns === 'object' ? trailingReturns : null;
+    BASE_PERIOD_OPTIONS.forEach((option) => {
+      if (option.key === 'annualized') {
+        options.push(option);
+        return;
+      }
+      const source = trailing ? trailing[option.key] : null;
+      if (!source) {
+        return;
+      }
+      const hasMetrics =
+        Number.isFinite(source.returnRate) ||
+        Number.isFinite(source.annualizedReturnRate) ||
+        Number.isFinite(source.pnlCad);
+      if (hasMetrics) {
+        options.push(option);
+      }
+    });
+    if (!options.length) {
+      options.push(BASE_PERIOD_OPTIONS[0]);
+    }
+    return options;
+  }, [trailingReturns]);
+
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') {
@@ -82,53 +108,74 @@ export default function ReturnBreakdownDialog({
     };
   }, [onClose]);
 
+  useEffect(() => {
+    if (!periodOptions.some((option) => option.key === selectedPeriod)) {
+      const fallback = periodOptions[0];
+      if (fallback) {
+        setSelectedPeriod(fallback.key);
+      }
+    }
+  }, [periodOptions, selectedPeriod]);
+
   const metrics = useMemo(() => {
     const entries = [];
     const percentOptions = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+    const availablePeriodKeys = new Set(periodOptions.map((option) => option.key));
 
     entries.push({
       key: 'annualized',
       label: 'Annualized return',
       percent: Number.isFinite(annualizedRate) ? annualizedRate * 100 : null,
+      annualizedPercent: null,
       money: Number.isFinite(totalPnl) ? totalPnl : null,
     });
 
     const orderedKeys = ['12M', '6M', '1M', '5Y', '10Y'];
     orderedKeys.forEach((key) => {
+      if (!availablePeriodKeys.has(key)) {
+        return;
+      }
       const source = trailingReturns && typeof trailingReturns === 'object' ? trailingReturns[key] : null;
-      const label = source && typeof source.label === 'string' ? source.label : null;
+      if (!source) {
+        return;
+      }
+      const baseOption = BASE_PERIOD_OPTIONS.find((option) => option.key === key);
+      const label =
+        (source && typeof source.label === 'string' && source.label) || (baseOption ? baseOption.label : key);
+      const percentValue = source && Number.isFinite(source.returnRate) ? source.returnRate * 100 : null;
+      const annualizedPercentValue =
+        source && Number.isFinite(source.annualizedReturnRate) ? source.annualizedReturnRate * 100 : null;
+      const moneyValue = source && Number.isFinite(source.pnlCad) ? source.pnlCad : null;
+      if (percentValue === null && annualizedPercentValue === null && moneyValue === null) {
+        return;
+      }
       entries.push({
         key,
-        label: label ||
-          (key === '12M'
-            ? '12 month return'
-            : key === '6M'
-              ? '6 month return'
-              : key === '1M'
-                ? '1 month return'
-                : key === '5Y'
-                  ? '5 year return'
-                  : key === '10Y'
-                    ? '10 year return'
-                    : key),
-        percent: source && Number.isFinite(source.returnRate) ? source.returnRate * 100 : null,
-        money: source && Number.isFinite(source.pnlCad) ? source.pnlCad : null,
+        label,
+        percent: percentValue,
+        annualizedPercent: annualizedPercentValue,
+        money: moneyValue,
       });
     });
 
     return entries.map((entry) => {
       const formattedPercent =
         entry.percent !== null ? formatSignedPercent(entry.percent, percentOptions) : '—';
+      const formattedAnnualized =
+        entry.annualizedPercent !== null
+          ? formatSignedPercent(entry.annualizedPercent, percentOptions)
+          : null;
       const formattedMoney = entry.money !== null ? formatSignedMoney(entry.money) : null;
       const tone = resolveTone(entry.percent, entry.money);
       return {
         ...entry,
         formattedPercent,
+        formattedAnnualized,
         formattedMoney,
         tone,
       };
     });
-  }, [annualizedRate, trailingReturns, totalPnl]);
+  }, [annualizedRate, periodOptions, totalPnl, trailingReturns]);
 
   const normalizedHistory = useMemo(() => {
     if (!Array.isArray(pnlHistory) || pnlHistory.length === 0) {
@@ -175,7 +222,8 @@ export default function ReturnBreakdownDialog({
       return null;
     }
 
-    const periodConfig = PERIOD_OPTIONS.find((option) => option.key === selectedPeriod) || PERIOD_OPTIONS[0];
+    const periodConfig =
+      periodOptions.find((option) => option.key === selectedPeriod) || periodOptions[0] || BASE_PERIOD_OPTIONS[0];
     let filtered = normalizedHistory;
 
     if (selectedPeriod !== 'annualized' && periodConfig && Number.isFinite(periodConfig.months)) {
@@ -283,7 +331,7 @@ export default function ReturnBreakdownDialog({
       finalValue,
       finalPoint: lastPoint || null,
     };
-  }, [normalizedHistory, selectedPeriod, valueMode]);
+  }, [normalizedHistory, periodOptions, selectedPeriod, valueMode]);
 
   const selectedMetric = metrics.find((entry) => entry.key === selectedPeriod) || metrics[0];
   const selectedPeriodLabel = selectedMetric ? selectedMetric.label : 'Annualized return';
@@ -354,8 +402,17 @@ export default function ReturnBreakdownDialog({
                     <span className={`return-details-dialog__metric-value return-details-dialog__metric-value--${metric.tone}`}>
                       {metric.formattedPercent}
                     </span>
-                    {metric.formattedMoney && (
-                      <span className="return-details-dialog__metric-extra">({metric.formattedMoney})</span>
+                    {(metric.formattedAnnualized || metric.formattedMoney) && (
+                      <div className="return-details-dialog__metric-sub">
+                        {metric.formattedAnnualized && (
+                          <span className="return-details-dialog__metric-extra">
+                            Annualized {metric.formattedAnnualized}
+                          </span>
+                        )}
+                        {metric.formattedMoney && (
+                          <span className="return-details-dialog__metric-extra">({metric.formattedMoney})</span>
+                        )}
+                      </div>
                     )}
                   </dd>
                 </div>
@@ -366,7 +423,7 @@ export default function ReturnBreakdownDialog({
           <section className="return-details-dialog__chart-section">
             <div className="return-details-dialog__chart-toolbar">
               <div className="return-details-dialog__controls" role="group" aria-label="Select return period">
-                {PERIOD_OPTIONS.map((option) => {
+                {periodOptions.map((option) => {
                   const isActive = selectedPeriod === option.key;
                   return (
                     <button
@@ -457,6 +514,7 @@ const trailingReturnShape = PropTypes.shape({
   endDate: PropTypes.string,
   pnlCad: PropTypes.number,
   returnRate: PropTypes.number,
+  annualizedReturnRate: PropTypes.number,
 });
 
 const historyEntryShape = PropTypes.shape({
