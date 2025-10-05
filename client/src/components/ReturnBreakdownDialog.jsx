@@ -167,12 +167,14 @@ export default function ReturnBreakdownDialog({
           : null;
       const formattedMoney = entry.money !== null ? formatSignedMoney(entry.money) : null;
       const tone = resolveTone(entry.percent, entry.money);
+      const moneyTone = resolveTone(null, entry.money);
       return {
         ...entry,
         formattedPercent,
         formattedAnnualized,
         formattedMoney,
         tone,
+        moneyTone,
       };
     });
   }, [annualizedRate, periodOptions, totalPnl, trailingReturns]);
@@ -404,13 +406,40 @@ export default function ReturnBreakdownDialog({
                     </span>
                     {(metric.formattedAnnualized || metric.formattedMoney) && (
                       <div className="return-details-dialog__metric-sub">
-                        {metric.formattedAnnualized && (
+                        {metric.formattedAnnualized ? (
                           <span className="return-details-dialog__metric-extra">
-                            Annualized {metric.formattedAnnualized}
+                            <span className="return-details-dialog__metric-extra-label">Annualized:</span>
+                            <span
+                              className={`return-details-dialog__metric-extra-value return-details-dialog__metric-extra-value--${metric.tone}`}
+                            >
+                              {metric.formattedAnnualized}
+                            </span>
+                            {metric.formattedMoney && (
+                              <span className="return-details-dialog__metric-extra-money">
+                                (
+                                <span
+                                  className={`return-details-dialog__metric-extra-value return-details-dialog__metric-extra-value--${metric.moneyTone}`}
+                                >
+                                  {metric.formattedMoney}
+                                </span>
+                                )
+                              </span>
+                            )}
                           </span>
-                        )}
-                        {metric.formattedMoney && (
-                          <span className="return-details-dialog__metric-extra">({metric.formattedMoney})</span>
+                        ) : (
+                          metric.formattedMoney && (
+                            <span className="return-details-dialog__metric-extra">
+                              <span className="return-details-dialog__metric-extra-money">
+                                (
+                                <span
+                                  className={`return-details-dialog__metric-extra-value return-details-dialog__metric-extra-value--${metric.moneyTone}`}
+                                >
+                                  {metric.formattedMoney}
+                                </span>
+                                )
+                              </span>
+                            </span>
+                          )
                         )}
                       </div>
                     )}

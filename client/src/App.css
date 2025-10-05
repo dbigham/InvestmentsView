@@ -720,6 +720,37 @@ textarea {
 .return-details-dialog__metric-extra {
   font-size: 13px;
   color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.return-details-dialog__metric-extra-label {
+  font-weight: 500;
+}
+
+.return-details-dialog__metric-extra-value {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.return-details-dialog__metric-extra-value--positive {
+  color: var(--color-positive);
+}
+
+.return-details-dialog__metric-extra-value--negative {
+  color: var(--color-negative);
+}
+
+.return-details-dialog__metric-extra-value--neutral {
+  color: var(--color-text-secondary);
+}
+
+.return-details-dialog__metric-extra-money {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--color-text-secondary);
 }
 
 .return-details-dialog__chart-section {
