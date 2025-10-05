@@ -2252,6 +2252,8 @@ function buildTrailingReturnSummaries(history, finalTimestamp, totalEquity) {
   });
 
   return summaries;
+}
+
 async function buildFundingPerformanceSummary(cashFlows, totalPnlCad, totalEquityCad, options = {}) {
   const schedule = normalizeCashFlowSchedule(cashFlows);
   if (schedule.length < 2) {
