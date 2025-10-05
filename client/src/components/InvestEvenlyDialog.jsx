@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatMoney, formatNumber } from '../utils/formatters';
 
+const DESCRIPTION_CHAR_LIMIT = 21;
+
 function formatCopyNumber(value, decimals = 2, { trimTrailingZeros = false } = {}) {
   if (!Number.isFinite(value)) {
     return null;
@@ -39,6 +41,17 @@ function formatShareDisplay(shares, precision) {
   }
   const digits = Math.max(0, Number.isFinite(precision) ? precision : 0);
   return formatNumber(shares, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function truncateDescription(value) {
+  if (!value) {
+    return null;
+  }
+  const normalized = String(value);
+  if (normalized.length <= DESCRIPTION_CHAR_LIMIT) {
+    return normalized;
+  }
+  return `${normalized.slice(0, DESCRIPTION_CHAR_LIMIT).trimEnd()}...`;
 }
 
 export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
@@ -127,12 +140,14 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
         ? formatCopyNumber(purchase.shares, purchase.sharePrecision ?? 0, { trimTrailingZeros: true })
         : null;
       const weightPercent = Number.isFinite(purchase.weight) ? purchase.weight : null;
+      const displayDescription = truncateDescription(purchase.description);
       return {
         ...purchase,
         amountCopy,
         shareCopy,
         weightPercent,
         rowKey,
+        displayDescription,
       };
     });
   }, [plan?.purchases]);
@@ -159,6 +174,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
       const shareCopy = Number.isFinite(conversion.shares) && conversion.shares > 0
         ? formatCopyNumber(conversion.shares, conversion.sharePrecision ?? 0, { trimTrailingZeros: true })
         : null;
+      const displayDescription = truncateDescription(conversion.description);
       return {
         ...conversion,
         spendCurrency,
@@ -166,6 +182,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
         targetAmount,
         amountCopy,
         shareCopy,
+        displayDescription,
       };
     });
   }, [plan?.conversions]);
@@ -252,8 +269,13 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
                       <div className="invest-plan-conversion__header">
                         <div className="invest-plan-symbol">
                           <span className="invest-plan-symbol__ticker">{conversion.symbol}</span>
-                          {conversion.description && (
-                            <span className="invest-plan-symbol__name">{conversion.description}</span>
+                          {conversion.displayDescription && (
+                            <span
+                              className="invest-plan-symbol__name"
+                              title={conversion.description || undefined}
+                            >
+                              {conversion.displayDescription}
+                            </span>
                           )}
                         </div>
                         <span className="invest-plan-conversion__direction">{directionLabel}</span>
@@ -340,8 +362,13 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
                           <th scope="row">
                             <div className="invest-plan-symbol">
                               <span className="invest-plan-symbol__ticker">{purchase.symbol}</span>
-                              {purchase.description && (
-                                <span className="invest-plan-symbol__name">{purchase.description}</span>
+                              {purchase.displayDescription && (
+                                <span
+                                  className="invest-plan-symbol__name"
+                                  title={purchase.description || undefined}
+                                >
+                                  {purchase.displayDescription}
+                                </span>
                               )}
                             </div>
                           </th>

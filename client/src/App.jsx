@@ -575,6 +575,82 @@ function findPositionDetails(positions, symbol) {
 }
 
 const DLR_SHARE_VALUE_USD = 10;
+const CENTS_PER_UNIT = 100;
+
+function alignRoundedAmountsToTotal(purchases) {
+  const validPurchases = purchases.filter(
+    (purchase) => Number.isFinite(purchase?.amount) && purchase.amount > 0
+  );
+
+  if (!validPurchases.length) {
+    return 0;
+  }
+
+  const rawTotal = validPurchases.reduce((sum, purchase) => sum + purchase.amount, 0);
+  const targetCents = Math.round((rawTotal + Number.EPSILON) * CENTS_PER_UNIT);
+
+  const entries = validPurchases.map((purchase, index) => {
+    const exactAmount = purchase.amount;
+    const exactCents = exactAmount * CENTS_PER_UNIT;
+    const flooredCents = Math.floor(exactCents + 1e-6);
+    const remainder = exactCents - flooredCents;
+    return {
+      purchase,
+      index,
+      flooredCents,
+      remainder,
+    };
+  });
+
+  let allocatedCents = entries.reduce((sum, entry) => sum + entry.flooredCents, 0);
+  let penniesToDistribute = targetCents - allocatedCents;
+
+  if (penniesToDistribute > 0) {
+    const sorted = [...entries].sort((a, b) => {
+      if (b.remainder !== a.remainder) {
+        return b.remainder - a.remainder;
+      }
+      return a.index - b.index;
+    });
+    let cursor = 0;
+    while (penniesToDistribute > 0 && sorted.length) {
+      const entry = sorted[cursor % sorted.length];
+      entry.flooredCents += 1;
+      penniesToDistribute -= 1;
+      cursor += 1;
+    }
+  } else if (penniesToDistribute < 0) {
+    const sorted = [...entries].sort((a, b) => {
+      if (a.remainder !== b.remainder) {
+        return a.remainder - b.remainder;
+      }
+      return b.purchase.amount - a.purchase.amount;
+    });
+    let cursor = 0;
+    while (penniesToDistribute < 0 && sorted.length) {
+      const entry = sorted[cursor % sorted.length];
+      if (entry.flooredCents <= 0) {
+        cursor += 1;
+        if (cursor >= sorted.length) {
+          break;
+        }
+        continue;
+      }
+      entry.flooredCents -= 1;
+      penniesToDistribute += 1;
+      cursor += 1;
+    }
+  }
+
+  let adjustedTotal = 0;
+  entries.forEach((entry) => {
+    const adjustedAmount = entry.flooredCents / CENTS_PER_UNIT;
+    entry.purchase.amount = adjustedAmount;
+    adjustedTotal += adjustedAmount;
+  });
+
+  return adjustedTotal;
+}
 
 function buildInvestEvenlyPlan({
   positions,
@@ -894,6 +970,13 @@ function buildInvestEvenlyPlan({
       updatedUsdTotal += spentCurrency;
     }
   });
+
+  updatedCadTotal = alignRoundedAmountsToTotal(
+    plan.purchases.filter((purchase) => purchase.currency === 'CAD')
+  );
+  updatedUsdTotal = alignRoundedAmountsToTotal(
+    plan.purchases.filter((purchase) => purchase.currency === 'USD')
+  );
 
   const cadRemaining = cadAvailableAfterConversions - updatedCadTotal;
   const usdRemaining = usdAvailableAfterConversions - updatedUsdTotal;
