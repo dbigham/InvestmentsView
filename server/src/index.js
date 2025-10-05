@@ -24,6 +24,14 @@ const {
   computeAnnualizedReturnFromCashFlows,
 } = require('./xirr');
 
+const RETURN_BREAKDOWN_PERIODS = [
+  { key: 'ten_year', months: 120 },
+  { key: 'five_year', months: 60 },
+  { key: 'twelve_month', months: 12 },
+  { key: 'six_month', months: 6 },
+  { key: 'one_month', months: 1 },
+];
+
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
@@ -882,6 +890,123 @@ function addMonths(baseDate, months) {
   );
 }
 
+function computeReturnBreakdownFromCashFlows(cashFlows, asOfDate, annualizedRate) {
+  const normalized = normalizeCashFlowsForXirr(cashFlows);
+  if (!normalized.length) {
+    return [];
+  }
+
+  const lastEntry = normalized[normalized.length - 1];
+  const resolvedAsOf =
+    asOfDate instanceof Date && !Number.isNaN(asOfDate.getTime())
+      ? asOfDate
+      : lastEntry?.date instanceof Date && !Number.isNaN(lastEntry.date.getTime())
+        ? lastEntry.date
+        : null;
+
+  if (!(resolvedAsOf instanceof Date) || Number.isNaN(resolvedAsOf.getTime())) {
+    return [];
+  }
+
+  const earliestEntry = normalized[0];
+  if (!(earliestEntry?.date instanceof Date) || Number.isNaN(earliestEntry.date.getTime())) {
+    return [];
+  }
+
+  const breakdown = [];
+  const safeRate = Number.isFinite(annualizedRate) && annualizedRate > -0.999 ? annualizedRate : 0;
+  const compoundingBase = 1 + safeRate;
+
+  for (const period of RETURN_BREAKDOWN_PERIODS) {
+    const startDate = addMonths(resolvedAsOf, -period.months);
+    if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+      continue;
+    }
+
+    if (!(earliestEntry.date < startDate)) {
+      continue;
+    }
+
+    const flowsBefore = normalized.filter((entry) => entry.date < startDate);
+    if (!flowsBefore.length) {
+      continue;
+    }
+
+    const flowsAfter = normalized.filter((entry) => entry.date >= startDate);
+    if (!flowsAfter.length) {
+      continue;
+    }
+
+    let startValue = 0;
+    let validStartValue = true;
+    for (const entry of flowsBefore) {
+      const millisDelta = startDate.getTime() - entry.date.getTime();
+      const yearSpan = millisDelta / DAY_IN_MS / 365;
+      if (!Number.isFinite(yearSpan) || yearSpan < 0) {
+        validStartValue = false;
+        break;
+      }
+      const growthFactor = compoundingBase > 0 ? Math.pow(compoundingBase, yearSpan) : Number.NaN;
+      if (!Number.isFinite(growthFactor)) {
+        validStartValue = false;
+        break;
+      }
+      const futureValue = entry.amount * growthFactor;
+      if (!Number.isFinite(futureValue)) {
+        validStartValue = false;
+        break;
+      }
+      startValue -= futureValue;
+    }
+
+    if (!validStartValue || !Number.isFinite(startValue) || Math.abs(startValue) < CASH_FLOW_EPSILON || startValue <= 0) {
+      const fallbackStart = flowsBefore.reduce((sum, entry) => sum - entry.amount, 0);
+      if (Number.isFinite(fallbackStart) && fallbackStart > CASH_FLOW_EPSILON) {
+        startValue = fallbackStart;
+        validStartValue = true;
+      } else {
+        continue;
+      }
+    }
+
+    const flowsAfterSum = flowsAfter.reduce((sum, entry) => sum + entry.amount, 0);
+    const totalReturn = flowsAfterSum - startValue;
+
+    let periodReturnRate = null;
+    if (Number.isFinite(totalReturn)) {
+      const rawRate = totalReturn / startValue;
+      if (Number.isFinite(rawRate)) {
+        periodReturnRate = rawRate;
+      }
+    }
+
+    let annualizedPeriodRate = null;
+    if (Number.isFinite(periodReturnRate) && periodReturnRate >= -1 && period.months > 0) {
+      const years = period.months / 12;
+      const exponent = years > 0 ? 1 / years : null;
+      if (Number.isFinite(exponent) && exponent > 0) {
+        const growthBase = 1 + periodReturnRate;
+        const growth = Math.pow(growthBase, exponent) - 1;
+        if (Number.isFinite(growth)) {
+          annualizedPeriodRate = growth;
+        }
+      }
+    }
+
+    breakdown.push({
+      period: period.key,
+      months: period.months,
+      startDate: startDate.toISOString(),
+      startValueCad: Number.isFinite(startValue) ? startValue : null,
+      totalReturnCad: Number.isFinite(totalReturn) ? totalReturn : null,
+      periodReturnRate: Number.isFinite(periodReturnRate) ? periodReturnRate : null,
+      annualizedRate: Number.isFinite(annualizedPeriodRate) ? annualizedPeriodRate : null,
+    });
+  }
+
+  return breakdown;
+}
+
 function clampDate(date, minDate) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return null;
@@ -1648,6 +1773,12 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     ? computeAccountAnnualizedReturn(effectiveCashFlows, accountKey)
     : null;
 
+  const returnBreakdown = computeReturnBreakdownFromCashFlows(
+    effectiveCashFlows,
+    now,
+    annualizedReturnRate
+  );
+
   const incompleteReturnData = conversionIncomplete || missingCashFlowDates;
 
   debugTotalPnl(accountKey, 'Net deposits summary', {
@@ -1699,6 +1830,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     },
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
     annualizedReturn,
+    returnBreakdown: returnBreakdown.length ? returnBreakdown : undefined,
     cashFlowsCad: effectiveCashFlows.length > 0 ? effectiveCashFlows : undefined,
     adjustments:
       accountAdjustment !== 0
@@ -2571,6 +2703,14 @@ app.get('/api/summary', async function (req, res) {
             asOf: aggregateAsOf,
             incomplete: true,
           };
+        }
+        const aggregateBreakdown = computeReturnBreakdownFromCashFlows(
+          aggregateTotals.cashFlowsCad,
+          new Date(aggregateAsOf),
+          aggregateRate
+        );
+        if (aggregateBreakdown.length) {
+          aggregateEntry.returnBreakdown = aggregateBreakdown;
         }
       }
 

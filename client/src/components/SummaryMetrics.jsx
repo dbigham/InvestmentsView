@@ -270,6 +270,7 @@ export default function SummaryMetrics({
   onShowPeople,
   peopleDisabled,
   onShowPnlBreakdown,
+  onShowAnnualizedReturn,
   isRefreshing,
   isAutoRefreshing,
   onCopySummary,
@@ -313,6 +314,10 @@ export default function SummaryMetrics({
         });
   const cagrTone =
     annualizedReturnRate > 0 ? 'positive' : annualizedReturnRate < 0 ? 'negative' : 'neutral';
+  const canShowReturnBreakdown =
+    typeof onShowAnnualizedReturn === 'function' &&
+    Array.isArray(fundingSummary?.returnBreakdown) &&
+    fundingSummary.returnBreakdown.length > 0;
 
   const safeTotalEquity = Number.isFinite(totalEquity)
     ? totalEquity
@@ -472,6 +477,7 @@ export default function SummaryMetrics({
             tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
             value={formattedCagr}
             tone={cagrTone}
+            onActivate={canShowReturnBreakdown ? onShowAnnualizedReturn : null}
           />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
@@ -519,6 +525,18 @@ SummaryMetrics.propTypes = {
     totalPnlCad: PropTypes.number,
     totalEquityCad: PropTypes.number,
     annualizedReturnRate: PropTypes.number,
+    annualizedReturnAsOf: PropTypes.string,
+    annualizedReturnIncomplete: PropTypes.bool,
+    annualizedReturnStartDate: PropTypes.string,
+    returnBreakdown: PropTypes.arrayOf(
+      PropTypes.shape({
+        period: PropTypes.string,
+        months: PropTypes.number,
+        startDate: PropTypes.string,
+        totalReturnCad: PropTypes.number,
+        annualizedRate: PropTypes.number,
+      })
+    ),
   }),
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
@@ -527,6 +545,7 @@ SummaryMetrics.propTypes = {
   onShowPeople: PropTypes.func,
   peopleDisabled: PropTypes.bool,
   onShowPnlBreakdown: PropTypes.func,
+  onShowAnnualizedReturn: PropTypes.func,
   isRefreshing: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
@@ -552,6 +571,7 @@ SummaryMetrics.defaultProps = {
   onShowPeople: null,
   peopleDisabled: false,
   onShowPnlBreakdown: null,
+  onShowAnnualizedReturn: null,
   isRefreshing: false,
   isAutoRefreshing: false,
   onCopySummary: null,
