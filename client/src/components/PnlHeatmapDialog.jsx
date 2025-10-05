@@ -245,7 +245,11 @@ function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
 
 const STYLE_TWO_MIN_SHARE = 0.005;
 
-function normalizeStyleTwoSymbol(position, fallbackId) {
+const MERGED_SYMBOL_ALIASES = new Map([
+  ['QQQM', 'QQQ'],
+]);
+
+function normalizeMergedSymbol(position, fallbackId) {
   const rawSymbol =
     typeof position.symbol === 'string' && position.symbol.trim()
       ? position.symbol.trim()
@@ -256,7 +260,8 @@ function normalizeStyleTwoSymbol(position, fallbackId) {
       : fallbackId;
 
   const normalized = rawSymbol ? rawSymbol.toUpperCase() : '';
-  const base = normalized.endsWith('.TO') ? normalized.slice(0, -3) : normalized;
+  const withoutToSuffix = normalized.endsWith('.TO') ? normalized.slice(0, -3) : normalized;
+  const base = MERGED_SYMBOL_ALIASES.get(withoutToSuffix) || withoutToSuffix;
 
   return {
     key: base || normalized || fallbackId,
@@ -265,11 +270,13 @@ function normalizeStyleTwoSymbol(position, fallbackId) {
   };
 }
 
-function aggregatePositionsForStyleTwo(positions) {
+function aggregatePositionsByMergedSymbol(positions) {
   const groups = new Map();
 
-  positions.forEach((position, index) => {
-    const { key, display, raw } = normalizeStyleTwoSymbol(position, `__style2_${index}`);
+  const entries = Array.isArray(positions) ? positions : [];
+
+  entries.forEach((position, index) => {
+    const { key, display, raw } = normalizeMergedSymbol(position, `__merged_${index}`);
     const resolvedCost = resolvePositionTotalCost(position);
     const normalizedMarketValue = isFiniteNumber(position.normalizedMarketValue)
       ? position.normalizedMarketValue
@@ -285,7 +292,9 @@ function aggregatePositionsForStyleTwo(positions) {
       : 0;
     const dayPnl = isFiniteNumber(position.dayPnl) ? position.dayPnl : 0;
     const openPnl = isFiniteNumber(position.openPnl) ? position.openPnl : 0;
-    const portfolioShare = isFiniteNumber(position.portfolioShare) ? position.portfolioShare : 0;
+    const portfolioShare = isFiniteNumber(position.portfolioShare)
+      ? position.portfolioShare
+      : null;
     const currency =
       typeof position.currency === 'string' && position.currency.trim()
         ? position.currency.trim().toUpperCase()
@@ -305,7 +314,9 @@ function aggregatePositionsForStyleTwo(positions) {
       entry.currentMarketValue += currentMarketValue;
       entry.dayPnl += dayPnl;
       entry.openPnl += openPnl;
-      entry.portfolioShare += portfolioShare;
+      if (portfolioShare !== null) {
+        entry.portfolioShare = (entry.portfolioShare ?? 0) + portfolioShare;
+      }
       if (entry.totalCost !== null) {
         if (isFiniteNumber(resolvedCost)) {
           entry.totalCost += resolvedCost;
@@ -336,7 +347,7 @@ function aggregatePositionsForStyleTwo(positions) {
       entry.rawSymbols.add(raw);
     } else {
       groups.set(key, {
-        id: `${key}-style2`,
+        id: `${key}-merged`,
         symbol: display,
         description: description || null,
         normalizedMarketValue,
@@ -378,8 +389,7 @@ function aggregatePositionsForStyleTwo(positions) {
 }
 
 function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
-  const sourcePositions =
-    styleMode === 'style2' ? aggregatePositionsForStyleTwo(positions) : positions;
+  const sourcePositions = aggregatePositionsByMergedSymbol(positions);
 
   const prepared = sourcePositions
     .map((position) => {
