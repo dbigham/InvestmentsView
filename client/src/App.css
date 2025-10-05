@@ -605,7 +605,7 @@ textarea {
   border-radius: var(--radius-card);
   border: 1px solid var(--color-border);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
-  width: min(960px, 100%);
+  width: min(1100px, 100%);
   max-height: 95vh;
   display: flex;
   flex-direction: column;
