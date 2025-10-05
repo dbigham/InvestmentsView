@@ -67,15 +67,30 @@ export default function AnnualizedReturnDialog({
           label: periodKey && PERIOD_LABELS[periodKey] ? PERIOD_LABELS[periodKey] : null,
           months,
           startDate: entry.startDate || null,
-          totalReturnCad: typeof entry.totalReturnCad === 'number' && Number.isFinite(entry.totalReturnCad)
-            ? entry.totalReturnCad
-            : entry.totalReturnCad === 0
-              ? 0
-              : null,
+          startValueCad:
+            typeof entry.startValueCad === 'number' && Number.isFinite(entry.startValueCad)
+              ? entry.startValueCad
+              : entry.startValueCad === 0
+                ? 0
+                : null,
+          totalReturnCad:
+            typeof entry.totalReturnCad === 'number' && Number.isFinite(entry.totalReturnCad)
+              ? entry.totalReturnCad
+              : entry.totalReturnCad === 0
+                ? 0
+                : null,
+          periodReturnRate:
+            typeof entry.periodReturnRate === 'number' && Number.isFinite(entry.periodReturnRate)
+              ? entry.periodReturnRate
+              : entry.periodReturnRate === 0
+                ? 0
+                : null,
           annualizedRate:
             typeof entry.annualizedRate === 'number' && Number.isFinite(entry.annualizedRate)
               ? entry.annualizedRate
-              : null,
+              : entry.annualizedRate === 0
+                ? 0
+                : null,
         };
       })
       .filter(Boolean);
@@ -151,13 +166,20 @@ export default function AnnualizedReturnDialog({
               orderedBreakdown.map((entry) => {
                 const tone = classifyPnL(entry.totalReturnCad);
                 const moneyDisplay = formatSignedMoney(entry.totalReturnCad);
-                const percentDisplay = entry.annualizedRate === null
+                const periodPercentDisplay = entry.periodReturnRate === null
+                  ? '—'
+                  : formatSignedPercent(entry.periodReturnRate * 100, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    });
+                const periodTone = resolveRateTone(entry.periodReturnRate);
+                const annualizedDisplay = entry.annualizedRate === null
                   ? '—'
                   : formatSignedPercent(entry.annualizedRate * 100, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
                     });
-                const percentTone = resolveRateTone(entry.annualizedRate);
+                const annualizedToneEntry = resolveRateTone(entry.annualizedRate);
                 const label = entry.label || 'Return';
                 const since = entry.startDate ? formatDate(entry.startDate) : null;
 
@@ -171,8 +193,17 @@ export default function AnnualizedReturnDialog({
                       <span className={`return-breakdown-list__value return-breakdown-list__value--${tone}`}>
                         {moneyDisplay}
                       </span>
-                      <span className={`return-breakdown-list__percent return-breakdown-list__percent--${percentTone}`}>
-                        {percentDisplay}
+                      <span
+                        className={`return-breakdown-list__percent return-breakdown-list__percent--${periodTone}`}
+                        title="Total return"
+                      >
+                        {periodPercentDisplay}
+                      </span>
+                      <span
+                        className={`return-breakdown-list__percent return-breakdown-list__percent--${annualizedToneEntry}`}
+                        title="Annualized"
+                      >
+                        {annualizedDisplay}
                       </span>
                     </dd>
                   </div>
@@ -198,7 +229,9 @@ AnnualizedReturnDialog.propTypes = {
       period: PropTypes.string,
       months: PropTypes.number,
       startDate: PropTypes.string,
+      startValueCad: PropTypes.number,
       totalReturnCad: PropTypes.number,
+      periodReturnRate: PropTypes.number,
       annualizedRate: PropTypes.number,
     })
   ),

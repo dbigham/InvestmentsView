@@ -2238,10 +2238,17 @@ button.time-pill:hover .time-pill__icon {
 
 .return-breakdown-list__values {
   margin: 0;
-  display: inline-flex;
+  display: grid;
+  grid-auto-flow: column;
   align-items: baseline;
   gap: 12px;
+  justify-items: end;
   font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.return-breakdown-list__values > span {
+  white-space: nowrap;
 }
 
 .return-breakdown-list__value {

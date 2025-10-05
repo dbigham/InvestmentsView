@@ -959,26 +959,48 @@ function computeReturnBreakdownFromCashFlows(cashFlows, asOfDate, annualizedRate
       startValue -= futureValue;
     }
 
-    if (!validStartValue || !Number.isFinite(startValue) || Math.abs(startValue) < CASH_FLOW_EPSILON) {
-      continue;
-    }
-
-    if (startValue <= 0) {
-      continue;
+    if (!validStartValue || !Number.isFinite(startValue) || Math.abs(startValue) < CASH_FLOW_EPSILON || startValue <= 0) {
+      const fallbackStart = flowsBefore.reduce((sum, entry) => sum - entry.amount, 0);
+      if (Number.isFinite(fallbackStart) && fallbackStart > CASH_FLOW_EPSILON) {
+        startValue = fallbackStart;
+        validStartValue = true;
+      } else {
+        continue;
+      }
     }
 
     const flowsAfterSum = flowsAfter.reduce((sum, entry) => sum + entry.amount, 0);
     const totalReturn = flowsAfterSum - startValue;
 
-    const periodFlows = [{ amount: -startValue, date: startDate }, ...flowsAfter];
-    const periodRate = computeAnnualizedReturnFromCashFlows(periodFlows, { preNormalized: true });
+    let periodReturnRate = null;
+    if (Number.isFinite(totalReturn)) {
+      const rawRate = totalReturn / startValue;
+      if (Number.isFinite(rawRate)) {
+        periodReturnRate = rawRate;
+      }
+    }
+
+    let annualizedPeriodRate = null;
+    if (Number.isFinite(periodReturnRate) && periodReturnRate >= -1 && period.months > 0) {
+      const years = period.months / 12;
+      const exponent = years > 0 ? 1 / years : null;
+      if (Number.isFinite(exponent) && exponent > 0) {
+        const growthBase = 1 + periodReturnRate;
+        const growth = Math.pow(growthBase, exponent) - 1;
+        if (Number.isFinite(growth)) {
+          annualizedPeriodRate = growth;
+        }
+      }
+    }
 
     breakdown.push({
       period: period.key,
       months: period.months,
       startDate: startDate.toISOString(),
+      startValueCad: Number.isFinite(startValue) ? startValue : null,
       totalReturnCad: Number.isFinite(totalReturn) ? totalReturn : null,
-      annualizedRate: Number.isFinite(periodRate) ? periodRate : null,
+      periodReturnRate: Number.isFinite(periodReturnRate) ? periodReturnRate : null,
+      annualizedRate: Number.isFinite(annualizedPeriodRate) ? annualizedPeriodRate : null,
     });
   }
 
