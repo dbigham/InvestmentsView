@@ -23,6 +23,14 @@ const {
   normalizeCashFlowsForXirr,
   computeAnnualizedReturnFromCashFlows,
 } = require('./xirr');
+const {
+  normalizeBreakdownSymbol,
+  resolveActivitySymbolForBreakdown,
+  classifyActivityForSymbolBreakdown,
+  accumulateSymbolBreakdown,
+  finalizeSymbolBreakdown,
+  isFundingActivity,
+} = require('./symbolBreakdown');
 
 const RETURN_BREAKDOWN_PERIODS = [
   { key: 'ten_year', months: 120 },
@@ -1101,22 +1109,6 @@ function resolveActivityTimestamp(activity) {
   return null;
 }
 
-const FUNDING_TYPE_REGEX = /(deposit|withdraw|transfer|journal)/i;
-
-function isFundingActivity(activity) {
-  if (!activity || typeof activity !== 'object') {
-    return false;
-  }
-  const type = typeof activity.type === 'string' ? activity.type : '';
-  const action = typeof activity.action === 'string' ? activity.action : '';
-  const description = typeof activity.description === 'string' ? activity.description : '';
-  return (
-    FUNDING_TYPE_REGEX.test(type) ||
-    FUNDING_TYPE_REGEX.test(action) ||
-    FUNDING_TYPE_REGEX.test(description)
-  );
-}
-
 const EMBEDDED_NUMBER_PATTERN = '\\d+(?:,\\d{3})*(?:\\.\\d+)?';
 const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
 
@@ -1589,7 +1581,8 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
   const paddedStart = earliestFunding ? addDays(floorToMonthStart(earliestFunding), -7) : addDays(now, -365);
   const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
   const activities = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
-  const fundingActivities = dedupeActivities(filterFundingActivities(activities));
+  const dedupedActivities = dedupeActivities(activities);
+  const fundingActivities = filterFundingActivities(dedupedActivities);
   debugTotalPnl(accountKey, 'Funding activities considered', fundingActivities.length);
 
   const perCurrencyTotals = new Map();
@@ -1598,6 +1591,8 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
   const breakdown = [];
   const cashFlowEntries = [];
   let missingCashFlowDates = false;
+  const symbolBreakdownMap = new Map();
+  let symbolBreakdownIncomplete = false;
 
   for (const activity of fundingActivities) {
     const details = resolveActivityAmountDetails(activity);
@@ -1689,6 +1684,60 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
       cashFlowEntries.push({ amount: -accountAdjustment, date: adjustmentDate.toISOString() });
     }
   }
+
+  for (const activity of dedupedActivities) {
+    const category = classifyActivityForSymbolBreakdown(activity);
+    if (!category) {
+      continue;
+    }
+    const symbolInfo = resolveActivitySymbolForBreakdown(activity);
+    if (!symbolInfo) {
+      continue;
+    }
+    const details = resolveActivityAmountDetails(activity);
+    if (!details) {
+      continue;
+    }
+    const { amount, currency, timestamp } = details;
+    const conversion = await convertAmountToCad(amount, currency, timestamp, accountKey);
+    const cadAmount = conversion.cadAmount;
+    const key = symbolInfo.symbol;
+    if (!symbolBreakdownMap.has(key)) {
+      symbolBreakdownMap.set(key, {
+        symbol: symbolInfo.symbol,
+        symbolId: symbolInfo.symbolId || null,
+        description: symbolInfo.description || null,
+        netCashFlowCad: 0,
+        incomeCad: 0,
+        tradeCad: 0,
+        investedCad: 0,
+        activityCount: 0,
+      });
+    }
+    const bucket = symbolBreakdownMap.get(key);
+    bucket.activityCount += 1;
+    if (!bucket.description && symbolInfo.description) {
+      bucket.description = symbolInfo.description;
+    }
+    if (!bucket.symbolId && symbolInfo.symbolId) {
+      bucket.symbolId = symbolInfo.symbolId;
+    }
+    if (Number.isFinite(cadAmount)) {
+      bucket.netCashFlowCad += cadAmount;
+      if (category === 'income') {
+        bucket.incomeCad += cadAmount;
+      } else {
+        bucket.tradeCad += cadAmount;
+      }
+      if (cadAmount < 0) {
+        bucket.investedCad += -cadAmount;
+      }
+    } else if (currency !== 'CAD') {
+      symbolBreakdownIncomplete = true;
+    }
+  }
+
+  const symbolBreakdownEntries = finalizeSymbolBreakdown(symbolBreakdownMap);
 
   const perCurrencyObject = {};
   for (const [currency, value] of perCurrencyTotals.entries()) {
@@ -1843,6 +1892,8 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
             netDepositsCad: accountAdjustment,
           }
         : undefined,
+    symbolBreakdown: symbolBreakdownEntries.length ? symbolBreakdownEntries : undefined,
+    symbolBreakdownIncomplete: symbolBreakdownIncomplete || undefined,
   };
 }
 
@@ -2563,6 +2614,9 @@ app.get('/api/summary', async function (req, res) {
     }
 
     const accountFundingSummaries = {};
+    const combinedSymbolBreakdownMap = new Map();
+    let combinedSymbolBreakdownIncomplete = false;
+    let combinedSymbolBreakdownArray = [];
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
       try {
@@ -2574,6 +2628,15 @@ app.get('/api/summary', async function (req, res) {
         );
         if (fundingSummary) {
           accountFundingSummaries[context.account.id] = fundingSummary;
+          if (fundingSummary.symbolBreakdown) {
+            accumulateSymbolBreakdown(
+              combinedSymbolBreakdownMap,
+              fundingSummary.symbolBreakdown
+            );
+          }
+          if (fundingSummary.symbolBreakdownIncomplete) {
+            combinedSymbolBreakdownIncomplete = true;
+          }
         }
       } catch (fundingError) {
         const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
@@ -2611,6 +2674,16 @@ app.get('/api/summary', async function (req, res) {
             if (Number.isFinite(netDepositsCad)) {
               aggregateTotals.netDepositsCad += netDepositsCad;
               aggregateTotals.netDepositsCount += 1;
+            }
+
+            if (fundingSummary.symbolBreakdown) {
+              accumulateSymbolBreakdown(
+                combinedSymbolBreakdownMap,
+                fundingSummary.symbolBreakdown
+              );
+            }
+            if (fundingSummary.symbolBreakdownIncomplete) {
+              combinedSymbolBreakdownIncomplete = true;
             }
 
             const totalPnlCad =
@@ -2730,9 +2803,22 @@ app.get('/api/summary', async function (req, res) {
         }
       }
 
+      const aggregateSymbolBreakdown = finalizeSymbolBreakdown(combinedSymbolBreakdownMap);
+      if (aggregateSymbolBreakdown.length) {
+        aggregateEntry.symbolBreakdown = aggregateSymbolBreakdown;
+      }
+      if (combinedSymbolBreakdownIncomplete) {
+        aggregateEntry.symbolBreakdownIncomplete = true;
+      }
+      combinedSymbolBreakdownArray = aggregateSymbolBreakdown;
+
       if (Object.keys(aggregateEntry).length > 0) {
         accountFundingSummaries.all = aggregateEntry;
       }
+    }
+
+    if (combinedSymbolBreakdownArray.length === 0) {
+      combinedSymbolBreakdownArray = finalizeSymbolBreakdown(combinedSymbolBreakdownMap);
     }
 
     Object.values(accountFundingSummaries).forEach((entry) => {
@@ -2781,6 +2867,8 @@ app.get('/api/summary', async function (req, res) {
       investmentModelEvaluations,
       accountFunding: accountFundingSummaries,
       asOf: new Date().toISOString(),
+      symbolBreakdown: combinedSymbolBreakdownArray,
+      symbolBreakdownIncomplete: combinedSymbolBreakdownIncomplete || undefined,
     });
   } catch (error) {
     if (error.response) {

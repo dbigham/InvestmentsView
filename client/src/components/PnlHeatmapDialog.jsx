@@ -388,6 +388,12 @@ function aggregatePositionsByMergedSymbol(positions) {
   });
 }
 
+function metricSignScore(value) {
+  if (value > 0) return 0;
+  if (value === 0) return 1;
+  return 2;
+}
+
 function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
   const sourcePositions = aggregatePositionsByMergedSymbol(positions);
 
@@ -429,12 +435,6 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
     return [];
   }
 
-  const score = (value) => {
-    if (value > 0) return 0;
-    if (value === 0) return 1;
-    return 2;
-  };
-
   if (styleMode === 'style2') {
     const withMetricWeight = prepared
       .map((item) => ({
@@ -458,8 +458,8 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
     const sorted = pool
       .slice()
       .sort((a, b) => {
-        const aScore = score(a.metricValue);
-        const bScore = score(b.metricValue);
+        const aScore = metricSignScore(a.metricValue);
+        const bScore = metricSignScore(b.metricValue);
         if (aScore !== bScore) {
           return aScore - bScore;
         }
@@ -495,8 +495,8 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
   const sorted = normalized
     .slice()
     .sort((a, b) => {
-      const aScore = score(a.metricValue);
-      const bScore = score(b.metricValue);
+      const aScore = metricSignScore(a.metricValue);
+      const bScore = metricSignScore(b.metricValue);
       if (aScore !== bScore) {
         return aScore - bScore;
       }
@@ -526,6 +526,206 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
       height: adjustedHeight,
     };
   });
+}
+
+function buildTotalPnlNodes(positions, symbolBreakdown) {
+  const sourcePositions = aggregatePositionsByMergedSymbol(positions);
+  const combined = new Map();
+
+  const ensureEntry = (key, defaults = {}) => {
+    if (!combined.has(key)) {
+      combined.set(key, {
+        key,
+        symbol: defaults.symbol || key,
+        description: defaults.description || null,
+        currency: defaults.currency || null,
+        marketValue: 0,
+        cashFlowCad: 0,
+        incomeCad: 0,
+        tradeCad: 0,
+        investedCad: 0,
+        openPnl: 0,
+        totalCost: null,
+        totalCostAvailable: true,
+        currentPrice: defaults.currentPrice || null,
+        openQuantity: null,
+        averageEntryPrice: null,
+        symbolId: defaults.symbolId || null,
+        activityCount: 0,
+      });
+    }
+    const entry = combined.get(key);
+    if (defaults.symbol && !entry.symbol) {
+      entry.symbol = defaults.symbol;
+    }
+    if (defaults.description && !entry.description) {
+      entry.description = defaults.description;
+    }
+    if (defaults.currency && !entry.currency) {
+      entry.currency = defaults.currency;
+    }
+    if (defaults.currentPrice && entry.currentPrice === null) {
+      entry.currentPrice = defaults.currentPrice;
+    }
+    if (defaults.symbolId && !entry.symbolId) {
+      entry.symbolId = defaults.symbolId;
+    }
+    return entry;
+  };
+
+  sourcePositions.forEach((position, index) => {
+    const normalized = normalizeMergedSymbol(position, `__total_position_${index}`);
+    const currency =
+      typeof position.currency === 'string' && position.currency.trim()
+        ? position.currency.trim().toUpperCase()
+        : null;
+    const entry = ensureEntry(normalized.key, {
+      symbol: normalized.display,
+      description: position.description || null,
+      currency,
+      currentPrice: position.currentPrice || null,
+      symbolId: position.symbolId || null,
+    });
+    const marketValue = isFiniteNumber(position.normalizedMarketValue)
+      ? position.normalizedMarketValue
+      : 0;
+    if (marketValue !== 0) {
+      entry.marketValue += marketValue;
+    }
+    const openPnl = isFiniteNumber(position.normalizedOpenPnl) ? position.normalizedOpenPnl : 0;
+    if (openPnl !== 0) {
+      entry.openPnl += openPnl;
+    }
+    if (isFiniteNumber(position.totalCost)) {
+      entry.totalCost = (entry.totalCost ?? 0) + position.totalCost;
+    } else if (position.totalCost === null || position.totalCost === undefined) {
+      entry.totalCostAvailable = false;
+      entry.totalCost = null;
+    }
+    const quantity = isFiniteNumber(position.openQuantity) ? position.openQuantity : null;
+    if (quantity !== null) {
+      entry.openQuantity = (entry.openQuantity ?? 0) + quantity;
+    }
+    if (entry.averageEntryPrice === null && isFiniteNumber(position.averageEntryPrice)) {
+      entry.averageEntryPrice = position.averageEntryPrice;
+    }
+  });
+
+  const breakdownEntries = Array.isArray(symbolBreakdown) ? symbolBreakdown : [];
+  breakdownEntries.forEach((item, index) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+    const normalized = normalizeMergedSymbol(
+      { symbol: item.symbol, symbolId: item.symbolId },
+      `__total_cashflow_${index}`
+    );
+    const description =
+      typeof item.description === 'string' && item.description.trim()
+        ? item.description.trim()
+        : null;
+    const entry = ensureEntry(normalized.key, {
+      symbol: normalized.display,
+      description,
+      symbolId:
+        item.symbolId !== undefined && item.symbolId !== null ? String(item.symbolId) : null,
+    });
+    const netCashFlow = Number(item.netCashFlowCad);
+    if (Number.isFinite(netCashFlow) && netCashFlow !== 0) {
+      entry.cashFlowCad += netCashFlow;
+    }
+    const incomeCad = Number(item.incomeCad);
+    if (Number.isFinite(incomeCad) && incomeCad !== 0) {
+      entry.incomeCad += incomeCad;
+    }
+    const tradeCad = Number(item.tradeCad);
+    if (Number.isFinite(tradeCad) && tradeCad !== 0) {
+      entry.tradeCad += tradeCad;
+    }
+    const investedCad = Number(item.investedCad);
+    if (Number.isFinite(investedCad) && investedCad > 0) {
+      entry.investedCad += investedCad;
+    }
+    const activityCount = Number(item.activityCount);
+    if (Number.isFinite(activityCount) && activityCount > 0) {
+      entry.activityCount += activityCount;
+    }
+    if (!entry.description && description) {
+      entry.description = description;
+    }
+    if (!entry.symbolId && item.symbolId !== undefined && item.symbolId !== null) {
+      entry.symbolId = String(item.symbolId);
+    }
+  });
+
+  const prepared = [];
+  combined.forEach((entry, key) => {
+    const hasCashFlow =
+      Math.abs(entry.cashFlowCad) > 0.0001 ||
+      Math.abs(entry.incomeCad) > 0.0001 ||
+      entry.investedCad > 0.0001;
+    let metricValue = entry.marketValue + entry.cashFlowCad;
+    if (!hasCashFlow && entry.openPnl !== 0) {
+      metricValue = entry.openPnl;
+    }
+    if (!Number.isFinite(metricValue) || Math.abs(metricValue) < 0.0001) {
+      return;
+    }
+    const weight = Math.abs(metricValue);
+    const basis = entry.investedCad > 0.0001
+      ? entry.investedCad
+      : entry.totalCostAvailable && Number.isFinite(entry.totalCost) && Math.abs(entry.totalCost) > 0.0001
+        ? Math.abs(entry.totalCost)
+        : null;
+    const percentChange = basis ? (metricValue / basis) * 100 : null;
+
+    prepared.push({
+      id: `${key}-total`,
+      symbol: entry.symbol,
+      description: entry.description || null,
+      weight,
+      marketValue: entry.marketValue,
+      metricValue,
+      percentChange,
+      portfolioShare: null,
+      currency: entry.currency || null,
+      currentPrice: entry.currentPrice || null,
+      share: null,
+      cashFlowCad: entry.cashFlowCad,
+      incomeCad: entry.incomeCad,
+      tradeCad: entry.tradeCad,
+      investedCad: entry.investedCad,
+    });
+  });
+
+  if (!prepared.length) {
+    return [];
+  }
+
+  const sorted = prepared
+    .slice()
+    .sort((a, b) => {
+      const aScore = metricSignScore(a.metricValue);
+      const bScore = metricSignScore(b.metricValue);
+      if (aScore !== bScore) {
+        return aScore - bScore;
+      }
+      if (aScore === 0) {
+        return b.weight - a.weight;
+      }
+      if (aScore === 2) {
+        if (a.weight !== b.weight) {
+          return a.weight - b.weight;
+        }
+        return Math.abs(a.metricValue) - Math.abs(b.metricValue);
+      }
+      return b.weight - a.weight;
+    });
+
+  return buildTreemapLayout(sorted).map((item) => ({
+    ...item,
+    share: null,
+  }));
 }
 
 const NEUTRAL_COLOR = '#404656';
@@ -577,6 +777,7 @@ export default function PnlHeatmapDialog({
   baseCurrency,
   asOf,
   totalMarketValue,
+  symbolBreakdown = [],
 }) {
   const initialMetric = mode === 'open' ? 'open' : 'day';
   const [metricMode, setMetricMode] = useState(initialMetric);
@@ -584,9 +785,11 @@ export default function PnlHeatmapDialog({
     setMetricMode(initialMetric);
   }, [initialMetric]);
 
-  const metricKey = metricMode === 'open' ? 'openPnl' : 'dayPnl';
-  const metricLabel = metricMode === 'open' ? 'Open P&L' : "Today's P&L";
-  const percentColorThreshold = metricMode === 'open' ? 70 : 5;
+  const metricKey =
+    metricMode === 'open' ? 'openPnl' : metricMode === 'day' ? 'dayPnl' : 'totalPnl';
+  const metricLabel =
+    metricMode === 'open' ? 'Open P&L' : metricMode === 'day' ? "Today's P&L" : 'Total P&L';
+  const percentColorThreshold = metricMode === 'open' ? 70 : metricMode === 'total' ? 50 : 5;
   const tileGapPx = 1;
   const halfTileGapPx = tileGapPx / 2;
   const epsilon = 0.0001;
@@ -594,10 +797,17 @@ export default function PnlHeatmapDialog({
   const formatPx = (value) => `${Number.parseFloat(value.toFixed(3))}`;
 
   const [styleMode, setStyleMode] = useState('style1');
-  const nodes = useMemo(
-    () => buildHeatmapNodes(positions, metricKey, styleMode),
-    [positions, metricKey, styleMode]
-  );
+  useEffect(() => {
+    if (metricMode === 'total' && styleMode !== 'style2') {
+      setStyleMode('style2');
+    }
+  }, [metricMode, styleMode]);
+  const nodes = useMemo(() => {
+    if (metricMode === 'total') {
+      return buildTotalPnlNodes(positions, symbolBreakdown);
+    }
+    return buildHeatmapNodes(positions, metricKey, styleMode);
+  }, [positions, metricMode, metricKey, styleMode, symbolBreakdown]);
   const [colorMode, setColorMode] = useState('percent');
   const handleTileClick = useCallback((event, symbol) => {
     if (!symbol) {
@@ -704,6 +914,16 @@ export default function PnlHeatmapDialog({
                 >
                   Open P&L
                 </button>
+                <button
+                  type="button"
+                  className={`pnl-heatmap-dialog__control${
+                    metricMode === 'total' ? ' pnl-heatmap-dialog__control--active' : ''
+                  }`}
+                  onClick={() => setMetricMode('total')}
+                  aria-pressed={metricMode === 'total'}
+                >
+                  Total P&L
+                </button>
               </div>
               <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Select heat map style">
                 <button
@@ -711,8 +931,14 @@ export default function PnlHeatmapDialog({
                   className={`pnl-heatmap-dialog__control${
                     styleMode === 'style1' ? ' pnl-heatmap-dialog__control--active' : ''
                   }`}
-                  onClick={() => setStyleMode('style1')}
+                  onClick={() => {
+                    if (metricMode === 'total') {
+                      return;
+                    }
+                    setStyleMode('style1');
+                  }}
                   aria-pressed={styleMode === 'style1'}
+                  disabled={metricMode === 'total'}
                 >
                   Style 1
                 </button>
@@ -822,6 +1048,27 @@ export default function PnlHeatmapDialog({
                       node.currency ? ` (${String(node.currency).toUpperCase()})` : ''
                     }`
                   : null;
+                const hasCashFlow =
+                  metricMode === 'total' && isFiniteNumber(node.cashFlowCad)
+                    ? Math.abs(node.cashFlowCad) >= 0.01
+                    : false;
+                const hasIncome =
+                  metricMode === 'total' && isFiniteNumber(node.incomeCad)
+                    ? Math.abs(node.incomeCad) >= 0.01
+                    : false;
+                const hasInvested =
+                  metricMode === 'total' && isFiniteNumber(node.investedCad)
+                    ? node.investedCad > 0.01
+                    : false;
+                const cashFlowLine = hasCashFlow
+                  ? `Net cash flow: ${formatSignedMoney(node.cashFlowCad)}`
+                  : null;
+                const incomeLine = hasIncome
+                  ? `Dividends & income: ${formatSignedMoney(node.incomeCad)}`
+                  : null;
+                const investedLine = hasInvested
+                  ? `Invested capital: ${formatMoney(node.investedCad)}`
+                  : null;
                 const areaFraction = node.width * node.height;
                 const areaRoot = Math.sqrt(areaFraction);
                 const symbolFontSize = clamp(areaRoot * 70, 7, 28);
@@ -852,6 +1099,9 @@ export default function PnlHeatmapDialog({
                   node.description ? `${node.symbol} — ${node.description}` : node.symbol,
                   pnlLine,
                   priceLine,
+                  cashFlowLine,
+                  incomeLine,
+                  investedLine,
                   !isStyleTwo && shareLabel ? `Portfolio share: ${shareLabel}` : null,
                   styleTwoLine,
                 ]
@@ -934,6 +1184,18 @@ PnlHeatmapDialog.propTypes = {
   baseCurrency: PropTypes.string,
   asOf: PropTypes.string,
   totalMarketValue: PropTypes.number,
+  symbolBreakdown: PropTypes.arrayOf(
+    PropTypes.shape({
+      symbol: PropTypes.string,
+      symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+      description: PropTypes.string,
+      netCashFlowCad: PropTypes.number,
+      incomeCad: PropTypes.number,
+      tradeCad: PropTypes.number,
+      investedCad: PropTypes.number,
+      activityCount: PropTypes.number,
+    })
+  ),
 };
 
 PnlHeatmapDialog.defaultProps = {
