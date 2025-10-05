@@ -1452,6 +1452,181 @@ async function convertAmountToCad(amount, currency, timestamp, accountKey) {
   return { cadAmount: null, fxRate: null };
 }
 
+function normalizeCashFlowSchedule(cashFlows) {
+  const normalized = normalizeCashFlowsForXirr(cashFlows);
+  if (!Array.isArray(normalized) || normalized.length < 2) {
+    return [];
+  }
+  return normalized.map((entry) => ({ amount: entry.amount, date: entry.date }));
+}
+
+const TRAILING_PERIODS = [
+  { key: '1M', label: '1 month return', months: 1 },
+  { key: '6M', label: '6 month return', months: 6 },
+  { key: '12M', label: '12 month return', months: 12 },
+  { key: '5Y', label: '5 year return', months: 60 },
+  { key: '10Y', label: '10 year return', months: 120 },
+];
+
+function findHistoryEntryOnOrBefore(history, targetTime) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return null;
+  }
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (Number.isFinite(entry.timestamp) && entry.timestamp <= targetTime) {
+      return entry;
+    }
+  }
+  return history[0] || null;
+}
+
+function buildTrailingReturnSummaries(history, finalTimestamp, totalEquity) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return null;
+  }
+  const finalEntry = history[history.length - 1];
+  if (!finalEntry) {
+    return null;
+  }
+  const resolvedFinalTimestamp = Number.isFinite(finalTimestamp) ? finalTimestamp : finalEntry.timestamp;
+  const resolvedTotalEquity = Number.isFinite(totalEquity) ? totalEquity : finalEntry.accountValue;
+  if (!Number.isFinite(resolvedFinalTimestamp) || !Number.isFinite(resolvedTotalEquity)) {
+    return null;
+  }
+
+  const finalNetDeposits = Number.isFinite(finalEntry.netDeposits) ? finalEntry.netDeposits : 0;
+  const summaries = {};
+
+  TRAILING_PERIODS.forEach((period) => {
+    const months = Number(period.months);
+    if (!Number.isFinite(months) || months <= 0) {
+      return;
+    }
+    const startDate = addMonths(new Date(resolvedFinalTimestamp), -months);
+    const startTime = startDate.getTime();
+    const startEntry = findHistoryEntryOnOrBefore(history, startTime) || history[0];
+    if (!startEntry) {
+      return;
+    }
+
+    const startValue = Number(startEntry.accountValue);
+    const startDeposits = Number(startEntry.netDeposits) || 0;
+    const contributionsAfterStart = finalNetDeposits - startDeposits;
+    const adjustedEndValue = resolvedTotalEquity - contributionsAfterStart;
+    const pnlChange = Number.isFinite(adjustedEndValue) && Number.isFinite(startValue)
+      ? adjustedEndValue - startValue
+      : null;
+    const returnRate =
+      Number.isFinite(startValue) && Math.abs(startValue) > CASH_FLOW_EPSILON && Number.isFinite(pnlChange)
+        ? pnlChange / startValue
+        : null;
+
+    summaries[period.key] = {
+      label: period.label,
+      startDate: startEntry.date,
+      endDate: finalEntry.date,
+      pnlCad: Number.isFinite(pnlChange) ? pnlChange : null,
+      returnRate: Number.isFinite(returnRate) ? returnRate : null,
+    };
+  });
+
+  return summaries;
+}
+
+function buildFundingPerformanceSummary(cashFlows, totalPnlCad, totalEquityCad) {
+  const schedule = normalizeCashFlowSchedule(cashFlows);
+  if (schedule.length < 2) {
+    return null;
+  }
+
+  const earliestEntry = schedule[0];
+  const finalEntry = schedule[schedule.length - 1];
+  if (!earliestEntry || !finalEntry || !(finalEntry.date instanceof Date)) {
+    return null;
+  }
+
+  const resolvedTotalEquity = Number.isFinite(totalEquityCad) ? totalEquityCad : finalEntry.amount;
+
+  const contributionSum = schedule
+    .slice(0, -1)
+    .reduce((acc, entry) => (Number.isFinite(entry.amount) ? acc + entry.amount : acc), 0);
+
+  const resolvedTotalPnl = Number.isFinite(totalPnlCad)
+    ? totalPnlCad
+    : Number.isFinite(resolvedTotalEquity)
+      ? resolvedTotalEquity + contributionSum
+      : null;
+
+  if (!Number.isFinite(resolvedTotalEquity) || !Number.isFinite(resolvedTotalPnl)) {
+    return null;
+  }
+
+  const contributionsByDay = new Map();
+  let netDepositsTotal = 0;
+  schedule.slice(0, -1).forEach((entry) => {
+    if (!entry || !Number.isFinite(entry.amount) || !(entry.date instanceof Date)) {
+      return;
+    }
+    const isoDate = entry.date.toISOString().slice(0, 10);
+    const netContribution = -entry.amount;
+    if (!Number.isFinite(netContribution) || Math.abs(netContribution) < CASH_FLOW_EPSILON) {
+      return;
+    }
+    netDepositsTotal += netContribution;
+    const existing = contributionsByDay.get(isoDate) || 0;
+    contributionsByDay.set(isoDate, existing + netContribution);
+  });
+
+  const startTime = earliestEntry.date.getTime();
+  const endTime = finalEntry.date.getTime();
+  const totalDuration = Math.max(1, endTime - startTime);
+
+  const history = [];
+  let runningNetDeposits = 0;
+  for (let cursor = startTime; cursor <= endTime; cursor += DAY_IN_MS) {
+    const currentDate = new Date(cursor);
+    const iso = currentDate.toISOString().slice(0, 10);
+    const dailyContribution = contributionsByDay.get(iso);
+    if (Number.isFinite(dailyContribution) && Math.abs(dailyContribution) >= CASH_FLOW_EPSILON) {
+      runningNetDeposits += dailyContribution;
+    }
+    const ratio = Math.min(1, Math.max(0, (cursor - startTime) / totalDuration));
+    const pnlValue = resolvedTotalPnl * ratio;
+    const accountValue = runningNetDeposits + pnlValue;
+    const percent =
+      Number.isFinite(accountValue) && Math.abs(accountValue) > CASH_FLOW_EPSILON ? pnlValue / accountValue : null;
+    history.push({
+      date: iso,
+      timestamp: cursor,
+      netDeposits: runningNetDeposits,
+      pnlCad: pnlValue,
+      accountValue,
+      pnlPercent: Number.isFinite(percent) ? percent : null,
+    });
+  }
+
+  if (history.length > 0) {
+    const lastEntry = history[history.length - 1];
+    lastEntry.netDeposits = netDepositsTotal;
+    lastEntry.pnlCad = resolvedTotalPnl;
+    lastEntry.accountValue = resolvedTotalEquity;
+    const percent =
+      Number.isFinite(resolvedTotalEquity) && Math.abs(resolvedTotalEquity) > CASH_FLOW_EPSILON
+        ? resolvedTotalPnl / resolvedTotalEquity
+        : null;
+    lastEntry.pnlPercent = Number.isFinite(percent) ? percent : null;
+    lastEntry.timestamp = endTime;
+  }
+
+  const trailingReturns = buildTrailingReturnSummaries(history, endTime, resolvedTotalEquity);
+
+  return {
+    pnlHistory: history,
+    trailingReturns,
+  };
+}
+
 async function computeNetDeposits(login, account, perAccountCombinedBalances, options = {}) {
   if (!account || !account.id) {
     return null;
@@ -1689,6 +1864,12 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     annualizedReturn.startDate = appliedCagrStartDate.toISOString().slice(0, 10);
   }
 
+  const performanceSummary = buildFundingPerformanceSummary(
+    effectiveCashFlows,
+    Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+    Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+  );
+
   return {
     netDeposits: {
       perCurrency: perCurrencyObject,
@@ -1700,6 +1881,9 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
     annualizedReturn,
     cashFlowsCad: effectiveCashFlows.length > 0 ? effectiveCashFlows : undefined,
+    pnlHistory: performanceSummary && performanceSummary.pnlHistory ? performanceSummary.pnlHistory : undefined,
+    trailingReturns:
+      performanceSummary && performanceSummary.trailingReturns ? performanceSummary.trailingReturns : undefined,
     adjustments:
       accountAdjustment !== 0
         ? {
@@ -2548,6 +2732,20 @@ app.get('/api/summary', async function (req, res) {
       }
 
       if (aggregateTotals.cashFlowsCad.length > 0) {
+        const performanceSummary = buildFundingPerformanceSummary(
+          aggregateTotals.cashFlowsCad,
+          Number.isFinite(aggregateTotals.totalPnlCad) ? aggregateTotals.totalPnlCad : null,
+          Number.isFinite(aggregateTotals.totalEquityCad) ? aggregateTotals.totalEquityCad : null,
+        );
+        if (performanceSummary) {
+          if (performanceSummary.pnlHistory) {
+            aggregateEntry.pnlHistory = performanceSummary.pnlHistory;
+          }
+          if (performanceSummary.trailingReturns) {
+            aggregateEntry.trailingReturns = performanceSummary.trailingReturns;
+          }
+        }
+
         const aggregateAsOf = new Date().toISOString();
         let aggregateRate = null;
         if (!aggregateTotals.incomplete) {
