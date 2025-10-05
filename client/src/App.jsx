@@ -659,6 +659,7 @@ function buildInvestEvenlyPlan({
   baseCurrency = 'CAD',
   priceOverrides = null,
   skipCadPurchases = false,
+  skipUsdPurchases = false,
 }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
@@ -674,13 +675,24 @@ function buildInvestEvenlyPlan({
   const cadInBase = normalizeCurrencyAmount(cadCash, 'CAD', currencyRates, normalizedBase);
   const usdInBase = normalizeCurrencyAmount(usdCash, 'USD', currencyRates, normalizedBase);
   const totalCashInBase = cadInBase + usdInBase;
-  const investableBaseTotal = skipCadPurchases ? usdInBase : totalCashInBase;
+  const skipCadRequested = Boolean(skipCadPurchases);
+  const skipUsdRequested = Boolean(skipUsdPurchases);
+  const skipCadMode = skipCadRequested && !skipUsdRequested;
+  const skipUsdMode = skipUsdRequested && !skipCadRequested;
+
+  const investableBaseTotal = skipCadMode
+    ? usdInBase
+    : skipUsdMode
+    ? cadInBase
+    : totalCashInBase;
 
   if (!Number.isFinite(investableBaseTotal)) {
     return null;
   }
 
-  if (!skipCadPurchases && investableBaseTotal <= 0) {
+  const requiresPositiveBalance = !skipCadMode && !skipUsdMode;
+
+  if (requiresPositiveBalance && investableBaseTotal <= 0) {
     return null;
   }
 
@@ -716,12 +728,24 @@ function buildInvestEvenlyPlan({
     return currency === 'CAD';
   });
 
-  const activePositions = skipCadPurchases
-    ? investablePositions.filter((position) => {
-        const currency = (position.currency || normalizedBase).toUpperCase();
-        return currency === 'USD';
-      })
-    : investablePositions;
+  const supportsUsdPurchases = investablePositions.some((position) => {
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    return currency === 'USD';
+  });
+
+  let activePositions = investablePositions;
+
+  if (skipCadMode) {
+    activePositions = investablePositions.filter((position) => {
+      const currency = (position.currency || normalizedBase).toUpperCase();
+      return currency === 'USD';
+    });
+  } else if (skipUsdMode) {
+    activePositions = investablePositions.filter((position) => {
+      const currency = (position.currency || normalizedBase).toUpperCase();
+      return currency === 'CAD';
+    });
+  }
 
   if (!activePositions.length) {
     return null;
@@ -742,6 +766,7 @@ function buildInvestEvenlyPlan({
       usd: usdCash,
       totalCad: totalCashInBase,
       investableCad: investableBaseTotal,
+      investableCurrency: skipCadMode ? 'USD' : skipUsdMode ? 'CAD' : null,
     },
     baseCurrency: normalizedBase,
     purchases: [],
@@ -863,7 +888,7 @@ function buildInvestEvenlyPlan({
   let cadAvailableAfterConversions = cadCash;
   let usdAvailableAfterConversions = usdCash;
 
-  if (!skipCadPurchases && usdShortfall > 0.01) {
+  if (!skipCadMode && !skipUsdMode && usdShortfall > 0.01) {
     const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
     let dlrShares = null;
     let dlrSpendCad = cadEquivalent;
@@ -903,7 +928,7 @@ function buildInvestEvenlyPlan({
     });
   }
 
-  if (!skipCadPurchases && cadShortfall > 0.01) {
+  if (!skipCadMode && !skipUsdMode && cadShortfall > 0.01) {
     const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
     let dlrUShares = null;
     let dlrSpendUsd = usdEquivalent;
@@ -1019,8 +1044,10 @@ function buildInvestEvenlyPlan({
   summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
   summaryLines.push(`Total available (CAD): ${formatMoney(totalCashInBase)} CAD`);
 
-  if (skipCadPurchases) {
+  if (skipCadMode) {
     summaryLines.push(`Investable USD funds (CAD): ${formatMoney(investableBaseTotal)} CAD`);
+  } else if (skipUsdMode) {
+    summaryLines.push(`Investable CAD funds (CAD): ${formatMoney(investableBaseTotal)} CAD`);
   }
 
   if (plan.conversions.length) {
@@ -1088,14 +1115,19 @@ function buildInvestEvenlyPlan({
   summaryLines.push(`  CAD purchases: ${formatMoney(updatedCadTotal)} CAD`);
   summaryLines.push(`  USD purchases: ${formatMoney(updatedUsdTotal)} USD`);
 
-  if (skipCadPurchases) {
+  if (skipCadMode) {
     summaryLines.push('');
     summaryLines.push('CAD purchases were already completed. Only USD purchases are included.');
+  } else if (skipUsdMode) {
+    summaryLines.push('');
+    summaryLines.push('USD purchases were already completed. Only CAD purchases are included.');
   }
 
   plan.summaryText = summaryLines.join('\n');
-  plan.skipCadPurchases = Boolean(skipCadPurchases);
+  plan.skipCadPurchases = skipCadMode;
+  plan.skipUsdPurchases = skipUsdMode;
   plan.supportsCadPurchaseToggle = supportsCadPurchases;
+  plan.supportsUsdPurchaseToggle = supportsUsdPurchases;
   return plan;
 }
 
@@ -2241,19 +2273,24 @@ export default function App() {
     enhancePlanWithAccountContext,
   ]);
 
+  const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
+  const skipUsdToggle = investEvenlyPlan?.skipUsdPurchases ?? false;
+
   const handleAdjustInvestEvenlyPlan = useCallback(
     (options) => {
       if (!investEvenlyPlanInputs) {
         return;
       }
 
-      const skipCadPurchases = Boolean(options?.skipCadPurchases);
+      const nextSkipCadPurchases = options?.skipCadPurchases ?? skipCadToggle;
+      const nextSkipUsdPurchases = options?.skipUsdPurchases ?? skipUsdToggle;
       const { priceOverrides, ...restInputs } = investEvenlyPlanInputs;
       const plan = buildInvestEvenlyPlan({
         ...restInputs,
         priceOverrides:
           priceOverrides instanceof Map ? new Map(priceOverrides) : priceOverrides || null,
-        skipCadPurchases,
+        skipCadPurchases: nextSkipCadPurchases,
+        skipUsdPurchases: nextSkipUsdPurchases,
       });
 
       if (!plan) {
@@ -2263,7 +2300,12 @@ export default function App() {
       console.log('Invest cash evenly plan summary (adjusted):\n' + plan.summaryText);
       setInvestEvenlyPlan(enhancePlanWithAccountContext(plan));
     },
-    [investEvenlyPlanInputs, enhancePlanWithAccountContext]
+    [
+      investEvenlyPlanInputs,
+      skipCadToggle,
+      skipUsdToggle,
+      enhancePlanWithAccountContext,
+    ]
   );
 
   useEffect(() => {

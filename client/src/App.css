@@ -727,6 +727,14 @@ textarea {
   margin: 0;
 }
 
+.invest-plan-toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .invest-plan-toggle-button {
   display: inline-flex;
   align-items: center;
@@ -752,6 +760,23 @@ textarea {
 
 .invest-plan-toggle-button:active {
   transform: scale(0.98);
+}
+
+.invest-plan-toggle-button--active {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.invest-plan-toggle-button--active:hover,
+.invest-plan-toggle-button--active:focus-visible {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.invest-plan-toggle-button--active:focus-visible {
+  box-shadow: 0 0 0 2px rgba(56, 155, 60, 0.3);
 }
 
 .invest-plan-toggle-note {

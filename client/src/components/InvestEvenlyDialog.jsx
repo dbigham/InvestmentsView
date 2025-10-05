@@ -193,14 +193,48 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
   const accountLabel = plan?.accountLabel || plan?.accountName || plan?.accountNumber || null;
   const accountNumber = plan?.accountNumber ? String(plan.accountNumber) : null;
   const skipCadPurchases = Boolean(plan?.skipCadPurchases);
-  const canToggleCadPurchases = Boolean(onAdjustPlan) && (plan?.supportsCadPurchaseToggle || skipCadPurchases);
+  const skipUsdPurchases = Boolean(plan?.skipUsdPurchases);
+  const canToggleCadPurchases =
+    Boolean(onAdjustPlan) && (plan?.supportsCadPurchaseToggle || skipCadPurchases);
+  const canToggleUsdPurchases =
+    Boolean(onAdjustPlan) && (plan?.supportsUsdPurchaseToggle || skipUsdPurchases);
+  const toggleGroupVisible = canToggleCadPurchases || canToggleUsdPurchases;
 
   const handleToggleCadPurchases = useCallback(() => {
     if (typeof onAdjustPlan !== 'function') {
       return;
     }
-    onAdjustPlan({ skipCadPurchases: !skipCadPurchases });
+    onAdjustPlan({ skipCadPurchases: !skipCadPurchases, skipUsdPurchases: false });
   }, [onAdjustPlan, skipCadPurchases]);
+
+  const handleToggleUsdPurchases = useCallback(() => {
+    if (typeof onAdjustPlan !== 'function') {
+      return;
+    }
+    onAdjustPlan({ skipUsdPurchases: !skipUsdPurchases, skipCadPurchases: false });
+  }, [onAdjustPlan, skipUsdPurchases]);
+
+  const cadToggleClassName = skipCadPurchases
+    ? 'invest-plan-toggle-button invest-plan-toggle-button--active'
+    : 'invest-plan-toggle-button';
+  const usdToggleClassName = skipUsdPurchases
+    ? 'invest-plan-toggle-button invest-plan-toggle-button--active'
+    : 'invest-plan-toggle-button';
+
+  const normalizedInvestableCurrency = cash?.investableCurrency
+    ? String(cash.investableCurrency).trim().toUpperCase()
+    : null;
+  const showInvestableRow =
+    (skipCadPurchases || skipUsdPurchases) && Number.isFinite(cash?.investableCad);
+  const investableRowLabel = normalizedInvestableCurrency
+    ? `Investable ${normalizedInvestableCurrency} funds (CAD)`
+    : 'Investable funds (CAD)';
+
+  const activeToggleNote = skipCadPurchases
+    ? 'CAD purchases are hidden. USD cash is allocated across USD positions.'
+    : skipUsdPurchases
+    ? 'USD purchases are hidden. CAD cash is allocated across CAD positions.'
+    : null;
 
   return (
     <div className="invest-plan-overlay" role="presentation" onClick={handleOverlayClick}>
@@ -257,9 +291,9 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                 <dt className="invest-plan-cash__label">Total (CAD)</dt>
                 <dd className="invest-plan-cash__value">{formatCurrencyLabel(cash.totalCad, plan?.baseCurrency || 'CAD')}</dd>
               </div>
-              {skipCadPurchases && Number.isFinite(cash?.investableCad) && (
+              {showInvestableRow && (
                 <div className="invest-plan-cash__row">
-                  <dt className="invest-plan-cash__label">Investable USD funds (CAD)</dt>
+                  <dt className="invest-plan-cash__label">{investableRowLabel}</dt>
                   <dd className="invest-plan-cash__value">
                     {formatCurrencyLabel(cash.investableCad, plan?.baseCurrency || 'CAD')}
                   </dd>
@@ -356,17 +390,30 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
           <section className="invest-plan-section">
             <div className="invest-plan-section__header">
               <h3 className="invest-plan-section__title">Planned purchases</h3>
-              {canToggleCadPurchases && (
-                <button type="button" className="invest-plan-toggle-button" onClick={handleToggleCadPurchases}>
-                  {skipCadPurchases ? 'Include CAD purchases' : 'CAD purchases already made'}
-                </button>
+              {toggleGroupVisible && (
+                <div className="invest-plan-toggle-group">
+                  {canToggleCadPurchases && (
+                    <button
+                      type="button"
+                      className={cadToggleClassName}
+                      onClick={handleToggleCadPurchases}
+                    >
+                      {skipCadPurchases ? 'Include CAD purchases' : 'CAD purchases already made'}
+                    </button>
+                  )}
+                  {canToggleUsdPurchases && (
+                    <button
+                      type="button"
+                      className={usdToggleClassName}
+                      onClick={handleToggleUsdPurchases}
+                    >
+                      {skipUsdPurchases ? 'Include USD purchases' : 'USD purchases already made'}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-            {skipCadPurchases && (
-              <p className="invest-plan-toggle-note">
-                CAD purchases are hidden. USD cash is allocated across USD positions.
-              </p>
-            )}
+            {activeToggleNote && <p className="invest-plan-toggle-note">{activeToggleNote}</p>}
             {purchaseRows.length ? (
               <div className="invest-plan-purchases-wrapper">
                 <table className="invest-plan-purchases">
@@ -528,6 +575,7 @@ InvestEvenlyDialog.propTypes = {
       usd: PropTypes.number,
       totalCad: PropTypes.number,
       investableCad: PropTypes.number,
+      investableCurrency: PropTypes.string,
     }),
     purchases: PropTypes.arrayOf(purchaseShape),
     totals: PropTypes.shape({
@@ -542,7 +590,9 @@ InvestEvenlyDialog.propTypes = {
     accountLabel: PropTypes.string,
     accountUrl: PropTypes.string,
     skipCadPurchases: PropTypes.bool,
+    skipUsdPurchases: PropTypes.bool,
     supportsCadPurchaseToggle: PropTypes.bool,
+    supportsUsdPurchaseToggle: PropTypes.bool,
   }).isRequired,
   onClose: PropTypes.func.isRequired,
   copyToClipboard: PropTypes.func,
