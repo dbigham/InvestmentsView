@@ -658,6 +658,7 @@ function buildInvestEvenlyPlan({
   currencyRates,
   baseCurrency = 'CAD',
   priceOverrides = null,
+  skipCadPurchases = false,
 }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
@@ -705,7 +706,23 @@ function buildInvestEvenlyPlan({
     return null;
   }
 
-  const totalNormalizedValue = investablePositions.reduce((sum, position) => {
+  const supportsCadPurchases = investablePositions.some((position) => {
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    return currency === 'CAD';
+  });
+
+  const activePositions = skipCadPurchases
+    ? investablePositions.filter((position) => {
+        const currency = (position.currency || normalizedBase).toUpperCase();
+        return currency === 'USD';
+      })
+    : investablePositions;
+
+  if (!activePositions.length) {
+    return null;
+  }
+
+  const totalNormalizedValue = activePositions.reduce((sum, position) => {
     const value = Number(position.normalizedMarketValue);
     return Number.isFinite(value) && value > 0 ? sum + value : sum;
   }, 0);
@@ -771,7 +788,7 @@ function buildInvestEvenlyPlan({
     return { shares, spentCurrency, note };
   };
 
-  investablePositions.forEach((position) => {
+  activePositions.forEach((position) => {
     const symbol = String(position.symbol).trim();
     const currency = (position.currency || normalizedBase).toUpperCase();
     const price = Number(position.currentPrice);
@@ -880,7 +897,7 @@ function buildInvestEvenlyPlan({
     });
   }
 
-  if (cadShortfall > 0.01) {
+  if (!skipCadPurchases && cadShortfall > 0.01) {
     const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
     let dlrUShares = null;
     let dlrSpendUsd = usdEquivalent;
@@ -1061,7 +1078,14 @@ function buildInvestEvenlyPlan({
   summaryLines.push(`  CAD purchases: ${formatMoney(updatedCadTotal)} CAD`);
   summaryLines.push(`  USD purchases: ${formatMoney(updatedUsdTotal)} USD`);
 
+  if (skipCadPurchases) {
+    summaryLines.push('');
+    summaryLines.push('CAD purchases were already completed. Only USD purchases are included.');
+  }
+
   plan.summaryText = summaryLines.join('\n');
+  plan.skipCadPurchases = Boolean(skipCadPurchases);
+  plan.supportsCadPurchaseToggle = supportsCadPurchases;
   return plan;
 }
 
@@ -1480,6 +1504,7 @@ export default function App() {
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
+  const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
@@ -2121,6 +2146,32 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const enhancePlanWithAccountContext = useCallback(
+    (plan) => {
+      if (!plan) {
+        return null;
+      }
+
+      const accountName =
+        (selectedAccountInfo?.displayName && selectedAccountInfo.displayName.trim()) ||
+        (selectedAccountInfo?.name && selectedAccountInfo.name.trim()) ||
+        null;
+      const accountNumber = selectedAccountInfo?.number || null;
+      const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
+      const contextLabel =
+        accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
+
+      return {
+        ...plan,
+        accountName: accountName || null,
+        accountNumber: accountNumber || null,
+        accountLabel: contextLabel || null,
+        accountUrl: accountUrl || null,
+      };
+    },
+    [selectedAccountInfo, selectedAccount]
+  );
+
   const handlePlanInvestEvenly = useCallback(async () => {
     const priceOverrides = new Map();
     const dlrDetails = findPositionDetails(orderedPositions, 'DLR.TO');
@@ -2151,13 +2202,15 @@ export default function App() {
       }
     }
 
-    const plan = buildInvestEvenlyPlan({
+    const planInputs = {
       positions: orderedPositions,
       balances,
       currencyRates,
       baseCurrency,
-      priceOverrides: priceOverrides.size ? priceOverrides : null,
-    });
+      priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
+    };
+
+    const plan = buildInvestEvenlyPlan(planInputs);
 
     if (!plan) {
       if (typeof window !== 'undefined') {
@@ -2168,30 +2221,40 @@ export default function App() {
 
     console.log('Invest cash evenly plan summary:\n' + plan.summaryText);
 
-    const accountName =
-      (selectedAccountInfo?.displayName && selectedAccountInfo.displayName.trim()) ||
-      (selectedAccountInfo?.name && selectedAccountInfo.name.trim()) ||
-      null;
-    const accountNumber = selectedAccountInfo?.number || null;
-    const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
-    const contextLabel =
-      accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
-
-    setInvestEvenlyPlan({
-      ...plan,
-      accountName: accountName || null,
-      accountNumber: accountNumber || null,
-      accountLabel: contextLabel || null,
-      accountUrl: accountUrl || null,
-    });
+    setInvestEvenlyPlan(enhancePlanWithAccountContext(plan));
+    setInvestEvenlyPlanInputs(planInputs);
   }, [
     orderedPositions,
     balances,
     currencyRates,
     baseCurrency,
-    selectedAccountInfo,
-    selectedAccount,
+    enhancePlanWithAccountContext,
   ]);
+
+  const handleAdjustInvestEvenlyPlan = useCallback(
+    (options) => {
+      if (!investEvenlyPlanInputs) {
+        return;
+      }
+
+      const skipCadPurchases = Boolean(options?.skipCadPurchases);
+      const { priceOverrides, ...restInputs } = investEvenlyPlanInputs;
+      const plan = buildInvestEvenlyPlan({
+        ...restInputs,
+        priceOverrides:
+          priceOverrides instanceof Map ? new Map(priceOverrides) : priceOverrides || null,
+        skipCadPurchases,
+      });
+
+      if (!plan) {
+        return;
+      }
+
+      console.log('Invest cash evenly plan summary (adjusted):\n' + plan.summaryText);
+      setInvestEvenlyPlan(enhancePlanWithAccountContext(plan));
+    },
+    [investEvenlyPlanInputs, enhancePlanWithAccountContext]
+  );
 
   useEffect(() => {
     if (!autoRefreshEnabled) {
@@ -2260,6 +2323,7 @@ export default function App() {
 
   const handleCloseInvestEvenlyDialog = useCallback(() => {
     setInvestEvenlyPlan(null);
+    setInvestEvenlyPlanInputs(null);
   }, []);
 
   if (loading && !data) {
@@ -2358,6 +2422,7 @@ export default function App() {
           plan={investEvenlyPlan}
           onClose={handleCloseInvestEvenlyDialog}
           copyToClipboard={copyTextToClipboard}
+          onAdjustPlan={handleAdjustInvestEvenlyPlan}
         />
       )}
       {pnlBreakdownMode && (
