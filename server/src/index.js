@@ -1599,7 +1599,13 @@ const BALANCE_NUMERIC_FIELDS = [
   'totalCost',
   'realizedPnl',
   'unrealizedPnl',
+  'exchangeRate',
+  'fxRate',
+  'conversionRate',
+  'rate',
 ];
+
+const BALANCE_DIRECT_FIELDS = new Set(['exchangeRate', 'fxRate', 'conversionRate', 'rate']);
 
 const BALANCE_FIELD_ALIASES = {
   dayPnl: ['dayPnL'],
@@ -1647,8 +1653,12 @@ function accumulateBalance(target, source) {
   BALANCE_NUMERIC_FIELDS.forEach(function (field) {
     const value = pickNumericValue(source, field);
     if (value !== null) {
-      const current = typeof target[field] === 'number' && Number.isFinite(target[field]) ? target[field] : 0;
-      target[field] = current + value;
+      if (BALANCE_DIRECT_FIELDS.has(field)) {
+        target[field] = value;
+      } else {
+        const current = typeof target[field] === 'number' && Number.isFinite(target[field]) ? target[field] : 0;
+        target[field] = current + value;
+      }
       markBalanceFieldPresent(target, field);
     }
   });
