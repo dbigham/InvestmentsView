@@ -43,6 +43,7 @@ function formatShareDisplay(shares, precision) {
 
 export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
   const [copyStatus, setCopyStatus] = useState(null);
+  const [completedPurchases, setCompletedPurchases] = useState(() => new Set());
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -74,6 +75,22 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
     }
   };
 
+  useEffect(() => {
+    setCompletedPurchases(new Set());
+  }, [plan?.purchases]);
+
+  const handleTogglePurchase = useCallback((rowKey) => {
+    setCompletedPurchases((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) {
+        next.delete(rowKey);
+      } else {
+        next.add(rowKey);
+      }
+      return next;
+    });
+  }, []);
+
   const copyValue = useCallback(
     async (value, label) => {
       if (!value || typeof copyToClipboard !== 'function') {
@@ -102,6 +119,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
       return [];
     }
     return plan.purchases.map((purchase) => {
+      const rowKey = `${purchase.symbol || ''}|${purchase.currency || ''}`;
       const amountCopy = Number.isFinite(purchase.amount) && purchase.amount > 0
         ? formatCopyNumber(purchase.amount, 2)
         : null;
@@ -114,6 +132,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
         amountCopy,
         shareCopy,
         weightPercent,
+        rowKey,
       };
     });
   }, [plan?.purchases]);
@@ -207,104 +226,6 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
             </dl>
           </section>
 
-          <section className="invest-plan-section">
-            <h3 className="invest-plan-section__title">Planned purchases</h3>
-            {purchaseRows.length ? (
-              <div className="invest-plan-purchases-wrapper">
-                <table className="invest-plan-purchases">
-                  <thead>
-                    <tr>
-                      <th scope="col">Symbol</th>
-                      <th scope="col">Allocation</th>
-                      <th scope="col">Amount</th>
-                      <th scope="col">Shares</th>
-                      <th scope="col">Price</th>
-                      <th scope="col">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {purchaseRows.map((purchase) => {
-                      const hasAmountCopy = Boolean(purchase.amountCopy);
-                      const hasShareCopy = Boolean(purchase.shareCopy);
-                      const priceLabel = Number.isFinite(purchase.price)
-                        ? `${formatMoney(purchase.price)} ${purchase.currency}`
-                        : '—';
-                      return (
-                        <tr key={purchase.symbol}>
-                          <th scope="row">
-                            <div className="invest-plan-symbol">
-                              <span className="invest-plan-symbol__ticker">{purchase.symbol}</span>
-                              {purchase.description && (
-                                <span className="invest-plan-symbol__name">{purchase.description}</span>
-                              )}
-                            </div>
-                          </th>
-                          <td>{formatWeight(purchase.weightPercent)}</td>
-                          <td>
-                            {hasAmountCopy ? (
-                              <button
-                                type="button"
-                                className="invest-plan-copy-button"
-                                onClick={() => copyValue(purchase.amountCopy, `${purchase.symbol} amount`)}
-                              >
-                                {formatCurrencyLabel(purchase.amount, purchase.currency)}
-                              </button>
-                            ) : (
-                              <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
-                                {formatCurrencyLabel(purchase.amount, purchase.currency)}
-                              </span>
-                            )}
-                          </td>
-                          <td>
-                            {hasShareCopy ? (
-                              <button
-                                type="button"
-                                className="invest-plan-copy-button"
-                                onClick={() => copyValue(purchase.shareCopy, `${purchase.symbol} shares`)}
-                              >
-                                {formatShareDisplay(purchase.shares, purchase.sharePrecision)}
-                              </button>
-                            ) : (
-                              <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
-                                {formatShareDisplay(purchase.shares, purchase.sharePrecision)}
-                              </span>
-                            )}
-                          </td>
-                          <td>{priceLabel}</td>
-                          <td>{purchase.note || '—'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="invest-plan-empty">No eligible positions were found.</p>
-            )}
-          </section>
-
-          <section className="invest-plan-section">
-            <h3 className="invest-plan-section__title">Totals</h3>
-            <dl className="invest-plan-cash">
-              <div className="invest-plan-cash__row">
-                <dt className="invest-plan-cash__label">CAD purchases</dt>
-                <dd className="invest-plan-cash__value">{formatCurrencyLabel(totals.cadNeeded, 'CAD')}</dd>
-              </div>
-              <div className="invest-plan-cash__row">
-                <dt className="invest-plan-cash__label">USD purchases</dt>
-                <dd className="invest-plan-cash__value">{formatCurrencyLabel(totals.usdNeeded, 'USD')}</dd>
-              </div>
-              <div className="invest-plan-cash__row">
-                <dt className="invest-plan-cash__label">Remaining CAD</dt>
-                <dd className="invest-plan-cash__value">{formatCurrencyLabel(totals.cadRemaining, 'CAD')}</dd>
-              </div>
-              <div className="invest-plan-cash__row">
-                <dt className="invest-plan-cash__label">Remaining USD</dt>
-                <dd className="invest-plan-cash__value">{formatCurrencyLabel(totals.usdRemaining, 'USD')}</dd>
-              </div>
-            </dl>
-          </section>
-
           {conversionRows.length > 0 && (
             <section className="invest-plan-section">
               <h3 className="invest-plan-section__title">FX conversions</h3>
@@ -371,6 +292,112 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
               </ul>
             </section>
           )}
+
+          <section className="invest-plan-section">
+            <h3 className="invest-plan-section__title">Planned purchases</h3>
+            {purchaseRows.length ? (
+              <div className="invest-plan-purchases-wrapper">
+                <table className="invest-plan-purchases">
+                  <thead>
+                    <tr>
+                      <th scope="col" className="invest-plan-purchases__checkbox-header">Done</th>
+                      <th scope="col">Symbol</th>
+                      <th scope="col">Allocation</th>
+                      <th scope="col">Amount</th>
+                      <th scope="col">Shares</th>
+                      <th scope="col">Price</th>
+                      <th scope="col">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchaseRows.map((purchase) => {
+                      const hasAmountCopy = Boolean(purchase.amountCopy);
+                      const hasShareCopy = Boolean(purchase.shareCopy);
+                      const priceLabel = Number.isFinite(purchase.price)
+                        ? `${formatMoney(purchase.price)} ${purchase.currency}`
+                        : '—';
+                      const isCompleted = completedPurchases.has(purchase.rowKey);
+                      const rowClassName = isCompleted
+                        ? 'invest-plan-purchases__row invest-plan-purchases__row--completed'
+                        : 'invest-plan-purchases__row';
+                      return (
+                        <tr key={purchase.rowKey} className={rowClassName}>
+                          <td className="invest-plan-purchases__checkbox-cell">
+                            <input
+                              type="checkbox"
+                              className="invest-plan-purchases__checkbox"
+                              checked={isCompleted}
+                              onChange={() => handleTogglePurchase(purchase.rowKey)}
+                              aria-label={`Mark ${purchase.symbol} purchase as ${
+                                isCompleted ? 'not completed' : 'completed'
+                              }`}
+                            />
+                          </td>
+                          <th scope="row">
+                            <div className="invest-plan-symbol">
+                              <span className="invest-plan-symbol__ticker">{purchase.symbol}</span>
+                              {purchase.description && (
+                                <span className="invest-plan-symbol__name">{purchase.description}</span>
+                              )}
+                            </div>
+                          </th>
+                          <td>{formatWeight(purchase.weightPercent)}</td>
+                          <td>
+                            {hasAmountCopy ? (
+                              <button
+                                type="button"
+                                className="invest-plan-copy-button"
+                                onClick={() => copyValue(purchase.amountCopy, `${purchase.symbol} amount`)}
+                              >
+                                {formatCurrencyLabel(purchase.amount, purchase.currency)}
+                              </button>
+                            ) : (
+                              <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
+                                {formatCurrencyLabel(purchase.amount, purchase.currency)}
+                              </span>
+                            )}
+                          </td>
+                          <td>
+                            {hasShareCopy ? (
+                              <button
+                                type="button"
+                                className="invest-plan-copy-button"
+                                onClick={() => copyValue(purchase.shareCopy, `${purchase.symbol} shares`)}
+                              >
+                                {formatShareDisplay(purchase.shares, purchase.sharePrecision)}
+                              </button>
+                            ) : (
+                              <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
+                                {formatShareDisplay(purchase.shares, purchase.sharePrecision)}
+                              </span>
+                            )}
+                          </td>
+                          <td>{priceLabel}</td>
+                          <td>{purchase.note || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="invest-plan-empty">No eligible positions were found.</p>
+            )}
+          </section>
+
+          <section className="invest-plan-section">
+            <h3 className="invest-plan-section__title">Totals</h3>
+            <dl className="invest-plan-cash">
+              <div className="invest-plan-cash__row">
+                <dt className="invest-plan-cash__label">CAD purchases</dt>
+                <dd className="invest-plan-cash__value">{formatCurrencyLabel(totals.cadNeeded, 'CAD')}</dd>
+              </div>
+              <div className="invest-plan-cash__row">
+                <dt className="invest-plan-cash__label">USD purchases</dt>
+                <dd className="invest-plan-cash__value">{formatCurrencyLabel(totals.usdNeeded, 'USD')}</dd>
+              </div>
+            </dl>
+          </section>
         </div>
 
         <footer className="invest-plan-dialog__footer">

@@ -770,12 +770,39 @@ textarea {
   vertical-align: top;
 }
 
+.invest-plan-purchases__checkbox-header {
+  width: 48px;
+  text-align: center;
+}
+
 .invest-plan-purchases th {
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-text-secondary);
+}
+
+.invest-plan-purchases__checkbox-cell {
+  padding-left: 12px;
+  padding-right: 12px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.invest-plan-purchases__checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.invest-plan-purchases__row {
+  transition: background-color 150ms ease, opacity 150ms ease;
+}
+
+.invest-plan-purchases__row--completed {
+  background: var(--color-surface-alt);
+  opacity: 0.6;
 }
 
 .invest-plan-purchases td {
