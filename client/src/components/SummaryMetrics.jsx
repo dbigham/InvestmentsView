@@ -269,6 +269,7 @@ export default function SummaryMetrics({
   usdToCadRate,
   onShowPeople,
   peopleDisabled,
+  onShowCashBreakdown,
   onShowPnlBreakdown,
   onShowAnnualizedReturn,
   isRefreshing,
@@ -484,7 +485,12 @@ export default function SummaryMetrics({
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
           <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
-          <MetricRow label="Cash" value={formatMoney(cash)} tone="neutral" />
+          <MetricRow
+            label="Cash"
+            value={formatMoney(cash)}
+            tone="neutral"
+            onActivate={onShowCashBreakdown || null}
+          />
           <MetricRow label="Buying power" value={formatMoney(buyingPower)} tone="neutral" />
         </dl>
       </div>
@@ -544,6 +550,7 @@ SummaryMetrics.propTypes = {
   usdToCadRate: PropTypes.number,
   onShowPeople: PropTypes.func,
   peopleDisabled: PropTypes.bool,
+  onShowCashBreakdown: PropTypes.func,
   onShowPnlBreakdown: PropTypes.func,
   onShowAnnualizedReturn: PropTypes.func,
   isRefreshing: PropTypes.bool,
@@ -570,6 +577,7 @@ SummaryMetrics.defaultProps = {
   usdToCadRate: null,
   onShowPeople: null,
   peopleDisabled: false,
+  onShowCashBreakdown: null,
   onShowPnlBreakdown: null,
   onShowAnnualizedReturn: null,
   isRefreshing: false,
