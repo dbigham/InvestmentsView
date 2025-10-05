@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary, getQqqTemperature } from './api/questrade';
+import { getSummary, getQqqTemperature, getQuote } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import { formatMoney, formatNumber } from './utils/formatters';
-import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
+import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -298,6 +298,64 @@ function coerceNumber(value) {
   return null;
 }
 
+function coercePositiveNumber(value) {
+  const numeric = coerceNumber(value);
+  if (numeric === null || !Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function normalizePriceOverrides(overrides) {
+  const map = new Map();
+  if (!overrides) {
+    return map;
+  }
+
+  const entries =
+    overrides instanceof Map
+      ? Array.from(overrides.entries())
+      : typeof overrides === 'object'
+        ? Object.entries(overrides)
+        : [];
+
+  entries.forEach(([key, value]) => {
+    const symbol = typeof key === 'string' ? key.trim().toUpperCase() : '';
+    if (!symbol) {
+      return;
+    }
+
+    const payload = value && typeof value === 'object' ? value : { price: value };
+    const price = coercePositiveNumber(payload.price);
+    if (!price) {
+      return;
+    }
+
+    const currency =
+      typeof payload.currency === 'string' && payload.currency.trim()
+        ? payload.currency.trim().toUpperCase()
+        : null;
+    const description = typeof payload.description === 'string' ? payload.description : null;
+    map.set(symbol, { price, currency, description });
+  });
+
+  return map;
+}
+
+function resolvePriceOverride(priceOverrides, symbol) {
+  if (!symbol) {
+    return null;
+  }
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return null;
+  }
+  if (!priceOverrides || !(priceOverrides instanceof Map)) {
+    return null;
+  }
+  return priceOverrides.get(normalizedSymbol) || null;
+}
+
 function buildBalancePnlMap(balances) {
   const result = { combined: {}, perCurrency: {} };
   if (!balances) {
@@ -518,12 +576,19 @@ function findPositionDetails(positions, symbol) {
 
 const DLR_SHARE_VALUE_USD = 10;
 
-function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrency = 'CAD' }) {
+function buildInvestEvenlyPlan({
+  positions,
+  balances,
+  currencyRates,
+  baseCurrency = 'CAD',
+  priceOverrides = null,
+}) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
   }
 
   const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const normalizedPriceOverrides = normalizePriceOverrides(priceOverrides);
   const cadCashRaw = resolveCashForCurrency(balances, 'CAD');
   const usdCashRaw = resolveCashForCurrency(balances, 'USD');
   const cadCash = Number.isFinite(cadCashRaw) ? cadCashRaw : 0;
@@ -718,13 +783,19 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
 
   const dlrToDetails = findPositionDetails(positions, 'DLR.TO');
   const dlrUDetails = findPositionDetails(positions, 'DLR.U.TO');
+  const dlrToOverride = resolvePriceOverride(normalizedPriceOverrides, 'DLR.TO');
+  const dlrUOverride = resolvePriceOverride(normalizedPriceOverrides, 'DLR.U.TO');
 
   if (usdShortfall > 0.01) {
     const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
     const dlrPrice =
-      dlrToDetails?.price ?? (hasUsdRate ? usdRate * DLR_SHARE_VALUE_USD : null);
+      coercePositiveNumber(dlrToOverride?.price) ??
+      coercePositiveNumber(dlrToDetails?.price) ??
+      (hasUsdRate ? usdRate * DLR_SHARE_VALUE_USD : null);
     let dlrShares = null;
     let dlrSpendCad = cadEquivalent;
+    const dlrDescription = dlrToOverride?.description ?? dlrToDetails?.description ?? null;
+    const dlrCurrency = dlrToOverride?.currency ?? dlrToDetails?.currency ?? 'CAD';
 
     if (dlrPrice && cadEquivalent !== null) {
       dlrShares = Math.floor(cadEquivalent / dlrPrice);
@@ -734,14 +805,14 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
     plan.conversions.push({
       type: 'CAD_TO_USD',
       symbol: 'DLR.TO',
-      description: dlrToDetails?.description ?? null,
+      description: dlrDescription,
       cadAmount: cadEquivalent,
       usdAmount: usdShortfall,
       sharePrice: dlrPrice,
       shares: dlrShares,
       sharePrecision: 0,
       spendAmount: dlrSpendCad,
-      currency: 'CAD',
+      currency: dlrCurrency || 'CAD',
       targetCurrency: 'USD',
     });
 
@@ -758,9 +829,14 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
 
   if (cadShortfall > 0.01) {
     const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
-    const dlrUPrice = dlrUDetails?.price ?? DLR_SHARE_VALUE_USD;
+    const dlrUPrice =
+      coercePositiveNumber(dlrUOverride?.price) ??
+      coercePositiveNumber(dlrUDetails?.price) ??
+      DLR_SHARE_VALUE_USD;
     let dlrUShares = null;
     let dlrSpendUsd = usdEquivalent;
+    const dlrUDescription = dlrUOverride?.description ?? dlrUDetails?.description ?? null;
+    const dlrUCurrency = dlrUOverride?.currency ?? dlrUDetails?.currency ?? 'USD';
 
     if (dlrUPrice && usdEquivalent !== null) {
       dlrUShares = Math.floor(usdEquivalent / dlrUPrice);
@@ -770,14 +846,14 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
     plan.conversions.push({
       type: 'USD_TO_CAD',
       symbol: 'DLR.U.TO',
-      description: dlrUDetails?.description ?? null,
+      description: dlrUDescription,
       cadAmount: cadShortfall,
       usdAmount: usdEquivalent,
       sharePrice: dlrUPrice,
       shares: dlrUShares,
       sharePrecision: 0,
       spendAmount: dlrSpendUsd,
-      currency: 'USD',
+      currency: dlrUCurrency || 'USD',
       targetCurrency: 'CAD',
     });
 
@@ -1215,6 +1291,7 @@ export default function App() {
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
+  const quoteCacheRef = useRef(new Map());
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -1851,12 +1928,42 @@ export default function App() {
     }
   }, [getSummaryText]);
 
-  const handlePlanInvestEvenly = useCallback(() => {
+  const handlePlanInvestEvenly = useCallback(async () => {
+    const priceOverrides = new Map();
+    const dlrDetails = findPositionDetails(orderedPositions, 'DLR.TO');
+    const hasDlrPrice = coercePositiveNumber(dlrDetails?.price) !== null;
+
+    if (!hasDlrPrice) {
+      const cachedOverride = quoteCacheRef.current.get('DLR.TO');
+      if (cachedOverride && coercePositiveNumber(cachedOverride.price)) {
+        priceOverrides.set('DLR.TO', cachedOverride);
+      } else {
+        try {
+          const quote = await getQuote('DLR.TO');
+          if (quote && coercePositiveNumber(quote.price)) {
+            const override = {
+              price: coercePositiveNumber(quote.price),
+              currency:
+                typeof quote.currency === 'string' && quote.currency.trim()
+                  ? quote.currency.trim().toUpperCase()
+                  : null,
+              description: typeof quote.name === 'string' ? quote.name : null,
+            };
+            quoteCacheRef.current.set('DLR.TO', override);
+            priceOverrides.set('DLR.TO', override);
+          }
+        } catch (error) {
+          console.error('Failed to load DLR.TO quote for invest evenly plan', error);
+        }
+      }
+    }
+
     const plan = buildInvestEvenlyPlan({
       positions: orderedPositions,
       balances,
       currencyRates,
       baseCurrency,
+      priceOverrides: priceOverrides.size ? priceOverrides : null,
     });
 
     if (!plan) {
@@ -1884,10 +1991,6 @@ export default function App() {
       accountLabel: contextLabel || null,
       accountUrl: accountUrl || null,
     });
-
-    if (selectedAccountInfo) {
-      openAccountSummary(selectedAccountInfo);
-    }
   }, [
     orderedPositions,
     balances,

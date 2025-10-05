@@ -29,6 +29,51 @@ const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
 const tokenFilePath = path.join(process.cwd(), 'token-store.json');
 
+let yahooFinance = null;
+let yahooFinanceLoadError = null;
+
+try {
+  // yahoo-finance2 is distributed as an ESM module with a default export.
+  // eslint-disable-next-line global-require
+  yahooFinance = require('yahoo-finance2').default;
+  if (yahooFinance && typeof yahooFinance.suppressNotices === 'function') {
+    yahooFinance.suppressNotices(['ripHistorical']);
+  }
+} catch (error) {
+  yahooFinanceLoadError = error instanceof Error ? error : new Error(String(error));
+  yahooFinance = null;
+}
+
+const YAHOO_MISSING_DEPENDENCY_MESSAGE =
+  'The "yahoo-finance2" package is required to fetch quote data. ' +
+  'Run `npm install` inside the server directory to install it.';
+
+class MissingYahooDependencyError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = 'MissingYahooDependencyError';
+    this.code = 'MISSING_DEPENDENCY';
+    if (cause) {
+      this.cause = cause;
+    }
+  }
+}
+
+if (!yahooFinance && yahooFinanceLoadError) {
+  console.warn('[Quote API] yahoo-finance2 dependency not found:', yahooFinanceLoadError.message);
+  console.warn('[Quote API]', YAHOO_MISSING_DEPENDENCY_MESSAGE);
+}
+
+function ensureYahooFinanceClient() {
+  if (!yahooFinance) {
+    throw new MissingYahooDependencyError(YAHOO_MISSING_DEPENDENCY_MESSAGE, yahooFinanceLoadError);
+  }
+  return yahooFinance;
+}
+
+const QUOTE_CACHE_TTL_SECONDS = 60;
+const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
+
 function resolveLoginDisplay(login) {
   if (!login) {
     return null;
@@ -109,6 +154,84 @@ function processQueue() {
       processQueue();
     }
   }, wait);
+}
+
+function normalizeSymbol(symbol) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const trimmed = symbol.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.toUpperCase();
+}
+
+function coerceQuoteNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  if (value instanceof Date) {
+    const numeric = value.getTime();
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function resolveQuoteTimestamp(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+  const fields = ['regularMarketTime', 'postMarketTime', 'preMarketTime'];
+  for (const field of fields) {
+    const raw = quote[field];
+    if (!raw) {
+      continue;
+    }
+    if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+      return raw.toISOString();
+    }
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const timestamp = numeric > 10_000_000_000 ? numeric : numeric * 1000;
+      const date = new Date(timestamp);
+      if (!Number.isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+    }
+  }
+  return null;
+}
+
+function extractQuotePrice(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+  const candidates = [
+    quote.regularMarketPrice,
+    quote.postMarketPrice,
+    quote.preMarketPrice,
+    quote.bid,
+    quote.ask,
+    quote.regularMarketDayHigh,
+    quote.regularMarketDayLow,
+    quote.previousClose,
+  ];
+  for (const candidate of candidates) {
+    const price = coerceQuoteNumber(candidate);
+    if (Number.isFinite(price) && price > 0) {
+      return price;
+    }
+  }
+  return null;
 }
 
 function normalizeLogin(login, fallbackId) {
@@ -1923,6 +2046,64 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
     };
   });
 }
+
+app.get('/api/quote', async function (req, res) {
+  const rawSymbol = typeof req.query.symbol === 'string' ? req.query.symbol : '';
+  const trimmedSymbol = rawSymbol ? rawSymbol.trim() : '';
+  const normalizedSymbol = normalizeSymbol(trimmedSymbol);
+
+  if (!normalizedSymbol) {
+    return res.status(400).json({ message: 'Query parameter "symbol" is required' });
+  }
+
+  const cacheKey = normalizedSymbol;
+  const cached = quoteCache.get(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+
+  try {
+    const finance = ensureYahooFinanceClient();
+    const quote = await finance.quote(trimmedSymbol || normalizedSymbol);
+    const price = extractQuotePrice(quote);
+    if (!Number.isFinite(price) || price <= 0) {
+      return res.status(404).json({ message: `Price unavailable for ${normalizedSymbol}` });
+    }
+
+    const currency =
+      quote && typeof quote.currency === 'string' && quote.currency.trim()
+        ? quote.currency.trim().toUpperCase()
+        : null;
+    const name =
+      (quote &&
+        (quote.longName || quote.shortName || quote.displayName || quote.symbol || normalizedSymbol)) ||
+      normalizedSymbol;
+    const payload = {
+      symbol: normalizedSymbol,
+      price,
+      currency,
+      name,
+      source: 'yahoo-finance2',
+      asOf: resolveQuoteTimestamp(quote),
+    };
+    quoteCache.set(cacheKey, payload);
+    return res.json(payload);
+  } catch (error) {
+    if (error instanceof MissingYahooDependencyError || error?.code === 'MISSING_DEPENDENCY') {
+      return res.status(503).json({ message: error.message });
+    }
+    const statusCode = error?.statusCode || error?.status;
+    const message = error && error.message ? error.message : 'Unknown error';
+    if (statusCode === 404) {
+      return res.status(404).json({ message: `Quote unavailable for ${normalizedSymbol}` });
+    }
+    if (typeof message === 'string' && message.toLowerCase().includes('not found')) {
+      return res.status(404).json({ message: `Quote unavailable for ${normalizedSymbol}` });
+    }
+    console.error('Failed to fetch quote from Yahoo Finance:', normalizedSymbol, message);
+    return res.status(500).json({ message: `Failed to fetch quote for ${normalizedSymbol}`, details: message });
+  }
+});
 
 app.get('/api/qqq-temperature', async function (req, res) {
   try {
