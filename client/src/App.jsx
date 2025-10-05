@@ -9,6 +9,7 @@ import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
+import CashBreakdownDialog from './components/CashBreakdownDialog';
 import { formatMoney, formatNumber } from './utils/formatters';
 import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
@@ -409,6 +410,7 @@ function resolveDisplayTotalEquity(balances) {
 }
 
 const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
+const MINIMUM_CASH_BREAKDOWN_AMOUNT = 5;
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -540,6 +542,127 @@ function resolveCashForCurrency(balances, currency) {
   }
 
   return 0;
+}
+
+function normalizeAccountBalanceSummary(balances) {
+  if (!balances || typeof balances !== 'object') {
+    return null;
+  }
+  if (balances.combined || balances.perCurrency) {
+    return balances;
+  }
+  return { combined: balances };
+}
+
+function buildCashBreakdownForCurrency({ currency, accountIds, accountsById, accountBalances }) {
+  const normalizedCurrency = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+  if (!normalizedCurrency) {
+    return null;
+  }
+
+  if (!Array.isArray(accountIds) || accountIds.length === 0) {
+    return null;
+  }
+
+  if (!accountsById || typeof accountsById.get !== 'function') {
+    return null;
+  }
+
+  if (!accountBalances || typeof accountBalances !== 'object') {
+    return null;
+  }
+
+  const entries = [];
+
+  accountIds.forEach((accountId) => {
+    if (!accountId || !accountsById.has(accountId)) {
+      return;
+    }
+
+    const account = accountsById.get(accountId);
+    const balanceSummary = normalizeAccountBalanceSummary(accountBalances[accountId]);
+    if (!balanceSummary) {
+      return;
+    }
+
+    const cashValue = resolveCashForCurrency(balanceSummary, normalizedCurrency);
+    if (!Number.isFinite(cashValue)) {
+      return;
+    }
+
+    if (cashValue <= 0) {
+      return;
+    }
+
+    if (cashValue < MINIMUM_CASH_BREAKDOWN_AMOUNT - 0.01) {
+      return;
+    }
+
+    const displayName =
+      typeof account.displayName === 'string' && account.displayName.trim()
+        ? account.displayName.trim()
+        : '';
+    const ownerLabel =
+      typeof account.ownerLabel === 'string' && account.ownerLabel.trim()
+        ? account.ownerLabel.trim()
+        : '';
+    const accountNumber =
+      typeof account.number === 'string' && account.number.trim() ? account.number.trim() : '';
+
+    let primaryName = displayName;
+    if (!primaryName) {
+      if (ownerLabel && accountNumber) {
+        primaryName = `${ownerLabel} ${accountNumber}`;
+      } else {
+        primaryName = accountNumber || ownerLabel || accountId;
+      }
+    }
+
+    const subtitleParts = [];
+    if (ownerLabel && ownerLabel !== primaryName) {
+      subtitleParts.push(ownerLabel);
+    }
+    if (accountNumber && accountNumber !== primaryName) {
+      subtitleParts.push(accountNumber);
+    }
+    const uniqueSubtitleParts = Array.from(new Set(subtitleParts));
+    const subtitle = uniqueSubtitleParts.length ? uniqueSubtitleParts.join(' • ') : null;
+
+    entries.push({
+      accountId,
+      name: primaryName,
+      subtitle,
+      amount: cashValue,
+    });
+  });
+
+  if (!entries.length) {
+    return null;
+  }
+
+  const total = entries.reduce((sum, entry) => sum + entry.amount, 0);
+  if (!(total > 0)) {
+    return null;
+  }
+
+  const rankedEntries = entries
+    .map((entry) => ({
+      ...entry,
+      percent: (entry.amount / total) * 100,
+    }))
+    .sort((a, b) => {
+      const diff = b.amount - a.amount;
+      if (Math.abs(diff) > 0.01) {
+        return diff;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+  return {
+    currency: normalizedCurrency,
+    total,
+    entries: rankedEntries,
+  };
 }
 
 function findPositionDetails(positions, symbol) {
@@ -1563,6 +1686,7 @@ export default function App() {
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
+  const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
@@ -1570,10 +1694,25 @@ export default function App() {
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const accountsById = useMemo(() => {
+    const map = new Map();
+    accounts.forEach((account) => {
+      if (account && typeof account.id === 'string' && account.id) {
+        map.set(account.id, account);
+      }
+    });
+    return map;
+  }, [accounts]);
   const filteredAccountIds = useMemo(
     () => (Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds : []),
     [data?.filteredAccountIds]
   );
+  const resolvedCashAccountIds = useMemo(() => {
+    if (filteredAccountIds.length) {
+      return filteredAccountIds.filter((accountId) => accountId && accountsById.has(accountId));
+    }
+    return Array.from(accountsById.keys());
+  }, [filteredAccountIds, accountsById]);
   const selectedAccount = useMemo(() => {
     if (activeAccountId === 'default') {
       if (filteredAccountIds.length === 1) {
@@ -2056,6 +2195,94 @@ export default function App() {
 
   const showingAllAccounts = selectedAccount === 'all';
 
+  const cashBreakdownData = useMemo(() => {
+    if (!cashBreakdownCurrency) {
+      return null;
+    }
+    return buildCashBreakdownForCurrency({
+      currency: cashBreakdownCurrency,
+      accountIds: resolvedCashAccountIds,
+      accountsById,
+      accountBalances: normalizedAccountBalances,
+    });
+  }, [
+    cashBreakdownCurrency,
+    resolvedCashAccountIds,
+    accountsById,
+    normalizedAccountBalances,
+  ]);
+
+  useEffect(() => {
+    if (!cashBreakdownCurrency) {
+      return;
+    }
+    if (!cashBreakdownData || !showingAllAccounts) {
+      setCashBreakdownCurrency(null);
+      return;
+    }
+    if (
+      !activeCurrency ||
+      activeCurrency.scope !== 'perCurrency' ||
+      activeCurrency.currency !== cashBreakdownCurrency
+    ) {
+      setCashBreakdownCurrency(null);
+    }
+  }, [
+    cashBreakdownCurrency,
+    cashBreakdownData,
+    showingAllAccounts,
+    activeCurrency,
+  ]);
+
+  const handleShowCashBreakdown = useCallback(
+    (currency) => {
+      if (!showingAllAccounts) {
+        return;
+      }
+      const normalizedCurrency = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+      if (!normalizedCurrency || (normalizedCurrency !== 'CAD' && normalizedCurrency !== 'USD')) {
+        return;
+      }
+      const breakdown = buildCashBreakdownForCurrency({
+        currency: normalizedCurrency,
+        accountIds: resolvedCashAccountIds,
+        accountsById,
+        accountBalances: normalizedAccountBalances,
+      });
+      if (!breakdown) {
+        return;
+      }
+      setCashBreakdownCurrency(normalizedCurrency);
+    },
+    [
+      showingAllAccounts,
+      resolvedCashAccountIds,
+      accountsById,
+      normalizedAccountBalances,
+    ]
+  );
+
+  const handleCloseCashBreakdown = useCallback(() => {
+    setCashBreakdownCurrency(null);
+  }, []);
+
+  const handleSelectAccountFromBreakdown = useCallback(
+    (accountId) => {
+      if (!accountId) {
+        return;
+      }
+      setCashBreakdownCurrency(null);
+      handleAccountChange(accountId);
+    },
+    [handleAccountChange]
+  );
+
+  const cashBreakdownAvailable =
+    showingAllAccounts &&
+    activeCurrency &&
+    activeCurrency.scope === 'perCurrency' &&
+    (activeCurrency.currency === 'CAD' || activeCurrency.currency === 'USD');
+
   const fetchQqqTemperature = useCallback(() => {
     if (qqqLoading) {
       return;
@@ -2495,6 +2722,11 @@ export default function App() {
             usdToCadRate={usdToCadRate}
             onShowPeople={handleOpenPeople}
             peopleDisabled={peopleDisabled}
+            onShowCashBreakdown={
+              cashBreakdownAvailable && activeCurrency
+                ? () => handleShowCashBreakdown(activeCurrency.currency)
+                : null
+            }
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
             onShowAnnualizedReturn={handleShowAnnualizedReturnDetails}
             isRefreshing={isRefreshing}
@@ -2551,6 +2783,15 @@ export default function App() {
           isFilteredView={!showingAllAccounts}
           missingAccounts={peopleMissingAccounts}
           asOf={asOf}
+        />
+      )}
+      {cashBreakdownData && (
+        <CashBreakdownDialog
+          currency={cashBreakdownData.currency}
+          total={cashBreakdownData.total}
+          entries={cashBreakdownData.entries}
+          onClose={handleCloseCashBreakdown}
+          onSelectAccount={handleSelectAccountFromBreakdown}
         />
       )}
       {investEvenlyPlan && (
