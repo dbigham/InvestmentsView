@@ -7,6 +7,7 @@ import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
+import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import { formatMoney, formatNumber } from './utils/formatters';
 import { buildAccountSummaryUrl } from './utils/questrade';
@@ -1561,6 +1562,7 @@ export default function App() {
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
+  const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
@@ -1941,12 +1943,26 @@ export default function App() {
     const netDepositsCad = selectedAccountFunding?.netDeposits?.combinedCad;
     const totalPnlCad = selectedAccountFunding?.totalPnl?.combinedCad;
     const totalEquityCad = selectedAccountFunding?.totalEquityCad;
-    const annualizedReturnRate = selectedAccountFunding?.annualizedReturn?.rate;
+    const annualizedReturn = selectedAccountFunding?.annualizedReturn || null;
+    const annualizedReturnRate = annualizedReturn?.rate;
+    const annualizedReturnAsOf = annualizedReturn?.asOf || null;
+    const annualizedReturnIncomplete = annualizedReturn?.incomplete === true;
+    const annualizedReturnStartDate =
+      typeof annualizedReturn?.startDate === 'string' && annualizedReturn.startDate.trim()
+        ? annualizedReturn.startDate
+        : null;
+    const returnBreakdown = Array.isArray(selectedAccountFunding?.returnBreakdown)
+      ? selectedAccountFunding.returnBreakdown.filter((entry) => entry && typeof entry === 'object')
+      : [];
     return {
       netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
       totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
       totalEquityCad: isFiniteNumber(totalEquityCad) ? totalEquityCad : null,
       annualizedReturnRate: isFiniteNumber(annualizedReturnRate) ? annualizedReturnRate : null,
+      annualizedReturnAsOf: annualizedReturnAsOf,
+      annualizedReturnIncomplete,
+      annualizedReturnStartDate,
+      returnBreakdown,
     };
   }, [selectedAccountFunding, activeCurrency]);
   const displayTotalEquity = useMemo(() => {
@@ -2369,6 +2385,15 @@ export default function App() {
     }
   }, [hasData, pnlBreakdownMode]);
 
+  useEffect(() => {
+    if (!showReturnBreakdown) {
+      return;
+    }
+    if (!fundingSummaryForDisplay?.returnBreakdown?.length) {
+      setShowReturnBreakdown(false);
+    }
+  }, [showReturnBreakdown, fundingSummaryForDisplay]);
+
   const handleRetryQqqDetails = useCallback(() => {
     fetchQqqTemperature();
   }, [fetchQqqTemperature]);
@@ -2398,6 +2423,17 @@ export default function App() {
   const handleClosePnlBreakdown = () => {
     setPnlBreakdownMode(null);
   };
+
+  const handleShowAnnualizedReturnDetails = useCallback(() => {
+    if (!fundingSummaryForDisplay?.returnBreakdown?.length) {
+      return;
+    }
+    setShowReturnBreakdown(true);
+  }, [fundingSummaryForDisplay]);
+
+  const handleCloseAnnualizedReturnDetails = useCallback(() => {
+    setShowReturnBreakdown(false);
+  }, []);
 
   const handleOpenPeople = () => {
     if (!peopleSummary.hasBalances) {
@@ -2460,6 +2496,7 @@ export default function App() {
             onShowPeople={handleOpenPeople}
             peopleDisabled={peopleDisabled}
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
+            onShowAnnualizedReturn={handleShowAnnualizedReturnDetails}
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
@@ -2484,18 +2521,28 @@ export default function App() {
           />
         )}
 
-        {showContent && (
-          <PositionsTable
-            positions={orderedPositions}
-            totalMarketValue={totalMarketValue}
-            sortColumn={resolvedSortColumn}
-            sortDirection={resolvedSortDirection}
-            onSortChange={setPositionsSort}
-            pnlMode={positionsPnlMode}
-            onPnlModeChange={setPositionsPnlMode}
-          />
-        )}
-      </main>
+      {showContent && (
+        <PositionsTable
+          positions={orderedPositions}
+          totalMarketValue={totalMarketValue}
+          sortColumn={resolvedSortColumn}
+          sortDirection={resolvedSortDirection}
+          onSortChange={setPositionsSort}
+          pnlMode={positionsPnlMode}
+          onPnlModeChange={setPositionsPnlMode}
+        />
+      )}
+    </main>
+      {showReturnBreakdown && fundingSummaryForDisplay?.returnBreakdown?.length > 0 && (
+        <AnnualizedReturnDialog
+          onClose={handleCloseAnnualizedReturnDetails}
+          annualizedRate={fundingSummaryForDisplay.annualizedReturnRate}
+          asOf={fundingSummaryForDisplay.annualizedReturnAsOf}
+          breakdown={fundingSummaryForDisplay.returnBreakdown}
+          incomplete={fundingSummaryForDisplay.annualizedReturnIncomplete}
+          startDate={fundingSummaryForDisplay.annualizedReturnStartDate}
+        />
+      )}
       {showPeople && (
         <PeopleDialog
           totals={peopleTotals}
