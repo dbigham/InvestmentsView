@@ -970,7 +970,7 @@ textarea {
 
 .invest-plan-conversions__journal-link {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--color-accent);
   text-decoration: none;
 }
