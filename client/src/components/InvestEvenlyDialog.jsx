@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatMoney, formatNumber } from '../utils/formatters';
 
@@ -58,6 +58,112 @@ function truncateDescription(value) {
 export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onAdjustPlan }) {
   const [copyStatus, setCopyStatus] = useState(null);
   const [completedPurchases, setCompletedPurchases] = useState(() => new Set());
+  const cadCashLabelId = useId();
+  const usdCashLabelId = useId();
+
+  const cash = plan?.cash || {};
+
+  const formatCashInputValue = useCallback((value) => {
+    if (!Number.isFinite(value)) {
+      return '';
+    }
+    return value.toFixed(2);
+  }, []);
+
+  const [cashInputs, setCashInputs] = useState(() => ({
+    cad: formatCashInputValue(cash?.cad),
+    usd: formatCashInputValue(cash?.usd),
+  }));
+
+  useEffect(() => {
+    setCashInputs({
+      cad: formatCashInputValue(cash?.cad),
+      usd: formatCashInputValue(cash?.usd),
+    });
+  }, [cash?.cad, cash?.usd, formatCashInputValue]);
+
+  const parseCashInput = useCallback((value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalized = trimmed.replace(/,/g, '');
+    if (!normalized) {
+      return null;
+    }
+    const numeric = Number(normalized);
+    return Number.isFinite(numeric) ? numeric : null;
+  }, []);
+
+  const handleCashInputChange = useCallback((currency, value) => {
+    setCashInputs((prev) => ({
+      ...prev,
+      [currency]: value,
+    }));
+  }, []);
+
+  const handleCashInputCommit = useCallback(() => {
+    if (typeof onAdjustPlan !== 'function') {
+      return;
+    }
+
+    const cadValueRaw = cashInputs.cad ?? '';
+    const usdValueRaw = cashInputs.usd ?? '';
+    const cadTrimmed = typeof cadValueRaw === 'string' ? cadValueRaw.trim() : '';
+    const usdTrimmed = typeof usdValueRaw === 'string' ? usdValueRaw.trim() : '';
+    const cadParsed = cadTrimmed ? parseCashInput(cadValueRaw) : null;
+    const usdParsed = usdTrimmed ? parseCashInput(usdValueRaw) : null;
+
+    const cadValid = !cadTrimmed || Number.isFinite(cadParsed);
+    const usdValid = !usdTrimmed || Number.isFinite(usdParsed);
+
+    if (!cadValid || !usdValid) {
+      setCashInputs({
+        cad: formatCashInputValue(cash?.cad),
+        usd: formatCashInputValue(cash?.usd),
+      });
+      return;
+    }
+
+    const overrides = {};
+
+    if (cadTrimmed && Number.isFinite(cadParsed)) {
+      overrides.cad = cadParsed;
+    }
+
+    if (usdTrimmed && Number.isFinite(usdParsed)) {
+      overrides.usd = usdParsed;
+    }
+
+    const payload = Object.keys(overrides).length > 0 ? overrides : null;
+
+    onAdjustPlan({ cashOverrides: payload });
+  },
+  [cashInputs, cash?.cad, cash?.usd, formatCashInputValue, onAdjustPlan, parseCashInput]
+  );
+
+  const handleCashInputKeyDown = useCallback(
+    (currency, event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleCashInputCommit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        setCashInputs((prev) => ({
+          ...prev,
+          [currency]: formatCashInputValue(currency === 'cad' ? cash?.cad : cash?.usd),
+        }));
+        event.currentTarget.blur();
+      }
+    },
+    [cash?.cad, cash?.usd, formatCashInputValue, handleCashInputCommit]
+  );
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -189,7 +295,6 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
   }, [plan?.conversions]);
 
   const totals = plan?.totals || {};
-  const cash = plan?.cash || {};
   const accountLabel = plan?.accountLabel || plan?.accountName || plan?.accountNumber || null;
   const accountNumber = plan?.accountNumber ? String(plan.accountNumber) : null;
   const skipCadPurchases = Boolean(plan?.skipCadPurchases);
@@ -280,12 +385,34 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
             <h3 className="invest-plan-section__title">Available cash</h3>
             <dl className="invest-plan-cash">
               <div className="invest-plan-cash__row">
-                <dt className="invest-plan-cash__label">CAD</dt>
-                <dd className="invest-plan-cash__value">{formatCurrencyLabel(cash.cad, 'CAD')}</dd>
+                <dt id={cadCashLabelId} className="invest-plan-cash__label">CAD</dt>
+                <dd className="invest-plan-cash__value">
+                  <input
+                    type="text"
+                    className="invest-plan-cash__input"
+                    inputMode="decimal"
+                    value={cashInputs.cad ?? ''}
+                    onChange={(event) => handleCashInputChange('cad', event.target.value)}
+                    onBlur={handleCashInputCommit}
+                    onKeyDown={(event) => handleCashInputKeyDown('cad', event)}
+                    aria-labelledby={cadCashLabelId}
+                  />
+                </dd>
               </div>
               <div className="invest-plan-cash__row">
-                <dt className="invest-plan-cash__label">USD</dt>
-                <dd className="invest-plan-cash__value">{formatCurrencyLabel(cash.usd, 'USD')}</dd>
+                <dt id={usdCashLabelId} className="invest-plan-cash__label">USD</dt>
+                <dd className="invest-plan-cash__value">
+                  <input
+                    type="text"
+                    className="invest-plan-cash__input"
+                    inputMode="decimal"
+                    value={cashInputs.usd ?? ''}
+                    onChange={(event) => handleCashInputChange('usd', event.target.value)}
+                    onBlur={handleCashInputCommit}
+                    onKeyDown={(event) => handleCashInputKeyDown('usd', event)}
+                    aria-labelledby={usdCashLabelId}
+                  />
+                </dd>
               </div>
               <div className="invest-plan-cash__row">
                 <dt className="invest-plan-cash__label">Total (CAD)</dt>

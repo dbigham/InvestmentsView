@@ -658,6 +658,7 @@ function buildInvestEvenlyPlan({
   currencyRates,
   baseCurrency = 'CAD',
   priceOverrides = null,
+  cashOverrides = null,
   skipCadPurchases = false,
   skipUsdPurchases = false,
 }) {
@@ -667,8 +668,20 @@ function buildInvestEvenlyPlan({
 
   const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
   const normalizedPriceOverrides = normalizePriceOverrides(priceOverrides);
-  const cadCashRaw = resolveCashForCurrency(balances, 'CAD');
-  const usdCashRaw = resolveCashForCurrency(balances, 'USD');
+  const normalizedCashOverrides =
+    cashOverrides && typeof cashOverrides === 'object' ? cashOverrides : null;
+  const hasCadOverride =
+    normalizedCashOverrides && Object.prototype.hasOwnProperty.call(normalizedCashOverrides, 'cad');
+  const hasUsdOverride =
+    normalizedCashOverrides && Object.prototype.hasOwnProperty.call(normalizedCashOverrides, 'usd');
+  const cadOverride = hasCadOverride ? coerceNumber(normalizedCashOverrides.cad) : null;
+  const usdOverride = hasUsdOverride ? coerceNumber(normalizedCashOverrides.usd) : null;
+  const cadCashRaw = Number.isFinite(cadOverride)
+    ? cadOverride
+    : resolveCashForCurrency(balances, 'CAD');
+  const usdCashRaw = Number.isFinite(usdOverride)
+    ? usdOverride
+    : resolveCashForCurrency(balances, 'USD');
   const cadCash = Number.isFinite(cadCashRaw) ? cadCashRaw : 0;
   const usdCash = Number.isFinite(usdCashRaw) ? usdCashRaw : 0;
 
@@ -2250,6 +2263,7 @@ export default function App() {
       currencyRates,
       baseCurrency,
       priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
+      cashOverrides: null,
     };
 
     const plan = buildInvestEvenlyPlan(planInputs);
@@ -2284,11 +2298,21 @@ export default function App() {
 
       const nextSkipCadPurchases = options?.skipCadPurchases ?? skipCadToggle;
       const nextSkipUsdPurchases = options?.skipUsdPurchases ?? skipUsdToggle;
-      const { priceOverrides, ...restInputs } = investEvenlyPlanInputs;
+      const hasCashOverrideOption =
+        options && Object.prototype.hasOwnProperty.call(options, 'cashOverrides');
+      const {
+        priceOverrides,
+        cashOverrides: storedCashOverrides,
+        ...restInputs
+      } = investEvenlyPlanInputs;
+      const nextCashOverrides = hasCashOverrideOption
+        ? options.cashOverrides
+        : storedCashOverrides ?? null;
       const plan = buildInvestEvenlyPlan({
         ...restInputs,
         priceOverrides:
           priceOverrides instanceof Map ? new Map(priceOverrides) : priceOverrides || null,
+        cashOverrides: nextCashOverrides,
         skipCadPurchases: nextSkipCadPurchases,
         skipUsdPurchases: nextSkipUsdPurchases,
       });
@@ -2299,12 +2323,25 @@ export default function App() {
 
       console.log('Invest cash evenly plan summary (adjusted):\n' + plan.summaryText);
       setInvestEvenlyPlan(enhancePlanWithAccountContext(plan));
+      setInvestEvenlyPlanInputs((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const nextPriceOverrides =
+          prev.priceOverrides instanceof Map ? new Map(prev.priceOverrides) : prev.priceOverrides || null;
+        return {
+          ...prev,
+          priceOverrides: nextPriceOverrides,
+          cashOverrides: nextCashOverrides ?? null,
+        };
+      });
     },
     [
       investEvenlyPlanInputs,
       skipCadToggle,
       skipUsdToggle,
       enhancePlanWithAccountContext,
+      setInvestEvenlyPlanInputs,
     ]
   );
 
