@@ -1697,7 +1697,12 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
 
   const combinedCadValue = conversionIncomplete ? null : combinedCad;
 
-  const combinedBalances = perAccountCombinedBalances && perAccountCombinedBalances[account.id];
+  const accountBalanceSummary =
+    perAccountCombinedBalances && perAccountCombinedBalances[account.id];
+  const combinedBalances =
+    accountBalanceSummary && accountBalanceSummary.combined
+      ? accountBalanceSummary.combined
+      : accountBalanceSummary;
   const cadBalance = combinedBalances ? combinedBalances.CAD || combinedBalances.cad : null;
   const totalEquityCad = cadBalance && Number.isFinite(Number(cadBalance.totalEquity))
     ? Number(cadBalance.totalEquity)
@@ -1980,17 +1985,21 @@ function mergeBalances(allBalances) {
   return summary;
 }
 
-function summarizeAccountCombinedBalances(balanceEntry) {
+function summarizeAccountBalances(balanceEntry) {
   const summary = mergeBalances([balanceEntry]);
   finalizeBalances(summary);
-  if (!summary || !summary.combined) {
+  if (!summary || typeof summary !== 'object') {
     return null;
   }
-  const combined = summary.combined;
-  if (!combined || typeof combined !== 'object' || !Object.keys(combined).length) {
+
+  const hasCombined = summary.combined && Object.keys(summary.combined).length > 0;
+  const hasPerCurrency = summary.perCurrency && Object.keys(summary.perCurrency).length > 0;
+
+  if (!hasCombined && !hasPerCurrency) {
     return null;
   }
-  return combined;
+
+  return summary;
 }
 
 function finalizeBalances(summary) {
@@ -2073,13 +2082,20 @@ function findAccountCadBalance(accountId, perAccountBalances) {
     return null;
   }
 
-  const cadKey = Object.keys(balances).find(function (key) {
+  const combinedBalances =
+    balances && typeof balances === 'object' && balances.combined ? balances.combined : balances;
+
+  if (!combinedBalances || typeof combinedBalances !== 'object') {
+    return null;
+  }
+
+  const cadKey = Object.keys(combinedBalances).find(function (key) {
     return key && typeof key === 'string' && key.toUpperCase() === 'CAD';
   });
   if (!cadKey) {
     return null;
   }
-  const cadBalance = balances[cadKey];
+  const cadBalance = combinedBalances[cadKey];
   if (!cadBalance || typeof cadBalance !== 'object') {
     return null;
   }
@@ -2473,9 +2489,9 @@ app.get('/api/summary', async function (req, res) {
     );
     const perAccountCombinedBalances = {};
     selectedContexts.forEach(function (context, index) {
-      const combined = summarizeAccountCombinedBalances(balancesResults[index]);
-      if (combined) {
-        perAccountCombinedBalances[context.account.id] = combined;
+      const summary = summarizeAccountBalances(balancesResults[index]);
+      if (summary) {
+        perAccountCombinedBalances[context.account.id] = summary;
       }
     });
     const flattenedPositions = positionsResults

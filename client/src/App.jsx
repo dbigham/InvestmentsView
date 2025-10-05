@@ -544,6 +544,16 @@ function resolveCashForCurrency(balances, currency) {
   return 0;
 }
 
+function normalizeAccountBalanceSummary(balances) {
+  if (!balances || typeof balances !== 'object') {
+    return null;
+  }
+  if (balances.combined || balances.perCurrency) {
+    return balances;
+  }
+  return { combined: balances };
+}
+
 function buildCashBreakdownForCurrency({ currency, accountIds, accountsById, accountBalances }) {
   const normalizedCurrency = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
   if (!normalizedCurrency) {
@@ -570,12 +580,12 @@ function buildCashBreakdownForCurrency({ currency, accountIds, accountsById, acc
     }
 
     const account = accountsById.get(accountId);
-    const combinedBalances = accountBalances[accountId];
-    if (!combinedBalances || typeof combinedBalances !== 'object') {
+    const balanceSummary = normalizeAccountBalanceSummary(accountBalances[accountId]);
+    if (!balanceSummary) {
       return;
     }
 
-    const cashValue = resolveCashForCurrency({ combined: combinedBalances }, normalizedCurrency);
+    const cashValue = resolveCashForCurrency(balanceSummary, normalizedCurrency);
     if (!Number.isFinite(cashValue)) {
       return;
     }
