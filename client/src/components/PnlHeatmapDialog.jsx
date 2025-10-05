@@ -245,8 +245,153 @@ function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
 
 const STYLE_TWO_MIN_SHARE = 0.005;
 
+const MERGED_SYMBOL_ALIASES = new Map([
+  ['QQQM', 'QQQ'],
+]);
+
+function normalizeMergedSymbol(position, fallbackId) {
+  const rawSymbol =
+    typeof position.symbol === 'string' && position.symbol.trim()
+      ? position.symbol.trim()
+      : position.symbolId !== undefined && position.symbolId !== null
+      ? String(position.symbolId)
+      : position.rowId
+      ? String(position.rowId)
+      : fallbackId;
+
+  const normalized = rawSymbol ? rawSymbol.toUpperCase() : '';
+  const withoutToSuffix = normalized.endsWith('.TO') ? normalized.slice(0, -3) : normalized;
+  const base = MERGED_SYMBOL_ALIASES.get(withoutToSuffix) || withoutToSuffix;
+
+  return {
+    key: base || normalized || fallbackId,
+    display: base || rawSymbol || '—',
+    raw: rawSymbol || '—',
+  };
+}
+
+function aggregatePositionsByMergedSymbol(positions) {
+  const groups = new Map();
+
+  const entries = Array.isArray(positions) ? positions : [];
+
+  entries.forEach((position, index) => {
+    const { key, display, raw } = normalizeMergedSymbol(position, `__merged_${index}`);
+    const resolvedCost = resolvePositionTotalCost(position);
+    const normalizedMarketValue = isFiniteNumber(position.normalizedMarketValue)
+      ? position.normalizedMarketValue
+      : 0;
+    const normalizedDayPnl = isFiniteNumber(position.normalizedDayPnl)
+      ? position.normalizedDayPnl
+      : 0;
+    const normalizedOpenPnl = isFiniteNumber(position.normalizedOpenPnl)
+      ? position.normalizedOpenPnl
+      : 0;
+    const currentMarketValue = isFiniteNumber(position.currentMarketValue)
+      ? position.currentMarketValue
+      : 0;
+    const dayPnl = isFiniteNumber(position.dayPnl) ? position.dayPnl : 0;
+    const openPnl = isFiniteNumber(position.openPnl) ? position.openPnl : 0;
+    const portfolioShare = isFiniteNumber(position.portfolioShare)
+      ? position.portfolioShare
+      : null;
+    const currency =
+      typeof position.currency === 'string' && position.currency.trim()
+        ? position.currency.trim().toUpperCase()
+        : null;
+    const description =
+      typeof position.description === 'string' && position.description.trim()
+        ? position.description.trim()
+        : position.description ?? null;
+    const currentPrice = isFiniteNumber(position.currentPrice) ? position.currentPrice : null;
+    const openQuantity = isFiniteNumber(position.openQuantity) ? position.openQuantity : null;
+
+    if (groups.has(key)) {
+      const entry = groups.get(key);
+      entry.normalizedMarketValue += normalizedMarketValue;
+      entry.normalizedDayPnl += normalizedDayPnl;
+      entry.normalizedOpenPnl += normalizedOpenPnl;
+      entry.currentMarketValue += currentMarketValue;
+      entry.dayPnl += dayPnl;
+      entry.openPnl += openPnl;
+      if (portfolioShare !== null) {
+        entry.portfolioShare = (entry.portfolioShare ?? 0) + portfolioShare;
+      }
+      if (entry.totalCost !== null) {
+        if (isFiniteNumber(resolvedCost)) {
+          entry.totalCost += resolvedCost;
+        } else {
+          entry.totalCost = null;
+        }
+      }
+      if (entry.openQuantity !== null) {
+        if (openQuantity !== null) {
+          entry.openQuantity += openQuantity;
+        } else {
+          entry.openQuantity = null;
+        }
+      }
+      if (!entry.description && description) {
+        entry.description = description;
+      }
+      if (currentPrice !== null && entry.currentPrice === null) {
+        entry.currentPrice = currentPrice;
+      }
+      if (currency) {
+        if (entry.currency && entry.currency !== currency) {
+          entry.currency = null;
+        } else if (!entry.currency) {
+          entry.currency = currency;
+        }
+      }
+      entry.rawSymbols.add(raw);
+    } else {
+      groups.set(key, {
+        id: `${key}-merged`,
+        symbol: display,
+        description: description || null,
+        normalizedMarketValue,
+        normalizedDayPnl,
+        normalizedOpenPnl,
+        currentMarketValue,
+        dayPnl,
+        openPnl,
+        portfolioShare,
+        currency,
+        currentPrice,
+        totalCost: isFiniteNumber(resolvedCost) ? resolvedCost : null,
+        averageEntryPrice: isFiniteNumber(position.averageEntryPrice)
+          ? position.averageEntryPrice
+          : null,
+        openQuantity,
+        rawSymbols: new Set([raw]),
+      });
+    }
+  });
+
+  return Array.from(groups.values()).map((entry) => {
+    const { rawSymbols, ...rest } = entry;
+    const { totalCost, openQuantity, averageEntryPrice } = rest;
+    let resolvedAverage = averageEntryPrice;
+    if (resolvedAverage === null && totalCost !== null && openQuantity) {
+      const quantity = isFiniteNumber(openQuantity) ? openQuantity : null;
+      if (quantity) {
+        resolvedAverage = totalCost / quantity;
+      }
+    }
+
+    return {
+      ...rest,
+      averageEntryPrice: resolvedAverage,
+      rowId: Array.from(rawSymbols).join(','),
+    };
+  });
+}
+
 function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
-  const prepared = positions
+  const sourcePositions = aggregatePositionsByMergedSymbol(positions);
+
+  const prepared = sourcePositions
     .map((position) => {
       const marketValue = isFiniteNumber(position.normalizedMarketValue)
         ? position.normalizedMarketValue
@@ -590,7 +735,6 @@ export default function PnlHeatmapDialog({
                   }`}
                   onClick={() => setColorMode('percent')}
                   aria-pressed={colorMode === 'percent'}
-                  disabled={styleMode === 'style2'}
                 >
                   % change
                 </button>
@@ -601,7 +745,6 @@ export default function PnlHeatmapDialog({
                   }`}
                   onClick={() => setColorMode('value')}
                   aria-pressed={colorMode === 'value'}
-                  disabled={styleMode === 'style2'}
                 >
                   {currencyLabel} change
                 </button>
@@ -662,7 +805,9 @@ export default function PnlHeatmapDialog({
                   return '—';
                 })();
                 const detailDisplay = isStyleTwo
-                  ? styleTwoDisplay
+                  ? colorMode === 'value'
+                    ? valueDisplay ?? '—'
+                    : styleTwoDisplay
                   : colorMode === 'value'
                   ? valueDisplay ?? '—'
                   : percentDisplay ?? '—';
