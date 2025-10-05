@@ -673,9 +673,10 @@ function buildInvestEvenlyPlan({
 
   const cadInBase = normalizeCurrencyAmount(cadCash, 'CAD', currencyRates, normalizedBase);
   const usdInBase = normalizeCurrencyAmount(usdCash, 'USD', currencyRates, normalizedBase);
-  const totalInvestableCad = cadInBase + usdInBase;
+  const totalCashInBase = cadInBase + usdInBase;
+  const investableBaseTotal = skipCadPurchases ? usdInBase : totalCashInBase;
 
-  if (!Number.isFinite(totalInvestableCad) || totalInvestableCad <= 0) {
+  if (!Number.isFinite(investableBaseTotal) || investableBaseTotal <= 0) {
     return null;
   }
 
@@ -735,7 +736,8 @@ function buildInvestEvenlyPlan({
     cash: {
       cad: cadCash,
       usd: usdCash,
-      totalCad: totalInvestableCad,
+      totalCad: totalCashInBase,
+      investableCad: investableBaseTotal,
     },
     baseCurrency: normalizedBase,
     purchases: [],
@@ -794,7 +796,7 @@ function buildInvestEvenlyPlan({
     const price = Number(position.currentPrice);
     const normalizedValue = Number(position.normalizedMarketValue);
     const weight = normalizedValue / totalNormalizedValue;
-    const targetCadAmount = totalInvestableCad * (Number.isFinite(weight) ? weight : 0);
+    const targetCadAmount = investableBaseTotal * (Number.isFinite(weight) ? weight : 0);
 
     let targetCurrencyAmount = targetCadAmount;
     if (currency !== normalizedBase) {
@@ -857,7 +859,7 @@ function buildInvestEvenlyPlan({
   let cadAvailableAfterConversions = cadCash;
   let usdAvailableAfterConversions = usdCash;
 
-  if (usdShortfall > 0.01) {
+  if (!skipCadPurchases && usdShortfall > 0.01) {
     const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
     let dlrShares = null;
     let dlrSpendCad = cadEquivalent;
@@ -1011,7 +1013,11 @@ function buildInvestEvenlyPlan({
   summaryLines.push('Available cash:');
   summaryLines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
   summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
-  summaryLines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
+  summaryLines.push(`Total available (CAD): ${formatMoney(totalCashInBase)} CAD`);
+
+  if (skipCadPurchases) {
+    summaryLines.push(`Investable USD funds (CAD): ${formatMoney(investableBaseTotal)} CAD`);
+  }
 
   if (plan.conversions.length) {
     summaryLines.push('');

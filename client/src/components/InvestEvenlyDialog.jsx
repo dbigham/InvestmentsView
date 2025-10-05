@@ -257,6 +257,14 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                 <dt className="invest-plan-cash__label">Total (CAD)</dt>
                 <dd className="invest-plan-cash__value">{formatCurrencyLabel(cash.totalCad, plan?.baseCurrency || 'CAD')}</dd>
               </div>
+              {skipCadPurchases && Number.isFinite(cash?.investableCad) && (
+                <div className="invest-plan-cash__row">
+                  <dt className="invest-plan-cash__label">Investable USD funds (CAD)</dt>
+                  <dd className="invest-plan-cash__value">
+                    {formatCurrencyLabel(cash.investableCad, plan?.baseCurrency || 'CAD')}
+                  </dd>
+                </div>
+              )}
             </dl>
           </section>
 
@@ -519,6 +527,7 @@ InvestEvenlyDialog.propTypes = {
       cad: PropTypes.number,
       usd: PropTypes.number,
       totalCad: PropTypes.number,
+      investableCad: PropTypes.number,
     }),
     purchases: PropTypes.arrayOf(purchaseShape),
     totals: PropTypes.shape({
