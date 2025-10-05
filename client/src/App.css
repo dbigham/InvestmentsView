@@ -715,6 +715,76 @@ textarea {
   color: var(--color-text-primary);
 }
 
+.invest-plan-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.invest-plan-section__header .invest-plan-section__title {
+  margin: 0;
+}
+
+.invest-plan-toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.invest-plan-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
+}
+
+.invest-plan-toggle-button:hover,
+.invest-plan-toggle-button:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  outline: none;
+}
+
+.invest-plan-toggle-button:active {
+  transform: scale(0.98);
+}
+
+.invest-plan-toggle-button--active {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.invest-plan-toggle-button--active:hover,
+.invest-plan-toggle-button--active:focus-visible {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.invest-plan-toggle-button--active:focus-visible {
+  box-shadow: 0 0 0 2px rgba(56, 155, 60, 0.3);
+}
+
+.invest-plan-toggle-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
 .invest-plan-cash {
   margin: 0;
   padding: 0;
@@ -888,6 +958,33 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.invest-plan-conversions__extras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.invest-plan-conversions__journal-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.invest-plan-conversions__journal-link:hover,
+.invest-plan-conversions__journal-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.invest-plan-conversions__account-number {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .invest-plan-conversions__item {

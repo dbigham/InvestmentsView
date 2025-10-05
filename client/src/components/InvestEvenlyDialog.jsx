@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { formatMoney, formatNumber } from '../utils/formatters';
 
 const DESCRIPTION_CHAR_LIMIT = 21;
+const JOURNALLING_URL = 'https://my.questrade.com/clients/en/my_requests/journalling.aspx';
 
 function formatCopyNumber(value, decimals = 2, { trimTrailingZeros = false } = {}) {
   if (!Number.isFinite(value)) {
@@ -54,7 +55,7 @@ function truncateDescription(value) {
   return `${normalized.slice(0, DESCRIPTION_CHAR_LIMIT).trimEnd()}...`;
 }
 
-export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
+export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onAdjustPlan }) {
   const [copyStatus, setCopyStatus] = useState(null);
   const [completedPurchases, setCompletedPurchases] = useState(() => new Set());
 
@@ -190,6 +191,50 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
   const totals = plan?.totals || {};
   const cash = plan?.cash || {};
   const accountLabel = plan?.accountLabel || plan?.accountName || plan?.accountNumber || null;
+  const accountNumber = plan?.accountNumber ? String(plan.accountNumber) : null;
+  const skipCadPurchases = Boolean(plan?.skipCadPurchases);
+  const skipUsdPurchases = Boolean(plan?.skipUsdPurchases);
+  const canToggleCadPurchases =
+    Boolean(onAdjustPlan) && (plan?.supportsCadPurchaseToggle || skipCadPurchases);
+  const canToggleUsdPurchases =
+    Boolean(onAdjustPlan) && (plan?.supportsUsdPurchaseToggle || skipUsdPurchases);
+  const toggleGroupVisible = canToggleCadPurchases || canToggleUsdPurchases;
+
+  const handleToggleCadPurchases = useCallback(() => {
+    if (typeof onAdjustPlan !== 'function') {
+      return;
+    }
+    onAdjustPlan({ skipCadPurchases: !skipCadPurchases, skipUsdPurchases: false });
+  }, [onAdjustPlan, skipCadPurchases]);
+
+  const handleToggleUsdPurchases = useCallback(() => {
+    if (typeof onAdjustPlan !== 'function') {
+      return;
+    }
+    onAdjustPlan({ skipUsdPurchases: !skipUsdPurchases, skipCadPurchases: false });
+  }, [onAdjustPlan, skipUsdPurchases]);
+
+  const cadToggleClassName = skipCadPurchases
+    ? 'invest-plan-toggle-button invest-plan-toggle-button--active'
+    : 'invest-plan-toggle-button';
+  const usdToggleClassName = skipUsdPurchases
+    ? 'invest-plan-toggle-button invest-plan-toggle-button--active'
+    : 'invest-plan-toggle-button';
+
+  const normalizedInvestableCurrency = cash?.investableCurrency
+    ? String(cash.investableCurrency).trim().toUpperCase()
+    : null;
+  const showInvestableRow =
+    (skipCadPurchases || skipUsdPurchases) && Number.isFinite(cash?.investableCad);
+  const investableRowLabel = normalizedInvestableCurrency
+    ? `Investable ${normalizedInvestableCurrency} funds (CAD)`
+    : 'Investable funds (CAD)';
+
+  const activeToggleNote = skipCadPurchases
+    ? 'CAD purchases are hidden. USD cash is allocated across USD positions.'
+    : skipUsdPurchases
+    ? 'USD purchases are hidden. CAD cash is allocated across CAD positions.'
+    : null;
 
   return (
     <div className="invest-plan-overlay" role="presentation" onClick={handleOverlayClick}>
@@ -246,12 +291,35 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
                 <dt className="invest-plan-cash__label">Total (CAD)</dt>
                 <dd className="invest-plan-cash__value">{formatCurrencyLabel(cash.totalCad, plan?.baseCurrency || 'CAD')}</dd>
               </div>
+              {showInvestableRow && (
+                <div className="invest-plan-cash__row">
+                  <dt className="invest-plan-cash__label">{investableRowLabel}</dt>
+                  <dd className="invest-plan-cash__value">
+                    {formatCurrencyLabel(cash.investableCad, plan?.baseCurrency || 'CAD')}
+                  </dd>
+                </div>
+              )}
             </dl>
           </section>
 
           {conversionRows.length > 0 && (
             <section className="invest-plan-section">
               <h3 className="invest-plan-section__title">FX conversions</h3>
+              <div className="invest-plan-conversions__extras">
+                <a
+                  className="invest-plan-conversions__journal-link"
+                  href={JOURNALLING_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Journal shares in Questrade
+                </a>
+                {accountNumber && (
+                  <span className="invest-plan-conversions__account-number">
+                    Account number: <strong>{accountNumber}</strong>
+                  </span>
+                )}
+              </div>
               <ul className="invest-plan-conversions">
                 {conversionRows.map((conversion) => {
                   const amountLabel = formatCurrencyLabel(conversion.spendAmount, conversion.spendCurrency);
@@ -320,7 +388,32 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard }) {
           )}
 
           <section className="invest-plan-section">
-            <h3 className="invest-plan-section__title">Planned purchases</h3>
+            <div className="invest-plan-section__header">
+              <h3 className="invest-plan-section__title">Planned purchases</h3>
+              {toggleGroupVisible && (
+                <div className="invest-plan-toggle-group">
+                  {canToggleCadPurchases && (
+                    <button
+                      type="button"
+                      className={cadToggleClassName}
+                      onClick={handleToggleCadPurchases}
+                    >
+                      {skipCadPurchases ? 'Include CAD purchases' : 'CAD purchases already made'}
+                    </button>
+                  )}
+                  {canToggleUsdPurchases && (
+                    <button
+                      type="button"
+                      className={usdToggleClassName}
+                      onClick={handleToggleUsdPurchases}
+                    >
+                      {skipUsdPurchases ? 'Include USD purchases' : 'USD purchases already made'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {activeToggleNote && <p className="invest-plan-toggle-note">{activeToggleNote}</p>}
             {purchaseRows.length ? (
               <div className="invest-plan-purchases-wrapper">
                 <table className="invest-plan-purchases">
@@ -481,6 +574,8 @@ InvestEvenlyDialog.propTypes = {
       cad: PropTypes.number,
       usd: PropTypes.number,
       totalCad: PropTypes.number,
+      investableCad: PropTypes.number,
+      investableCurrency: PropTypes.string,
     }),
     purchases: PropTypes.arrayOf(purchaseShape),
     totals: PropTypes.shape({
@@ -491,14 +586,20 @@ InvestEvenlyDialog.propTypes = {
     }),
     conversions: PropTypes.arrayOf(conversionShape),
     accountName: PropTypes.string,
-    accountNumber: PropTypes.string,
+    accountNumber: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     accountLabel: PropTypes.string,
     accountUrl: PropTypes.string,
+    skipCadPurchases: PropTypes.bool,
+    skipUsdPurchases: PropTypes.bool,
+    supportsCadPurchaseToggle: PropTypes.bool,
+    supportsUsdPurchaseToggle: PropTypes.bool,
   }).isRequired,
   onClose: PropTypes.func.isRequired,
   copyToClipboard: PropTypes.func,
+  onAdjustPlan: PropTypes.func,
 };
 
 InvestEvenlyDialog.defaultProps = {
   copyToClipboard: null,
+  onAdjustPlan: null,
 };
