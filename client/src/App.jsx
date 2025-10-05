@@ -6,8 +6,10 @@ import { getSummary, getQqqTemperature } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
+import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import { formatMoney, formatNumber } from './utils/formatters';
+import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -481,6 +483,39 @@ function resolveCashForCurrency(balances, currency) {
   return 0;
 }
 
+function findPositionDetails(positions, symbol) {
+  if (!Array.isArray(positions) || !symbol) {
+    return null;
+  }
+
+  const normalizedSymbol = String(symbol).trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return null;
+  }
+
+  for (const position of positions) {
+    if (!position) {
+      continue;
+    }
+    const positionSymbol = position.symbol ? String(position.symbol).trim().toUpperCase() : '';
+    if (positionSymbol !== normalizedSymbol) {
+      continue;
+    }
+
+    const price = coerceNumber(position.currentPrice);
+    const currency = typeof position.currency === 'string' ? position.currency.trim().toUpperCase() : null;
+    const description = typeof position.description === 'string' ? position.description : null;
+
+    return {
+      price: price !== null && price > 0 ? price : null,
+      currency,
+      description,
+    };
+  }
+
+  return null;
+}
+
 function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrency = 'CAD' }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
@@ -536,15 +571,33 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
     return null;
   }
 
-  const lines = [];
-  lines.push('Invest cash evenly plan');
-  lines.push('');
-  lines.push('Available cash:');
-  lines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
-  lines.push(`  USD: ${formatMoney(usdCash)} USD`);
-  lines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
-  lines.push('');
-  lines.push('Purchases:');
+  const plan = {
+    cash: {
+      cad: cadCash,
+      usd: usdCash,
+      totalCad: totalInvestableCad,
+    },
+    baseCurrency: normalizedBase,
+    purchases: [],
+    totals: {
+      cadNeeded: 0,
+      usdNeeded: 0,
+      cadRemaining: 0,
+      usdRemaining: 0,
+    },
+    conversions: [],
+    summaryText: '',
+  };
+
+  const summaryLines = [];
+  summaryLines.push('Invest cash evenly plan');
+  summaryLines.push('');
+  summaryLines.push('Available cash:');
+  summaryLines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
+  summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
+  summaryLines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
+  summaryLines.push('');
+  summaryLines.push('Purchases:');
 
   let totalCadNeeded = 0;
   let totalUsdNeeded = 0;
@@ -585,14 +638,14 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
         shares = Math.floor(targetCurrencyAmount / price);
         spentCurrency = shares * price;
         if (shares === 0) {
-          note = ' (insufficient for 1 share)';
+          note = 'Insufficient for 1 share';
         }
       } else {
         const factor = Math.pow(10, USD_SHARE_PRECISION);
         shares = Math.floor((targetCurrencyAmount / price) * factor) / factor;
         spentCurrency = shares * price;
         if (shares === 0) {
-          note = ' (insufficient for minimum fractional share)';
+          note = 'Insufficient for minimum fractional share';
         }
       }
     }
@@ -619,43 +672,125 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
     const formattedShares = formatNumber(shares, shareDigits);
     const formattedPrice = price > 0 ? `${formatMoney(price)} ${currency}` : '—';
 
-    lines.push(`  ${symbol} (${currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${note}`);
+    summaryLines.push(
+      `  ${symbol} (${currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${
+        note ? ` (${note})` : ''
+      }`
+    );
+
+    plan.purchases.push({
+      symbol,
+      description: position.description ?? null,
+      currency,
+      amount: spentCurrency,
+      targetAmount: targetCurrencyAmount,
+      shares,
+      sharePrecision: currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
+      price,
+      note: note || null,
+      weight,
+    });
   });
 
   const cadRemaining = cadCash - totalCadNeeded;
   const usdRemaining = usdCash - totalUsdNeeded;
 
-  lines.push('');
-  lines.push('Totals:');
-  lines.push(
+  plan.totals = {
+    cadNeeded: totalCadNeeded,
+    usdNeeded: totalUsdNeeded,
+    cadRemaining,
+    usdRemaining,
+  };
+
+  summaryLines.push('');
+  summaryLines.push('Totals:');
+  summaryLines.push(
     `  CAD purchases: ${formatMoney(totalCadNeeded)} CAD (remaining cash: ${formatMoney(cadRemaining)} CAD)`
   );
-  lines.push(
+  summaryLines.push(
     `  USD purchases: ${formatMoney(totalUsdNeeded)} USD (remaining cash: ${formatMoney(usdRemaining)} USD)`
   );
 
   const cadShortfall = totalCadNeeded > cadCash ? totalCadNeeded - cadCash : 0;
   const usdShortfall = totalUsdNeeded > usdCash ? totalUsdNeeded - usdCash : 0;
 
-  if (cadShortfall > 0.01) {
-    const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
-    lines.push(
-      `  Convert ${formatMoney(cadShortfall)} CAD${
-        usdEquivalent ? ` (≈ ${formatMoney(usdEquivalent)} USD)` : ''
-      } from USD to CAD`
-    );
-  }
+  const dlrToDetails = findPositionDetails(positions, 'DLR.TO');
+  const dlrUDetails = findPositionDetails(positions, 'DLR.U.TO');
 
   if (usdShortfall > 0.01) {
     const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
-    lines.push(
+    const dlrPrice = dlrToDetails?.price ?? (hasUsdRate ? usdRate : null);
+    let dlrShares = null;
+    let dlrSpendCad = cadEquivalent;
+
+    if (dlrPrice && cadEquivalent !== null) {
+      dlrShares = Math.floor(cadEquivalent / dlrPrice);
+      dlrSpendCad = dlrShares * dlrPrice;
+    }
+
+    plan.conversions.push({
+      type: 'CAD_TO_USD',
+      symbol: 'DLR.TO',
+      description: dlrToDetails?.description ?? null,
+      cadAmount: cadEquivalent,
+      usdAmount: usdShortfall,
+      sharePrice: dlrPrice,
+      shares: dlrShares,
+      sharePrecision: 0,
+      spendAmount: dlrSpendCad,
+      currency: 'CAD',
+      targetCurrency: 'USD',
+    });
+
+    summaryLines.push(
       `  Convert ${cadEquivalent ? `${formatMoney(cadEquivalent)} CAD` : 'additional CAD'} into ${formatMoney(
         usdShortfall
-      )} USD`
+      )} USD via DLR.TO${
+        dlrShares && dlrShares > 0
+          ? ` (${formatNumber(dlrShares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
+          : ''
+      }`
     );
   }
 
-  return lines.join('\n');
+  if (cadShortfall > 0.01) {
+    const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
+    const dlrUPrice = dlrUDetails?.price ?? null;
+    let dlrUShares = null;
+    let dlrSpendUsd = usdEquivalent;
+
+    if (dlrUPrice && usdEquivalent !== null) {
+      dlrUShares = Math.floor(usdEquivalent / dlrUPrice);
+      dlrSpendUsd = dlrUShares * dlrUPrice;
+    }
+
+    plan.conversions.push({
+      type: 'USD_TO_CAD',
+      symbol: 'DLR.U.TO',
+      description: dlrUDetails?.description ?? null,
+      cadAmount: cadShortfall,
+      usdAmount: usdEquivalent,
+      sharePrice: dlrUPrice,
+      shares: dlrUShares,
+      sharePrecision: 0,
+      spendAmount: dlrSpendUsd,
+      currency: 'USD',
+      targetCurrency: 'CAD',
+    });
+
+    summaryLines.push(
+      `  Convert ${formatMoney(cadShortfall)} CAD${
+        usdEquivalent ? ` (≈ ${formatMoney(usdEquivalent)} USD)` : ''
+      } from USD via DLR.U.TO${
+        dlrUShares && dlrUShares > 0
+          ? ` (${formatNumber(dlrUShares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
+          : ''
+      }`
+    );
+  }
+
+  plan.summaryText = summaryLines.join('\n');
+  return plan;
 }
 
 function pickBalanceEntry(bucket, currency) {
@@ -1072,6 +1207,7 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
+  const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
@@ -1712,7 +1848,7 @@ export default function App() {
     }
   }, [getSummaryText]);
 
-  const handlePlanInvestEvenly = useCallback(async () => {
+  const handlePlanInvestEvenly = useCallback(() => {
     const plan = buildInvestEvenlyPlan({
       positions: orderedPositions,
       balances,
@@ -1727,20 +1863,36 @@ export default function App() {
       return;
     }
 
-    console.log('Invest cash evenly plan:\n' + plan);
+    console.log('Invest cash evenly plan summary:\n' + plan.summaryText);
 
-    try {
-      await copyTextToClipboard(plan);
-      if (typeof window !== 'undefined') {
-        window.alert('Invest cash evenly plan copied to clipboard.');
-      }
-    } catch (error) {
-      console.error('Failed to copy invest evenly plan', error);
-      if (typeof window !== 'undefined') {
-        window.alert(plan);
-      }
+    const accountName =
+      (selectedAccountInfo?.displayName && selectedAccountInfo.displayName.trim()) ||
+      (selectedAccountInfo?.name && selectedAccountInfo.name.trim()) ||
+      null;
+    const accountNumber = selectedAccountInfo?.number || null;
+    const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
+    const contextLabel =
+      accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
+
+    setInvestEvenlyPlan({
+      ...plan,
+      accountName: accountName || null,
+      accountNumber: accountNumber || null,
+      accountLabel: contextLabel || null,
+      accountUrl: accountUrl || null,
+    });
+
+    if (selectedAccountInfo) {
+      openAccountSummary(selectedAccountInfo);
     }
-  }, [orderedPositions, balances, currencyRates, baseCurrency]);
+  }, [
+    orderedPositions,
+    balances,
+    currencyRates,
+    baseCurrency,
+    selectedAccountInfo,
+    selectedAccount,
+  ]);
 
   useEffect(() => {
     if (!autoRefreshEnabled) {
@@ -1806,6 +1958,10 @@ export default function App() {
   const handleClosePeople = () => {
     setShowPeople(false);
   };
+
+  const handleCloseInvestEvenlyDialog = useCallback(() => {
+    setInvestEvenlyPlan(null);
+  }, []);
 
   if (loading && !data) {
     return (
@@ -1896,6 +2052,13 @@ export default function App() {
           isFilteredView={!showingAllAccounts}
           missingAccounts={peopleMissingAccounts}
           asOf={asOf}
+        />
+      )}
+      {investEvenlyPlan && (
+        <InvestEvenlyDialog
+          plan={investEvenlyPlan}
+          onClose={handleCloseInvestEvenlyDialog}
+          copyToClipboard={copyTextToClipboard}
         />
       )}
       {pnlBreakdownMode && (

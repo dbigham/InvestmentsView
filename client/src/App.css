@@ -588,6 +588,363 @@ textarea {
   color: var(--color-text-secondary);
 }
 
+.invest-plan-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 32px 24px;
+  overflow-y: auto;
+  z-index: 1100;
+}
+
+.invest-plan-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  width: min(960px, 100%);
+  max-height: 95vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.invest-plan-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 12px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.invest-plan-dialog__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.invest-plan-dialog__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.invest-plan-dialog__account {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.invest-plan-dialog__account-link {
+  font-size: 13px;
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.invest-plan-dialog__account-link:hover,
+.invest-plan-dialog__account-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.invest-plan-dialog__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease, transform 0.1s ease;
+}
+
+.invest-plan-dialog__close:hover,
+.invest-plan-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.invest-plan-dialog__close:active {
+  transform: scale(0.96);
+}
+
+.invest-plan-dialog__body {
+  flex: 1;
+  padding: 12px 24px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.invest-plan-dialog__status {
+  padding: 8px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  background: var(--color-surface-alt);
+  color: var(--color-text-primary);
+}
+
+.invest-plan-dialog__status--success {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.invest-plan-dialog__status--error {
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+}
+
+.invest-plan-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.invest-plan-section__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.invest-plan-cash {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.invest-plan-cash__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.invest-plan-cash__label {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.invest-plan-cash__value {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.invest-plan-purchases-wrapper {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.invest-plan-purchases {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.invest-plan-purchases thead {
+  background: var(--color-surface-alt);
+}
+
+.invest-plan-purchases th,
+.invest-plan-purchases td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-divider);
+  text-align: left;
+  vertical-align: top;
+}
+
+.invest-plan-purchases th {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+}
+
+.invest-plan-purchases td {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.invest-plan-purchases tbody tr:last-child th,
+.invest-plan-purchases tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.invest-plan-symbol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.invest-plan-symbol__ticker {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: var(--color-text-primary);
+}
+
+.invest-plan-symbol__name {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.invest-plan-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
+}
+
+.invest-plan-copy-button:hover,
+.invest-plan-copy-button:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  outline: none;
+}
+
+.invest-plan-copy-button:active {
+  transform: scale(0.98);
+}
+
+.invest-plan-copy-button--disabled {
+  border-style: dashed;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: default;
+}
+
+.invest-plan-copy-button--disabled:hover,
+.invest-plan-copy-button--disabled:focus-visible {
+  border-color: var(--color-divider);
+  color: var(--color-text-muted);
+  background: transparent;
+}
+
+.invest-plan-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.invest-plan-conversions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.invest-plan-conversions__item {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.invest-plan-conversion__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.invest-plan-conversion__direction {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.invest-plan-conversion__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.invest-plan-conversion__details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.invest-plan-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px 24px;
+  border-top: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.invest-plan-footer__button {
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 18px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.invest-plan-footer__button:hover,
+.invest-plan-footer__button:focus-visible {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.invest-plan-footer__button--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.invest-plan-footer__button--primary:hover,
+.invest-plan-footer__button--primary:focus-visible {
+  background: #2f7f31;
+  border-color: #2f7f31;
+  color: #ffffff;
+}
+
 .equity-card__heading {
   display: flex;
   flex-direction: column;
