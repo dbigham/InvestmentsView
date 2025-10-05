@@ -516,6 +516,8 @@ function findPositionDetails(positions, symbol) {
   return null;
 }
 
+const DLR_SHARE_VALUE_USD = 10;
+
 function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrency = 'CAD' }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
@@ -719,7 +721,8 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
 
   if (usdShortfall > 0.01) {
     const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
-    const dlrPrice = dlrToDetails?.price ?? (hasUsdRate ? usdRate : null);
+    const dlrPrice =
+      dlrToDetails?.price ?? (hasUsdRate ? usdRate * DLR_SHARE_VALUE_USD : null);
     let dlrShares = null;
     let dlrSpendCad = cadEquivalent;
 
@@ -755,7 +758,7 @@ function buildInvestEvenlyPlan({ positions, balances, currencyRates, baseCurrenc
 
   if (cadShortfall > 0.01) {
     const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
-    const dlrUPrice = dlrUDetails?.price ?? null;
+    const dlrUPrice = dlrUDetails?.price ?? DLR_SHARE_VALUE_USD;
     let dlrUShares = null;
     let dlrSpendUsd = usdEquivalent;
 
