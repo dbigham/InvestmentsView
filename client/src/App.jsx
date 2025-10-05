@@ -676,7 +676,11 @@ function buildInvestEvenlyPlan({
   const totalCashInBase = cadInBase + usdInBase;
   const investableBaseTotal = skipCadPurchases ? usdInBase : totalCashInBase;
 
-  if (!Number.isFinite(investableBaseTotal) || investableBaseTotal <= 0) {
+  if (!Number.isFinite(investableBaseTotal)) {
+    return null;
+  }
+
+  if (!skipCadPurchases && investableBaseTotal <= 0) {
     return null;
   }
 
