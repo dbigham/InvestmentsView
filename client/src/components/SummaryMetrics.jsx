@@ -67,7 +67,7 @@ MetricRow.defaultProps = {
   tooltip: null,
 };
 
-function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
+function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disabled, chatUrl }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const containerRef = useRef(null);
@@ -76,6 +76,7 @@ function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
   const hasChatLink = Boolean(normalizedChatUrl);
   const hasCopyAction = typeof onCopySummary === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
+  const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -146,6 +147,21 @@ function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
     }
   };
 
+  const handlePlanInvestEvenly = async () => {
+    if (!onPlanInvestEvenly || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onPlanInvestEvenly();
+    } catch (error) {
+      console.error('Failed to prepare invest evenly plan', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -192,6 +208,19 @@ function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
               </button>
             </li>
           )}
+          {hasInvestEvenlyAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handlePlanInvestEvenly}
+                disabled={busy}
+              >
+                Invest cash evenly
+              </button>
+            </li>
+          )}
           {hasEstimateAction && (
             <li role="none">
               <button
@@ -214,6 +243,7 @@ function ActionMenu({ onCopySummary, onEstimateCagr, disabled, chatUrl }) {
 ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
   onEstimateCagr: PropTypes.func,
+  onPlanInvestEvenly: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -221,6 +251,7 @@ ActionMenu.propTypes = {
 ActionMenu.defaultProps = {
   onCopySummary: null,
   onEstimateCagr: null,
+  onPlanInvestEvenly: null,
   disabled: false,
   chatUrl: null,
 };
@@ -243,6 +274,7 @@ export default function SummaryMetrics({
   isAutoRefreshing,
   onCopySummary,
   onEstimateFutureCagr,
+  onPlanInvestEvenly,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -377,10 +409,11 @@ export default function SummaryMetrics({
               People
             </button>
           )}
-          {(onCopySummary || onEstimateFutureCagr || chatUrl) && (
+          {(onCopySummary || onEstimateFutureCagr || onPlanInvestEvenly || chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
               onEstimateCagr={onEstimateFutureCagr}
+              onPlanInvestEvenly={onPlanInvestEvenly}
               chatUrl={chatUrl}
             />
           )}
@@ -498,6 +531,7 @@ SummaryMetrics.propTypes = {
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
   onEstimateFutureCagr: PropTypes.func,
+  onPlanInvestEvenly: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -522,6 +556,7 @@ SummaryMetrics.defaultProps = {
   isAutoRefreshing: false,
   onCopySummary: null,
   onEstimateFutureCagr: null,
+  onPlanInvestEvenly: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,

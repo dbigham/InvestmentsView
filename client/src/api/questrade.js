@@ -15,6 +15,15 @@ function buildQqqTemperatureUrl() {
   return url.toString();
 }
 
+function buildQuoteUrl(symbol) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/quote', base);
+  if (symbol) {
+    url.searchParams.set('symbol', symbol);
+  }
+  return url.toString();
+}
+
 export async function getSummary(accountId) {
   const response = await fetch(buildUrl(accountId));
   if (!response.ok) {
@@ -30,5 +39,34 @@ export async function getQqqTemperature() {
     const text = await response.text();
     throw new Error(text || 'Failed to load QQQ temperature data');
   }
+  return response.json();
+}
+
+export async function getQuote(symbol) {
+  const normalizedSymbol = typeof symbol === 'string' ? symbol.trim() : '';
+  if (!normalizedSymbol) {
+    throw new Error('Symbol is required');
+  }
+
+  const response = await fetch(buildQuoteUrl(normalizedSymbol));
+  if (!response.ok) {
+    let message = 'Failed to load quote data';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse quote error response as JSON', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read quote error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
   return response.json();
 }

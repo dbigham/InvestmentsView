@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary, getQqqTemperature } from './api/questrade';
+import { getSummary, getQqqTemperature, getQuote } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
+import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import { formatMoney, formatNumber } from './utils/formatters';
+import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -296,6 +298,64 @@ function coerceNumber(value) {
   return null;
 }
 
+function coercePositiveNumber(value) {
+  const numeric = coerceNumber(value);
+  if (numeric === null || !Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function normalizePriceOverrides(overrides) {
+  const map = new Map();
+  if (!overrides) {
+    return map;
+  }
+
+  const entries =
+    overrides instanceof Map
+      ? Array.from(overrides.entries())
+      : typeof overrides === 'object'
+        ? Object.entries(overrides)
+        : [];
+
+  entries.forEach(([key, value]) => {
+    const symbol = typeof key === 'string' ? key.trim().toUpperCase() : '';
+    if (!symbol) {
+      return;
+    }
+
+    const payload = value && typeof value === 'object' ? value : { price: value };
+    const price = coercePositiveNumber(payload.price);
+    if (!price) {
+      return;
+    }
+
+    const currency =
+      typeof payload.currency === 'string' && payload.currency.trim()
+        ? payload.currency.trim().toUpperCase()
+        : null;
+    const description = typeof payload.description === 'string' ? payload.description : null;
+    map.set(symbol, { price, currency, description });
+  });
+
+  return map;
+}
+
+function resolvePriceOverride(priceOverrides, symbol) {
+  if (!symbol) {
+    return null;
+  }
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return null;
+  }
+  if (!priceOverrides || !(priceOverrides instanceof Map)) {
+    return null;
+  }
+  return priceOverrides.get(normalizedSymbol) || null;
+}
+
 function buildBalancePnlMap(balances) {
   const result = { combined: {}, perCurrency: {} };
   if (!balances) {
@@ -421,6 +481,588 @@ function convertCombinedPnl(perCurrencySummary, currencyRates, targetCurrency, b
   });
 
   return result;
+}
+
+function findBalanceEntryForCurrency(balances, currency) {
+  if (!balances || !currency) {
+    return null;
+  }
+
+  const normalizedCurrency = String(currency).trim().toUpperCase();
+  const scopes = ['perCurrency', 'combined'];
+
+  for (const scope of scopes) {
+    const bucket = balances[scope];
+    if (!bucket || typeof bucket !== 'object') {
+      continue;
+    }
+
+    if (bucket[normalizedCurrency]) {
+      return bucket[normalizedCurrency];
+    }
+
+    const matchedKey = Object.keys(bucket).find((key) => {
+      return key && String(key).trim().toUpperCase() === normalizedCurrency;
+    });
+    if (matchedKey) {
+      return bucket[matchedKey];
+    }
+
+    const matchedEntry = Object.values(bucket).find((entry) => {
+      return (
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.currency === 'string' &&
+        entry.currency.trim().toUpperCase() === normalizedCurrency
+      );
+    });
+    if (matchedEntry) {
+      return matchedEntry;
+    }
+  }
+
+  return null;
+}
+
+function resolveCashForCurrency(balances, currency) {
+  const entry = findBalanceEntryForCurrency(balances, currency);
+  if (!entry || typeof entry !== 'object') {
+    return 0;
+  }
+
+  const cashFields = ['cash', 'buyingPower', 'available', 'availableCash'];
+  for (const field of cashFields) {
+    const value = coerceNumber(entry[field]);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function findPositionDetails(positions, symbol) {
+  if (!Array.isArray(positions) || !symbol) {
+    return null;
+  }
+
+  const normalizedSymbol = String(symbol).trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return null;
+  }
+
+  for (const position of positions) {
+    if (!position) {
+      continue;
+    }
+    const positionSymbol = position.symbol ? String(position.symbol).trim().toUpperCase() : '';
+    if (positionSymbol !== normalizedSymbol) {
+      continue;
+    }
+
+    const price = coerceNumber(position.currentPrice);
+    const currency = typeof position.currency === 'string' ? position.currency.trim().toUpperCase() : null;
+    const description = typeof position.description === 'string' ? position.description : null;
+
+    return {
+      price: price !== null && price > 0 ? price : null,
+      currency,
+      description,
+    };
+  }
+
+  return null;
+}
+
+const DLR_SHARE_VALUE_USD = 10;
+const CENTS_PER_UNIT = 100;
+
+function alignRoundedAmountsToTotal(purchases) {
+  const validPurchases = purchases.filter(
+    (purchase) => Number.isFinite(purchase?.amount) && purchase.amount > 0
+  );
+
+  if (!validPurchases.length) {
+    return 0;
+  }
+
+  const rawTotal = validPurchases.reduce((sum, purchase) => sum + purchase.amount, 0);
+  const targetCents = Math.round((rawTotal + Number.EPSILON) * CENTS_PER_UNIT);
+
+  const entries = validPurchases.map((purchase, index) => {
+    const exactAmount = purchase.amount;
+    const exactCents = exactAmount * CENTS_PER_UNIT;
+    const flooredCents = Math.floor(exactCents + 1e-6);
+    const remainder = exactCents - flooredCents;
+    return {
+      purchase,
+      index,
+      flooredCents,
+      remainder,
+    };
+  });
+
+  let allocatedCents = entries.reduce((sum, entry) => sum + entry.flooredCents, 0);
+  let penniesToDistribute = targetCents - allocatedCents;
+
+  if (penniesToDistribute > 0) {
+    const sorted = [...entries].sort((a, b) => {
+      if (b.remainder !== a.remainder) {
+        return b.remainder - a.remainder;
+      }
+      return a.index - b.index;
+    });
+    let cursor = 0;
+    while (penniesToDistribute > 0 && sorted.length) {
+      const entry = sorted[cursor % sorted.length];
+      entry.flooredCents += 1;
+      penniesToDistribute -= 1;
+      cursor += 1;
+    }
+  } else if (penniesToDistribute < 0) {
+    const sorted = [...entries].sort((a, b) => {
+      if (a.remainder !== b.remainder) {
+        return a.remainder - b.remainder;
+      }
+      return b.purchase.amount - a.purchase.amount;
+    });
+    let cursor = 0;
+    while (penniesToDistribute < 0 && sorted.length) {
+      const entry = sorted[cursor % sorted.length];
+      if (entry.flooredCents <= 0) {
+        cursor += 1;
+        if (cursor >= sorted.length) {
+          break;
+        }
+        continue;
+      }
+      entry.flooredCents -= 1;
+      penniesToDistribute += 1;
+      cursor += 1;
+    }
+  }
+
+  let adjustedTotal = 0;
+  entries.forEach((entry) => {
+    const adjustedAmount = entry.flooredCents / CENTS_PER_UNIT;
+    entry.purchase.amount = adjustedAmount;
+    adjustedTotal += adjustedAmount;
+  });
+
+  return adjustedTotal;
+}
+
+function buildInvestEvenlyPlan({
+  positions,
+  balances,
+  currencyRates,
+  baseCurrency = 'CAD',
+  priceOverrides = null,
+}) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return null;
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const normalizedPriceOverrides = normalizePriceOverrides(priceOverrides);
+  const cadCashRaw = resolveCashForCurrency(balances, 'CAD');
+  const usdCashRaw = resolveCashForCurrency(balances, 'USD');
+  const cadCash = Number.isFinite(cadCashRaw) ? cadCashRaw : 0;
+  const usdCash = Number.isFinite(usdCashRaw) ? usdCashRaw : 0;
+
+  const cadInBase = normalizeCurrencyAmount(cadCash, 'CAD', currencyRates, normalizedBase);
+  const usdInBase = normalizeCurrencyAmount(usdCash, 'USD', currencyRates, normalizedBase);
+  const totalInvestableCad = cadInBase + usdInBase;
+
+  if (!Number.isFinite(totalInvestableCad) || totalInvestableCad <= 0) {
+    return null;
+  }
+
+  const investablePositions = positions.filter((position) => {
+    if (!position) {
+      return false;
+    }
+    const symbol = position.symbol ? String(position.symbol).trim() : '';
+    if (!symbol) {
+      return false;
+    }
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    if (currency !== 'CAD' && currency !== 'USD') {
+      return false;
+    }
+    const normalizedValue = Number(position.normalizedMarketValue);
+    if (!Number.isFinite(normalizedValue) || normalizedValue <= 0) {
+      return false;
+    }
+    const price = Number(position.currentPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      return false;
+    }
+    return true;
+  });
+
+  if (!investablePositions.length) {
+    return null;
+  }
+
+  const totalNormalizedValue = investablePositions.reduce((sum, position) => {
+    const value = Number(position.normalizedMarketValue);
+    return Number.isFinite(value) && value > 0 ? sum + value : sum;
+  }, 0);
+
+  if (!Number.isFinite(totalNormalizedValue) || totalNormalizedValue <= 0) {
+    return null;
+  }
+
+  const plan = {
+    cash: {
+      cad: cadCash,
+      usd: usdCash,
+      totalCad: totalInvestableCad,
+    },
+    baseCurrency: normalizedBase,
+    purchases: [],
+    totals: {
+      cadNeeded: 0,
+      usdNeeded: 0,
+      cadRemaining: 0,
+      usdRemaining: 0,
+    },
+    conversions: [],
+    summaryText: '',
+  };
+
+  let totalCadNeeded = 0;
+  let totalUsdNeeded = 0;
+
+  const USD_SHARE_PRECISION = 4;
+  const usdRate = currencyRates?.get('USD');
+  const hasUsdRate = Number.isFinite(usdRate) && usdRate > 0;
+
+  const computePurchaseAllocation = (targetAmount, currency, price) => {
+    let shares = 0;
+    let spentCurrency = 0;
+    let note = '';
+
+    if (price > 0 && targetAmount > 0) {
+      if (currency === 'CAD') {
+        shares = Math.floor(targetAmount / price);
+        spentCurrency = shares * price;
+        if (shares === 0) {
+          note = 'Insufficient for 1 share';
+        }
+      } else {
+        const factor = Math.pow(10, USD_SHARE_PRECISION);
+        shares = Math.floor((targetAmount / price) * factor) / factor;
+        spentCurrency = shares * price;
+        if (shares === 0) {
+          note = 'Insufficient for minimum fractional share';
+        }
+      }
+    }
+
+    if (!Number.isFinite(shares)) {
+      shares = 0;
+    }
+    if (!Number.isFinite(spentCurrency) || spentCurrency < 0) {
+      spentCurrency = 0;
+    }
+
+    return { shares, spentCurrency, note };
+  };
+
+  investablePositions.forEach((position) => {
+    const symbol = String(position.symbol).trim();
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    const price = Number(position.currentPrice);
+    const normalizedValue = Number(position.normalizedMarketValue);
+    const weight = normalizedValue / totalNormalizedValue;
+    const targetCadAmount = totalInvestableCad * (Number.isFinite(weight) ? weight : 0);
+
+    let targetCurrencyAmount = targetCadAmount;
+    if (currency !== normalizedBase) {
+      targetCurrencyAmount = convertAmountToCurrency(
+        targetCadAmount,
+        normalizedBase,
+        currency,
+        currencyRates,
+        normalizedBase
+      );
+    }
+
+    if (!Number.isFinite(targetCurrencyAmount) || targetCurrencyAmount <= 0) {
+      targetCurrencyAmount = 0;
+    }
+
+    const { shares, spentCurrency, note } = computePurchaseAllocation(
+      targetCurrencyAmount,
+      currency,
+      price
+    );
+
+    if (currency === 'CAD') {
+      totalCadNeeded += spentCurrency;
+    } else if (currency === 'USD') {
+      totalUsdNeeded += spentCurrency;
+    }
+
+    plan.purchases.push({
+      symbol,
+      description: position.description ?? null,
+      currency,
+      amount: spentCurrency,
+      targetAmount: targetCurrencyAmount,
+      shares,
+      sharePrecision: currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
+      price,
+      note: note || null,
+      weight,
+    });
+  });
+
+  const cadShortfall = totalCadNeeded > cadCash ? totalCadNeeded - cadCash : 0;
+  const usdShortfall = totalUsdNeeded > usdCash ? totalUsdNeeded - usdCash : 0;
+
+  const dlrToDetails = findPositionDetails(positions, 'DLR.TO');
+  const dlrUDetails = findPositionDetails(positions, 'DLR.U.TO');
+  const dlrToOverride = resolvePriceOverride(normalizedPriceOverrides, 'DLR.TO');
+  const dlrUOverride = resolvePriceOverride(normalizedPriceOverrides, 'DLR.U.TO');
+
+  const dlrToPrice =
+    coercePositiveNumber(dlrToOverride?.price) ??
+    coercePositiveNumber(dlrToDetails?.price) ??
+    (hasUsdRate ? usdRate * DLR_SHARE_VALUE_USD : null);
+  const dlrUPrice =
+    coercePositiveNumber(dlrUOverride?.price) ??
+    coercePositiveNumber(dlrUDetails?.price) ??
+    DLR_SHARE_VALUE_USD;
+
+  let cadAvailableAfterConversions = cadCash;
+  let usdAvailableAfterConversions = usdCash;
+
+  if (usdShortfall > 0.01) {
+    const cadEquivalent = hasUsdRate ? usdShortfall * usdRate : null;
+    let dlrShares = null;
+    let dlrSpendCad = cadEquivalent;
+    let actualUsdReceived = null;
+    const dlrDescription = dlrToOverride?.description ?? dlrToDetails?.description ?? null;
+    const dlrCurrency = dlrToOverride?.currency ?? dlrToDetails?.currency ?? 'CAD';
+
+    if (dlrToPrice && cadEquivalent !== null) {
+      dlrShares = Math.floor(cadEquivalent / dlrToPrice);
+      dlrSpendCad = dlrShares * dlrToPrice;
+      if (dlrShares > 0 && dlrUPrice) {
+        actualUsdReceived = dlrShares * dlrUPrice;
+      }
+    }
+
+    if (Number.isFinite(dlrSpendCad)) {
+      cadAvailableAfterConversions -= dlrSpendCad;
+    }
+    if (Number.isFinite(actualUsdReceived)) {
+      usdAvailableAfterConversions += actualUsdReceived;
+    }
+
+    plan.conversions.push({
+      type: 'CAD_TO_USD',
+      symbol: 'DLR.TO',
+      description: dlrDescription,
+      cadAmount: cadEquivalent,
+      usdAmount: usdShortfall,
+      sharePrice: dlrToPrice,
+      shares: dlrShares,
+      sharePrecision: 0,
+      spendAmount: dlrSpendCad,
+      currency: dlrCurrency || 'CAD',
+      targetCurrency: 'USD',
+      actualSpendAmount: dlrSpendCad,
+      actualReceiveAmount: actualUsdReceived,
+    });
+  }
+
+  if (cadShortfall > 0.01) {
+    const usdEquivalent = hasUsdRate ? cadShortfall / usdRate : null;
+    let dlrUShares = null;
+    let dlrSpendUsd = usdEquivalent;
+    let actualCadReceived = null;
+    const dlrUDescription = dlrUOverride?.description ?? dlrUDetails?.description ?? null;
+    const dlrUCurrency = dlrUOverride?.currency ?? dlrUDetails?.currency ?? 'USD';
+
+    if (dlrUPrice && usdEquivalent !== null) {
+      dlrUShares = Math.floor(usdEquivalent / dlrUPrice);
+      dlrSpendUsd = dlrUShares * dlrUPrice;
+      if (dlrUShares > 0 && dlrToPrice) {
+        actualCadReceived = dlrUShares * dlrToPrice;
+      }
+    }
+
+    if (Number.isFinite(dlrSpendUsd)) {
+      usdAvailableAfterConversions -= dlrSpendUsd;
+    }
+    if (Number.isFinite(actualCadReceived)) {
+      cadAvailableAfterConversions += actualCadReceived;
+    }
+
+    plan.conversions.push({
+      type: 'USD_TO_CAD',
+      symbol: 'DLR.U.TO',
+      description: dlrUDescription,
+      cadAmount: cadShortfall,
+      usdAmount: usdEquivalent,
+      sharePrice: dlrUPrice,
+      shares: dlrUShares,
+      sharePrecision: 0,
+      spendAmount: dlrSpendUsd,
+      currency: dlrUCurrency || 'USD',
+      targetCurrency: 'CAD',
+      actualSpendAmount: dlrSpendUsd,
+      actualReceiveAmount: actualCadReceived,
+    });
+  }
+
+  if (!Number.isFinite(cadAvailableAfterConversions)) {
+    cadAvailableAfterConversions = 0;
+  }
+  if (!Number.isFinite(usdAvailableAfterConversions)) {
+    usdAvailableAfterConversions = 0;
+  }
+
+  const totalCadPlanned = plan.purchases
+    .filter((purchase) => purchase.currency === 'CAD')
+    .reduce((sum, purchase) => sum + (Number.isFinite(purchase.amount) ? purchase.amount : 0), 0);
+  const totalUsdPlanned = plan.purchases
+    .filter((purchase) => purchase.currency === 'USD')
+    .reduce((sum, purchase) => sum + (Number.isFinite(purchase.amount) ? purchase.amount : 0), 0);
+
+  const cadScale =
+    totalCadPlanned > 0 && cadAvailableAfterConversions < totalCadPlanned
+      ? Math.max(cadAvailableAfterConversions, 0) / totalCadPlanned
+      : 1;
+  const usdScale =
+    totalUsdPlanned > 0 && usdAvailableAfterConversions < totalUsdPlanned
+      ? Math.max(usdAvailableAfterConversions, 0) / totalUsdPlanned
+      : 1;
+
+  let updatedCadTotal = 0;
+  let updatedUsdTotal = 0;
+
+  plan.purchases.forEach((purchase) => {
+    let scaledTarget = purchase.targetAmount ?? 0;
+    if (purchase.currency === 'CAD' && cadScale < 0.9999) {
+      scaledTarget *= cadScale;
+    } else if (purchase.currency === 'USD' && usdScale < 0.9999) {
+      scaledTarget *= usdScale;
+    }
+
+    const { shares, spentCurrency, note } = computePurchaseAllocation(
+      scaledTarget,
+      purchase.currency,
+      purchase.price
+    );
+
+    purchase.amount = spentCurrency;
+    purchase.shares = shares;
+    purchase.note = note || null;
+
+    if (purchase.currency === 'CAD') {
+      updatedCadTotal += spentCurrency;
+    } else if (purchase.currency === 'USD') {
+      updatedUsdTotal += spentCurrency;
+    }
+  });
+
+  updatedCadTotal = alignRoundedAmountsToTotal(
+    plan.purchases.filter((purchase) => purchase.currency === 'CAD')
+  );
+  updatedUsdTotal = alignRoundedAmountsToTotal(
+    plan.purchases.filter((purchase) => purchase.currency === 'USD')
+  );
+
+  const cadRemaining = cadAvailableAfterConversions - updatedCadTotal;
+  const usdRemaining = usdAvailableAfterConversions - updatedUsdTotal;
+
+  plan.totals = {
+    cadNeeded: updatedCadTotal,
+    usdNeeded: updatedUsdTotal,
+    cadRemaining,
+    usdRemaining,
+  };
+
+  const summaryLines = [];
+  summaryLines.push('Invest cash evenly plan');
+  summaryLines.push('');
+  summaryLines.push('Available cash:');
+  summaryLines.push(`  CAD: ${formatMoney(cadCash)} CAD`);
+  summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
+  summaryLines.push(`Total available (CAD): ${formatMoney(totalInvestableCad)} CAD`);
+
+  if (plan.conversions.length) {
+    summaryLines.push('');
+    summaryLines.push('FX conversions:');
+    plan.conversions.forEach((conversion) => {
+      if (conversion.type === 'CAD_TO_USD') {
+        const spendCad = Number.isFinite(conversion.actualSpendAmount)
+          ? conversion.actualSpendAmount
+          : conversion.cadAmount;
+        const receiveUsd = Number.isFinite(conversion.actualReceiveAmount)
+          ? conversion.actualReceiveAmount
+          : conversion.usdAmount;
+        const sharesText =
+          conversion.shares && conversion.shares > 0
+            ? ` (${formatNumber(conversion.shares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
+            : '';
+        const spendLabel = Number.isFinite(spendCad) ? `${formatMoney(spendCad)} CAD` : 'CAD';
+        const receiveLabel = Number.isFinite(receiveUsd)
+          ? `${formatMoney(receiveUsd)} USD`
+          : 'USD';
+        summaryLines.push(
+          `  Convert ${spendLabel} into ${receiveLabel} via DLR.TO${sharesText}`
+        );
+      } else if (conversion.type === 'USD_TO_CAD') {
+        const spendUsd = Number.isFinite(conversion.actualSpendAmount)
+          ? conversion.actualSpendAmount
+          : conversion.usdAmount;
+        const receiveCad = Number.isFinite(conversion.actualReceiveAmount)
+          ? conversion.actualReceiveAmount
+          : conversion.cadAmount;
+        const sharesText =
+          conversion.shares && conversion.shares > 0
+            ? ` (${formatNumber(conversion.shares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} shares)`
+            : '';
+        const spendLabel = Number.isFinite(spendUsd) ? `${formatMoney(spendUsd)} USD` : 'USD';
+        const receiveLabel = Number.isFinite(receiveCad)
+          ? `${formatMoney(receiveCad)} CAD`
+          : 'CAD';
+        summaryLines.push(`  Convert ${receiveLabel} from ${spendLabel} via DLR.U.TO${sharesText}`);
+      }
+    });
+  }
+
+  summaryLines.push('');
+  summaryLines.push('Purchases:');
+  plan.purchases.forEach((purchase) => {
+    const shareDigits =
+      purchase.currency === 'CAD'
+        ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+        : { minimumFractionDigits: USD_SHARE_PRECISION, maximumFractionDigits: USD_SHARE_PRECISION };
+    const formattedAmount = `${formatMoney(purchase.amount)} ${purchase.currency}`;
+    const formattedShares = formatNumber(purchase.shares, shareDigits);
+    const formattedPrice =
+      purchase.price > 0 ? `${formatMoney(purchase.price)} ${purchase.currency}` : '—';
+    summaryLines.push(
+      `  ${purchase.symbol} (${purchase.currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${
+        purchase.note ? ` (${purchase.note})` : ''
+      }`
+    );
+  });
+
+  summaryLines.push('');
+  summaryLines.push('Totals:');
+  summaryLines.push(`  CAD purchases: ${formatMoney(updatedCadTotal)} CAD`);
+  summaryLines.push(`  USD purchases: ${formatMoney(updatedUsdTotal)} USD`);
+
+  plan.summaryText = summaryLines.join('\n');
+  return plan;
 }
 
 function pickBalanceEntry(bucket, currency) {
@@ -837,10 +1479,12 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
+  const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
+  const quoteCacheRef = useRef(new Map());
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -1477,6 +2121,78 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const handlePlanInvestEvenly = useCallback(async () => {
+    const priceOverrides = new Map();
+    const dlrDetails = findPositionDetails(orderedPositions, 'DLR.TO');
+    const hasDlrPrice = coercePositiveNumber(dlrDetails?.price) !== null;
+
+    if (!hasDlrPrice) {
+      const cachedOverride = quoteCacheRef.current.get('DLR.TO');
+      if (cachedOverride && coercePositiveNumber(cachedOverride.price)) {
+        priceOverrides.set('DLR.TO', cachedOverride);
+      } else {
+        try {
+          const quote = await getQuote('DLR.TO');
+          if (quote && coercePositiveNumber(quote.price)) {
+            const override = {
+              price: coercePositiveNumber(quote.price),
+              currency:
+                typeof quote.currency === 'string' && quote.currency.trim()
+                  ? quote.currency.trim().toUpperCase()
+                  : null,
+              description: typeof quote.name === 'string' ? quote.name : null,
+            };
+            quoteCacheRef.current.set('DLR.TO', override);
+            priceOverrides.set('DLR.TO', override);
+          }
+        } catch (error) {
+          console.error('Failed to load DLR.TO quote for invest evenly plan', error);
+        }
+      }
+    }
+
+    const plan = buildInvestEvenlyPlan({
+      positions: orderedPositions,
+      balances,
+      currencyRates,
+      baseCurrency,
+      priceOverrides: priceOverrides.size ? priceOverrides : null,
+    });
+
+    if (!plan) {
+      if (typeof window !== 'undefined') {
+        window.alert('Unable to build an invest evenly plan. Ensure cash balances and prices are available.');
+      }
+      return;
+    }
+
+    console.log('Invest cash evenly plan summary:\n' + plan.summaryText);
+
+    const accountName =
+      (selectedAccountInfo?.displayName && selectedAccountInfo.displayName.trim()) ||
+      (selectedAccountInfo?.name && selectedAccountInfo.name.trim()) ||
+      null;
+    const accountNumber = selectedAccountInfo?.number || null;
+    const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
+    const contextLabel =
+      accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
+
+    setInvestEvenlyPlan({
+      ...plan,
+      accountName: accountName || null,
+      accountNumber: accountNumber || null,
+      accountLabel: contextLabel || null,
+      accountUrl: accountUrl || null,
+    });
+  }, [
+    orderedPositions,
+    balances,
+    currencyRates,
+    baseCurrency,
+    selectedAccountInfo,
+    selectedAccount,
+  ]);
+
   useEffect(() => {
     if (!autoRefreshEnabled) {
       return undefined;
@@ -1542,6 +2258,10 @@ export default function App() {
     setShowPeople(false);
   };
 
+  const handleCloseInvestEvenlyDialog = useCallback(() => {
+    setInvestEvenlyPlan(null);
+  }, []);
+
   if (loading && !data) {
     return (
       <div className="summary-page summary-page--initial-loading">
@@ -1591,6 +2311,7 @@ export default function App() {
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
+            onPlanInvestEvenly={handlePlanInvestEvenly}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
@@ -1630,6 +2351,13 @@ export default function App() {
           isFilteredView={!showingAllAccounts}
           missingAccounts={peopleMissingAccounts}
           asOf={asOf}
+        />
+      )}
+      {investEvenlyPlan && (
+        <InvestEvenlyDialog
+          plan={investEvenlyPlan}
+          onClose={handleCloseInvestEvenlyDialog}
+          copyToClipboard={copyTextToClipboard}
         />
       )}
       {pnlBreakdownMode && (
