@@ -1774,6 +1774,10 @@ export default function App() {
     () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
     [accountFundingSource]
   );
+  const symbolBreakdown = useMemo(
+    () => (Array.isArray(data?.symbolBreakdown) ? data.symbolBreakdown : []),
+    [data?.symbolBreakdown]
+  );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
     if (selectedAccount === 'all') {
@@ -2810,6 +2814,7 @@ export default function App() {
           baseCurrency={baseCurrency}
           asOf={asOf}
           totalMarketValue={heatmapMarketValue}
+          symbolBreakdown={symbolBreakdown}
         />
       )}
     </div>
