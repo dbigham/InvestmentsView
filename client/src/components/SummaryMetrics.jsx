@@ -268,6 +268,7 @@ export default function SummaryMetrics({
   displayTotalEquity,
   usdToCadRate,
   onShowPeople,
+  onShowReturnDetails,
   peopleDisabled,
   onShowPnlBreakdown,
   isRefreshing,
@@ -472,6 +473,7 @@ export default function SummaryMetrics({
             tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
             value={formattedCagr}
             tone={cagrTone}
+            onActivate={typeof onShowReturnDetails === 'function' ? onShowReturnDetails : null}
           />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
@@ -519,12 +521,32 @@ SummaryMetrics.propTypes = {
     totalPnlCad: PropTypes.number,
     totalEquityCad: PropTypes.number,
     annualizedReturnRate: PropTypes.number,
+    trailingReturns: PropTypes.objectOf(
+      PropTypes.shape({
+        label: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        pnlCad: PropTypes.number,
+        returnRate: PropTypes.number,
+      })
+    ),
+    pnlHistory: PropTypes.arrayOf(
+      PropTypes.shape({
+        date: PropTypes.string.isRequired,
+        timestamp: PropTypes.number,
+        netDeposits: PropTypes.number,
+        pnlCad: PropTypes.number,
+        accountValue: PropTypes.number,
+        pnlPercent: PropTypes.number,
+      })
+    ),
   }),
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
   usdToCadRate: PropTypes.number,
   onShowPeople: PropTypes.func,
+  onShowReturnDetails: PropTypes.func,
   peopleDisabled: PropTypes.bool,
   onShowPnlBreakdown: PropTypes.func,
   isRefreshing: PropTypes.bool,
@@ -550,6 +572,7 @@ SummaryMetrics.defaultProps = {
   displayTotalEquity: null,
   usdToCadRate: null,
   onShowPeople: null,
+  onShowReturnDetails: null,
   peopleDisabled: false,
   onShowPnlBreakdown: null,
   isRefreshing: false,

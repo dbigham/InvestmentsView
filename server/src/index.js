@@ -73,6 +73,7 @@ function ensureYahooFinanceClient() {
 
 const QUOTE_CACHE_TTL_SECONDS = 60;
 const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
+const historicalQuoteCache = new Map();
 
 function resolveLoginDisplay(login) {
   if (!login) {
@@ -882,6 +883,14 @@ function addMonths(baseDate, months) {
   );
 }
 
+function isTradingDay(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return false;
+  }
+  const day = date.getUTCDay();
+  return day !== 0 && day !== 6;
+}
+
 function clampDate(date, minDate) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return null;
@@ -1452,6 +1461,901 @@ async function convertAmountToCad(amount, currency, timestamp, accountKey) {
   return { cadAmount: null, fxRate: null };
 }
 
+function normalizeCashFlowSchedule(cashFlows) {
+  const normalized = normalizeCashFlowsForXirr(cashFlows);
+  if (!Array.isArray(normalized) || normalized.length < 2) {
+    return [];
+  }
+  return normalized.map((entry) => ({ amount: entry.amount, date: entry.date }));
+}
+
+const TRAILING_PERIODS = [
+  { key: '1M', label: '1 month return', months: 1 },
+  { key: '6M', label: '6 month return', months: 6 },
+  { key: '12M', label: '12 month return', months: 12 },
+  { key: '5Y', label: '5 year return', months: 60 },
+  { key: '10Y', label: '10 year return', months: 120 },
+];
+
+function addEvent(eventMap, date, event) {
+  if (!date || !event) {
+    return;
+  }
+  if (!eventMap.has(date)) {
+    eventMap.set(date, []);
+  }
+  eventMap.get(date).push(event);
+}
+
+function sanitizeHistoricalQuotes(quotes) {
+  if (!Array.isArray(quotes)) {
+    return [];
+  }
+  return quotes
+    .map((entry) => {
+      const date = formatDateOnly(entry && entry.date);
+      const close = Number(entry && (entry.adjclose ?? entry.close));
+      if (!date || !Number.isFinite(close) || close <= 0) {
+        return null;
+      }
+      return { date, close };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+function buildHistoryCacheKey(symbol, startIso, endIso) {
+  return [symbol || '', startIso || '', endIso || ''].join('|');
+}
+
+async function fetchDailyCloseSeries(symbol, startDate, endDate, accountKey) {
+  const startIso = formatDateOnly(startDate);
+  const endIso = formatDateOnly(endDate);
+  if (!startIso || !endIso) {
+    return [];
+  }
+  const cacheKey = buildHistoryCacheKey(symbol, startIso, endIso);
+  if (historicalQuoteCache.has(cacheKey)) {
+    return historicalQuoteCache.get(cacheKey);
+  }
+  try {
+    const client = ensureYahooFinanceClient();
+    const result = await client.chart(symbol, {
+      period1: startIso,
+      period2: endIso,
+      interval: '1d',
+    });
+    const quotes = result && Array.isArray(result.quotes) ? result.quotes : [];
+    const series = sanitizeHistoricalQuotes(quotes);
+    historicalQuoteCache.set(cacheKey, series);
+    return series;
+  } catch (error) {
+    if (DEBUG_TOTAL_PNL) {
+      const message = error && error.message ? error.message : String(error);
+      debugTotalPnl(accountKey, 'Failed to fetch history for ' + symbol, message);
+    }
+    historicalQuoteCache.set(cacheKey, []);
+    return [];
+  }
+}
+
+function coerceActivitySymbol(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const raw = activity.symbol || activity.symbolId || null;
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.trim();
+  }
+  return null;
+}
+
+function isTradeLikeActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+  const type = typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
+  const action = typeof activity.action === 'string' ? activity.action.toLowerCase() : '';
+  if (!type && !action) {
+    return false;
+  }
+  if (/(trade|exercise|assignment|cover)/i.test(type)) {
+    return true;
+  }
+  if (/(buy|sell|short|cover)/i.test(action)) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeTradeActivity(activity) {
+  if (!isTradeLikeActivity(activity)) {
+    return null;
+  }
+  const symbol = coerceActivitySymbol(activity);
+  if (!symbol) {
+    return null;
+  }
+  let quantity = Number(activity.quantity);
+  const netAmount = Number(activity.netAmount);
+  const grossAmount = Number(activity.grossAmount);
+  const price = Number(activity.price);
+  const action = typeof activity.action === 'string' ? activity.action.toLowerCase() : '';
+  let direction = 0;
+  if (/(sell|short)/.test(action)) {
+    direction = -1;
+  } else if (/(buy|cover)/.test(action)) {
+    direction = 1;
+  }
+  if (direction === 0 && Number.isFinite(netAmount) && Math.abs(netAmount) > CASH_FLOW_EPSILON) {
+    direction = netAmount < 0 ? 1 : -1;
+  }
+  if (!Number.isFinite(quantity) || Math.abs(quantity) < 1e-8) {
+    if (Number.isFinite(netAmount) && Number.isFinite(price) && Math.abs(price) > 1e-8) {
+      quantity = Math.abs(netAmount / price);
+    } else if (Number.isFinite(grossAmount) && Number.isFinite(price) && Math.abs(price) > 1e-8) {
+      quantity = Math.abs(grossAmount / price);
+    } else {
+      return null;
+    }
+  }
+  if (direction === 0) {
+    direction = quantity >= 0 ? 1 : -1;
+  }
+  const signedQuantity = Math.abs(quantity) * (direction >= 0 ? 1 : -1);
+  const resolvedAmount =
+    Number.isFinite(netAmount) && Math.abs(netAmount) > CASH_FLOW_EPSILON
+      ? netAmount
+      : Number.isFinite(grossAmount) && Math.abs(grossAmount) > CASH_FLOW_EPSILON
+        ? grossAmount
+        : null;
+  return {
+    symbol,
+    quantity: signedQuantity,
+    currency: normalizeCurrency(activity.currency) || 'CAD',
+    netAmount: resolvedAmount,
+    sourceType: activity.type || null,
+  };
+}
+
+const CASH_INCOME_KEYWORDS = ['dividend', 'distribution', 'interest', 'payment', 'drip'];
+const CASH_EXPENSE_KEYWORDS = ['fee', 'commission', 'withholding', 'tax', 'charge'];
+
+function normalizeCashEffectActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  if (isFundingActivity(activity) || isTradeLikeActivity(activity)) {
+    return null;
+  }
+  let amount = Number(activity.netAmount);
+  if (!Number.isFinite(amount) || Math.abs(amount) < CASH_FLOW_EPSILON) {
+    const gross = Number(activity.grossAmount);
+    if (Number.isFinite(gross) && Math.abs(gross) >= CASH_FLOW_EPSILON) {
+      amount = gross;
+    } else {
+      return null;
+    }
+  }
+  const currency = normalizeCurrency(activity.currency) || 'CAD';
+  const type = typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
+  const action = typeof activity.action === 'string' ? activity.action.toLowerCase() : '';
+  const description = typeof activity.description === 'string' ? activity.description.toLowerCase() : '';
+  let category = null;
+  if (
+    CASH_INCOME_KEYWORDS.some((keyword) => type.includes(keyword) || action.includes(keyword) || description.includes(keyword))
+  ) {
+    category = 'income';
+  } else if (
+    CASH_EXPENSE_KEYWORDS.some((keyword) => type.includes(keyword) || action.includes(keyword) || description.includes(keyword))
+  ) {
+    category = 'expense';
+  }
+  if (!category) {
+    category = amount >= 0 ? 'income' : 'expense';
+  }
+  return {
+    amount,
+    currency,
+    category,
+    symbol: coerceActivitySymbol(activity),
+  };
+}
+
+async function buildMarketDerivedPnLHistory({
+  schedule,
+  contributionsByDay,
+  activities,
+  finalEntry,
+  netDepositsTotal,
+  accountKey,
+  finalPositions,
+}) {
+  if (!Array.isArray(schedule) || schedule.length < 2) {
+    return null;
+  }
+  const earliestEntry = schedule[0];
+  if (!earliestEntry || !(earliestEntry.date instanceof Date)) {
+    return null;
+  }
+  const resolvedFinalDate = finalEntry && finalEntry.date instanceof Date ? finalEntry.date : null;
+  if (!resolvedFinalDate) {
+    return null;
+  }
+
+  const startTime = earliestEntry.date.getTime();
+  const endTime = resolvedFinalDate.getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+    return null;
+  }
+
+  const eventsByDate = new Map();
+  const symbolCurrencies = new Map();
+  let earliestActivityTime = null;
+
+  contributionsByDay.forEach((amount, date) => {
+    if (!date || !Number.isFinite(amount) || Math.abs(amount) < CASH_FLOW_EPSILON) {
+      return;
+    }
+    addEvent(eventsByDate, date, {
+      type: 'cash',
+      amountCad: amount,
+      source: 'funding',
+    });
+  });
+
+  const tradeEvents = [];
+  const cashEvents = [];
+
+  if (Array.isArray(activities)) {
+    activities.forEach((activity) => {
+      const timestamp = resolveActivityTimestamp(activity);
+      const isoDate = timestamp ? formatDateOnly(timestamp) : null;
+      if (!isoDate) {
+        return;
+      }
+      const timeValue = timestamp.getTime();
+      if (Number.isFinite(timeValue)) {
+        if (earliestActivityTime === null || timeValue < earliestActivityTime) {
+          earliestActivityTime = timeValue;
+        }
+      }
+
+      const trade = normalizeTradeActivity(activity);
+      if (trade) {
+        tradeEvents.push({
+          date: isoDate,
+          timestamp,
+          symbol: trade.symbol,
+          quantity: trade.quantity,
+          currency: trade.currency,
+          netAmount: trade.netAmount,
+        });
+        if (trade.symbol && trade.currency && !symbolCurrencies.has(trade.symbol)) {
+          symbolCurrencies.set(trade.symbol, trade.currency);
+        }
+        return;
+      }
+
+      const cash = normalizeCashEffectActivity(activity);
+      if (cash) {
+        cashEvents.push({
+          date: isoDate,
+          timestamp,
+          amount: cash.amount,
+          currency: cash.currency,
+          category: cash.category,
+          symbol: cash.symbol || null,
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(finalPositions)) {
+    finalPositions.forEach((position) => {
+      if (!position || typeof position !== 'object') {
+        return;
+      }
+      const symbol = typeof position.symbol === 'string' ? position.symbol.trim() : null;
+      if (!symbol) {
+        return;
+      }
+      const currency = normalizeCurrency(position.currency) || null;
+      if (currency && !symbolCurrencies.has(symbol)) {
+        symbolCurrencies.set(symbol, currency);
+      }
+    });
+  }
+
+  for (const trade of tradeEvents) {
+    let netAmountCad = null;
+    if (Number.isFinite(trade.netAmount)) {
+      try {
+        const conversion = await convertAmountToCad(trade.netAmount, trade.currency, trade.timestamp, accountKey);
+        netAmountCad = Number.isFinite(conversion.cadAmount) ? conversion.cadAmount : null;
+      } catch (error) {
+        if (DEBUG_TOTAL_PNL) {
+          const message = error && error.message ? error.message : String(error);
+          debugTotalPnl(accountKey, 'Failed to convert trade cash flow for ' + trade.symbol, message);
+        }
+      }
+    }
+    addEvent(eventsByDate, trade.date, {
+      type: 'trade',
+      symbol: trade.symbol,
+      quantity: trade.quantity,
+      currency: trade.currency,
+      netAmountCad,
+    });
+  }
+
+  for (const cash of cashEvents) {
+    try {
+      const conversion = await convertAmountToCad(cash.amount, cash.currency, cash.timestamp, accountKey);
+      const cadAmount = Number.isFinite(conversion.cadAmount) ? conversion.cadAmount : null;
+      if (cadAmount === null) {
+        continue;
+      }
+      addEvent(eventsByDate, cash.date, {
+        type: 'cash',
+        amountCad: cadAmount,
+        source: cash.category,
+        symbol: cash.symbol || null,
+      });
+    } catch (error) {
+      if (DEBUG_TOTAL_PNL) {
+        const message = error && error.message ? error.message : String(error);
+        debugTotalPnl(accountKey, 'Failed to convert cash activity', message);
+      }
+    }
+  }
+
+  const symbols = Array.from(symbolCurrencies.keys());
+  const priceSeriesBySymbol = new Map();
+  if (symbols.length) {
+    const paddedStart = earliestActivityTime !== null ? Math.min(startTime, earliestActivityTime) : startTime;
+    const historyStart = new Date(Math.max(MIN_ACTIVITY_DATE.getTime(), paddedStart - 7 * DAY_IN_MS));
+    const historyEnd = new Date(endTime + DAY_IN_MS);
+    const priceResults = await Promise.all(
+      symbols.map((symbol) =>
+        fetchDailyCloseSeries(symbol, historyStart, historyEnd, accountKey)
+          .then((series) => [symbol, series])
+          .catch(() => [symbol, []])
+      )
+    );
+    priceResults.forEach(([symbol, series]) => {
+      if (Array.isArray(series) && series.length) {
+        priceSeriesBySymbol.set(symbol, series);
+      }
+    });
+  }
+
+  const tradingDates = new Set();
+  priceSeriesBySymbol.forEach((series) => {
+    series.forEach((entry) => tradingDates.add(entry.date));
+  });
+
+  const dateSet = new Set();
+  const startIso = formatDateOnly(new Date(startTime));
+  const endIso = formatDateOnly(new Date(endTime));
+  if (startIso) {
+    dateSet.add(startIso);
+  }
+  if (endIso) {
+    dateSet.add(endIso);
+  }
+  contributionsByDay.forEach((_amount, date) => dateSet.add(date));
+  eventsByDate.forEach((_events, date) => dateSet.add(date));
+  tradingDates.forEach((date) => dateSet.add(date));
+
+  const sortedDates = Array.from(dateSet)
+    .map((date) => {
+      const timestamp = Date.parse(`${date}T00:00:00Z`);
+      if (!Number.isFinite(timestamp)) {
+        return null;
+      }
+      return { date, timestamp };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  if (!sortedDates.length) {
+    return null;
+  }
+
+  const priceState = new Map();
+  priceSeriesBySymbol.forEach((series, symbol) => {
+    const lookup = new Map();
+    series.forEach((entry) => {
+      lookup.set(entry.date, entry.close);
+    });
+    priceState.set(symbol, { lookup, lastClose: null });
+  });
+
+  const positions = new Map();
+  const history = [];
+  let cashCad = 0;
+  let netDepositsRunning = 0;
+
+  for (const { date, timestamp } of sortedDates) {
+    const events = eventsByDate.get(date) || [];
+    for (const event of events) {
+      if (!event || typeof event !== 'object') {
+        continue;
+      }
+      if (event.type === 'cash') {
+        if (Number.isFinite(event.amountCad)) {
+          cashCad += event.amountCad;
+          if (event.source === 'funding') {
+            netDepositsRunning += event.amountCad;
+          }
+        }
+      } else if (event.type === 'trade') {
+        if (!event.symbol) {
+          continue;
+        }
+        const currency = event.currency || symbolCurrencies.get(event.symbol) || 'CAD';
+        if (!symbolCurrencies.has(event.symbol)) {
+          symbolCurrencies.set(event.symbol, currency);
+        }
+        const current = positions.get(event.symbol) || { quantity: 0, currency };
+        current.quantity = (Number.isFinite(current.quantity) ? current.quantity : 0) + (Number(event.quantity) || 0);
+        current.currency = currency;
+        if (Math.abs(current.quantity) < 1e-8) {
+          positions.delete(event.symbol);
+        } else {
+          positions.set(event.symbol, current);
+        }
+        if (Number.isFinite(event.netAmountCad)) {
+          cashCad += event.netAmountCad;
+        }
+      }
+    }
+
+    priceState.forEach((state) => {
+      if (state.lookup.has(date)) {
+        state.lastClose = state.lookup.get(date);
+      }
+    });
+
+    let holdingsValue = 0;
+    const valueDate = new Date(timestamp);
+    for (const [symbol, position] of positions.entries()) {
+      if (!position || !Number.isFinite(position.quantity) || Math.abs(position.quantity) < 1e-8) {
+        continue;
+      }
+      const state = priceState.get(symbol);
+      const close = state ? state.lastClose : null;
+      if (!Number.isFinite(close)) {
+        continue;
+      }
+      let priceCad = close;
+      const currency = position.currency || symbolCurrencies.get(symbol) || 'CAD';
+      if (currency === 'USD') {
+        const fxRate = await resolveUsdToCadRate(valueDate, accountKey);
+        if (!Number.isFinite(fxRate) || fxRate <= 0) {
+          continue;
+        }
+        priceCad *= fxRate;
+      }
+      holdingsValue += position.quantity * priceCad;
+    }
+
+    const accountValue = holdingsValue + cashCad;
+    const pnlValue = accountValue - netDepositsRunning;
+    const pnlPercent =
+      Number.isFinite(accountValue) && Math.abs(accountValue) > CASH_FLOW_EPSILON ? pnlValue / accountValue : null;
+
+    const isTradingDay = tradingDates.has(date);
+    const shouldRecord =
+      isTradingDay || events.length > 0 || history.length === 0 || timestamp >= endTime || history.length === 0;
+
+    if (shouldRecord) {
+      history.push({
+        date,
+        timestamp,
+        netDeposits: netDepositsRunning,
+        pnlCad: Number.isFinite(pnlValue) ? pnlValue : null,
+        accountValue: Number.isFinite(accountValue) ? accountValue : null,
+        pnlPercent: Number.isFinite(pnlPercent) ? pnlPercent : null,
+      });
+    }
+  }
+
+  if (!history.length) {
+    return null;
+  }
+
+  const lastEntry = history[history.length - 1];
+  if (lastEntry) {
+    if (Number.isFinite(netDepositsTotal)) {
+      lastEntry.netDeposits = netDepositsTotal;
+    }
+    lastEntry.timestamp = endTime;
+    lastEntry.date = formatDateOnly(resolvedFinalDate);
+  }
+
+  return history;
+}
+
+function buildIrrPnLHistory({ schedule, contributionsByDay, resolvedTotalPnl }) {
+  if (!Array.isArray(schedule) || schedule.length < 2) {
+    return null;
+  }
+  const earliestEntry = schedule[0];
+  const finalEntry = schedule[schedule.length - 1];
+  if (!earliestEntry || !finalEntry || !(earliestEntry.date instanceof Date) || !(finalEntry.date instanceof Date)) {
+    return null;
+  }
+
+  const startTime = earliestEntry.date.getTime();
+  const endTime = finalEntry.date.getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+    return null;
+  }
+
+  const dateEntries = [];
+  for (let cursor = startTime; cursor <= endTime; cursor += DAY_IN_MS) {
+    const currentDate = new Date(cursor);
+    const iso = currentDate.toISOString().slice(0, 10);
+    const contribution = contributionsByDay.get(iso);
+    dateEntries.push({
+      timestamp: cursor,
+      date: iso,
+      contribution: Number.isFinite(contribution) ? contribution : 0,
+    });
+  }
+
+  const history = [];
+  let runningNetDeposits = 0;
+  let accountValue = 0;
+
+  const toleranceContribution = CASH_FLOW_EPSILON;
+
+  dateEntries.forEach((entry, index) => {
+    const contribution = Number(entry.contribution) || 0;
+    if (Math.abs(contribution) >= toleranceContribution) {
+      runningNetDeposits += contribution;
+      accountValue += contribution;
+    }
+
+    const ratio = Math.min(1, Math.max(0, (entry.timestamp - startTime) / Math.max(1, endTime - startTime)));
+    const pnlValue = resolvedTotalPnl * ratio;
+    accountValue = runningNetDeposits + pnlValue;
+
+    const percent =
+      Number.isFinite(accountValue) && Math.abs(accountValue) > CASH_FLOW_EPSILON ? pnlValue / accountValue : null;
+
+    const shouldRecord = index === 0 || index === dateEntries.length - 1 || Math.abs(contribution) >= toleranceContribution;
+
+    if (shouldRecord) {
+      history.push({
+        date: entry.date,
+        timestamp: entry.timestamp,
+        netDeposits: runningNetDeposits,
+        pnlCad: Number.isFinite(pnlValue) ? pnlValue : null,
+        accountValue: Number.isFinite(accountValue) ? accountValue : null,
+        pnlPercent: Number.isFinite(percent) ? percent : null,
+      });
+    }
+  });
+
+  return history;
+}
+
+function mergePnLHistories(histories) {
+  if (!Array.isArray(histories) || histories.length === 0) {
+    return null;
+  }
+
+  const normalized = histories
+    .map((history) => {
+      if (!Array.isArray(history) || !history.length) {
+        return null;
+      }
+      return history
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const resolvedTimestamp = Number.isFinite(entry.timestamp)
+            ? entry.timestamp
+            : Date.parse(`${entry.date || ''}T00:00:00Z`);
+          if (!Number.isFinite(resolvedTimestamp)) {
+            return null;
+          }
+          const resolvedDate = entry.date || new Date(resolvedTimestamp).toISOString().slice(0, 10);
+          return Object.assign({}, entry, { timestamp: resolvedTimestamp, date: resolvedDate });
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.timestamp - b.timestamp);
+    })
+    .filter((history) => Array.isArray(history) && history.length);
+
+  if (!normalized.length) {
+    return null;
+  }
+
+  const dateSet = new Set();
+  normalized.forEach((history) => {
+    history.forEach((entry) => {
+      if (entry.date) {
+        dateSet.add(entry.date);
+      }
+    });
+  });
+
+  const sortedDates = Array.from(dateSet)
+    .map((date) => {
+      const timestamp = Date.parse(`${date}T00:00:00Z`);
+      if (!Number.isFinite(timestamp)) {
+        return null;
+      }
+      return { date, timestamp };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  if (!sortedDates.length) {
+    return null;
+  }
+
+  const pointers = normalized.map(() => 0);
+  const lastKnown = normalized.map(() => null);
+
+  const merged = [];
+
+  for (const { date, timestamp } of sortedDates) {
+    let totalAccountValue = 0;
+    let totalNetDeposits = 0;
+    let haveAccountValue = false;
+    let haveNetDeposits = false;
+
+    normalized.forEach((history, index) => {
+      while (pointers[index] < history.length && history[pointers[index]].timestamp <= timestamp) {
+        lastKnown[index] = history[pointers[index]];
+        pointers[index] += 1;
+      }
+      const current = lastKnown[index];
+      if (!current) {
+        return;
+      }
+      if (Number.isFinite(current.accountValue)) {
+        totalAccountValue += current.accountValue;
+        haveAccountValue = true;
+      }
+      if (Number.isFinite(current.netDeposits)) {
+        totalNetDeposits += current.netDeposits;
+        haveNetDeposits = true;
+      }
+    });
+
+    if (!haveAccountValue || !haveNetDeposits) {
+      continue;
+    }
+
+    const pnlValue = totalAccountValue - totalNetDeposits;
+    const pnlPercent =
+      Math.abs(totalAccountValue) > CASH_FLOW_EPSILON ? pnlValue / totalAccountValue : null;
+
+    merged.push({
+      date,
+      timestamp,
+      accountValue: totalAccountValue,
+      netDeposits: totalNetDeposits,
+      pnlCad: Number.isFinite(pnlValue) ? pnlValue : null,
+      pnlPercent: Number.isFinite(pnlPercent) ? pnlPercent : null,
+    });
+  }
+
+  if (!merged.length) {
+    return null;
+  }
+
+  return merged;
+}
+
+function findHistoryEntryOnOrBefore(history, targetTime) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return null;
+  }
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (Number.isFinite(entry.timestamp) && entry.timestamp <= targetTime) {
+      return entry;
+    }
+  }
+  return history[0] || null;
+}
+
+function buildTrailingReturnSummaries(history, finalTimestamp, totalEquity) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return null;
+  }
+  const finalEntry = history[history.length - 1];
+  if (!finalEntry) {
+    return null;
+  }
+  const resolvedFinalTimestamp = Number.isFinite(finalTimestamp) ? finalTimestamp : finalEntry.timestamp;
+  const resolvedTotalEquity = Number.isFinite(totalEquity) ? totalEquity : finalEntry.accountValue;
+  if (!Number.isFinite(resolvedFinalTimestamp) || !Number.isFinite(resolvedTotalEquity)) {
+    return null;
+  }
+
+  const finalNetDeposits = Number.isFinite(finalEntry.netDeposits) ? finalEntry.netDeposits : 0;
+  const earliestEntry = history[0];
+  const earliestTimestamp = Number.isFinite(earliestEntry?.timestamp) ? earliestEntry.timestamp : null;
+  const summaries = {};
+  const gapToleranceMs = DAY_IN_MS;
+
+  TRAILING_PERIODS.forEach((period) => {
+    const months = Number(period.months);
+    if (!Number.isFinite(months) || months <= 0) {
+      return;
+    }
+    const startDate = addMonths(new Date(resolvedFinalTimestamp), -months);
+    const startTime = startDate.getTime();
+    if (!Number.isFinite(startTime)) {
+      return;
+    }
+    if (
+      Number.isFinite(earliestTimestamp) &&
+      startTime < earliestTimestamp - gapToleranceMs
+    ) {
+      return;
+    }
+    const startEntry = findHistoryEntryOnOrBefore(history, startTime) || history[0];
+    if (!startEntry) {
+      return;
+    }
+
+    const startTimestamp = Number(startEntry.timestamp);
+    if (!Number.isFinite(startTimestamp)) {
+      return;
+    }
+
+    const startValue = Number(startEntry.accountValue);
+    const startDeposits = Number(startEntry.netDeposits) || 0;
+    const contributionsAfterStart = finalNetDeposits - startDeposits;
+    const adjustedEndValue = resolvedTotalEquity - contributionsAfterStart;
+    const pnlChange = Number.isFinite(adjustedEndValue) && Number.isFinite(startValue)
+      ? adjustedEndValue - startValue
+      : null;
+    const returnRate =
+      Number.isFinite(startValue) && Math.abs(startValue) > CASH_FLOW_EPSILON && Number.isFinite(pnlChange)
+        ? pnlChange / startValue
+        : null;
+
+    let annualizedReturnRate = null;
+    if (Number.isFinite(returnRate)) {
+      const durationMs = resolvedFinalTimestamp - startTimestamp;
+      if (durationMs > 0) {
+        const durationYears = durationMs / (365.25 * DAY_IN_MS);
+        const base = 1 + returnRate;
+        if (durationYears > 0 && base > 0) {
+          const computed = Math.pow(base, 1 / durationYears) - 1;
+          if (Number.isFinite(computed)) {
+            annualizedReturnRate = computed;
+          }
+        }
+      }
+    }
+
+    summaries[period.key] = {
+      label: period.label,
+      startDate: startEntry.date,
+      endDate: finalEntry.date,
+      pnlCad: Number.isFinite(pnlChange) ? pnlChange : null,
+      returnRate: Number.isFinite(returnRate) ? returnRate : null,
+      annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : null,
+    };
+  });
+
+  return summaries;
+}
+
+async function buildFundingPerformanceSummary(cashFlows, totalPnlCad, totalEquityCad, options = {}) {
+  const schedule = normalizeCashFlowSchedule(cashFlows);
+  if (schedule.length < 2) {
+    return null;
+  }
+
+  const earliestEntry = schedule[0];
+  const finalEntry = schedule[schedule.length - 1];
+  if (!earliestEntry || !finalEntry || !(finalEntry.date instanceof Date)) {
+    return null;
+  }
+
+  const resolvedTotalEquity = Number.isFinite(totalEquityCad) ? totalEquityCad : finalEntry.amount;
+
+  const contributionSum = schedule
+    .slice(0, -1)
+    .reduce((acc, entry) => (Number.isFinite(entry.amount) ? acc + entry.amount : acc), 0);
+
+  const resolvedTotalPnl = Number.isFinite(totalPnlCad)
+    ? totalPnlCad
+    : Number.isFinite(resolvedTotalEquity)
+      ? resolvedTotalEquity + contributionSum
+      : null;
+
+  if (!Number.isFinite(resolvedTotalEquity) || !Number.isFinite(resolvedTotalPnl)) {
+    return null;
+  }
+
+  const contributionsByDay = new Map();
+  let netDepositsTotal = 0;
+  schedule.slice(0, -1).forEach((entry) => {
+    if (!entry || !Number.isFinite(entry.amount) || !(entry.date instanceof Date)) {
+      return;
+    }
+    const isoDate = entry.date.toISOString().slice(0, 10);
+    const netContribution = -entry.amount;
+    if (!Number.isFinite(netContribution) || Math.abs(netContribution) < CASH_FLOW_EPSILON) {
+      return;
+    }
+    netDepositsTotal += netContribution;
+    const existing = contributionsByDay.get(isoDate) || 0;
+    contributionsByDay.set(isoDate, existing + netContribution);
+  });
+
+  let history = null;
+
+  const activityCandidates = Array.isArray(options.activities) ? options.activities : null;
+  if (activityCandidates && activityCandidates.length) {
+    history = await buildMarketDerivedPnLHistory({
+      schedule,
+      contributionsByDay,
+      activities: activityCandidates,
+      finalEntry,
+      netDepositsTotal,
+      accountKey: options.accountKey || null,
+      finalPositions: Array.isArray(options.finalPositions) ? options.finalPositions : null,
+    });
+  }
+
+  if (!history || history.length < 2) {
+    history = buildIrrPnLHistory({
+      schedule,
+      contributionsByDay,
+      resolvedTotalPnl,
+    });
+  }
+
+  if (!history || history.length === 0) {
+    return null;
+  }
+
+  history.sort((a, b) => {
+    const timeA = Number.isFinite(a.timestamp) ? a.timestamp : Date.parse(`${a.date}T00:00:00Z`);
+    const timeB = Number.isFinite(b.timestamp) ? b.timestamp : Date.parse(`${b.date}T00:00:00Z`);
+    return timeA - timeB;
+  });
+
+  const endTime = finalEntry.date.getTime();
+  if (history.length > 0) {
+    const lastEntry = history[history.length - 1];
+    if (lastEntry) {
+      lastEntry.netDeposits = netDepositsTotal;
+      lastEntry.pnlCad = resolvedTotalPnl;
+      lastEntry.accountValue = resolvedTotalEquity;
+      const percent =
+        Number.isFinite(resolvedTotalEquity) && Math.abs(resolvedTotalEquity) > CASH_FLOW_EPSILON
+          ? resolvedTotalPnl / resolvedTotalEquity
+          : null;
+      lastEntry.pnlPercent = Number.isFinite(percent) ? percent : null;
+      lastEntry.timestamp = endTime;
+      lastEntry.date = new Date(endTime).toISOString().slice(0, 10);
+    }
+  }
+
+  const trailingReturns = buildTrailingReturnSummaries(history, endTime, resolvedTotalEquity);
+
+  return {
+    pnlHistory: history,
+    trailingReturns,
+  };
+}
+
 async function computeNetDeposits(login, account, perAccountCombinedBalances, options = {}) {
   if (!account || !account.id) {
     return null;
@@ -1689,6 +2593,17 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     annualizedReturn.startDate = appliedCagrStartDate.toISOString().slice(0, 10);
   }
 
+  const performanceSummary = await buildFundingPerformanceSummary(
+    effectiveCashFlows,
+    Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+    Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+    {
+      activities,
+      accountKey,
+      finalPositions: Array.isArray(options.finalPositions) ? options.finalPositions : null,
+    },
+  );
+
   return {
     netDeposits: {
       perCurrency: perCurrencyObject,
@@ -1700,6 +2615,9 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
     annualizedReturn,
     cashFlowsCad: effectiveCashFlows.length > 0 ? effectiveCashFlows : undefined,
+    pnlHistory: performanceSummary && performanceSummary.pnlHistory ? performanceSummary.pnlHistory : undefined,
+    trailingReturns:
+      performanceSummary && performanceSummary.trailingReturns ? performanceSummary.trailingReturns : undefined,
     adjustments:
       accountAdjustment !== 0
         ? {
@@ -2334,6 +3252,9 @@ app.get('/api/summary', async function (req, res) {
         return fetchPositions(context.login, context.account.number);
       })
     );
+    selectedContexts.forEach(function (context, index) {
+      context.positions = Array.isArray(positionsResults[index]) ? positionsResults[index] : [];
+    });
     const balancesResults = await Promise.all(
       selectedContexts.map(function (context) {
         return fetchBalances(context.login, context.account.number);
@@ -2422,7 +3343,7 @@ app.get('/api/summary', async function (req, res) {
           context.login,
           context.account,
           perAccountCombinedBalances,
-          { applyAccountCagrStartDate: true }
+          { applyAccountCagrStartDate: true, finalPositions: context.positions }
         );
         if (fundingSummary) {
           accountFundingSummaries[context.account.id] = fundingSummary;
@@ -2452,7 +3373,7 @@ app.get('/api/summary', async function (req, res) {
             context.login,
             context.account,
             perAccountCombinedBalances,
-            { applyAccountCagrStartDate: false }
+            { applyAccountCagrStartDate: false, finalPositions: context.positions }
           );
           if (fundingSummary) {
             accountFundingSummaries[context.account.id] = fundingSummary;
@@ -2545,6 +3466,49 @@ app.get('/api/summary', async function (req, res) {
       }
       if (aggregateTotals.totalEquityCount > 0) {
         aggregateEntry.totalEquityCad = aggregateTotals.totalEquityCad;
+      }
+
+      const perAccountHistories = selectedContexts
+        .map((context) => {
+          const summary = accountFundingSummaries[context.account.id];
+          return summary && Array.isArray(summary.pnlHistory) ? summary.pnlHistory : null;
+        })
+        .filter(Boolean);
+
+      let mergedHistory = null;
+      if (perAccountHistories.length > 0) {
+        mergedHistory = mergePnLHistories(perAccountHistories);
+      }
+
+      if ((!mergedHistory || !mergedHistory.length) && aggregateTotals.cashFlowsCad.length > 0) {
+        const performanceSummary = await buildFundingPerformanceSummary(
+          aggregateTotals.cashFlowsCad,
+          Number.isFinite(aggregateTotals.totalPnlCad) ? aggregateTotals.totalPnlCad : null,
+          Number.isFinite(aggregateTotals.totalEquityCad) ? aggregateTotals.totalEquityCad : null,
+        );
+        if (performanceSummary && Array.isArray(performanceSummary.pnlHistory)) {
+          mergedHistory = performanceSummary.pnlHistory;
+        }
+        if (performanceSummary && performanceSummary.trailingReturns) {
+          aggregateEntry.trailingReturns = performanceSummary.trailingReturns;
+        }
+      }
+
+      if (mergedHistory && mergedHistory.length) {
+        aggregateEntry.pnlHistory = mergedHistory;
+        const finalMergedEntry = mergedHistory[mergedHistory.length - 1];
+        const trailingTimestamp = finalMergedEntry ? finalMergedEntry.timestamp : null;
+        const aggregateEquity = Number.isFinite(aggregateTotals.totalEquityCad)
+          ? aggregateTotals.totalEquityCad
+          : Number.isFinite(finalMergedEntry && finalMergedEntry.accountValue)
+            ? finalMergedEntry.accountValue
+            : null;
+        if (Number.isFinite(trailingTimestamp) && Number.isFinite(aggregateEquity)) {
+          const trailing = buildTrailingReturnSummaries(mergedHistory, trailingTimestamp, aggregateEquity);
+          if (trailing) {
+            aggregateEntry.trailingReturns = trailing;
+          }
+        }
       }
 
       if (aggregateTotals.cashFlowsCad.length > 0) {

@@ -7,6 +7,7 @@ import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
+import ReturnBreakdownDialog from './components/ReturnBreakdownDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import { formatMoney, formatNumber } from './utils/formatters';
 import { buildAccountSummaryUrl } from './utils/questrade';
@@ -1558,6 +1559,7 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [showPeople, setShowPeople] = useState(false);
+  const [showReturnDetails, setShowReturnDetails] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
@@ -1942,11 +1944,70 @@ export default function App() {
     const totalPnlCad = selectedAccountFunding?.totalPnl?.combinedCad;
     const totalEquityCad = selectedAccountFunding?.totalEquityCad;
     const annualizedReturnRate = selectedAccountFunding?.annualizedReturn?.rate;
+    const trailingReturnsSource = selectedAccountFunding?.trailingReturns;
+    const pnlHistorySource = selectedAccountFunding?.pnlHistory;
+
+    let trailingReturns = null;
+    if (trailingReturnsSource && typeof trailingReturnsSource === 'object') {
+      trailingReturns = {};
+      Object.entries(trailingReturnsSource).forEach(([key, value]) => {
+        if (!value || typeof value !== 'object') {
+          return;
+        }
+        trailingReturns[key] = {
+          label: typeof value.label === 'string' ? value.label : null,
+          startDate: typeof value.startDate === 'string' ? value.startDate : null,
+          endDate: typeof value.endDate === 'string' ? value.endDate : null,
+          pnlCad: Number.isFinite(value.pnlCad) ? value.pnlCad : null,
+          returnRate: Number.isFinite(value.returnRate) ? value.returnRate : null,
+          annualizedReturnRate: Number.isFinite(value.annualizedReturnRate)
+            ? value.annualizedReturnRate
+            : null,
+        };
+      });
+      if (Object.keys(trailingReturns).length === 0) {
+        trailingReturns = null;
+      }
+    }
+
+    let pnlHistory = null;
+    if (Array.isArray(pnlHistorySource) && pnlHistorySource.length > 0) {
+      pnlHistory = pnlHistorySource
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const date = typeof entry.date === 'string' ? entry.date : null;
+          if (!date) {
+            return null;
+          }
+          const timestamp = Number(entry.timestamp);
+          const netDeposits = Number(entry.netDeposits);
+          const pnlCad = Number(entry.pnlCad);
+          const accountValue = Number(entry.accountValue);
+          const pnlPercent = Number(entry.pnlPercent);
+          return {
+            date,
+            timestamp: Number.isFinite(timestamp) ? timestamp : null,
+            netDeposits: Number.isFinite(netDeposits) ? netDeposits : null,
+            pnlCad: Number.isFinite(pnlCad) ? pnlCad : null,
+            accountValue: Number.isFinite(accountValue) ? accountValue : null,
+            pnlPercent: Number.isFinite(pnlPercent) ? pnlPercent : null,
+          };
+        })
+        .filter(Boolean);
+      if (!pnlHistory.length) {
+        pnlHistory = null;
+      }
+    }
+
     return {
       netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
       totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
       totalEquityCad: isFiniteNumber(totalEquityCad) ? totalEquityCad : null,
       annualizedReturnRate: isFiniteNumber(annualizedReturnRate) ? annualizedReturnRate : null,
+      trailingReturns,
+      pnlHistory,
     };
   }, [selectedAccountFunding, activeCurrency]);
   const displayTotalEquity = useMemo(() => {
@@ -2369,6 +2430,12 @@ export default function App() {
     }
   }, [hasData, pnlBreakdownMode]);
 
+  useEffect(() => {
+    if (!fundingSummaryForDisplay && showReturnDetails) {
+      setShowReturnDetails(false);
+    }
+  }, [fundingSummaryForDisplay, showReturnDetails]);
+
   const handleRetryQqqDetails = useCallback(() => {
     fetchQqqTemperature();
   }, [fetchQqqTemperature]);
@@ -2409,6 +2476,17 @@ export default function App() {
   const handleClosePeople = () => {
     setShowPeople(false);
   };
+
+  const handleOpenReturnDetails = useCallback(() => {
+    if (!fundingSummaryForDisplay) {
+      return;
+    }
+    setShowReturnDetails(true);
+  }, [fundingSummaryForDisplay]);
+
+  const handleCloseReturnDetails = useCallback(() => {
+    setShowReturnDetails(false);
+  }, []);
 
   const handleCloseInvestEvenlyDialog = useCallback(() => {
     setInvestEvenlyPlan(null);
@@ -2458,6 +2536,7 @@ export default function App() {
             displayTotalEquity={displayTotalEquity}
             usdToCadRate={usdToCadRate}
             onShowPeople={handleOpenPeople}
+            onShowReturnDetails={fundingSummaryForDisplay ? handleOpenReturnDetails : null}
             peopleDisabled={peopleDisabled}
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
             isRefreshing={isRefreshing}
@@ -2496,6 +2575,18 @@ export default function App() {
           />
         )}
       </main>
+      {showReturnDetails && (
+        <ReturnBreakdownDialog
+          annualizedRate={fundingSummaryForDisplay?.annualizedReturnRate ?? null}
+          trailingReturns={fundingSummaryForDisplay?.trailingReturns ?? null}
+          pnlHistory={fundingSummaryForDisplay?.pnlHistory ?? null}
+          totalPnl={fundingSummaryForDisplay?.totalPnlCad ?? null}
+          totalEquity={fundingSummaryForDisplay?.totalEquityCad ?? null}
+          netDeposits={fundingSummaryForDisplay?.netDepositsCad ?? null}
+          asOf={asOf}
+          onClose={handleCloseReturnDetails}
+        />
+      )}
       {showPeople && (
         <PeopleDialog
           totals={peopleTotals}
