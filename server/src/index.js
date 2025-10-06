@@ -2968,6 +2968,24 @@ app.get('/api/summary', async function (req, res) {
 
     const accountFundingSummaries = {};
     const accountDividendSummaries = {};
+    const accountActivityContextCache = new Map();
+
+    async function ensureAccountActivityContext(context) {
+      if (!context || !context.account || !context.account.id) {
+        return null;
+      }
+      const accountId = context.account.id;
+      if (!accountActivityContextCache.has(accountId)) {
+        const contextPromise = buildAccountActivityContext(context.login, context.account).catch(
+          (error) => {
+            accountActivityContextCache.delete(accountId);
+            throw error;
+          }
+        );
+        accountActivityContextCache.set(accountId, contextPromise);
+      }
+      return accountActivityContextCache.get(accountId);
+    }
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
       let sharedActivityContext = null;
@@ -3027,12 +3045,26 @@ app.get('/api/summary', async function (req, res) {
       };
 
       for (const context of selectedContexts) {
+        let activityContext = null;
+        try {
+          activityContext = await ensureAccountActivityContext(context);
+        } catch (activityError) {
+          const activityMessage =
+            activityError && activityError.message ? activityError.message : String(activityError);
+          console.warn(
+            'Failed to prepare activity history for account ' + context.account.id + ':',
+            activityMessage
+          );
+        }
+
         try {
           const fundingSummary = await computeNetDeposits(
             context.login,
             context.account,
             perAccountCombinedBalances,
-            { applyAccountCagrStartDate: false }
+            activityContext
+              ? { applyAccountCagrStartDate: false, activityContext }
+              : { applyAccountCagrStartDate: false }
           );
           if (fundingSummary) {
             accountFundingSummaries[context.account.id] = fundingSummary;
@@ -3171,7 +3203,7 @@ app.get('/api/summary', async function (req, res) {
       for (const context of selectedContexts) {
         let activityContext = null;
         try {
-          activityContext = await buildAccountActivityContext(context.login, context.account);
+          activityContext = await ensureAccountActivityContext(context);
         } catch (activityError) {
           const activityMessage =
             activityError && activityError.message ? activityError.message : String(activityError);
@@ -3182,9 +3214,11 @@ app.get('/api/summary', async function (req, res) {
         }
 
         try {
-          const dividendSummary = await computeDividendBreakdown(context.login, context.account, {
-            activityContext,
-          });
+          const dividendSummary = await computeDividendBreakdown(
+            context.login,
+            context.account,
+            activityContext ? { activityContext } : undefined
+          );
           if (dividendSummary) {
             accountDividendSummaries[context.account.id] = dividendSummary;
           }
