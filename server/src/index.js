@@ -3676,41 +3676,51 @@ app.get('/api/summary', async function (req, res) {
     const defaultAccountId = defaultAccount ? defaultAccount.id : null;
 
     const investmentModelEvaluations = {};
-    if (selectedContexts.length === 1) {
-      const context = selectedContexts[0];
-      const { account } = context;
-      const modelsToEvaluate = resolveAccountInvestmentModels(account);
-      if (account && modelsToEvaluate.length) {
+    await Promise.all(
+      selectedContexts.map(async function (context) {
+        const { account } = context;
+        const modelsToEvaluate = resolveAccountInvestmentModels(account);
+        if (!account || !modelsToEvaluate.length) {
+          return;
+        }
+
         const evaluationBucket = {};
         for (const modelConfig of modelsToEvaluate) {
           if (!modelConfig || !modelConfig.model) {
             continue;
           }
+
           const payload = buildInvestmentModelRequest(
             account,
             flattenedPositions,
             perAccountCombinedBalances,
             modelConfig
           );
+
           if (!payload || !Array.isArray(payload.positions) || payload.positions.length === 0) {
             evaluationBucket[modelConfig.model] = { status: 'no_positions' };
             continue;
           }
+
           try {
             const evaluation = await evaluateInvestmentModel(payload);
             evaluationBucket[modelConfig.model] = { status: 'ok', data: evaluation };
           } catch (modelError) {
             const message =
               modelError && modelError.message ? modelError.message : 'Failed to evaluate investment model.';
-            console.warn('Investment model evaluation failed for account ' + account.id + ' (' + modelConfig.model + '):', message);
+            console.warn(
+              'Investment model evaluation failed for account ' + account.id + ' (' + modelConfig.model + '):',
+              message
+            );
             evaluationBucket[modelConfig.model] = { status: 'error', message };
           }
         }
+
         if (Object.keys(evaluationBucket).length > 0) {
           investmentModelEvaluations[account.id] = evaluationBucket;
         }
-      }
-    }
+      })
+    );
 
     const accountFundingSummaries = {};
     const accountDividendSummaries = {};
