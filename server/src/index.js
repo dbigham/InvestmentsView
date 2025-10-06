@@ -16,7 +16,7 @@ const {
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
-const { evaluateInvestmentModel } = require('./investmentModel');
+const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
 const {
   CASH_FLOW_EPSILON,
   DAY_IN_MS,
@@ -31,6 +31,8 @@ const RETURN_BREAKDOWN_PERIODS = [
   { key: 'six_month', months: 6 },
   { key: 'one_month', months: 1 },
 ];
+
+const DEFAULT_TEMPERATURE_CHART_START_DATE = '1980-01-01';
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -3063,6 +3065,174 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
   });
 }
 
+function toFiniteNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeTemperatureChartPoints(points) {
+  if (!Array.isArray(points)) {
+    return [];
+  }
+  return points
+    .map(function (entry) {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const date = normalizeDateOnly(entry.date || entry.timestamp || null);
+      if (!date) {
+        return null;
+      }
+      const temperature = toFiniteNumber(entry.temperature ?? entry.temp);
+      if (temperature === null) {
+        return null;
+      }
+      const normalized = { date, temperature };
+      const close = toFiniteNumber(entry.close);
+      if (close !== null) {
+        normalized.close = close;
+      }
+      const fitted = toFiniteNumber(entry.fitted ?? entry.fit);
+      if (fitted !== null) {
+        normalized.fitted = fitted;
+      }
+      return normalized;
+    })
+    .filter(Boolean)
+    .sort(function (a, b) {
+      if (a.date < b.date) {
+        return -1;
+      }
+      if (a.date > b.date) {
+        return 1;
+      }
+      return 0;
+    });
+}
+
+function normalizeTemperatureChartResponse(requestedModel, response) {
+  const series = normalizeTemperatureChartPoints(response && response.points);
+  const latest = series.length ? { ...series[series.length - 1] } : null;
+  const resolvedStart = normalizeDateOnly(response && response.resolved_start_date);
+  const resolvedEnd = normalizeDateOnly(response && response.resolved_end_date);
+  const fallbackStart = series.length ? series[0].date : null;
+  const fallbackEnd = latest ? latest.date : null;
+  const rangeStart = resolvedStart || fallbackStart;
+  const rangeEnd = resolvedEnd || fallbackEnd;
+  const requestedStart = normalizeDateOnly(response && response.requested_start_date);
+  const requestedEnd = normalizeDateOnly(response && response.requested_end_date);
+
+  const referenceTemperatures = Array.isArray(response && response.reference_temperatures)
+    ? response.reference_temperatures
+        .map(function (value) {
+          return toFiniteNumber(value);
+        })
+        .filter(function (value) {
+          return value !== null;
+        })
+    : [];
+
+  const allocationAnchors = Array.isArray(response && response.temperature_allocation)
+    ? response.temperature_allocation
+        .map(function (entry) {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const temperature = toFiniteNumber(entry.temperature ?? entry.temp);
+          const allocation = toFiniteNumber(entry.allocation);
+          if (temperature === null || allocation === null) {
+            return null;
+          }
+          return { temperature, allocation };
+        })
+        .filter(Boolean)
+    : [];
+
+  const fitRaw = response && typeof response.fit === 'object' ? response.fit : null;
+  let growthCurve = null;
+  let fitDetails = null;
+  if (fitRaw) {
+    const fitA = toFiniteNumber(fitRaw.A);
+    const fitR = toFiniteNumber(fitRaw.growth_rate);
+    const fitPercent = toFiniteNumber(fitRaw.growth_rate_percent);
+    const fitStart = normalizeDateOnly(fitRaw.start_date);
+    const manualOverride = typeof fitRaw.manual_override === 'boolean' ? fitRaw.manual_override : null;
+
+    fitDetails = {};
+    if (fitA !== null) {
+      fitDetails.A = fitA;
+    }
+    if (fitR !== null) {
+      fitDetails.growthRate = fitR;
+    }
+    if (fitPercent !== null) {
+      fitDetails.growthRatePercent = fitPercent;
+    }
+    if (fitStart) {
+      fitDetails.startDate = fitStart;
+    }
+    if (manualOverride !== null) {
+      fitDetails.manualOverride = manualOverride;
+    }
+    if (Object.keys(fitDetails).length === 0) {
+      fitDetails = null;
+    }
+
+    if (fitA !== null || fitR !== null || fitStart || manualOverride !== null) {
+      growthCurve = {};
+      if (fitA !== null) {
+        growthCurve.A = fitA;
+      }
+      if (fitR !== null) {
+        growthCurve.r = fitR;
+      }
+      if (fitStart) {
+        growthCurve.startDate = fitStart;
+      }
+      if (manualOverride !== null) {
+        growthCurve.manualOverride = manualOverride;
+      }
+    }
+  }
+
+  const normalizedBaseSymbol = typeof response?.base_symbol === 'string' ? response.base_symbol : null;
+  const baseSymbol = normalizedBaseSymbol ? normalizeSymbol(normalizedBaseSymbol) : null;
+  const priceSource =
+    response && typeof response.price_source === 'string' && response.price_source.trim()
+      ? response.price_source.trim()
+      : null;
+  const experiment =
+    response && typeof response.experiment === 'string' && response.experiment.trim()
+      ? response.experiment.trim()
+      : null;
+
+  return {
+    model: requestedModel || null,
+    experiment: experiment || (requestedModel ? requestedModel.toUpperCase() : null),
+    updated: new Date().toISOString(),
+    rangeStart: rangeStart || null,
+    rangeEnd: rangeEnd || null,
+    requestedRange:
+      requestedStart || requestedEnd
+        ? {
+            start: requestedStart || null,
+            end: requestedEnd || null,
+          }
+        : null,
+    baseSymbol,
+    priceSource,
+    referenceTemperatures,
+    temperatureAllocation: allocationAnchors.length ? allocationAnchors : null,
+    fit: fitDetails,
+    growthCurve,
+    series,
+    latest,
+  };
+}
+
 app.get('/api/quote', async function (req, res) {
   const rawSymbol = typeof req.query.symbol === 'string' ? req.query.symbol : '';
   const trimmedSymbol = rawSymbol ? rawSymbol.trim() : '';
@@ -3134,6 +3304,64 @@ app.get('/api/qqq-temperature', async function (req, res) {
     }
     const message = error && error.message ? error.message : 'Unknown error';
     res.status(500).json({ message: 'Failed to load QQQ temperature data', details: message });
+  }
+});
+
+app.get('/api/investment-model-temperature', async function (req, res) {
+  const rawModel = typeof req.query.model === 'string' ? req.query.model : '';
+  const trimmedModel = rawModel.trim();
+  if (!trimmedModel) {
+    return res.status(400).json({ message: 'Query parameter "model" is required' });
+  }
+
+  const normalizedExperiment = trimmedModel.toUpperCase();
+  const startDate = normalizeDateOnly(req.query.startDate) || DEFAULT_TEMPERATURE_CHART_START_DATE;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const endDate = normalizeDateOnly(req.query.endDate) || todayIso;
+
+  const startTime = new Date(startDate + 'T00:00:00Z').getTime();
+  const endTime = new Date(endDate + 'T00:00:00Z').getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime > endTime) {
+    return res.status(400).json({ message: 'Invalid date range specified.' });
+  }
+
+  const payload = {
+    experiment: normalizedExperiment,
+    start_date: startDate,
+    end_date: endDate,
+  };
+
+  const baseSymbol = normalizeSymbol(req.query.symbol || req.query.baseSymbol || null);
+  if (baseSymbol) {
+    payload.base_symbol = baseSymbol;
+  }
+  const leveragedSymbol = normalizeSymbol(req.query.leveragedSymbol || null);
+  if (leveragedSymbol) {
+    payload.leveraged_symbol = leveragedSymbol;
+  }
+  const reserveSymbol = normalizeSymbol(req.query.reserveSymbol || null);
+  if (reserveSymbol) {
+    payload.reserve_symbol = reserveSymbol;
+  }
+
+  try {
+    const response = await evaluateInvestmentModelTemperatureChart(payload);
+    const normalized = normalizeTemperatureChartResponse(trimmedModel, response);
+    if (!normalized.series.length) {
+      return res.status(404).json({ message: 'Investment model chart unavailable' });
+    }
+    return res.json(normalized);
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Unknown error';
+    if (error && (error.code === 'BRIDGE_NOT_FOUND' || error.code === 'PYTHON_NOT_FOUND')) {
+      return res.status(503).json({ message });
+    }
+    const detail = typeof message === 'string' && message.includes('\n') ? message.split('\n')[0].trim() : message;
+    console.warn(
+      'Failed to load investment model temperature for model ' + trimmedModel + ':',
+      message
+    );
+    return res.status(500).json({ message: 'Failed to load investment model chart', details: detail });
   }
 });
 

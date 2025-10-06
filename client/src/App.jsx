@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary, getQqqTemperature, getQuote } from './api/questrade';
+import { getSummary, getQqqTemperature, getQuote, getInvestmentModelTemperature } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
@@ -18,6 +18,33 @@ import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
+const MODEL_CHART_DEFAULT_START_DATE = '1980-01-01';
+
+function buildInvestmentModelChartKey(modelConfig) {
+  if (!modelConfig || typeof modelConfig !== 'object') {
+    return null;
+  }
+  const modelName = typeof modelConfig.model === 'string' ? modelConfig.model.trim() : '';
+  if (!modelName) {
+    return null;
+  }
+  const parts = [modelName.toUpperCase()];
+  const baseSymbol = typeof modelConfig.symbol === 'string' ? modelConfig.symbol.trim().toUpperCase() : '';
+  if (baseSymbol) {
+    parts.push(`base:${baseSymbol}`);
+  }
+  const leveragedSymbol =
+    typeof modelConfig.leveragedSymbol === 'string' ? modelConfig.leveragedSymbol.trim().toUpperCase() : '';
+  if (leveragedSymbol) {
+    parts.push(`lev:${leveragedSymbol}`);
+  }
+  const reserveSymbol =
+    typeof modelConfig.reserveSymbol === 'string' ? modelConfig.reserveSymbol.trim().toUpperCase() : '';
+  if (reserveSymbol) {
+    parts.push(`res:${reserveSymbol}`);
+  }
+  return parts.join('|');
+}
 
 function resolveAccountModelsForDisplay(account) {
   if (!account || typeof account !== 'object') {
@@ -2115,6 +2142,8 @@ export default function App() {
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
+  const [investmentModelCharts, setInvestmentModelCharts] = useState({});
+  const investmentModelChartsRef = useRef({});
   const quoteCacheRef = useRef(new Map());
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
@@ -2697,23 +2726,29 @@ export default function App() {
     }
     return selectedAccountModels.map((model) => {
       const modelKey = typeof model.model === 'string' ? model.model.trim() : '';
-      if (!modelKey) {
-        return { ...model, evaluation: null };
+      let evaluation = null;
+      if (modelKey) {
+        evaluation = selectedAccountEvaluationMap[modelKey] || null;
+        if (!evaluation) {
+          const normalizedKey = modelKey.toUpperCase();
+          const fallbackKey = Object.keys(selectedAccountEvaluationMap).find(
+            (key) => String(key || '').toUpperCase() === normalizedKey
+          );
+          if (fallbackKey) {
+            evaluation = selectedAccountEvaluationMap[fallbackKey] || null;
+          }
+        }
       }
-      const direct = selectedAccountEvaluationMap[modelKey];
-      if (direct) {
-        return { ...model, evaluation: direct };
-      }
-      const normalizedKey = modelKey.toUpperCase();
-      const fallbackKey = Object.keys(selectedAccountEvaluationMap).find(
-        (key) => String(key || '').toUpperCase() === normalizedKey
-      );
+      const chartKey = buildInvestmentModelChartKey(model);
+      const chartState = chartKey && investmentModelCharts[chartKey] ? investmentModelCharts[chartKey] : null;
       return {
         ...model,
-        evaluation: fallbackKey ? selectedAccountEvaluationMap[fallbackKey] : null,
+        evaluation,
+        chartKey,
+        chart: chartState || { data: null, loading: false, error: null },
       };
     });
-  }, [selectedAccountModels, selectedAccountEvaluationMap]);
+  }, [selectedAccountModels, selectedAccountEvaluationMap, investmentModelCharts]);
   const shouldShowInvestmentModels = investmentModelSections.length > 0;
   const shouldShowQqqDetails = shouldShowInvestmentModels || Boolean(selectedAccountInfo?.showQQQDetails);
 
@@ -2813,6 +2848,101 @@ export default function App() {
     activeCurrency.scope === 'perCurrency' &&
     (activeCurrency.currency === 'CAD' || activeCurrency.currency === 'USD');
 
+  useEffect(() => {
+    investmentModelChartsRef.current = investmentModelCharts;
+  }, [investmentModelCharts]);
+
+  const fetchInvestmentModelChart = useCallback(
+    (modelConfig, options = {}) => {
+      if (!modelConfig || typeof modelConfig !== 'object') {
+        return;
+      }
+      const chartKey = buildInvestmentModelChartKey(modelConfig);
+      const modelName = typeof modelConfig.model === 'string' ? modelConfig.model.trim() : '';
+      if (!chartKey || !modelName) {
+        return;
+      }
+      const existing = investmentModelChartsRef.current[chartKey];
+      if (!options.force) {
+        if (existing && (existing.loading || (existing.data && !existing.error))) {
+          return;
+        }
+      } else if (existing && existing.loading) {
+        return;
+      }
+
+      setInvestmentModelCharts((prev) => {
+        const previous = prev[chartKey] || null;
+        return {
+          ...prev,
+          [chartKey]: {
+            data: previous?.data || null,
+            loading: true,
+            error: null,
+          },
+        };
+      });
+
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const request = {
+        model: modelName,
+        startDate: MODEL_CHART_DEFAULT_START_DATE,
+        endDate: todayIso,
+      };
+      if (typeof modelConfig.symbol === 'string' && modelConfig.symbol.trim()) {
+        request.symbol = modelConfig.symbol.trim();
+      }
+      if (typeof modelConfig.leveragedSymbol === 'string' && modelConfig.leveragedSymbol.trim()) {
+        request.leveragedSymbol = modelConfig.leveragedSymbol.trim();
+      }
+      if (typeof modelConfig.reserveSymbol === 'string' && modelConfig.reserveSymbol.trim()) {
+        request.reserveSymbol = modelConfig.reserveSymbol.trim();
+      }
+
+      getInvestmentModelTemperature(request)
+        .then((data) => {
+          setInvestmentModelCharts((prev) => ({
+            ...prev,
+            [chartKey]: { data, loading: false, error: null },
+          }));
+        })
+        .catch((error) => {
+          const normalizedError = error instanceof Error ? error : new Error(String(error));
+          setInvestmentModelCharts((prev) => ({
+            ...prev,
+            [chartKey]: {
+              data: prev[chartKey]?.data || null,
+              loading: false,
+              error: normalizedError,
+            },
+          }));
+        });
+    },
+    [setInvestmentModelCharts]
+  );
+
+  useEffect(() => {
+    if (!shouldShowInvestmentModels) {
+      return;
+    }
+    selectedAccountModels.forEach((model) => {
+      const chartKey = buildInvestmentModelChartKey(model);
+      if (!chartKey) {
+        return;
+      }
+      const state = investmentModelCharts[chartKey];
+      if (state && (state.loading || state.data || state.error)) {
+        return;
+      }
+      fetchInvestmentModelChart(model);
+    });
+  }, [
+    shouldShowInvestmentModels,
+    selectedAccountModels,
+    investmentModelCharts,
+    fetchInvestmentModelChart,
+  ]);
+
   const fetchQqqTemperature = useCallback(() => {
     if (qqqLoading) {
       return;
@@ -2858,6 +2988,15 @@ export default function App() {
   const handleCloseInvestmentModelDialog = useCallback(() => {
     setShowInvestmentModelDialog(false);
   }, []);
+  const handleRetryInvestmentModelChart = useCallback(
+    (modelConfig) => {
+      if (!modelConfig) {
+        return;
+      }
+      fetchInvestmentModelChart(modelConfig, { force: true });
+    },
+    [fetchInvestmentModelChart]
+  );
   const qqqSummary = useMemo(() => {
     const latestTemperature = Number(qqqData?.latest?.temperature);
     const latestDate =
@@ -3292,13 +3431,18 @@ export default function App() {
                     ? `${modelKey} Investment Model`
                     : 'Investment Model';
                   const mapKey = modelKey || section.title || `investment-model-${index}`;
+                  const chartState = section.chart || { data: null, loading: false, error: null };
+                  const retryHandler =
+                    section.chartKey && typeof handleRetryInvestmentModelChart === 'function'
+                      ? () => handleRetryInvestmentModelChart(section)
+                      : null;
                   return (
                     <QqqTemperatureSection
                       key={mapKey}
-                      data={qqqData}
-                      loading={qqqLoading}
-                      error={qqqError}
-                      onRetry={handleRetryQqqDetails}
+                      data={chartState.data}
+                      loading={chartState.loading}
+                      error={chartState.error}
+                      onRetry={retryHandler}
                       title={derivedTitle}
                       modelName={modelKey || null}
                       lastRebalance={section.lastRebalance || null}

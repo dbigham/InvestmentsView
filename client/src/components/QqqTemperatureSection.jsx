@@ -5,6 +5,7 @@ import { formatDate, formatNumber, formatPercent } from '../utils/formatters';
 const CHART_WIDTH = 720;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 0, bottom: 4.5, left: 0 };
+const DEFAULT_REFERENCE_TEMPERATURES = [1, 1.5, 0.5];
 
 const TIMEFRAME_OPTIONS = [
   { value: '1M', label: '1 month' },
@@ -164,6 +165,18 @@ export default function QqqTemperatureSection({
   const [timeframe, setTimeframe] = useState('5Y');
   const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
   const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
+  const referenceTemperatures = useMemo(() => {
+    if (!Array.isArray(data?.referenceTemperatures)) {
+      return DEFAULT_REFERENCE_TEMPERATURES;
+    }
+    const normalized = data.referenceTemperatures
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+    if (!normalized.length) {
+      return DEFAULT_REFERENCE_TEMPERATURES;
+    }
+    return normalized;
+  }, [data?.referenceTemperatures]);
   const latestTemperature = Number(data?.latest?.temperature);
   const latestLabel = Number.isFinite(latestTemperature)
     ? `T = ${formatNumber(latestTemperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -200,12 +213,33 @@ export default function QqqTemperatureSection({
     if (!hasChart) {
       return null;
     }
-    return {
-      base: chartMetrics.yFor(1),
-      upper: chartMetrics.yFor(1.5),
-      lower: chartMetrics.yFor(0.5),
+    const unique = Array.from(new Set(referenceTemperatures)).filter((value) => Number.isFinite(value));
+    if (!unique.length) {
+      return null;
+    }
+    let baseTemperature = unique[0];
+    let smallestDistance = Math.abs(baseTemperature - 1);
+    for (let i = 1; i < unique.length; i += 1) {
+      const candidate = unique[i];
+      const distance = Math.abs(candidate - 1);
+      if (distance < smallestDistance) {
+        smallestDistance = distance;
+        baseTemperature = candidate;
+      }
+    }
+    const higher = unique.filter((value) => value > baseTemperature).sort((a, b) => a - b);
+    const lower = unique.filter((value) => value < baseTemperature).sort((a, b) => b - a);
+    const guides = {
+      base: chartMetrics.yFor(baseTemperature),
     };
-  }, [chartMetrics, hasChart]);
+    if (higher.length) {
+      guides.upper = chartMetrics.yFor(higher[0]);
+    }
+    if (lower.length) {
+      guides.lower = chartMetrics.yFor(lower[0]);
+    }
+    return guides;
+  }, [chartMetrics, hasChart, referenceTemperatures]);
 
   const marker = useMemo(() => {
     if (!hasChart) {
@@ -432,9 +466,33 @@ export default function QqqTemperatureSection({
             />
             {guideLines && (
               <g className="qqq-section__guides">
-                <line className="qqq-section__line qqq-section__line--base" x1={PADDING.left} x2={CHART_WIDTH - PADDING.right} y1={guideLines.base} y2={guideLines.base} />
-                <line className="qqq-section__line qqq-section__line--guide" x1={PADDING.left} x2={CHART_WIDTH - PADDING.right} y1={guideLines.upper} y2={guideLines.upper} />
-                <line className="qqq-section__line qqq-section__line--guide" x1={PADDING.left} x2={CHART_WIDTH - PADDING.right} y1={guideLines.lower} y2={guideLines.lower} />
+                {Number.isFinite(guideLines.base) && (
+                  <line
+                    className="qqq-section__line qqq-section__line--base"
+                    x1={PADDING.left}
+                    x2={CHART_WIDTH - PADDING.right}
+                    y1={guideLines.base}
+                    y2={guideLines.base}
+                  />
+                )}
+                {Number.isFinite(guideLines.upper) && (
+                  <line
+                    className="qqq-section__line qqq-section__line--guide"
+                    x1={PADDING.left}
+                    x2={CHART_WIDTH - PADDING.right}
+                    y1={guideLines.upper}
+                    y2={guideLines.upper}
+                  />
+                )}
+                {Number.isFinite(guideLines.lower) && (
+                  <line
+                    className="qqq-section__line qqq-section__line--guide"
+                    x1={PADDING.left}
+                    x2={CHART_WIDTH - PADDING.right}
+                    y1={guideLines.lower}
+                    y2={guideLines.lower}
+                  />
+                )}
               </g>
             )}
             {pathD && <path className="qqq-section__series-path" d={pathD} />}
@@ -469,7 +527,10 @@ QqqTemperatureSection.propTypes = {
     growthCurve: PropTypes.shape({
       A: PropTypes.number,
       r: PropTypes.number,
+      startDate: PropTypes.string,
+      manualOverride: PropTypes.bool,
     }),
+    referenceTemperatures: PropTypes.arrayOf(PropTypes.number),
     series: PropTypes.arrayOf(
       PropTypes.shape({
         date: PropTypes.string.isRequired,
