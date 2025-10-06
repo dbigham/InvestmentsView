@@ -92,6 +92,7 @@ function DividendBreakdown({ summary, variant }) {
 
   const variantClass = variant === 'panel' ? ' dividends-card--panel' : '';
   const entries = Array.isArray(summary.entries) ? summary.entries : [];
+  const hasEntries = entries.length > 0;
   const totalCad = Number.isFinite(summary.totalCad) ? summary.totalCad : null;
   const totalsByCurrencyLabel = formatCurrencyTotals(summary.totalsByCurrency);
   const rangeLabel = formatRange(summary.startDate, summary.endDate);
@@ -125,7 +126,7 @@ function DividendBreakdown({ summary, variant }) {
         </div>
       </header>
 
-      {entries.length > 0 ? (
+      {hasEntries ? (
         <div className="dividends-card__table-wrapper">
           <table className="dividends-table">
             <thead>
@@ -191,7 +192,9 @@ function DividendBreakdown({ summary, variant }) {
       )}
 
       {totalsByCurrencyLabel ? (
-        <footer className="dividends-card__footer">
+        <footer
+          className={`dividends-card__footer${hasEntries ? ' dividends-card__footer--flush' : ''}`}
+        >
           <span className="dividends-card__footer-label">Totals by currency:</span>
           <span className="dividends-card__footer-value">{totalsByCurrencyLabel}</span>
         </footer>
