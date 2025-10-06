@@ -9,6 +9,7 @@ import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
+import QqqTemperatureDialog from './components/QqqTemperatureDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
 import { formatMoney, formatNumber } from './utils/formatters';
@@ -2055,6 +2056,7 @@ export default function App() {
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
+  const [showInvestmentModelDialog, setShowInvestmentModelDialog] = useState(false);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
@@ -2252,6 +2254,19 @@ export default function App() {
   const positionsPanelId = 'portfolio-panel-positions';
   const dividendsPanelId = 'portfolio-panel-dividends';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
+  const a1ReferenceAccount = useMemo(() => {
+    if (!accounts.length) {
+      return null;
+    }
+    return accounts.find((account) => account?.investmentModel === 'A1') || null;
+  }, [accounts]);
+  const a1LastRebalance = a1ReferenceAccount?.investmentModelLastRebalance || null;
+  const a1Evaluation = useMemo(() => {
+    if (!a1ReferenceAccount?.id) {
+      return null;
+    }
+    return investmentModelEvaluations[a1ReferenceAccount.id] || null;
+  }, [a1ReferenceAccount, investmentModelEvaluations]);
   const asOf = data?.asOf || null;
 
   const baseCurrency = 'CAD';
@@ -2598,6 +2613,12 @@ export default function App() {
 
   const showingAllAccounts = selectedAccount === 'all';
 
+  useEffect(() => {
+    if (!showingAllAccounts) {
+      setShowInvestmentModelDialog(false);
+    }
+  }, [showingAllAccounts]);
+
   const cashBreakdownData = useMemo(() => {
     if (!cashBreakdownCurrency) {
       return null;
@@ -2721,6 +2742,16 @@ export default function App() {
     qqqError,
     fetchQqqTemperature,
   ]);
+  const handleShowInvestmentModelDialog = useCallback(() => {
+    if (!qqqData && !qqqLoading && !qqqError) {
+      fetchQqqTemperature();
+    }
+    setShowInvestmentModelDialog(true);
+  }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
+
+  const handleCloseInvestmentModelDialog = useCallback(() => {
+    setShowInvestmentModelDialog(false);
+  }, []);
   const qqqSummary = useMemo(() => {
     const latestTemperature = Number(qqqData?.latest?.temperature);
     const latestDate =
@@ -3140,6 +3171,7 @@ export default function App() {
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
+            onShowInvestmentModel={showingAllAccounts ? handleShowInvestmentModelDialog : null}
           />
         )}
 
@@ -3246,6 +3278,18 @@ export default function App() {
           entries={cashBreakdownData.entries}
           onClose={handleCloseCashBreakdown}
           onSelectAccount={handleSelectAccountFromBreakdown}
+        />
+      )}
+      {showInvestmentModelDialog && (
+        <QqqTemperatureDialog
+          onClose={handleCloseInvestmentModelDialog}
+          data={qqqData}
+          loading={qqqLoading}
+          error={qqqError}
+          onRetry={fetchQqqTemperature}
+          modelName="A1"
+          lastRebalance={a1LastRebalance}
+          evaluation={a1Evaluation}
         />
       )}
       {investEvenlyPlan && (
