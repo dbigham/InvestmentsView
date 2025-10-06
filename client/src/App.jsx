@@ -10,6 +10,7 @@ import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
+import DividendBreakdown from './components/DividendBreakdown';
 import { formatMoney, formatNumber } from './utils/formatters';
 import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
@@ -154,6 +155,314 @@ async function copyTextToClipboard(text) {
   }
 
   throw new Error('Clipboard API is not available.');
+}
+
+function createEmptyDividendSummary() {
+  return {
+    entries: [],
+    totalsByCurrency: {},
+    totalCad: 0,
+    totalCount: 0,
+    conversionIncomplete: false,
+    startDate: null,
+    endDate: null,
+  };
+}
+
+function parseDateLike(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function aggregateDividendSummaries(dividendsByAccount, accountIds) {
+  if (!dividendsByAccount || typeof dividendsByAccount !== 'object') {
+    return createEmptyDividendSummary();
+  }
+
+  const seenIds = new Set();
+  const normalizedIds = [];
+  if (Array.isArray(accountIds)) {
+    accountIds.forEach((accountId) => {
+      if (accountId === null || accountId === undefined) {
+        return;
+      }
+      const key = String(accountId);
+      if (!key || seenIds.has(key)) {
+        return;
+      }
+      seenIds.add(key);
+      normalizedIds.push(key);
+    });
+  }
+
+  if (!normalizedIds.length) {
+    return createEmptyDividendSummary();
+  }
+
+  const entryMap = new Map();
+  const totalsByCurrency = new Map();
+  let totalCad = 0;
+  let totalCadHasValue = false;
+  let totalCount = 0;
+  let conversionIncomplete = false;
+  let aggregateStart = null;
+  let aggregateEnd = null;
+  let processedSummary = false;
+
+  const normalizeCurrencyKey = (currency) => {
+    if (typeof currency === 'string' && currency.trim()) {
+      return currency.trim().toUpperCase();
+    }
+    return '';
+  };
+
+  normalizedIds.forEach((accountId) => {
+    const summary = dividendsByAccount[accountId];
+    if (!summary || typeof summary !== 'object') {
+      return;
+    }
+    processedSummary = true;
+
+    const summaryTotals =
+      summary.totalsByCurrency && typeof summary.totalsByCurrency === 'object'
+        ? summary.totalsByCurrency
+        : {};
+
+    Object.entries(summaryTotals).forEach(([currency, value]) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        return;
+      }
+      const key = normalizeCurrencyKey(currency);
+      const current = totalsByCurrency.get(key) || 0;
+      totalsByCurrency.set(key, current + numeric);
+    });
+
+    if (Number.isFinite(summary.totalCad)) {
+      totalCad += summary.totalCad;
+      totalCadHasValue = true;
+    }
+
+    if (Number.isFinite(summary.totalCount)) {
+      totalCount += summary.totalCount;
+    }
+
+    if (summary.conversionIncomplete) {
+      conversionIncomplete = true;
+    }
+
+    const summaryStart = parseDateLike(summary.startDate);
+    if (summaryStart && (!aggregateStart || summaryStart < aggregateStart)) {
+      aggregateStart = summaryStart;
+    }
+    const summaryEnd = parseDateLike(summary.endDate);
+    if (summaryEnd && (!aggregateEnd || summaryEnd > aggregateEnd)) {
+      aggregateEnd = summaryEnd;
+    }
+
+    const entries = Array.isArray(summary.entries) ? summary.entries : [];
+    entries.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+
+      const canonicalSymbol =
+        typeof entry.symbol === 'string' && entry.symbol.trim() ? entry.symbol.trim() : '';
+      const displaySymbol =
+        typeof entry.displaySymbol === 'string' && entry.displaySymbol.trim()
+          ? entry.displaySymbol.trim()
+          : '';
+      const description =
+        typeof entry.description === 'string' && entry.description.trim()
+          ? entry.description.trim()
+          : '';
+      const rawSymbolsArray = Array.isArray(entry.rawSymbols) ? entry.rawSymbols : [];
+      const rawSymbolLabel = rawSymbolsArray
+        .map((raw) => (typeof raw === 'string' ? raw.trim() : ''))
+        .filter(Boolean)
+        .join('|');
+
+      const entryKey =
+        canonicalSymbol || displaySymbol || rawSymbolLabel || description || `entry-${entryMap.size}`;
+
+      let aggregateEntry = entryMap.get(entryKey);
+      if (!aggregateEntry) {
+        aggregateEntry = {
+          symbol: canonicalSymbol || null,
+          displaySymbol: displaySymbol || canonicalSymbol || null,
+          rawSymbols: new Set(),
+          description: description || null,
+          currencyTotals: new Map(),
+          cadAmount: 0,
+          cadAmountHasValue: false,
+          conversionIncomplete: false,
+          activityCount: 0,
+          firstDate: null,
+          lastDate: null,
+          lastTimestamp: null,
+          lastAmount: null,
+          lastCurrency: null,
+        };
+        entryMap.set(entryKey, aggregateEntry);
+      } else {
+        if (!aggregateEntry.symbol && canonicalSymbol) {
+          aggregateEntry.symbol = canonicalSymbol;
+        }
+        if (!aggregateEntry.displaySymbol && (displaySymbol || canonicalSymbol)) {
+          aggregateEntry.displaySymbol = displaySymbol || canonicalSymbol;
+        }
+        if (!aggregateEntry.description && description) {
+          aggregateEntry.description = description;
+        }
+      }
+
+      rawSymbolsArray.forEach((raw) => {
+        if (typeof raw === 'string' && raw.trim()) {
+          aggregateEntry.rawSymbols.add(raw.trim());
+        }
+      });
+
+      const entryTotals =
+        entry.currencyTotals && typeof entry.currencyTotals === 'object'
+          ? entry.currencyTotals
+          : {};
+      Object.entries(entryTotals).forEach(([currency, value]) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          return;
+        }
+        const key = normalizeCurrencyKey(currency);
+        const current = aggregateEntry.currencyTotals.get(key) || 0;
+        aggregateEntry.currencyTotals.set(key, current + numeric);
+      });
+
+      const cadAmount = Number(entry.cadAmount);
+      if (Number.isFinite(cadAmount)) {
+        aggregateEntry.cadAmount += cadAmount;
+        aggregateEntry.cadAmountHasValue = true;
+      }
+
+      if (entry.conversionIncomplete) {
+        aggregateEntry.conversionIncomplete = true;
+      }
+
+      const activityCount = Number(entry.activityCount);
+      if (Number.isFinite(activityCount)) {
+        aggregateEntry.activityCount += activityCount;
+      }
+
+      const entryFirst = parseDateLike(entry.firstDate || entry.startDate);
+      if (entryFirst && (!aggregateEntry.firstDate || entryFirst < aggregateEntry.firstDate)) {
+        aggregateEntry.firstDate = entryFirst;
+      }
+
+      const entryLast = parseDateLike(entry.lastDate || entry.endDate);
+      if (entryLast && (!aggregateEntry.lastDate || entryLast > aggregateEntry.lastDate)) {
+        aggregateEntry.lastDate = entryLast;
+      }
+
+      const entryTimestamp = parseDateLike(entry.lastTimestamp || entry.lastDate || entry.endDate);
+      if (entryTimestamp && (!aggregateEntry.lastTimestamp || entryTimestamp > aggregateEntry.lastTimestamp)) {
+        aggregateEntry.lastTimestamp = entryTimestamp;
+        const lastAmount = Number(entry.lastAmount);
+        aggregateEntry.lastAmount = Number.isFinite(lastAmount) ? lastAmount : null;
+        aggregateEntry.lastCurrency =
+          typeof entry.lastCurrency === 'string' && entry.lastCurrency.trim()
+            ? entry.lastCurrency.trim().toUpperCase()
+            : null;
+      }
+    });
+  });
+
+  if (!processedSummary) {
+    return createEmptyDividendSummary();
+  }
+
+  let computedStart = aggregateStart;
+  let computedEnd = aggregateEnd;
+
+  const finalEntries = Array.from(entryMap.values()).map((entry) => {
+    if (entry.firstDate && (!computedStart || entry.firstDate < computedStart)) {
+      computedStart = entry.firstDate;
+    }
+    if (entry.lastDate && (!computedEnd || entry.lastDate > computedEnd)) {
+      computedEnd = entry.lastDate;
+    }
+
+    const rawSymbols = Array.from(entry.rawSymbols);
+    const currencyTotalsObject = {};
+    entry.currencyTotals.forEach((value, currency) => {
+      currencyTotalsObject[currency] = value;
+    });
+
+    const cadAmount = entry.cadAmountHasValue ? entry.cadAmount : null;
+    const magnitude =
+      cadAmount !== null
+        ? Math.abs(cadAmount)
+        : Array.from(entry.currencyTotals.values()).reduce((sum, value) => sum + Math.abs(value), 0);
+
+    return {
+      symbol: entry.symbol || null,
+      displaySymbol:
+        entry.displaySymbol || entry.symbol || (rawSymbols.length ? rawSymbols[0] : null) || null,
+      rawSymbols: rawSymbols.length ? rawSymbols : undefined,
+      description: entry.description || null,
+      currencyTotals: currencyTotalsObject,
+      cadAmount,
+      conversionIncomplete: entry.conversionIncomplete || undefined,
+      activityCount: entry.activityCount,
+      firstDate: entry.firstDate ? entry.firstDate.toISOString().slice(0, 10) : null,
+      lastDate: entry.lastDate ? entry.lastDate.toISOString().slice(0, 10) : null,
+      lastTimestamp: entry.lastTimestamp ? entry.lastTimestamp.toISOString() : null,
+      lastAmount: Number.isFinite(entry.lastAmount) ? entry.lastAmount : null,
+      lastCurrency: entry.lastCurrency || null,
+      _magnitude: magnitude,
+    };
+  });
+
+  finalEntries.sort((a, b) => (b._magnitude || 0) - (a._magnitude || 0));
+
+  const cleanedEntries = finalEntries.map((entry) => {
+    const cleaned = { ...entry };
+    delete cleaned._magnitude;
+    if (!cleaned.rawSymbols) {
+      delete cleaned.rawSymbols;
+    }
+    if (!cleaned.conversionIncomplete) {
+      delete cleaned.conversionIncomplete;
+    }
+    return cleaned;
+  });
+
+  const totalsByCurrencyObject = {};
+  totalsByCurrency.forEach((value, currency) => {
+    totalsByCurrencyObject[currency] = value;
+  });
+
+  return {
+    entries: cleanedEntries,
+    totalsByCurrency: totalsByCurrencyObject,
+    totalCad: totalCadHasValue ? totalCad : null,
+    totalCount,
+    conversionIncomplete: conversionIncomplete || undefined,
+    startDate: computedStart ? computedStart.toISOString().slice(0, 10) : null,
+    endDate: computedEnd ? computedEnd.toISOString().slice(0, 10) : null,
+  };
 }
 
 const CHATGPT_ESTIMATE_URL = 'https://chatgpt.com/?model=gpt-5-thinking';
@@ -1681,6 +1990,7 @@ export default function App() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
+  const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
   const [showPeople, setShowPeople] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
@@ -1774,6 +2084,11 @@ export default function App() {
     () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
     [accountFundingSource]
   );
+  const accountDividendSource = data?.accountDividends;
+  const accountDividends = useMemo(
+    () => (accountDividendSource && typeof accountDividendSource === 'object' ? accountDividendSource : EMPTY_OBJECT),
+    [accountDividendSource]
+  );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
     if (selectedAccount === 'all') {
@@ -1848,6 +2163,36 @@ export default function App() {
     }
     return null;
   }, [selectedAccount, accountFunding, filteredAccountIds, selectedAccountInfo]);
+  const selectedAccountDividends = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return aggregateDividendSummaries(accountDividends, filteredAccountIds);
+    }
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    const entry = accountDividends[selectedAccountInfo.id];
+    if (entry && typeof entry === 'object') {
+      return entry;
+    }
+    return createEmptyDividendSummary();
+  }, [selectedAccount, selectedAccountInfo, accountDividends, filteredAccountIds]);
+  const hasDividendSummary = Boolean(selectedAccountDividends);
+  const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
+
+  useEffect(() => {
+    if (portfolioViewTab !== 'positions' && portfolioViewTab !== 'dividends') {
+      setPortfolioViewTab('positions');
+      return;
+    }
+    if (portfolioViewTab === 'dividends' && !hasDividendSummary) {
+      setPortfolioViewTab('positions');
+    }
+  }, [portfolioViewTab, hasDividendSummary, setPortfolioViewTab]);
+
+  const positionsTabId = 'portfolio-tab-positions';
+  const dividendsTabId = 'portfolio-tab-dividends';
+  const positionsPanelId = 'portfolio-panel-positions';
+  const dividendsPanelId = 'portfolio-panel-dividends';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
@@ -2753,18 +3098,69 @@ export default function App() {
           />
         )}
 
-      {showContent && (
-        <PositionsTable
-          positions={orderedPositions}
-          totalMarketValue={totalMarketValue}
-          sortColumn={resolvedSortColumn}
-          sortDirection={resolvedSortDirection}
-          onSortChange={setPositionsSort}
-          pnlMode={positionsPnlMode}
-          onPnlModeChange={setPositionsPnlMode}
-        />
-      )}
-    </main>
+        {showContent && (
+          <section className="positions-card">
+            <header className="positions-card__header">
+              <div className="positions-card__tabs" role="tablist" aria-label="Portfolio data views">
+                <button
+                  type="button"
+                  id={positionsTabId}
+                  role="tab"
+                  aria-selected={portfolioViewTab === 'positions'}
+                  aria-controls={positionsPanelId}
+                  className={portfolioViewTab === 'positions' ? 'active' : ''}
+                  onClick={() => setPortfolioViewTab('positions')}
+                >
+                  Positions
+                </button>
+                {hasDividendSummary ? (
+                  <button
+                    type="button"
+                    id={dividendsTabId}
+                    role="tab"
+                    aria-selected={portfolioViewTab === 'dividends'}
+                    aria-controls={dividendsPanelId}
+                    className={portfolioViewTab === 'dividends' ? 'active' : ''}
+                    onClick={() => setPortfolioViewTab('dividends')}
+                  >
+                    Dividends
+                  </button>
+                ) : null}
+              </div>
+            </header>
+
+            <div
+              id={positionsPanelId}
+              role="tabpanel"
+              aria-labelledby={positionsTabId}
+              hidden={portfolioViewTab !== 'positions'}
+            >
+              <PositionsTable
+                positions={orderedPositions}
+                totalMarketValue={totalMarketValue}
+                sortColumn={resolvedSortColumn}
+                sortDirection={resolvedSortDirection}
+                onSortChange={setPositionsSort}
+                pnlMode={positionsPnlMode}
+                onPnlModeChange={setPositionsPnlMode}
+                embedded
+              />
+            </div>
+
+            {hasDividendSummary ? (
+              <div
+                id={dividendsPanelId}
+                role="tabpanel"
+                aria-labelledby={dividendsTabId}
+                hidden={!showDividendsPanel}
+              >
+                <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
+              </div>
+            ) : null}
+          </section>
+        )}
+
+      </main>
       {showReturnBreakdown && fundingSummaryForDisplay?.returnBreakdown?.length > 0 && (
         <AnnualizedReturnDialog
           onClose={handleCloseAnnualizedReturnDetails}

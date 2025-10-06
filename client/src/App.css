@@ -2283,6 +2283,174 @@ button.time-pill:hover .time-pill__icon {
 }
 
 
+.dividends-card {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--color-divider);
+  overflow: hidden;
+}
+
+.dividends-card--panel {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.dividends-card--panel .dividends-card__header {
+  padding: 20px 24px 16px;
+}
+
+.dividends-card--panel .dividends-card__table-wrapper {
+  padding: 0 24px 12px;
+}
+
+.dividends-card--panel .dividends-card__empty {
+  padding: 24px;
+}
+
+.dividends-card--panel .dividends-card__footer {
+  padding: 12px 24px 0;
+}
+
+.dividends-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.dividends-card__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+}
+
+.dividends-card__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.dividends-card__subtitle,
+.dividends-card__meta {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.dividends-card__meta {
+  font-weight: 500;
+}
+
+.dividends-card__totals {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+  min-width: 180px;
+}
+
+.dividends-card__totals-label {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.dividends-card__totals-value {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.dividends-card__totals-note {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  max-width: 260px;
+}
+
+.dividends-card__table-wrapper {
+  overflow-x: auto;
+}
+
+.dividends-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 560px;
+}
+
+.dividends-table thead th {
+  background: var(--color-surface-alt);
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.dividends-table tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-divider);
+  vertical-align: top;
+  font-size: 0.9rem;
+  color: var(--color-text-primary);
+}
+
+.dividends-table__cell--numeric {
+  text-align: right;
+}
+
+.dividends-table__symbol {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.dividends-table__description,
+.dividends-table__raw {
+  margin-top: 4px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.dividends-table__note {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.dividends-card__empty {
+  padding: 24px;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.dividends-card__footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--color-divider);
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.dividends-card__footer-label {
+  font-weight: 500;
+}
+
+.dividends-card__footer-value {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
 .return-breakdown-overlay {
   position: fixed;
   inset: 0;
