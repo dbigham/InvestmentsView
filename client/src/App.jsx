@@ -19,6 +19,61 @@ import './App.css';
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
 
+function resolveAccountModelsForDisplay(account) {
+  if (!account || typeof account !== 'object') {
+    return [];
+  }
+
+  const rawModels = Array.isArray(account.investmentModels) ? account.investmentModels : [];
+  const normalized = rawModels
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const rawModel = typeof entry.model === 'string' ? entry.model.trim() : '';
+      if (!rawModel) {
+        return null;
+      }
+      const normalizedEntry = { model: rawModel };
+      if (typeof entry.symbol === 'string' && entry.symbol.trim()) {
+        normalizedEntry.symbol = entry.symbol.trim();
+      }
+      if (typeof entry.leveragedSymbol === 'string' && entry.leveragedSymbol.trim()) {
+        normalizedEntry.leveragedSymbol = entry.leveragedSymbol.trim();
+      }
+      if (typeof entry.reserveSymbol === 'string' && entry.reserveSymbol.trim()) {
+        normalizedEntry.reserveSymbol = entry.reserveSymbol.trim();
+      }
+      if (typeof entry.lastRebalance === 'string' && entry.lastRebalance.trim()) {
+        normalizedEntry.lastRebalance = entry.lastRebalance.trim();
+      }
+      if (typeof entry.title === 'string' && entry.title.trim()) {
+        normalizedEntry.title = entry.title.trim();
+      }
+      return normalizedEntry;
+    })
+    .filter(Boolean);
+
+  if (normalized.length) {
+    return normalized;
+  }
+
+  const fallbackModel = typeof account.investmentModel === 'string' ? account.investmentModel.trim() : '';
+  if (!fallbackModel) {
+    return [];
+  }
+
+  const fallbackEntry = { model: fallbackModel };
+  if (
+    typeof account.investmentModelLastRebalance === 'string' &&
+    account.investmentModelLastRebalance.trim()
+  ) {
+    fallbackEntry.lastRebalance = account.investmentModelLastRebalance.trim();
+  }
+
+  return [fallbackEntry];
+}
+
 function formatQuantity(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '—';
@@ -2258,14 +2313,36 @@ export default function App() {
     if (!accounts.length) {
       return null;
     }
-    return accounts.find((account) => account?.investmentModel === 'A1') || null;
+    const targetModel = 'A1';
+    return (
+      accounts.find((account) => {
+        const models = resolveAccountModelsForDisplay(account);
+        return models.some((entry) => String(entry.model || '').trim().toUpperCase() === targetModel);
+      }) || null
+    );
   }, [accounts]);
-  const a1LastRebalance = a1ReferenceAccount?.investmentModelLastRebalance || null;
+  const a1LastRebalance = useMemo(() => {
+    if (!a1ReferenceAccount) {
+      return null;
+    }
+    const models = resolveAccountModelsForDisplay(a1ReferenceAccount);
+    const match = models.find((entry) => String(entry.model || '').trim().toUpperCase() === 'A1');
+    return match?.lastRebalance || null;
+  }, [a1ReferenceAccount]);
   const a1Evaluation = useMemo(() => {
     if (!a1ReferenceAccount?.id) {
       return null;
     }
-    return investmentModelEvaluations[a1ReferenceAccount.id] || null;
+    const bucket = investmentModelEvaluations[a1ReferenceAccount.id];
+    if (!bucket || typeof bucket !== 'object') {
+      return null;
+    }
+    if (bucket.A1) {
+      return bucket.A1;
+    }
+    const entries = Object.entries(bucket);
+    const match = entries.find(([key]) => String(key || '').toUpperCase() === 'A1');
+    return match ? match[1] : null;
   }, [a1ReferenceAccount, investmentModelEvaluations]);
   const asOf = data?.asOf || null;
 
@@ -2598,18 +2675,47 @@ export default function App() {
 
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
-  const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
-
-  const selectedAccountEvaluation = useMemo(() => {
+  const selectedAccountModels = useMemo(() => {
     if (!selectedAccountInfo) {
-      return null;
+      return [];
     }
-    if (selectedAccountInfo.id && investmentModelEvaluations[selectedAccountInfo.id]) {
-      return investmentModelEvaluations[selectedAccountInfo.id];
+    return resolveAccountModelsForDisplay(selectedAccountInfo);
+  }, [selectedAccountInfo]);
+  const selectedAccountEvaluationMap = useMemo(() => {
+    if (!selectedAccountInfo?.id) {
+      return EMPTY_OBJECT;
     }
-    return null;
+    const bucket = investmentModelEvaluations[selectedAccountInfo.id];
+    if (!bucket || typeof bucket !== 'object') {
+      return EMPTY_OBJECT;
+    }
+    return bucket;
   }, [selectedAccountInfo, investmentModelEvaluations]);
-  const qqqSectionTitle = selectedAccountInfo?.investmentModel ? 'Investment Model' : 'QQQ temperature';
+  const investmentModelSections = useMemo(() => {
+    if (!selectedAccountModels.length) {
+      return [];
+    }
+    return selectedAccountModels.map((model) => {
+      const modelKey = typeof model.model === 'string' ? model.model.trim() : '';
+      if (!modelKey) {
+        return { ...model, evaluation: null };
+      }
+      const direct = selectedAccountEvaluationMap[modelKey];
+      if (direct) {
+        return { ...model, evaluation: direct };
+      }
+      const normalizedKey = modelKey.toUpperCase();
+      const fallbackKey = Object.keys(selectedAccountEvaluationMap).find(
+        (key) => String(key || '').toUpperCase() === normalizedKey
+      );
+      return {
+        ...model,
+        evaluation: fallbackKey ? selectedAccountEvaluationMap[fallbackKey] : null,
+      };
+    });
+  }, [selectedAccountModels, selectedAccountEvaluationMap]);
+  const shouldShowInvestmentModels = investmentModelSections.length > 0;
+  const shouldShowQqqDetails = shouldShowInvestmentModels || Boolean(selectedAccountInfo?.showQQQDetails);
 
   const showingAllAccounts = selectedAccount === 'all';
 
@@ -3176,16 +3282,43 @@ export default function App() {
         )}
 
         {showContent && shouldShowQqqDetails && (
-          <QqqTemperatureSection
-            data={qqqData}
-            loading={qqqLoading}
-            error={qqqError}
-            onRetry={handleRetryQqqDetails}
-            title={qqqSectionTitle}
-            modelName={selectedAccountInfo?.investmentModel || null}
-            lastRebalance={selectedAccountInfo?.investmentModelLastRebalance || null}
-            evaluation={selectedAccountEvaluation}
-          />
+          <>
+            {shouldShowInvestmentModels
+              ? investmentModelSections.map((section, index) => {
+                  const modelKey = section.model || '';
+                  const derivedTitle = section.title
+                    ? section.title
+                    : modelKey
+                    ? `${modelKey} Investment Model`
+                    : 'Investment Model';
+                  const mapKey = modelKey || section.title || `investment-model-${index}`;
+                  return (
+                    <QqqTemperatureSection
+                      key={mapKey}
+                      data={qqqData}
+                      loading={qqqLoading}
+                      error={qqqError}
+                      onRetry={handleRetryQqqDetails}
+                      title={derivedTitle}
+                      modelName={modelKey || null}
+                      lastRebalance={section.lastRebalance || null}
+                      evaluation={section.evaluation || null}
+                    />
+                  );
+                })
+              : (
+                  <QqqTemperatureSection
+                    data={qqqData}
+                    loading={qqqLoading}
+                    error={qqqError}
+                    onRetry={handleRetryQqqDetails}
+                    title="QQQ temperature"
+                    modelName={null}
+                    lastRebalance={null}
+                    evaluation={null}
+                  />
+                )}
+          </>
         )}
 
         {showContent && (

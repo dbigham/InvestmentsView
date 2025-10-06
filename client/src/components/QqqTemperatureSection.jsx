@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatNumber, formatPercent } from '../utils/formatters';
 
@@ -173,7 +173,10 @@ export default function QqqTemperatureSection({
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.rangeStart;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.rangeEnd;
   const resolvedTitle = title || (modelName ? 'Investment Model' : 'QQQ temperature');
-  const headingId = modelName ? 'investment-model-heading' : 'qqq-temperature-heading';
+  const generatedId = useId();
+  const headingId = modelName
+    ? `investment-model-heading-${generatedId}`
+    : `qqq-temperature-heading-${generatedId}`;
   const loadingLabel = modelName ? 'Loading investment model…' : 'Loading QQQ temperature…';
   const errorLabel = modelName ? 'Unable to load investment model details.' : 'Unable to load QQQ temperature details.';
 

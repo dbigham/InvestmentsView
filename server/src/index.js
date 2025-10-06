@@ -175,6 +175,151 @@ function normalizeSymbol(symbol) {
   return trimmed.toUpperCase();
 }
 
+function normalizeDateOnly(value) {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    if (Number.isNaN(time)) {
+      return null;
+    }
+    return new Date(time).toISOString().slice(0, 10);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const derived = new Date(value);
+    if (Number.isNaN(derived.getTime())) {
+      return null;
+    }
+    return derived.toISOString().slice(0, 10);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+    return parsed.toISOString().slice(0, 10);
+  }
+  if (typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, 'date')) {
+      return normalizeDateOnly(value.date);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+      return normalizeDateOnly(value.value);
+    }
+  }
+  return null;
+}
+
+function normalizeInvestmentModelConfig(raw) {
+  if (raw == null) {
+    return null;
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return null;
+    }
+    return { model: trimmed.toUpperCase() };
+  }
+
+  if (typeof raw !== 'object') {
+    return null;
+  }
+
+  const modelCandidate =
+    raw.model ?? raw.experiment ?? raw.id ?? raw.key ?? raw.name ?? raw.title ?? null;
+  const normalizedModel = typeof modelCandidate === 'string' ? modelCandidate.trim() : null;
+  if (!normalizedModel) {
+    return null;
+  }
+
+  const result = { model: normalizedModel.toUpperCase() };
+
+  const baseSymbol = raw.symbol ?? raw.baseSymbol ?? raw.base_symbol;
+  const normalizedBase = normalizeSymbol(baseSymbol);
+  if (normalizedBase) {
+    result.symbol = normalizedBase;
+  }
+
+  const leveragedSymbol = raw.leveragedSymbol ?? raw.leveraged_symbol ?? raw.leveraged ?? raw.leveragedsymbol;
+  const normalizedLeveraged = normalizeSymbol(leveragedSymbol);
+  if (normalizedLeveraged) {
+    result.leveragedSymbol = normalizedLeveraged;
+  }
+
+  const reserveSymbol = raw.reserveSymbol ?? raw.reserve_symbol ?? raw.reserve;
+  const normalizedReserve = normalizeSymbol(reserveSymbol);
+  if (normalizedReserve) {
+    result.reserveSymbol = normalizedReserve;
+  }
+
+  const normalizedLast = normalizeDateOnly(
+    raw.lastRebalance ?? raw.last_rebalance ?? raw.last_rebalance_date
+  );
+  if (normalizedLast) {
+    result.lastRebalance = normalizedLast;
+  }
+
+  if (typeof raw.title === 'string' && raw.title.trim()) {
+    result.title = raw.title.trim();
+  } else if (typeof raw.label === 'string' && raw.label.trim()) {
+    result.title = raw.label.trim();
+  }
+
+  return result;
+}
+
+function normalizeInvestmentModelList(raw) {
+  if (raw == null) {
+    return [];
+  }
+
+  const list = Array.isArray(raw) ? raw : [raw];
+  const seen = new Set();
+  const results = [];
+
+  list.forEach((entry) => {
+    const normalized = normalizeInvestmentModelConfig(entry);
+    if (!normalized || !normalized.model) {
+      return;
+    }
+    const key = normalized.model.toUpperCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push(normalized);
+  });
+
+  return results;
+}
+
+function resolveAccountInvestmentModels(account) {
+  if (!account) {
+    return [];
+  }
+
+  const normalized = normalizeInvestmentModelList(account.investmentModels);
+  if (normalized.length) {
+    return normalized;
+  }
+
+  if (account.investmentModel) {
+    return normalizeInvestmentModelList({
+      model: account.investmentModel,
+      lastRebalance: account.investmentModelLastRebalance,
+    });
+  }
+
+  return [];
+}
+
 function coerceQuoteNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
     return value;
@@ -2816,47 +2961,70 @@ function extractCadMarketValue(balanceEntry) {
   return null;
 }
 
-function buildInitialInvestmentModelPositions(account, perAccountBalances) {
+function buildInitialInvestmentModelPositions(account, perAccountBalances, modelConfig) {
   const cadBalance = findAccountCadBalance(account.id, perAccountBalances);
+  const configuredReserveSymbol =
+    modelConfig && modelConfig.reserveSymbol ? normalizeSymbol(modelConfig.reserveSymbol) : null;
+  const reserveSymbol = configuredReserveSymbol || 'SGOV';
   if (!cadBalance) {
-    return { positions: [], reserveSymbol: 'SGOV' };
+    return { positions: [], reserveSymbol };
   }
   const cadValue = extractCadMarketValue(cadBalance);
   if (!Number.isFinite(cadValue)) {
-    return { positions: [], reserveSymbol: 'SGOV' };
+    return { positions: [], reserveSymbol };
   }
   return {
     positions: [
       {
-        symbol: 'SGOV',
+        symbol: reserveSymbol,
         dollars: cadValue,
       },
     ],
-    reserveSymbol: 'SGOV',
+    reserveSymbol,
   };
 }
 
-function buildInvestmentModelRequest(account, positions, perAccountBalances) {
-  if (!account || !account.investmentModel) {
+function buildInvestmentModelRequest(account, positions, perAccountBalances, modelConfig) {
+  if (!account) {
     return null;
   }
 
-  const modelKey = String(account.investmentModel).trim();
-  if (!modelKey) {
+  const normalizedConfig =
+    normalizeInvestmentModelConfig(modelConfig) ||
+    normalizeInvestmentModelConfig({
+      model: account.investmentModel,
+      lastRebalance: account.investmentModelLastRebalance,
+    });
+
+  if (!normalizedConfig || !normalizedConfig.model) {
     return null;
   }
 
   const requestDate = new Date().toISOString().slice(0, 10);
   const payload = {
-    experiment: modelKey,
+    experiment: normalizedConfig.model,
     request_date: requestDate,
   };
 
-  if (account.investmentModelLastRebalance) {
+  if (normalizedConfig.symbol) {
+    payload.base_symbol = normalizedConfig.symbol;
+  }
+  if (normalizedConfig.leveragedSymbol) {
+    payload.leveraged_symbol = normalizedConfig.leveragedSymbol;
+  }
+
+  const lastRebalance =
+    normalizedConfig.lastRebalance || normalizeDateOnly(account.investmentModelLastRebalance);
+
+  if (normalizedConfig.reserveSymbol) {
+    payload.reserve_symbol = normalizedConfig.reserveSymbol;
+  }
+
+  if (lastRebalance) {
     payload.positions = buildInvestmentModelPositions(positions, account.id);
-    payload.last_rebalance = account.investmentModelLastRebalance;
+    payload.last_rebalance = lastRebalance;
   } else {
-    const initial = buildInitialInvestmentModelPositions(account, perAccountBalances);
+    const initial = buildInitialInvestmentModelPositions(account, perAccountBalances, normalizedConfig);
     payload.positions = initial.positions;
     if (initial.reserveSymbol) {
       payload.reserve_symbol = initial.reserveSymbol;
@@ -3022,11 +3190,22 @@ app.get('/api/summary', async function (req, res) {
             if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
               normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
             }
+            let normalizedInvestmentModels = [];
+            if (Object.prototype.hasOwnProperty.call(accountSettingsOverride, 'investmentModels')) {
+              normalizedInvestmentModels = normalizeInvestmentModelList(
+                accountSettingsOverride.investmentModels
+              );
+              if (normalizedInvestmentModels.length) {
+                normalizedAccount.investmentModels = normalizedInvestmentModels;
+              }
+            }
             if (typeof accountSettingsOverride.investmentModel === 'string') {
               const trimmedModel = accountSettingsOverride.investmentModel.trim();
               if (trimmedModel) {
                 normalizedAccount.investmentModel = trimmedModel;
               }
+            } else if (normalizedInvestmentModels.length && normalizedInvestmentModels[0].model) {
+              normalizedAccount.investmentModel = normalizedInvestmentModels[0].model;
             }
             if (typeof accountSettingsOverride.lastRebalance === 'string') {
               const trimmedDate = accountSettingsOverride.lastRebalance.trim();
@@ -3041,6 +3220,11 @@ app.get('/api/summary', async function (req, res) {
               const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
               if (trimmedDate) {
                 normalizedAccount.investmentModelLastRebalance = trimmedDate;
+              }
+            } else if (!normalizedAccount.investmentModelLastRebalance && normalizedInvestmentModels.length) {
+              const withRebalance = normalizedInvestmentModels.find((entry) => entry.lastRebalance);
+              if (withRebalance) {
+                normalizedAccount.investmentModelLastRebalance = withRebalance.lastRebalance;
               }
             }
             if (
@@ -3083,6 +3267,28 @@ app.get('/api/summary', async function (req, res) {
 
     let allAccounts = accountCollections.flatMap(function (entry) {
       return entry.accounts;
+    });
+
+    allAccounts = allAccounts.map(function (account) {
+      if (!account) {
+        return account;
+      }
+      const normalizedModels = resolveAccountInvestmentModels(account);
+      if (normalizedModels.length) {
+        account.investmentModels = normalizedModels;
+        if (!account.investmentModel && normalizedModels[0]?.model) {
+          account.investmentModel = normalizedModels[0].model;
+        }
+        if (!account.investmentModelLastRebalance) {
+          const withRebalance = normalizedModels.find((entry) => entry.lastRebalance);
+          if (withRebalance) {
+            account.investmentModelLastRebalance = withRebalance.lastRebalance;
+          }
+        }
+      } else {
+        account.investmentModels = [];
+      }
+      return account;
     });
 
     if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
@@ -3245,20 +3451,35 @@ app.get('/api/summary', async function (req, res) {
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
       const { account } = context;
-      if (account && account.investmentModel) {
-        const payload = buildInvestmentModelRequest(account, flattenedPositions, perAccountCombinedBalances);
-        if (!payload || !Array.isArray(payload.positions) || payload.positions.length === 0) {
-          investmentModelEvaluations[account.id] = { status: 'no_positions' };
-        } else {
+      const modelsToEvaluate = resolveAccountInvestmentModels(account);
+      if (account && modelsToEvaluate.length) {
+        const evaluationBucket = {};
+        for (const modelConfig of modelsToEvaluate) {
+          if (!modelConfig || !modelConfig.model) {
+            continue;
+          }
+          const payload = buildInvestmentModelRequest(
+            account,
+            flattenedPositions,
+            perAccountCombinedBalances,
+            modelConfig
+          );
+          if (!payload || !Array.isArray(payload.positions) || payload.positions.length === 0) {
+            evaluationBucket[modelConfig.model] = { status: 'no_positions' };
+            continue;
+          }
           try {
             const evaluation = await evaluateInvestmentModel(payload);
-            investmentModelEvaluations[account.id] = { status: 'ok', data: evaluation };
+            evaluationBucket[modelConfig.model] = { status: 'ok', data: evaluation };
           } catch (modelError) {
             const message =
               modelError && modelError.message ? modelError.message : 'Failed to evaluate investment model.';
-            console.warn('Investment model evaluation failed for account ' + account.id + ':', message);
-            investmentModelEvaluations[account.id] = { status: 'error', message };
+            console.warn('Investment model evaluation failed for account ' + account.id + ' (' + modelConfig.model + '):', message);
+            evaluationBucket[modelConfig.model] = { status: 'error', message };
           }
+        }
+        if (Object.keys(evaluationBucket).length > 0) {
+          investmentModelEvaluations[account.id] = evaluationBucket;
         }
       }
     }
@@ -3544,6 +3765,18 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const responseAccounts = allAccounts.map(function (account) {
+      const models = resolveAccountInvestmentModels(account);
+      const serializedModels = models.map(function (entry) {
+        return {
+          model: entry.model,
+          symbol: entry.symbol || null,
+          leveragedSymbol: entry.leveragedSymbol || null,
+          reserveSymbol: entry.reserveSymbol || null,
+          lastRebalance: entry.lastRebalance || null,
+          title: entry.title || null,
+        };
+      });
+      const primaryModel = models.length ? models[0] : null;
       return {
         id: account.id,
         number: account.number,
@@ -3560,8 +3793,10 @@ app.get('/api/summary', async function (req, res) {
         portalAccountId: account.portalAccountId || null,
         chatURL: account.chatURL || null,
         showQQQDetails: account.showQQQDetails === true,
-        investmentModel: account.investmentModel || null,
-        investmentModelLastRebalance: account.investmentModelLastRebalance || null,
+        investmentModel: primaryModel ? primaryModel.model : account.investmentModel || null,
+        investmentModelLastRebalance:
+          (primaryModel && primaryModel.lastRebalance) || account.investmentModelLastRebalance || null,
+        investmentModels: serializedModels,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });

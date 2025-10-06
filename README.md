@@ -27,7 +27,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
    - (Optional) Copy `server/account-beneficiaries.example.json` to `server/account-beneficiaries.json` and replace the placeholder account numbers with your own. The proxy reads this file to attach household beneficiary metadata (for example "Eli Bigham" or "Philanthropy") to each account.
    - (Optional) Copy `server/accounts.example.json` to `server/accounts.json` to define friendly account names, chat links, and Questrade portal UUIDs per account number. The proxy watches this file (or the path pointed to by `ACCOUNTS_FILE` / `ACCOUNT_NAMES_FILE`) for updates and forwards the resolved metadata to the UI so Ctrl/⌘-clicking the account selector can open the matching page in the Questrade portal. You can also:
      - Set `showQQQDetails` to surface the per-account QQQ temperature card.
-     - Attach an `investmentModel` key (plus `lastRebalance`) to evaluate a strategy with the optional bridge.
+     - Add an `investmentModels` array (each entry may include `model`, `symbol`, `leveragedSymbol`, `reserveSymbol`, and `lastRebalance`) to evaluate strategies with the optional bridge.
      - Provide `chatURL` links that appear under the summary card "Actions" menu.
      - Apply `netDepositAdjustment` and `cagrStartDate` overrides to tune funding / return calculations.
      - Mark `"default": true` on an account to have the dashboard start there after a restart.
@@ -49,7 +49,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 
    Install Python dependencies for the bridge according to the helper repository's README. The server will also honour the
    `INVESTMENT_MODEL_REPO` environment variable if you prefer to keep the checkout elsewhere. The bridge is only required when
-   accounts are configured with an `investmentModel` or `showQQQDetails`.
+   accounts are configured with `investmentModels` or `showQQQDetails`.
 
 4. Run the backend
 
