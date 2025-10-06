@@ -280,6 +280,7 @@ export default function SummaryMetrics({
   chatUrl,
   showQqqTemperature,
   qqqSummary,
+  onShowInvestmentModel,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -298,6 +299,20 @@ export default function SummaryMetrics({
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
   const formattedTotal = formatSignedMoney(totalPnlValue);
+  const qqqStatus = qqqSummary?.status || 'loading';
+  const hasQqqTemperature = Number.isFinite(qqqSummary?.temperature);
+  let qqqLabel = 'QQQ temperature: Loading…';
+  if ((qqqStatus === 'ready' || qqqStatus === 'refreshing') && hasQqqTemperature) {
+    const formattedTemp = formatNumber(qqqSummary.temperature, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    qqqLabel = `QQQ temperature: ${formattedTemp}`;
+  } else if (qqqStatus === 'error') {
+    qqqLabel = qqqSummary?.message || 'Unable to load';
+  } else if (qqqStatus !== 'loading') {
+    qqqLabel = 'QQQ temperature unavailable';
+  }
   const netDepositsValue = Number.isFinite(fundingSummary?.netDepositsCad)
     ? fundingSummary.netDepositsCad
     : null;
@@ -383,24 +398,26 @@ export default function SummaryMetrics({
             </p>
           )}
           {showQqqTemperature && (
-            <p className="equity-card__subtext" role="status">
-              <span className="equity-card__subtext-value">
-                {(() => {
-                  const status = qqqSummary?.status || 'loading';
-                  const hasTemperature = Number.isFinite(qqqSummary?.temperature);
-                  if ((status === 'ready' || status === 'refreshing') && hasTemperature) {
-                    const formattedTemp = formatNumber(qqqSummary.temperature, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    });
-                    return `QQQ temperature: ${formattedTemp}`;
-                  }
-                  if (status === 'error') {
-                    return qqqSummary?.message || 'Unable to load';
-                  }
-                  return 'QQQ temperature: Loading…';
-                })()}
-              </span>
+            <p className="equity-card__subtext">
+              {typeof onShowInvestmentModel === 'function' ? (
+                <>
+                  <button
+                    type="button"
+                    className="equity-card__subtext-button"
+                    onClick={onShowInvestmentModel}
+                    disabled={qqqStatus === 'loading'}
+                  >
+                    <span className="equity-card__subtext-value">{qqqLabel}</span>
+                  </button>
+                  <span className="visually-hidden" role="status" aria-live="polite">
+                    {qqqLabel}
+                  </span>
+                </>
+              ) : (
+                <span className="equity-card__subtext-value" role="status" aria-live="polite">
+                  {qqqLabel}
+                </span>
+              )}
             </p>
           )}
         </div>
@@ -561,11 +578,12 @@ SummaryMetrics.propTypes = {
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
-    status: PropTypes.oneOf(['loading', 'ready', 'error']),
+    status: PropTypes.oneOf(['loading', 'ready', 'refreshing', 'error']),
     temperature: PropTypes.number,
     date: PropTypes.string,
     message: PropTypes.string,
   }),
+  onShowInvestmentModel: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -589,4 +607,5 @@ SummaryMetrics.defaultProps = {
   showQqqTemperature: false,
   qqqSummary: null,
   fundingSummary: null,
+  onShowInvestmentModel: null,
 };
