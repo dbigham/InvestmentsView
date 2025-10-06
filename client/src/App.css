@@ -1834,6 +1834,13 @@ textarea {
   border-radius: 999px;
 }
 
+.positions-card__models-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: -12px;
+}
+
 .positions-table {
   display: flex;
   flex-direction: column;
@@ -2037,6 +2044,10 @@ textarea {
   .equity-card,
   .positions-card {
     padding: 20px 20px 16px;
+  }
+
+  .positions-card__models-panel {
+    margin-bottom: -16px;
   }
 
   .positions-card__header {

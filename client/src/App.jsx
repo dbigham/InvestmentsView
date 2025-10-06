@@ -3673,6 +3673,7 @@ export default function App() {
                 role="tabpanel"
                 aria-labelledby={modelsTabId}
                 hidden={!showModelsPanel}
+                className="positions-card__models-panel"
               >
                 {investmentModelSections.map((section, index) => {
                   const modelKey = section.model || '';
