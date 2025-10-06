@@ -200,6 +200,7 @@ function PositionsTable({
   onSortChange,
   pnlMode: externalPnlMode,
   onPnlModeChange,
+  embedded = false,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
@@ -352,6 +353,10 @@ function PositionsTable({
   );
 
   if (!positions.length) {
+    if (embedded) {
+      return <div className="empty-state">No positions to display.</div>;
+    }
+
     return (
       <section className="positions-card">
         <header className="positions-card__header">
@@ -366,6 +371,97 @@ function PositionsTable({
     );
   }
 
+  const renderTable = () => (
+    <div className="positions-table" role="table">
+      <div className="positions-table__row positions-table__row--head" role="row">
+        {TABLE_HEADERS.map((column) => {
+          const isSorted = column.key === sortState.column;
+          const sortDirectionValue = isSorted ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none';
+          return (
+            <div
+              key={column.key}
+              role="columnheader"
+              aria-sort={sortDirectionValue}
+              className={`positions-table__head ${column.className}${isSorted ? ' sorted' : ''}`}
+            >
+              <button type="button" className="positions-table__head-button" onClick={() => handleSort(column.key)}>
+                <span>{column.label}</span>
+                {isSorted && (
+                  <span className={`positions-table__sort-indicator ${sortState.direction}`} aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="positions-table__body">
+        {sortedPositions.map((position, index) => {
+          const displayShare = formatShare(position.portfolioShare);
+          const displayDescription = truncateDescription(position.description);
+          const fallbackKey = `${position.accountNumber || position.accountId || 'row'}:${
+            position.symbolId ?? position.symbol ?? index
+          }`;
+          const rowKey = position.rowId || fallbackKey;
+
+          return (
+            <div
+              key={rowKey}
+              className="positions-table__row positions-table__row--clickable"
+              role="row"
+              onClick={(event) => handleRowNavigation(event, position.symbol)}
+            >
+              <div className="positions-table__cell positions-table__cell--symbol" role="cell">
+                <div className="positions-table__symbol-ticker">{position.symbol}</div>
+                <div className="positions-table__symbol-name" title={position.description || '\u2014'}>
+                  {displayDescription}
+                </div>
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                <PnlBadge
+                  value={position.dayPnl}
+                  percent={position.dayPnlPercent}
+                  mode={pnlMode}
+                  onToggle={handleTogglePnlMode}
+                />
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                <PnlBadge
+                  value={position.openPnl}
+                  percent={position.openPnlPercent}
+                  mode={pnlMode}
+                  onToggle={handleTogglePnlMode}
+                />
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                {formatQuantity(position.openQuantity)}
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                {formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                {formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                {formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="positions-table__cell positions-table__cell--currency" role="cell">
+                <span>{position.currency || '\u2014'}</span>
+              </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                {displayShare}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return renderTable();
+  }
+
   return (
     <section className="positions-card">
       <header className="positions-card__header">
@@ -376,93 +472,7 @@ function PositionsTable({
         </div>
       </header>
 
-      <div className="positions-table" role="table">
-        <div className="positions-table__row positions-table__row--head" role="row">
-          {TABLE_HEADERS.map((column) => {
-            const isSorted = column.key === sortState.column;
-            const sortDirectionValue = isSorted ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none';
-            return (
-              <div
-                key={column.key}
-                role="columnheader"
-                aria-sort={sortDirectionValue}
-                className={`positions-table__head ${column.className}${isSorted ? ' sorted' : ''}`}
-              >
-                <button type="button" className="positions-table__head-button" onClick={() => handleSort(column.key)}>
-                  <span>{column.label}</span>
-                  {isSorted && (
-                    <span
-                      className={`positions-table__sort-indicator ${sortState.direction}`}
-                      aria-hidden="true"
-                    />
-                  )}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="positions-table__body">
-          {sortedPositions.map((position, index) => {
-            const displayShare = formatShare(position.portfolioShare);
-            const displayDescription = truncateDescription(position.description);
-            const fallbackKey = `${position.accountNumber || position.accountId || 'row'}:${
-              position.symbolId ?? position.symbol ?? index
-            }`;
-            const rowKey = position.rowId || fallbackKey;
-
-            return (
-              <div
-                key={rowKey}
-                className="positions-table__row positions-table__row--clickable"
-                role="row"
-                onClick={(event) => handleRowNavigation(event, position.symbol)}
-              >
-                <div className="positions-table__cell positions-table__cell--symbol" role="cell">
-                  <div className="positions-table__symbol-ticker">{position.symbol}</div>
-                  <div className="positions-table__symbol-name" title={position.description || '\u2014'}>
-                    {displayDescription}
-                  </div>
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  <PnlBadge
-                    value={position.dayPnl}
-                    percent={position.dayPnlPercent}
-                    mode={pnlMode}
-                    onToggle={handleTogglePnlMode}
-                  />
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  <PnlBadge
-                    value={position.openPnl}
-                    percent={position.openPnlPercent}
-                    mode={pnlMode}
-                    onToggle={handleTogglePnlMode}
-                  />
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatQuantity(position.openQuantity)}
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <div className="positions-table__cell positions-table__cell--currency" role="cell">
-                  <span>{position.currency || '\u2014'}</span>
-                </div>
-                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                  {displayShare}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {renderTable()}
     </section>
   );
 }
@@ -494,6 +504,7 @@ PositionsTable.propTypes = {
   onSortChange: PropTypes.func,
   pnlMode: PropTypes.oneOf(['currency', 'percent']),
   onPnlModeChange: PropTypes.func,
+  embedded: PropTypes.bool,
 };
 
 PositionsTable.defaultProps = {
@@ -503,6 +514,7 @@ PositionsTable.defaultProps = {
   onSortChange: null,
   pnlMode: null,
   onPnlModeChange: null,
+  embedded: false,
 };
 
 export default PositionsTable;

@@ -2291,6 +2291,28 @@ button.time-pill:hover .time-pill__icon {
   overflow: hidden;
 }
 
+.dividends-card--panel {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.dividends-card--panel .dividends-card__header {
+  padding: 20px 24px 16px;
+}
+
+.dividends-card--panel .dividends-card__table-wrapper {
+  padding: 0 24px 12px;
+}
+
+.dividends-card--panel .dividends-card__empty {
+  padding: 24px;
+}
+
+.dividends-card--panel .dividends-card__footer {
+  padding: 12px 24px 0;
+}
+
 .dividends-card__header {
   display: flex;
   flex-wrap: wrap;

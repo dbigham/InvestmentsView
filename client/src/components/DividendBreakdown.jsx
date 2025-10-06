@@ -85,11 +85,12 @@ function formatRange(start, end) {
   return null;
 }
 
-function DividendBreakdown({ summary }) {
+function DividendBreakdown({ summary, variant }) {
   if (!summary || typeof summary !== 'object') {
     return null;
   }
 
+  const variantClass = variant === 'panel' ? ' dividends-card--panel' : '';
   const entries = Array.isArray(summary.entries) ? summary.entries : [];
   const totalCad = Number.isFinite(summary.totalCad) ? summary.totalCad : null;
   const totalsByCurrencyLabel = formatCurrencyTotals(summary.totalsByCurrency);
@@ -97,7 +98,7 @@ function DividendBreakdown({ summary }) {
   const totalCount = Number.isFinite(summary.totalCount) ? summary.totalCount : null;
 
   return (
-    <section className="dividends-card" aria-labelledby="dividends-card-title">
+    <section className={`dividends-card${variantClass}`} aria-labelledby="dividends-card-title">
       <header className="dividends-card__header">
         <div className="dividends-card__title-block">
           <h2 id="dividends-card-title" className="dividends-card__title">
@@ -224,10 +225,12 @@ DividendBreakdown.propTypes = {
     endDate: PropTypes.string,
     totalCount: PropTypes.number,
   }),
+  variant: PropTypes.oneOf(['card', 'panel']),
 };
 
 DividendBreakdown.defaultProps = {
   summary: null,
+  variant: 'card',
 };
 
 export default DividendBreakdown;
