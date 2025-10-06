@@ -3675,28 +3675,30 @@ export default function App() {
                 hidden={!showModelsPanel}
                 className="positions-card__models-panel"
               >
-                {investmentModelSections.map((section, index) => {
-                  const modelKey = section.model || '';
-                  const chartState = section.chart || { data: null, loading: false, error: null };
-                  const mapKey = `${section.accountId || 'account'}-${section.chartKey || modelKey || index}`;
-                  const retryHandler =
-                    section.chartKey && typeof handleRetryInvestmentModelChart === 'function'
+                {showModelsPanel
+                  ? investmentModelSections.map((section, index) => {
+                    const modelKey = section.model || '';
+                    const chartState = section.chart || { data: null, loading: false, error: null };
+                    const mapKey = `${section.accountId || 'account'}-${section.chartKey || modelKey || index}`;
+                    const retryHandler =
+                      section.chartKey && typeof handleRetryInvestmentModelChart === 'function'
                       ? () => handleRetryInvestmentModelChart(section)
                       : null;
-                  return (
-                    <QqqTemperatureSection
-                      key={mapKey}
-                      data={chartState.data}
-                      loading={chartState.loading}
-                      error={chartState.error}
-                      onRetry={retryHandler}
-                      title={section.displayTitle || null}
-                      modelName={modelKey || null}
-                      lastRebalance={section.lastRebalance || null}
-                      evaluation={section.evaluation || null}
-                    />
-                  );
-                })}
+                    return (
+                      <QqqTemperatureSection
+                        key={mapKey}
+                        data={chartState.data}
+                        loading={chartState.loading}
+                        error={chartState.error}
+                        onRetry={retryHandler}
+                        title={section.displayTitle || null}
+                        modelName={modelKey || null}
+                        lastRebalance={section.lastRebalance || null}
+                        evaluation={section.evaluation || null}
+                      />
+                    );
+                  })
+                  : null}
               </div>
             ) : null}
           </section>
