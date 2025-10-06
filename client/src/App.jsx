@@ -10,6 +10,7 @@ import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
+import DividendBreakdown from './components/DividendBreakdown';
 import { formatMoney, formatNumber } from './utils/formatters';
 import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
@@ -1774,6 +1775,11 @@ export default function App() {
     () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
     [accountFundingSource]
   );
+  const accountDividendSource = data?.accountDividends;
+  const accountDividends = useMemo(
+    () => (accountDividendSource && typeof accountDividendSource === 'object' ? accountDividendSource : EMPTY_OBJECT),
+    [accountDividendSource]
+  );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
     if (selectedAccount === 'all') {
@@ -1848,6 +1854,19 @@ export default function App() {
     }
     return null;
   }, [selectedAccount, accountFunding, filteredAccountIds, selectedAccountInfo]);
+  const selectedAccountDividends = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return null;
+    }
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    const entry = accountDividends[selectedAccountInfo.id];
+    if (entry && typeof entry === 'object') {
+      return entry;
+    }
+    return null;
+  }, [selectedAccount, selectedAccountInfo, accountDividends]);
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const asOf = data?.asOf || null;
 
@@ -2751,6 +2770,10 @@ export default function App() {
             lastRebalance={selectedAccountInfo?.investmentModelLastRebalance || null}
             evaluation={selectedAccountEvaluation}
           />
+        )}
+
+        {showContent && selectedAccount !== 'all' && selectedAccountDividends && (
+          <DividendBreakdown summary={selectedAccountDividends} />
         )}
 
       {showContent && (

@@ -1117,6 +1117,133 @@ function isFundingActivity(activity) {
   );
 }
 
+const DIVIDEND_ACTIVITY_REGEX = /(dividend|distribution)/i;
+
+const DIVIDEND_SYMBOL_CANONICAL_ALIASES = new Map([
+  ['N003056', 'NVDA'],
+  ['NVDA', 'NVDA'],
+  ['A033916', 'ASML'],
+  ['ASML', 'ASML'],
+  ['.ENB', 'ENB'],
+  ['ENB', 'ENB'],
+  ['ENB.TO', 'ENB'],
+  ['A040553', 'GOOG'],
+  ['GOOG', 'GOOG'],
+  ['GOOGL', 'GOOG'],
+  ['C074212', 'CI'],
+  ['CI', 'CI'],
+  ['CI.TO', 'CI'],
+  ['D052167', 'GGLL'],
+  ['GGLL', 'GGLL'],
+  ['H079292', 'SGOV'],
+  ['SGOV', 'SGOV'],
+  ['H082968', 'QQQ'],
+  ['QQQ', 'QQQ'],
+  ['QQM', 'QQQ'],
+  ['L415517', 'LLY'],
+  ['LLY', 'LLY'],
+  ['M415385', 'MSFT'],
+  ['MSFT', 'MSFT'],
+  ['PSA', 'PSA'],
+  ['PSA.TO', 'PSA'],
+  ['S022496', 'SPDR'],
+  ['SPDR', 'SPDR'],
+  ['T002234', 'TSM'],
+  ['TSM', 'TSM'],
+]);
+
+const DIVIDEND_DESCRIPTION_HINTS = new Map(
+  [
+    ['NVDA', ['NVDA', 'NVIDIA']],
+    ['ASML', ['ASML']],
+    ['ENB', ['ENB', 'ENBRIDGE']],
+    ['GOOG', ['GOOG', 'GOOGL', 'ALPHABET']],
+    ['CI', ['CI', 'CI FINANCIAL']],
+    ['GGLL', ['GGLL']],
+    ['SGOV', ['SGOV']],
+    ['QQQ', ['QQQ', 'QQM']],
+    ['LLY', ['LLY', 'ELI LILLY']],
+    ['MSFT', ['MSFT', 'MICROSOFT']],
+    ['PSA', ['PSA', 'PUBLIC STORAGE']],
+    ['SPDR', ['SPDR']],
+    ['TSM', ['TSM', 'TAIWAN SEMI']],
+  ].map(function ([canonical, hints]) {
+    const normalizedHints = Array.isArray(hints)
+      ? hints
+          .map(function (hint) {
+            return typeof hint === 'string' ? hint.trim().toUpperCase() : null;
+          })
+          .filter(Boolean)
+      : [];
+    return [canonical, normalizedHints];
+  })
+);
+
+function normalizeDividendSymbolCandidate(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed.toUpperCase() : '';
+}
+
+function normalizeDividendActivitySymbol(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+
+  const rawSymbolOriginal = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
+  const rawSymbol = normalizeDividendSymbolCandidate(rawSymbolOriginal);
+  const canonicalFromRaw = rawSymbol ? DIVIDEND_SYMBOL_CANONICAL_ALIASES.get(rawSymbol) : null;
+
+  if (canonicalFromRaw) {
+    return {
+      canonical: canonicalFromRaw,
+      raw: rawSymbol,
+      display: canonicalFromRaw,
+    };
+  }
+
+  if (rawSymbol) {
+    return {
+      canonical: rawSymbol,
+      raw: rawSymbol,
+      display: rawSymbol,
+    };
+  }
+
+  const description = typeof activity.description === 'string' ? activity.description.trim() : '';
+  if (description) {
+    const upperDescription = description.toUpperCase();
+    for (const [canonical, hints] of DIVIDEND_DESCRIPTION_HINTS.entries()) {
+      if (hints.some((hint) => upperDescription.includes(hint))) {
+        return {
+          canonical,
+          raw: rawSymbol || null,
+          display: canonical,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function isDividendActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+
+  const fields = ['type', 'subType', 'action', 'description'];
+  for (const field of fields) {
+    const value = activity[field];
+    if (typeof value === 'string' && DIVIDEND_ACTIVITY_REGEX.test(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const EMBEDDED_NUMBER_PATTERN = '\\d+(?:,\\d{3})*(?:\\.\\d+)?';
 const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
 
@@ -1517,6 +1644,60 @@ async function discoverEarliestFundingDate(login, accountId, accountKey) {
   return null;
 }
 
+async function buildAccountActivityContext(login, account, options = {}) {
+  if (!login || !account) {
+    return null;
+  }
+
+  const accountKey = account.id;
+  const accountNumber = account.number || account.accountNumber || account.id;
+  if (!accountKey || !accountNumber) {
+    return null;
+  }
+
+  const { fallbackMonths = 12 } = options;
+  const earliestFunding = await discoverEarliestFundingDate(login, accountNumber, accountKey);
+  const now = new Date();
+  const nowIsoString = now.toISOString();
+
+  const paddedStart = earliestFunding
+    ? addDays(floorToMonthStart(earliestFunding), -7)
+    : addMonths(now, -Math.max(1, fallbackMonths));
+  const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
+
+  const activitiesRaw = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
+  const activities = dedupeActivities(activitiesRaw);
+
+  return {
+    accountId: accountKey,
+    accountNumber,
+    accountKey,
+    earliestFunding,
+    crawlStart,
+    activities,
+    now,
+    nowIsoString,
+  };
+}
+
+async function resolveAccountActivityContext(login, account, providedContext) {
+  if (
+    providedContext &&
+    typeof providedContext === 'object' &&
+    providedContext.accountId &&
+    account &&
+    providedContext.accountId === account.id
+  ) {
+    const normalized = Object.assign({}, providedContext);
+    if (!Array.isArray(normalized.activities)) {
+      normalized.activities = [];
+    }
+    return normalized;
+  }
+
+  return buildAccountActivityContext(login, account);
+}
+
 function resolveActivityAmountDetails(activity) {
   const amountInfo = resolveActivityAmount(activity);
   if (!amountInfo) {
@@ -1582,13 +1763,25 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
     return null;
   }
   const accountKey = account.id;
-  const accountNumber = account.number || account.accountNumber || account.id;
-  const earliestFunding = await discoverEarliestFundingDate(login, accountNumber, accountKey);
-  const now = new Date();
-  const nowIsoString = now.toISOString();
-  const paddedStart = earliestFunding ? addDays(floorToMonthStart(earliestFunding), -7) : addDays(now, -365);
-  const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
-  const activities = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
+  const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
+  if (!activityContext) {
+    return null;
+  }
+
+  const earliestFunding = activityContext.earliestFunding || null;
+  const now =
+    activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
+      ? activityContext.now
+      : new Date();
+  const nowIsoString =
+    typeof activityContext.nowIsoString === 'string'
+      ? activityContext.nowIsoString
+      : now.toISOString();
+  const crawlStart =
+    activityContext.crawlStart instanceof Date && !Number.isNaN(activityContext.crawlStart.getTime())
+      ? activityContext.crawlStart
+      : clampDate(addDays(now, -365) || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
+  const activities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   const fundingActivities = dedupeActivities(filterFundingActivities(activities));
   debugTotalPnl(accountKey, 'Funding activities considered', fundingActivities.length);
 
@@ -1843,6 +2036,217 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
             netDepositsCad: accountAdjustment,
           }
         : undefined,
+  };
+}
+
+
+async function computeDividendBreakdown(login, account, options = {}) {
+  if (!account || !account.id) {
+    return null;
+  }
+
+  const accountKey = account.id;
+  const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
+  if (!activityContext) {
+    return null;
+  }
+
+  const activities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
+  const dividendActivities = activities.filter((activity) => isDividendActivity(activity));
+
+  if (!dividendActivities.length) {
+    return {
+      entries: [],
+      totalsByCurrency: {},
+      totalCad: 0,
+      totalCount: 0,
+      conversionIncomplete: false,
+      startDate: null,
+      endDate: null,
+    };
+  }
+
+  const totalsBySymbol = new Map();
+  const totalsByCurrency = new Map();
+  let totalCad = 0;
+  let totalCount = 0;
+  let conversionIncomplete = false;
+  let earliest = null;
+  let latest = null;
+
+  for (const activity of dividendActivities) {
+    const details = resolveActivityAmountDetails(activity);
+    if (!details) {
+      continue;
+    }
+
+    const amount = Number(details.amount);
+    if (!Number.isFinite(amount) || Math.abs(amount) < CASH_FLOW_EPSILON) {
+      continue;
+    }
+
+    const currency = normalizeCurrency(details.currency) || 'CAD';
+    const timestamp =
+      details.timestamp instanceof Date && !Number.isNaN(details.timestamp.getTime())
+        ? details.timestamp
+        : null;
+
+    const symbolInfo = normalizeDividendActivitySymbol(activity);
+    if (!symbolInfo) {
+      continue;
+    }
+
+    const entryKey = symbolInfo.canonical || symbolInfo.raw || activity.description || 'UNKNOWN';
+    let entry = totalsBySymbol.get(entryKey);
+    if (!entry) {
+      entry = {
+        canonical: symbolInfo.canonical || null,
+        display: symbolInfo.canonical || symbolInfo.raw || null,
+        rawSymbols: new Set(),
+        description: null,
+        currencyTotals: new Map(),
+        cadAmount: 0,
+        conversionIncomplete: false,
+        activityCount: 0,
+        earliestTimestamp: null,
+        latestTimestamp: null,
+        latestAmount: null,
+        latestCurrency: null,
+      };
+      totalsBySymbol.set(entryKey, entry);
+    }
+
+    if (symbolInfo.canonical && !entry.canonical) {
+      entry.canonical = symbolInfo.canonical;
+    }
+    if (!entry.display && (symbolInfo.canonical || symbolInfo.raw)) {
+      entry.display = symbolInfo.canonical || symbolInfo.raw;
+    }
+    if (symbolInfo.raw) {
+      entry.rawSymbols.add(symbolInfo.raw);
+    }
+    if (!entry.description && typeof activity.description === 'string' && activity.description.trim()) {
+      entry.description = activity.description.trim();
+    }
+
+    entry.activityCount += 1;
+    totalCount += 1;
+
+    if (!entry.currencyTotals.has(currency)) {
+      entry.currencyTotals.set(currency, 0);
+    }
+    entry.currencyTotals.set(currency, entry.currencyTotals.get(currency) + amount);
+
+    if (!totalsByCurrency.has(currency)) {
+      totalsByCurrency.set(currency, 0);
+    }
+    totalsByCurrency.set(currency, totalsByCurrency.get(currency) + amount);
+
+    if (timestamp) {
+      if (!entry.earliestTimestamp || timestamp < entry.earliestTimestamp) {
+        entry.earliestTimestamp = timestamp;
+      }
+      if (!entry.latestTimestamp || timestamp > entry.latestTimestamp) {
+        entry.latestTimestamp = timestamp;
+        entry.latestAmount = amount;
+        entry.latestCurrency = currency;
+      }
+      if (!earliest || timestamp < earliest) {
+        earliest = timestamp;
+      }
+      if (!latest || timestamp > latest) {
+        latest = timestamp;
+      }
+    }
+
+    let cadContribution = null;
+    if (!currency || currency === 'CAD') {
+      cadContribution = amount;
+    } else {
+      const conversion = await convertAmountToCad(amount, currency, timestamp, accountKey);
+      if (Number.isFinite(conversion.cadAmount)) {
+        cadContribution = conversion.cadAmount;
+      } else {
+        entry.conversionIncomplete = true;
+        conversionIncomplete = true;
+      }
+    }
+
+    if (Number.isFinite(cadContribution)) {
+      entry.cadAmount += cadContribution;
+      totalCad += cadContribution;
+    }
+  }
+
+  const toCurrencyTotalsObject = (map) => {
+    const result = {};
+    for (const [currency, value] of map.entries()) {
+      result[currency] = value;
+    }
+    return result;
+  };
+
+  const computeMagnitude = (entry) => {
+    if (Number.isFinite(entry.cadAmount)) {
+      return Math.abs(entry.cadAmount);
+    }
+    const totals = entry.currencyTotals || {};
+    return Object.values(totals).reduce((sum, value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? sum + Math.abs(numeric) : sum;
+    }, 0);
+  };
+
+  const entries = Array.from(totalsBySymbol.values()).map((entry) => {
+    const currencyTotals = toCurrencyTotalsObject(entry.currencyTotals);
+    const rawSymbols = Array.from(entry.rawSymbols);
+    const displaySymbol = entry.display || entry.canonical || (rawSymbols.length ? rawSymbols[0] : null);
+    const cadAmount = Number.isFinite(entry.cadAmount) ? entry.cadAmount : 0;
+    return {
+      symbol: entry.canonical || null,
+      displaySymbol: displaySymbol || null,
+      rawSymbols: rawSymbols.length ? rawSymbols : undefined,
+      description: entry.description || null,
+      currencyTotals,
+      cadAmount: Number.isFinite(cadAmount) ? cadAmount : null,
+      conversionIncomplete: entry.conversionIncomplete || undefined,
+      activityCount: entry.activityCount,
+      firstDate: entry.earliestTimestamp ? formatDateOnly(entry.earliestTimestamp) : null,
+      lastDate: entry.latestTimestamp ? formatDateOnly(entry.latestTimestamp) : null,
+      lastTimestamp: entry.latestTimestamp ? entry.latestTimestamp.toISOString() : null,
+      lastAmount: Number.isFinite(entry.latestAmount) ? entry.latestAmount : null,
+      lastCurrency: entry.latestCurrency || null,
+      _magnitude: computeMagnitude({
+        cadAmount,
+        currencyTotals,
+      }),
+    };
+  });
+
+  entries.sort((a, b) => (b._magnitude || 0) - (a._magnitude || 0));
+
+  const cleanedEntries = entries.map((entry) => {
+    const cleaned = Object.assign({}, entry);
+    delete cleaned._magnitude;
+    if (!cleaned.rawSymbols) {
+      delete cleaned.rawSymbols;
+    }
+    if (!cleaned.conversionIncomplete) {
+      delete cleaned.conversionIncomplete;
+    }
+    return cleaned;
+  });
+
+  const totalsByCurrencyObject = toCurrencyTotalsObject(totalsByCurrency);
+
+  return {
+    entries: cleanedEntries,
+    totalsByCurrency: totalsByCurrencyObject,
+    totalCad: Number.isFinite(totalCad) ? totalCad : null,
+    conversionIncomplete: conversionIncomplete || undefined,
+    startDate: earliest ? formatDateOnly(earliest) : null,
+    endDate: latest ? formatDateOnly(latest) : null,
+    totalCount,
   };
 }
 
@@ -2563,14 +2967,27 @@ app.get('/api/summary', async function (req, res) {
     }
 
     const accountFundingSummaries = {};
+    const accountDividendSummaries = {};
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
+      let sharedActivityContext = null;
+      try {
+        sharedActivityContext = await buildAccountActivityContext(context.login, context.account);
+      } catch (activityError) {
+        const activityMessage =
+          activityError && activityError.message ? activityError.message : String(activityError);
+        console.warn(
+          'Failed to prepare activity history for account ' + context.account.id + ':',
+          activityMessage
+        );
+      }
+
       try {
         const fundingSummary = await computeNetDeposits(
           context.login,
           context.account,
           perAccountCombinedBalances,
-          { applyAccountCagrStartDate: true }
+          { applyAccountCagrStartDate: true, activityContext: sharedActivityContext }
         );
         if (fundingSummary) {
           accountFundingSummaries[context.account.id] = fundingSummary;
@@ -2579,6 +2996,21 @@ app.get('/api/summary', async function (req, res) {
         const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
         console.warn(
           'Failed to compute net deposits for account ' + context.account.id + ':',
+          message
+        );
+      }
+
+      try {
+        const dividendSummary = await computeDividendBreakdown(context.login, context.account, {
+          activityContext: sharedActivityContext,
+        });
+        if (dividendSummary) {
+          accountDividendSummaries[context.account.id] = dividendSummary;
+        }
+      } catch (dividendError) {
+        const message = dividendError && dividendError.message ? dividendError.message : String(dividendError);
+        console.warn(
+          'Failed to compute dividends for account ' + context.account.id + ':',
           message
         );
       }
@@ -2780,6 +3212,7 @@ app.get('/api/summary', async function (req, res) {
       accountBalances: perAccountCombinedBalances,
       investmentModelEvaluations,
       accountFunding: accountFundingSummaries,
+      accountDividends: accountDividendSummaries,
       asOf: new Date().toISOString(),
     });
   } catch (error) {
