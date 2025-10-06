@@ -97,20 +97,21 @@ function DividendBreakdown({ summary, variant }) {
   const rangeLabel = formatRange(summary.startDate, summary.endDate);
   const totalCount = Number.isFinite(summary.totalCount) ? summary.totalCount : null;
 
+  const showTitleBlock = Boolean(rangeLabel || totalCount);
+
   return (
-    <section className={`dividends-card${variantClass}`} aria-labelledby="dividends-card-title">
+    <section className={`dividends-card${variantClass}`} aria-label="Dividend breakdown">
       <header className="dividends-card__header">
-        <div className="dividends-card__title-block">
-          <h2 id="dividends-card-title" className="dividends-card__title">
-            Dividends by company
-          </h2>
-          {rangeLabel ? <p className="dividends-card__subtitle">{rangeLabel}</p> : null}
-          {totalCount ? (
-            <p className="dividends-card__meta">
-              {formatNumber(totalCount, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} payouts recorded
-            </p>
-          ) : null}
-        </div>
+        {showTitleBlock ? (
+          <div className="dividends-card__title-block">
+            {rangeLabel ? <p className="dividends-card__subtitle">{rangeLabel}</p> : null}
+            {totalCount ? (
+              <p className="dividends-card__meta">
+                {formatNumber(totalCount, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} payouts recorded
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <div className="dividends-card__totals">
           <span className="dividends-card__totals-label">Total received</span>
           <span className="dividends-card__totals-value">
