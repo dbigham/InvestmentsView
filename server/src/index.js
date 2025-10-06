@@ -35,7 +35,7 @@ const RETURN_BREAKDOWN_PERIODS = [
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
-const tokenFilePath = path.join(process.cwd(), 'token-store.json');
+const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
 
 let yahooFinance = null;
 let yahooFinanceLoadError = null;
@@ -347,6 +347,81 @@ const loginsById = {};
 allLogins.forEach((login) => {
   loginsById[login.id] = login;
 });
+
+const EARLIEST_FUNDING_CACHE_PATH = path.join(__dirname, '..', 'earliest-funding-cache.json');
+const EARLIEST_FUNDING_CACHE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+const earliestFundingPromises = new Map();
+
+function loadEarliestFundingCache() {
+  try {
+    if (!fs.existsSync(EARLIEST_FUNDING_CACHE_PATH)) {
+      return { entries: {} };
+    }
+    const contents = fs.readFileSync(EARLIEST_FUNDING_CACHE_PATH, 'utf-8');
+    if (!contents.trim()) {
+      return { entries: {} };
+    }
+    const parsed = JSON.parse(contents);
+    if (parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object') {
+      return { entries: parsed.entries };
+    }
+  } catch (error) {
+    console.warn('Failed to read earliest funding cache:', error.message);
+  }
+  return { entries: {} };
+}
+
+function persistEarliestFundingCache(state) {
+  try {
+    const payload = {
+      updatedAt: new Date().toISOString(),
+      entries: state.entries,
+    };
+    fs.writeFileSync(EARLIEST_FUNDING_CACHE_PATH, JSON.stringify(payload, null, 2));
+  } catch (error) {
+    console.warn('Failed to persist earliest funding cache:', error.message);
+  }
+}
+
+const earliestFundingCacheState = loadEarliestFundingCache();
+
+function buildEarliestFundingCacheKey(login, accountId, accountKey) {
+  const loginId = login && login.id ? String(login.id) : 'unknown-login';
+  const normalizedAccountKey = accountKey ? String(accountKey) : null;
+  const normalizedAccountId = accountId ? String(accountId) : null;
+  return [loginId, normalizedAccountKey || normalizedAccountId || 'unknown-account'].join('::');
+}
+
+function getCachedEarliestFunding(cacheKey) {
+  const entry = earliestFundingCacheState.entries[cacheKey];
+  if (!entry) {
+    return { hit: false };
+  }
+  const cachedAtMs = Date.parse(entry.cachedAt || entry.cached_at || '');
+  if (Number.isNaN(cachedAtMs) || Date.now() - cachedAtMs > EARLIEST_FUNDING_CACHE_MAX_AGE_MS) {
+    delete earliestFundingCacheState.entries[cacheKey];
+    persistEarliestFundingCache(earliestFundingCacheState);
+    return { hit: false };
+  }
+  if (entry.earliestFunding === null) {
+    return { hit: true, value: null };
+  }
+  if (typeof entry.earliestFunding === 'string') {
+    const parsed = new Date(entry.earliestFunding);
+    if (!Number.isNaN(parsed.getTime())) {
+      return { hit: true, value: parsed };
+    }
+  }
+  return { hit: false };
+}
+
+function setCachedEarliestFunding(cacheKey, value) {
+  earliestFundingCacheState.entries[cacheKey] = {
+    earliestFunding: value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : null,
+    cachedAt: new Date().toISOString(),
+  };
+  persistEarliestFundingCache(earliestFundingCacheState);
+}
 
 
 function buildAccountOverrideKeys(account, login) {
@@ -687,7 +762,7 @@ const DEBUG_XIRR = process.env.DEBUG_XIRR === 'true';
 const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
-const ACTIVITIES_CACHE_DIR = path.join(process.cwd(), '.cache', 'activities');
+const ACTIVITIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'activities');
 
 const activitiesMemoryCache = new Map();
 let activitiesCacheDirEnsured = false;
@@ -1559,6 +1634,21 @@ function dedupeActivities(activities) {
   return result;
 }
 
+function computeActivityFingerprint(activities) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return 'count:0|latest:none';
+  }
+  let latest = null;
+  activities.forEach((activity) => {
+    const timestamp = resolveActivityTimestamp(activity);
+    if (timestamp && (!latest || timestamp > latest)) {
+      latest = timestamp;
+    }
+  });
+  const latestIso = latest instanceof Date && !Number.isNaN(latest.getTime()) ? latest.toISOString() : 'none';
+  return 'count:' + activities.length + '|latest:' + latestIso;
+}
+
 function findEarliestFundingTimestamp(activities) {
   let earliest = null;
   activities.forEach((activity) => {
@@ -1571,77 +1661,213 @@ function findEarliestFundingTimestamp(activities) {
 }
 
 async function discoverEarliestFundingDate(login, accountId, accountKey) {
-  const now = new Date();
-  const currentMonthStart = floorToMonthStart(now);
-  if (!currentMonthStart) {
-    debugTotalPnl(accountKey, 'Unable to determine current month start during discovery');
+  const cacheKey = buildEarliestFundingCacheKey(login, accountId, accountKey);
+  if (cacheKey) {
+    const cached = getCachedEarliestFunding(cacheKey);
+    if (cached.hit) {
+      return cached.value || null;
+    }
+    if (earliestFundingPromises.has(cacheKey)) {
+      return earliestFundingPromises.get(cacheKey);
+    }
+  }
+
+  async function computeEarliestFundingDate() {
+    const now = new Date();
+    const currentMonthStart = floorToMonthStart(now);
+    if (!currentMonthStart) {
+      debugTotalPnl(accountKey, 'Unable to determine current month start during discovery');
+      return null;
+    }
+
+    let monthStart = currentMonthStart;
+    let earliest = null;
+    let consecutiveEmpty = 0;
+    let iterations = 0;
+    const MAX_MONTH_LOOKBACK = 600; // 50 years of monthly checks
+
+    while (monthStart && monthStart >= MIN_ACTIVITY_DATE && iterations < MAX_MONTH_LOOKBACK) {
+      iterations += 1;
+      const nextMonthStart = addMonths(monthStart, 1);
+      if (!nextMonthStart) {
+        break;
+      }
+      let monthEnd = new Date(Math.min(nextMonthStart.getTime() - 1000, now.getTime()));
+      if (monthEnd < monthStart) {
+        break;
+      }
+      const monthLabel = {
+        start: formatDateOnly(monthStart),
+        end: formatDateOnly(monthEnd),
+      };
+      const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey);
+      const funding = filterFundingActivities(activities);
+      if (funding.length > 0) {
+        const windowEarliest = findEarliestFundingTimestamp(funding);
+        if (windowEarliest && (!earliest || windowEarliest < earliest)) {
+          earliest = windowEarliest;
+        }
+        consecutiveEmpty = 0;
+        debugTotalPnl(
+          accountKey,
+          'Funding month hit',
+          Object.assign({ activities: funding.length }, monthLabel)
+        );
+      } else {
+        consecutiveEmpty += 1;
+        debugTotalPnl(
+          accountKey,
+          'Funding month empty',
+          Object.assign({ consecutiveEmpty }, monthLabel)
+        );
+      }
+
+      if (earliest && consecutiveEmpty >= 12) {
+        debugTotalPnl(accountKey, 'Stopping discovery after 12 empty months beyond earliest');
+        break;
+      }
+      if (!earliest && consecutiveEmpty >= 12) {
+        debugTotalPnl(accountKey, 'Stopping discovery after 12 consecutive empty months with no funding');
+        break;
+      }
+
+      const previousMonthStart = addMonths(monthStart, -1);
+      if (!previousMonthStart || previousMonthStart < MIN_ACTIVITY_DATE) {
+        break;
+      }
+      monthStart = previousMonthStart;
+    }
+
+    if (earliest) {
+      debugTotalPnl(accountKey, 'Earliest funding date discovered', formatDateOnly(earliest));
+      return earliest;
+    }
+
+    debugTotalPnl(accountKey, 'No funding activities found during discovery');
     return null;
   }
 
-  let monthStart = currentMonthStart;
-  let earliest = null;
-  let consecutiveEmpty = 0;
-  let iterations = 0;
-  const MAX_MONTH_LOOKBACK = 600; // 50 years of monthly checks
-
-  while (monthStart && monthStart >= MIN_ACTIVITY_DATE && iterations < MAX_MONTH_LOOKBACK) {
-    iterations += 1;
-    const nextMonthStart = addMonths(monthStart, 1);
-    if (!nextMonthStart) {
-      break;
-    }
-    let monthEnd = new Date(nextMonthStart.getTime() - 1000);
-    if (monthEnd > now) {
-      monthEnd = new Date(now.getTime());
-    }
-    if (monthEnd < monthStart) {
-      break;
-    }
-    const monthLabel = {
-      start: formatDateOnly(monthStart),
-      end: formatDateOnly(monthEnd),
-    };
-    const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey);
-    const funding = filterFundingActivities(activities);
-    if (funding.length > 0) {
-      const windowEarliest = findEarliestFundingTimestamp(funding);
-      if (windowEarliest && (!earliest || windowEarliest < earliest)) {
-        earliest = windowEarliest;
-      }
-      consecutiveEmpty = 0;
-      debugTotalPnl(accountKey, 'Funding month hit', Object.assign({ activities: funding.length }, monthLabel));
-    } else {
-      consecutiveEmpty += 1;
-      debugTotalPnl(
-        accountKey,
-        'Funding month empty',
-        Object.assign({ consecutiveEmpty }, monthLabel)
-      );
-    }
-
-    if (earliest && consecutiveEmpty >= 12) {
-      debugTotalPnl(accountKey, 'Stopping discovery after 12 empty months beyond earliest');
-      break;
-    }
-    if (!earliest && consecutiveEmpty >= 12) {
-      debugTotalPnl(accountKey, 'Stopping discovery after 12 consecutive empty months with no funding');
-      break;
-    }
-
-    const previousMonthStart = addMonths(monthStart, -1);
-    if (!previousMonthStart || previousMonthStart < MIN_ACTIVITY_DATE) {
-      break;
-    }
-    monthStart = previousMonthStart;
+  if (!cacheKey) {
+    return computeEarliestFundingDate();
   }
 
-  if (earliest) {
-    debugTotalPnl(accountKey, 'Earliest funding date discovered', formatDateOnly(earliest));
-    return earliest;
-  }
+  const pendingPromise = computeEarliestFundingDate()
+    .then((value) => {
+      setCachedEarliestFunding(cacheKey, value);
+      return value || null;
+    })
+    .finally(() => {
+      earliestFundingPromises.delete(cacheKey);
+    });
+  earliestFundingPromises.set(cacheKey, pendingPromise);
+  return pendingPromise;
+}
 
-  debugTotalPnl(accountKey, 'No funding activities found during discovery');
-  return null;
+const NET_DEPOSITS_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
+const MAX_NET_DEPOSITS_CACHE_SIZE = 200;
+const netDepositsCache = new Map();
+const netDepositsPromiseCache = new Map();
+
+function cloneNetDepositsSummary(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch (error) {
+      // Fall back to JSON serialization
+    }
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function computeBalanceFingerprint(balanceSummary) {
+  if (!balanceSummary || typeof balanceSummary !== 'object') {
+    return 'balance:none';
+  }
+  const combined = balanceSummary.combined && typeof balanceSummary.combined === 'object'
+    ? balanceSummary.combined
+    : balanceSummary;
+  const cadEntry = combined.CAD || combined.cad || null;
+  if (!cadEntry || typeof cadEntry !== 'object') {
+    return 'balance:no-cad';
+  }
+  const fields = ['totalEquity', 'marketValue', 'cash'];
+  const parts = fields.map((field) => {
+    const numeric = Number(cadEntry[field]);
+    return Number.isFinite(numeric) ? numeric.toFixed(2) : 'na';
+  });
+  const asOf = typeof cadEntry.asOf === 'string' ? cadEntry.asOf : 'na';
+  return ['balance', asOf, ...parts].join('|');
+}
+
+function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, options, activityContext) {
+  if (!account || !activityContext) {
+    return null;
+  }
+  const loginId = login && login.id ? String(login.id) : account.loginId || 'unknown-login';
+  const accountId = account.id ? String(account.id) : account.number ? String(account.number) : 'unknown-account';
+  const tradingDay =
+    typeof activityContext.nowIsoString === 'string'
+      ? activityContext.nowIsoString.slice(0, 10)
+      : formatDateOnly(activityContext.now || new Date());
+  if (!tradingDay) {
+    return null;
+  }
+  const fingerprint =
+    activityContext && typeof activityContext.fingerprint === 'string'
+      ? activityContext.fingerprint
+      : computeActivityFingerprint(activityContext.activities || []);
+  const balanceSummary = perAccountCombinedBalances ? perAccountCombinedBalances[account.id] : null;
+  const balanceFingerprint = computeBalanceFingerprint(balanceSummary);
+  const cagrKey = options && options.applyAccountCagrStartDate ? 'cagr:1' : 'cagr:0';
+  const cagrDateKey =
+    options && options.applyAccountCagrStartDate && typeof account.cagrStartDate === 'string'
+      ? 'cagrDate:' + account.cagrStartDate.trim()
+      : 'cagrDate:none';
+  const adjustment = Number(account.netDepositAdjustment);
+  const adjustmentKey = Number.isFinite(adjustment) ? 'adj:' + adjustment.toFixed(2) : 'adj:none';
+  return [
+    loginId,
+    accountId,
+    tradingDay,
+    fingerprint,
+    balanceFingerprint,
+    cagrKey,
+    cagrDateKey,
+    adjustmentKey,
+  ].join('|');
+}
+
+function pruneNetDepositsCache() {
+  if (netDepositsCache.size <= MAX_NET_DEPOSITS_CACHE_SIZE) {
+    return;
+  }
+  const entries = Array.from(netDepositsCache.entries()).sort((a, b) => a[1].cachedAt - b[1].cachedAt);
+  while (entries.length > MAX_NET_DEPOSITS_CACHE_SIZE) {
+    const entry = entries.shift();
+    if (entry) {
+      netDepositsCache.delete(entry[0]);
+    }
+  }
+}
+
+function getNetDepositsCacheEntry(cacheKey) {
+  const entry = netDepositsCache.get(cacheKey);
+  if (!entry) {
+    return { hit: false };
+  }
+  if (Date.now() - entry.cachedAt > NET_DEPOSITS_CACHE_MAX_AGE_MS) {
+    netDepositsCache.delete(cacheKey);
+    return { hit: false };
+  }
+  return { hit: true, value: cloneNetDepositsSummary(entry.value) };
+}
+
+function setNetDepositsCacheEntry(cacheKey, value) {
+  netDepositsCache.set(cacheKey, { value, cachedAt: Date.now() });
+  pruneNetDepositsCache();
 }
 
 async function buildAccountActivityContext(login, account, options = {}) {
@@ -1677,6 +1903,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
     activities,
     now,
     nowIsoString,
+    fingerprint: computeActivityFingerprint(activities),
   };
 }
 
@@ -1691,6 +1918,9 @@ async function resolveAccountActivityContext(login, account, providedContext) {
     const normalized = Object.assign({}, providedContext);
     if (!Array.isArray(normalized.activities)) {
       normalized.activities = [];
+    }
+    if (typeof normalized.fingerprint !== 'string') {
+      normalized.fingerprint = computeActivityFingerprint(normalized.activities);
     }
     return normalized;
   }
@@ -1758,15 +1988,11 @@ async function convertAmountToCad(amount, currency, timestamp, accountKey) {
   return { cadAmount: null, fxRate: null };
 }
 
-async function computeNetDeposits(login, account, perAccountCombinedBalances, options = {}) {
-  if (!account || !account.id) {
+async function computeNetDepositsCore(account, perAccountCombinedBalances, options = {}, activityContext) {
+  if (!account || !account.id || !activityContext) {
     return null;
   }
   const accountKey = account.id;
-  const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
-  if (!activityContext) {
-    return null;
-  }
 
   const earliestFunding = activityContext.earliestFunding || null;
   const now =
@@ -2037,6 +2263,47 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
           }
         : undefined,
   };
+}
+
+async function computeNetDeposits(login, account, perAccountCombinedBalances, options = {}) {
+  if (!account || !account.id) {
+    return null;
+  }
+
+  const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
+  if (!activityContext) {
+    return null;
+  }
+
+  const cacheKey = buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, options, activityContext);
+  if (cacheKey) {
+    const cached = getNetDepositsCacheEntry(cacheKey);
+    if (cached.hit) {
+      return cached.value;
+    }
+    if (netDepositsPromiseCache.has(cacheKey)) {
+      const pending = await netDepositsPromiseCache.get(cacheKey);
+      return cloneNetDepositsSummary(pending);
+    }
+  }
+
+  const execute = () => computeNetDepositsCore(account, perAccountCombinedBalances, options, activityContext);
+
+  if (!cacheKey) {
+    return execute();
+  }
+
+  const pendingPromise = execute()
+    .then((result) => {
+      setNetDepositsCacheEntry(cacheKey, result);
+      return result;
+    })
+    .finally(() => {
+      netDepositsPromiseCache.delete(cacheKey);
+    });
+  netDepositsPromiseCache.set(cacheKey, pendingPromise);
+  const computed = await pendingPromise;
+  return cloneNetDepositsSummary(computed);
 }
 
 
@@ -2442,6 +2709,35 @@ function mergePnL(positions) {
   );
 }
 
+async function mapWithConcurrency(items, limit, mapper) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+  const results = new Array(items.length);
+  const concurrency = Math.max(1, Math.min(limit || 1, items.length));
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) {
+        return;
+      }
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  const workers = [];
+  for (let i = 0; i < concurrency; i += 1) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+const MAX_AGGREGATE_FUNDING_CONCURRENCY = 4;
+
 function buildInvestmentModelPositions(positions, accountId) {
   if (!Array.isArray(positions) || !accountId) {
     return [];
@@ -2680,107 +2976,108 @@ app.get('/api/summary', async function (req, res) {
   const configuredDefaultKey = getDefaultAccountId();
 
   try {
-    const accountCollections = [];
     const accountNameOverrides = getAccountNameOverrides();
     const accountPortalOverrides = getAccountPortalOverrides();
     const accountChatOverrides = getAccountChatOverrides();
     const configuredOrdering = getAccountOrdering();
     const accountSettings = getAccountSettings();
     const accountBeneficiaries = getAccountBeneficiaries();
-    for (const login of allLogins) {
-      const fetchedAccounts = await fetchAccounts(login);
-      const normalized = fetchedAccounts.map(function (account, index) {
-        const rawNumber = account.number || account.accountNumber || account.id || index;
-        const number = String(rawNumber);
-        const compositeId = login.id + ':' + number;
-        const ownerLabel = resolveLoginDisplay(login);
-        const normalizedAccount = Object.assign({}, account, {
-          id: compositeId,
-          number,
-          accountNumber: number,
-          loginId: login.id,
-          ownerId: login.id,
-          ownerLabel,
-          ownerEmail: login.email || null,
-          loginLabel: ownerLabel,
-          loginEmail: login.email || null,
+    const accountCollections = await Promise.all(
+      allLogins.map(async function (login) {
+        const fetchedAccounts = await fetchAccounts(login);
+        const normalized = fetchedAccounts.map(function (account, index) {
+          const rawNumber = account.number || account.accountNumber || account.id || index;
+          const number = String(rawNumber);
+          const compositeId = login.id + ':' + number;
+          const ownerLabel = resolveLoginDisplay(login);
+          const normalizedAccount = Object.assign({}, account, {
+            id: compositeId,
+            number,
+            accountNumber: number,
+            loginId: login.id,
+            ownerId: login.id,
+            ownerLabel,
+            ownerEmail: login.email || null,
+            loginLabel: ownerLabel,
+            loginEmail: login.email || null,
+          });
+          const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
+          if (displayName) {
+            normalizedAccount.displayName = displayName;
+          }
+          const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
+          if (overridePortalId) {
+            normalizedAccount.portalAccountId = overridePortalId;
+          }
+          const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
+          if (overrideChatUrl) {
+            normalizedAccount.chatURL = overrideChatUrl;
+          } else if (normalizedAccount.chatURL === undefined) {
+            normalizedAccount.chatURL = null;
+          }
+          const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
+          if (typeof accountSettingsOverride === 'boolean') {
+            normalizedAccount.showQQQDetails = accountSettingsOverride;
+          } else if (accountSettingsOverride && typeof accountSettingsOverride === 'object') {
+            if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
+              normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
+            }
+            if (typeof accountSettingsOverride.investmentModel === 'string') {
+              const trimmedModel = accountSettingsOverride.investmentModel.trim();
+              if (trimmedModel) {
+                normalizedAccount.investmentModel = trimmedModel;
+              }
+            }
+            if (typeof accountSettingsOverride.lastRebalance === 'string') {
+              const trimmedDate = accountSettingsOverride.lastRebalance.trim();
+              if (trimmedDate) {
+                normalizedAccount.investmentModelLastRebalance = trimmedDate;
+              }
+            } else if (
+              accountSettingsOverride.lastRebalance &&
+              typeof accountSettingsOverride.lastRebalance === 'object' &&
+              typeof accountSettingsOverride.lastRebalance.date === 'string'
+            ) {
+              const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
+              if (trimmedDate) {
+                normalizedAccount.investmentModelLastRebalance = trimmedDate;
+              }
+            }
+            if (
+              typeof accountSettingsOverride.netDepositAdjustment === 'number' &&
+              Number.isFinite(accountSettingsOverride.netDepositAdjustment)
+            ) {
+              normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
+            }
+            if (typeof accountSettingsOverride.cagrStartDate === 'string') {
+              const trimmedDate = accountSettingsOverride.cagrStartDate.trim();
+              if (trimmedDate) {
+                normalizedAccount.cagrStartDate = trimmedDate;
+              }
+            } else if (
+              accountSettingsOverride.cagrStartDate &&
+              typeof accountSettingsOverride.cagrStartDate === 'object' &&
+              typeof accountSettingsOverride.cagrStartDate.date === 'string'
+            ) {
+              const trimmedDate = accountSettingsOverride.cagrStartDate.date.trim();
+              if (trimmedDate) {
+                normalizedAccount.cagrStartDate = trimmedDate;
+              }
+            }
+          }
+          const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
+          if (defaultBeneficiary) {
+            normalizedAccount.beneficiary = defaultBeneficiary;
+          }
+          const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
+          if (resolvedBeneficiary) {
+            normalizedAccount.beneficiary = resolvedBeneficiary;
+          }
+          return normalizedAccount;
         });
-        const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
-        if (displayName) {
-          normalizedAccount.displayName = displayName;
-        }
-        const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
-        if (overridePortalId) {
-          normalizedAccount.portalAccountId = overridePortalId;
-        }
-        const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
-        if (overrideChatUrl) {
-          normalizedAccount.chatURL = overrideChatUrl;
-        } else if (normalizedAccount.chatURL === undefined) {
-          normalizedAccount.chatURL = null;
-        }
-        const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
-        if (typeof accountSettingsOverride === 'boolean') {
-          normalizedAccount.showQQQDetails = accountSettingsOverride;
-        } else if (accountSettingsOverride && typeof accountSettingsOverride === 'object') {
-          if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
-            normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
-          }
-          if (typeof accountSettingsOverride.investmentModel === 'string') {
-            const trimmedModel = accountSettingsOverride.investmentModel.trim();
-            if (trimmedModel) {
-              normalizedAccount.investmentModel = trimmedModel;
-            }
-          }
-          if (typeof accountSettingsOverride.lastRebalance === 'string') {
-            const trimmedDate = accountSettingsOverride.lastRebalance.trim();
-            if (trimmedDate) {
-              normalizedAccount.investmentModelLastRebalance = trimmedDate;
-            }
-          } else if (
-            accountSettingsOverride.lastRebalance &&
-            typeof accountSettingsOverride.lastRebalance === 'object' &&
-            typeof accountSettingsOverride.lastRebalance.date === 'string'
-          ) {
-            const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
-            if (trimmedDate) {
-              normalizedAccount.investmentModelLastRebalance = trimmedDate;
-            }
-          }
-          if (
-            typeof accountSettingsOverride.netDepositAdjustment === 'number' &&
-            Number.isFinite(accountSettingsOverride.netDepositAdjustment)
-          ) {
-            normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
-          }
-          if (typeof accountSettingsOverride.cagrStartDate === 'string') {
-            const trimmedDate = accountSettingsOverride.cagrStartDate.trim();
-            if (trimmedDate) {
-              normalizedAccount.cagrStartDate = trimmedDate;
-            }
-          } else if (
-            accountSettingsOverride.cagrStartDate &&
-            typeof accountSettingsOverride.cagrStartDate === 'object' &&
-            typeof accountSettingsOverride.cagrStartDate.date === 'string'
-          ) {
-            const trimmedDate = accountSettingsOverride.cagrStartDate.date.trim();
-            if (trimmedDate) {
-              normalizedAccount.cagrStartDate = trimmedDate;
-            }
-          }
-        }
-        const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
-        if (defaultBeneficiary) {
-          normalizedAccount.beneficiary = defaultBeneficiary;
-        }
-        const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
-        if (resolvedBeneficiary) {
-          normalizedAccount.beneficiary = resolvedBeneficiary;
-        }
-        return normalizedAccount;
-      });
-      accountCollections.push({ login, accounts: normalized });
-    }
+        return { login, accounts: normalized };
+      })
+    );
 
     const defaultAccount = findDefaultAccount(accountCollections, configuredDefaultKey);
 
@@ -3044,100 +3341,108 @@ app.get('/api/summary', async function (req, res) {
         incomplete: false,
       };
 
-      for (const context of selectedContexts) {
-        let activityContext = null;
-        try {
-          activityContext = await ensureAccountActivityContext(context);
-        } catch (activityError) {
-          const activityMessage =
-            activityError && activityError.message ? activityError.message : String(activityError);
-          console.warn(
-            'Failed to prepare activity history for account ' + context.account.id + ':',
-            activityMessage
-          );
-        }
-
-        try {
-          const fundingSummary = await computeNetDeposits(
-            context.login,
-            context.account,
-            perAccountCombinedBalances,
-            activityContext
-              ? { applyAccountCagrStartDate: false, activityContext }
-              : { applyAccountCagrStartDate: false }
-          );
-          if (fundingSummary) {
-            accountFundingSummaries[context.account.id] = fundingSummary;
-            const netDepositsCad =
-              fundingSummary && fundingSummary.netDeposits
-                ? fundingSummary.netDeposits.combinedCad
-                : null;
-            if (Number.isFinite(netDepositsCad)) {
-              aggregateTotals.netDepositsCad += netDepositsCad;
-              aggregateTotals.netDepositsCount += 1;
-            }
-
-            const totalPnlCad =
-              fundingSummary && fundingSummary.totalPnl ? fundingSummary.totalPnl.combinedCad : null;
-            if (Number.isFinite(totalPnlCad)) {
-              aggregateTotals.totalPnlCad += totalPnlCad;
-              aggregateTotals.totalPnlCount += 1;
-            }
-
-            const totalEquityCad = fundingSummary ? fundingSummary.totalEquityCad : null;
-            if (Number.isFinite(totalEquityCad)) {
-              aggregateTotals.totalEquityCad += totalEquityCad;
-              aggregateTotals.totalEquityCount += 1;
-            }
-
-            if (Array.isArray(fundingSummary.cashFlowsCad)) {
-              fundingSummary.cashFlowsCad.forEach((entry) => {
-                if (!entry || typeof entry !== 'object') {
-                  return;
-                }
-                const amount = Number(entry.amount);
-                if (!Number.isFinite(amount) || Math.abs(amount) < CASH_FLOW_EPSILON) {
-                  return;
-                }
-                let isoDate = null;
-                if (entry.date instanceof Date) {
-                  isoDate = entry.date.toISOString();
-                } else if (typeof entry.date === 'string' && entry.date.trim()) {
-                  const parsed = new Date(entry.date);
-                  if (!Number.isNaN(parsed.getTime())) {
-                    isoDate = parsed.toISOString();
-                  }
-                } else if (entry.timestamp instanceof Date) {
-                  isoDate = entry.timestamp.toISOString();
-                } else if (typeof entry.timestamp === 'string' && entry.timestamp.trim()) {
-                  const parsedTimestamp = new Date(entry.timestamp);
-                  if (!Number.isNaN(parsedTimestamp.getTime())) {
-                    isoDate = parsedTimestamp.toISOString();
-                  }
-                }
-                if (!isoDate) {
-                  return;
-                }
-                aggregateTotals.cashFlowsCad.push({ amount, date: isoDate });
-              });
-            }
-
-            if (
-              fundingSummary &&
-              fundingSummary.annualizedReturn &&
-              fundingSummary.annualizedReturn.incomplete
-            ) {
-              aggregateTotals.incomplete = true;
-            }
+      const perAccountFunding = await mapWithConcurrency(
+        selectedContexts,
+        MAX_AGGREGATE_FUNDING_CONCURRENCY,
+        async function (context) {
+          let activityContext = null;
+          try {
+            activityContext = await ensureAccountActivityContext(context);
+          } catch (activityError) {
+            const activityMessage =
+              activityError && activityError.message ? activityError.message : String(activityError);
+            console.warn(
+              'Failed to prepare activity history for account ' + context.account.id + ':',
+              activityMessage
+            );
           }
-        } catch (fundingError) {
-          const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
-          console.warn(
-            'Failed to compute net deposits for account ' + context.account.id + ':',
-            message
-          );
+
+          let fundingSummary = null;
+          try {
+            fundingSummary = await computeNetDeposits(
+              context.login,
+              context.account,
+              perAccountCombinedBalances,
+              activityContext
+                ? { applyAccountCagrStartDate: false, activityContext }
+                : { applyAccountCagrStartDate: false }
+            );
+          } catch (fundingError) {
+            const message = fundingError && fundingError.message ? fundingError.message : String(fundingError);
+            console.warn(
+              'Failed to compute net deposits for account ' + context.account.id + ':',
+              message
+            );
+          }
+
+          return { context, fundingSummary };
         }
-      }
+      );
+
+      perAccountFunding.forEach(function (result) {
+        const context = result && result.context;
+        const fundingSummary = result && result.fundingSummary;
+        if (!context || !fundingSummary) {
+          return;
+        }
+
+        accountFundingSummaries[context.account.id] = fundingSummary;
+        const netDepositsCad =
+          fundingSummary && fundingSummary.netDeposits ? fundingSummary.netDeposits.combinedCad : null;
+        if (Number.isFinite(netDepositsCad)) {
+          aggregateTotals.netDepositsCad += netDepositsCad;
+          aggregateTotals.netDepositsCount += 1;
+        }
+
+        const totalPnlCad =
+          fundingSummary && fundingSummary.totalPnl ? fundingSummary.totalPnl.combinedCad : null;
+        if (Number.isFinite(totalPnlCad)) {
+          aggregateTotals.totalPnlCad += totalPnlCad;
+          aggregateTotals.totalPnlCount += 1;
+        }
+
+        const totalEquityCad = fundingSummary ? fundingSummary.totalEquityCad : null;
+        if (Number.isFinite(totalEquityCad)) {
+          aggregateTotals.totalEquityCad += totalEquityCad;
+          aggregateTotals.totalEquityCount += 1;
+        }
+
+        if (Array.isArray(fundingSummary.cashFlowsCad)) {
+          fundingSummary.cashFlowsCad.forEach((entry) => {
+            if (!entry || typeof entry !== 'object') {
+              return;
+            }
+            const amount = Number(entry.amount);
+            if (!Number.isFinite(amount) || Math.abs(amount) < CASH_FLOW_EPSILON) {
+              return;
+            }
+            let isoDate = null;
+            if (entry.date instanceof Date) {
+              isoDate = entry.date.toISOString();
+            } else if (typeof entry.date === 'string' && entry.date.trim()) {
+              const parsed = new Date(entry.date);
+              if (!Number.isNaN(parsed.getTime())) {
+                isoDate = parsed.toISOString();
+              }
+            } else if (entry.timestamp instanceof Date) {
+              isoDate = entry.timestamp.toISOString();
+            } else if (typeof entry.timestamp === 'string' && entry.timestamp.trim()) {
+              const parsedTimestamp = new Date(entry.timestamp);
+              if (!Number.isNaN(parsedTimestamp.getTime())) {
+                isoDate = parsedTimestamp.toISOString();
+              }
+            }
+            if (!isoDate) {
+              return;
+            }
+            aggregateTotals.cashFlowsCad.push({ amount, date: isoDate });
+          });
+        }
+
+        if (fundingSummary.annualizedReturn && fundingSummary.annualizedReturn.incomplete) {
+          aggregateTotals.incomplete = true;
+        }
+      });
 
       const aggregateEntry = {};
       if (aggregateTotals.netDepositsCount > 0) {

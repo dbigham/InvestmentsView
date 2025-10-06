@@ -8,6 +8,7 @@ client/dist/
 server/token-store.json
 server/accounts.json
 server/account-beneficiaries.json
+server/earliest-funding-cache.json
 server/data/qqq-cache/
 .cache/
 vendor/TQQQ/
