@@ -3167,6 +3167,37 @@ app.get('/api/summary', async function (req, res) {
       }
     }
 
+    if (selectedContexts.length > 1) {
+      for (const context of selectedContexts) {
+        let activityContext = null;
+        try {
+          activityContext = await buildAccountActivityContext(context.login, context.account);
+        } catch (activityError) {
+          const activityMessage =
+            activityError && activityError.message ? activityError.message : String(activityError);
+          console.warn(
+            'Failed to prepare activity history for account ' + context.account.id + ':',
+            activityMessage
+          );
+        }
+
+        try {
+          const dividendSummary = await computeDividendBreakdown(context.login, context.account, {
+            activityContext,
+          });
+          if (dividendSummary) {
+            accountDividendSummaries[context.account.id] = dividendSummary;
+          }
+        } catch (dividendError) {
+          const message = dividendError && dividendError.message ? dividendError.message : String(dividendError);
+          console.warn(
+            'Failed to compute dividends for account ' + context.account.id + ':',
+            message
+          );
+        }
+      }
+    }
+
     Object.values(accountFundingSummaries).forEach((entry) => {
       if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsCad')) {
         delete entry.cashFlowsCad;
