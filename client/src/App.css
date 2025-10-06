@@ -1801,6 +1801,24 @@ textarea {
   cursor: pointer;
 }
 
+.positions-card__tabs button.positions-card__tab--attention {
+  color: var(--color-accent);
+}
+
+.positions-card__tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.positions-card__tab-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-surface);
+}
+
 .positions-card__tabs button.active {
   color: var(--color-accent);
 }

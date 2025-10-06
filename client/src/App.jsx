@@ -101,6 +101,70 @@ function resolveAccountModelsForDisplay(account) {
   return [fallbackEntry];
 }
 
+function getAccountLabel(account) {
+  if (!account || typeof account !== 'object') {
+    return '';
+  }
+  const displayName = typeof account.displayName === 'string' ? account.displayName.trim() : '';
+  if (displayName) {
+    return displayName;
+  }
+  const name = typeof account.name === 'string' ? account.name.trim() : '';
+  if (name) {
+    return name;
+  }
+  const number = typeof account.number === 'string' ? account.number.trim() : '';
+  if (number) {
+    return number;
+  }
+  return '';
+}
+
+function normalizeModelAction(action) {
+  if (!action) {
+    return '';
+  }
+  const raw = String(action).trim().toLowerCase();
+  if (!raw) {
+    return '';
+  }
+  return raw.replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isRebalanceAction(action) {
+  const normalized = normalizeModelAction(action);
+  return normalized.includes('rebalance');
+}
+
+function isHoldAction(action) {
+  const normalized = normalizeModelAction(action);
+  return normalized === '' || normalized === 'hold';
+}
+
+function getModelActionPriority(action) {
+  if (isRebalanceAction(action)) {
+    return 0;
+  }
+  if (isHoldAction(action)) {
+    return 2;
+  }
+  return 1;
+}
+
+function getModelSectionPriority(section) {
+  if (!section || typeof section !== 'object') {
+    return 2;
+  }
+  const basePriority = getModelActionPriority(section.evaluationAction);
+  if (basePriority === 2) {
+    const status = section.evaluationStatus;
+    if (status && status !== 'ok') {
+      return 1;
+    }
+  }
+  return basePriority;
+}
+
 function formatQuantity(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '—';
@@ -2167,6 +2231,11 @@ export default function App() {
     }
     return Array.from(accountsById.keys());
   }, [filteredAccountIds, accountsById]);
+  const accountsInView = useMemo(() => {
+    const candidateIds =
+      filteredAccountIds.length > 0 ? filteredAccountIds : Array.from(accountsById.keys());
+    return candidateIds.filter((accountId) => accountId && accountsById.has(accountId));
+  }, [filteredAccountIds, accountsById]);
   const selectedAccount = useMemo(() => {
     if (activeAccountId === 'default') {
       if (filteredAccountIds.length === 1) {
@@ -2323,20 +2392,12 @@ export default function App() {
   const hasDividendSummary = Boolean(selectedAccountDividends);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
 
-  useEffect(() => {
-    if (portfolioViewTab !== 'positions' && portfolioViewTab !== 'dividends') {
-      setPortfolioViewTab('positions');
-      return;
-    }
-    if (portfolioViewTab === 'dividends' && !hasDividendSummary) {
-      setPortfolioViewTab('positions');
-    }
-  }, [portfolioViewTab, hasDividendSummary, setPortfolioViewTab]);
-
   const positionsTabId = 'portfolio-tab-positions';
   const dividendsTabId = 'portfolio-tab-dividends';
+  const modelsTabId = 'portfolio-tab-models';
   const positionsPanelId = 'portfolio-panel-positions';
   const dividendsPanelId = 'portfolio-panel-dividends';
+  const modelsPanelId = 'portfolio-panel-models';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const a1ReferenceAccount = useMemo(() => {
     if (!accounts.length) {
@@ -2704,53 +2765,141 @@ export default function App() {
 
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
-  const selectedAccountModels = useMemo(() => {
-    if (!selectedAccountInfo) {
-      return [];
+  const investmentModelsForView = useMemo(() => {
+    if (selectedAccount === 'all') {
+      if (!accountsInView.length) {
+        return [];
+      }
+      return accountsInView.reduce((accumulator, accountId) => {
+        const account = accountsById.get(accountId);
+        if (!account) {
+          return accumulator;
+        }
+        const models = resolveAccountModelsForDisplay(account);
+        if (!models.length) {
+          return accumulator;
+        }
+        const accountLabel = getAccountLabel(account);
+        models.forEach((model) => {
+          accumulator.push({
+            ...model,
+            accountId,
+            accountLabel,
+          });
+        });
+        return accumulator;
+      }, []);
     }
-    return resolveAccountModelsForDisplay(selectedAccountInfo);
-  }, [selectedAccountInfo]);
-  const selectedAccountEvaluationMap = useMemo(() => {
+
     if (!selectedAccountInfo?.id) {
-      return EMPTY_OBJECT;
-    }
-    const bucket = investmentModelEvaluations[selectedAccountInfo.id];
-    if (!bucket || typeof bucket !== 'object') {
-      return EMPTY_OBJECT;
-    }
-    return bucket;
-  }, [selectedAccountInfo, investmentModelEvaluations]);
-  const investmentModelSections = useMemo(() => {
-    if (!selectedAccountModels.length) {
       return [];
     }
-    return selectedAccountModels.map((model) => {
+
+    const accountLabel = getAccountLabel(selectedAccountInfo);
+    return resolveAccountModelsForDisplay(selectedAccountInfo).map((model) => ({
+      ...model,
+      accountId: selectedAccountInfo.id,
+      accountLabel,
+    }));
+  }, [selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
+  const investmentModelSections = useMemo(() => {
+    if (!investmentModelsForView.length) {
+      return [];
+    }
+
+    const sections = investmentModelsForView.map((model) => {
       const modelKey = typeof model.model === 'string' ? model.model.trim() : '';
+      const normalizedKey = modelKey.toUpperCase();
       let evaluation = null;
-      if (modelKey) {
-        evaluation = selectedAccountEvaluationMap[modelKey] || null;
-        if (!evaluation) {
-          const normalizedKey = modelKey.toUpperCase();
-          const fallbackKey = Object.keys(selectedAccountEvaluationMap).find(
-            (key) => String(key || '').toUpperCase() === normalizedKey
-          );
-          if (fallbackKey) {
-            evaluation = selectedAccountEvaluationMap[fallbackKey] || null;
+      if (model.accountId) {
+        const bucket = investmentModelEvaluations[model.accountId];
+        if (bucket && typeof bucket === 'object') {
+          if (modelKey && bucket[modelKey]) {
+            evaluation = bucket[modelKey];
+          }
+          if (!evaluation && modelKey) {
+            const fallbackKey = Object.keys(bucket).find(
+              (key) => String(key || '').toUpperCase() === normalizedKey
+            );
+            if (fallbackKey) {
+              evaluation = bucket[fallbackKey];
+            }
           }
         }
       }
+
       const chartKey = buildInvestmentModelChartKey(model);
       const chartState = chartKey && investmentModelCharts[chartKey] ? investmentModelCharts[chartKey] : null;
+      const evaluationAction =
+        evaluation?.data?.decision?.action ?? evaluation?.decision?.action ?? evaluation?.action ?? null;
+      const evaluationStatus = evaluation?.status ?? null;
+      const accountLabel = model.accountLabel || getAccountLabel(accountsById.get(model.accountId));
+      const modelLabel = model.title
+        ? model.title
+        : modelKey
+        ? `${modelKey} Investment Model`
+        : 'Investment Model';
+      const displayTitle = selectedAccount === 'all' && accountLabel ? `${accountLabel} — ${modelLabel}` : modelLabel;
+
       return {
         ...model,
-        evaluation,
+        accountLabel,
         chartKey,
         chart: chartState || { data: null, loading: false, error: null },
+        evaluation,
+        evaluationAction,
+        evaluationStatus,
+        displayTitle,
       };
     });
-  }, [selectedAccountModels, selectedAccountEvaluationMap, investmentModelCharts]);
+
+    sections.sort((sectionA, sectionB) => {
+      const priorityDiff = getModelSectionPriority(sectionA) - getModelSectionPriority(sectionB);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      if (selectedAccount === 'all') {
+        const accountCompare = (sectionA.accountLabel || '').localeCompare(sectionB.accountLabel || '', undefined, {
+          sensitivity: 'base',
+        });
+        if (accountCompare !== 0) {
+          return accountCompare;
+        }
+      }
+      return (sectionA.model || '').localeCompare(sectionB.model || '', undefined, { sensitivity: 'base' });
+    });
+
+    return sections;
+  }, [
+    investmentModelsForView,
+    investmentModelEvaluations,
+    investmentModelCharts,
+    selectedAccount,
+    accountsById,
+  ]);
   const shouldShowInvestmentModels = investmentModelSections.length > 0;
-  const shouldShowQqqDetails = shouldShowInvestmentModels || Boolean(selectedAccountInfo?.showQQQDetails);
+  const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
+  const modelsRequireAttention = useMemo(() => {
+    if (!shouldShowInvestmentModels) {
+      return false;
+    }
+    return investmentModelSections.some((section) => getModelSectionPriority(section) === 0);
+  }, [shouldShowInvestmentModels, investmentModelSections]);
+  const showModelsPanel = shouldShowInvestmentModels && portfolioViewTab === 'models';
+
+  useEffect(() => {
+    if (portfolioViewTab !== 'positions' && portfolioViewTab !== 'dividends' && portfolioViewTab !== 'models') {
+      setPortfolioViewTab('positions');
+      return;
+    }
+    if (portfolioViewTab === 'dividends' && !hasDividendSummary) {
+      setPortfolioViewTab(shouldShowInvestmentModels ? 'models' : 'positions');
+      return;
+    }
+    if (portfolioViewTab === 'models' && !shouldShowInvestmentModels) {
+      setPortfolioViewTab(hasDividendSummary ? 'dividends' : 'positions');
+    }
+  }, [portfolioViewTab, hasDividendSummary, shouldShowInvestmentModels, setPortfolioViewTab]);
 
   const showingAllAccounts = selectedAccount === 'all';
 
@@ -2925,7 +3074,7 @@ export default function App() {
     if (!shouldShowInvestmentModels) {
       return;
     }
-    selectedAccountModels.forEach((model) => {
+    investmentModelsForView.forEach((model) => {
       const chartKey = buildInvestmentModelChartKey(model);
       if (!chartKey) {
         return;
@@ -2938,7 +3087,7 @@ export default function App() {
     });
   }, [
     shouldShowInvestmentModels,
-    selectedAccountModels,
+    investmentModelsForView,
     investmentModelCharts,
     fetchInvestmentModelChart,
   ]);
@@ -3421,48 +3570,16 @@ export default function App() {
         )}
 
         {showContent && shouldShowQqqDetails && (
-          <>
-            {shouldShowInvestmentModels
-              ? investmentModelSections.map((section, index) => {
-                  const modelKey = section.model || '';
-                  const derivedTitle = section.title
-                    ? section.title
-                    : modelKey
-                    ? `${modelKey} Investment Model`
-                    : 'Investment Model';
-                  const mapKey = modelKey || section.title || `investment-model-${index}`;
-                  const chartState = section.chart || { data: null, loading: false, error: null };
-                  const retryHandler =
-                    section.chartKey && typeof handleRetryInvestmentModelChart === 'function'
-                      ? () => handleRetryInvestmentModelChart(section)
-                      : null;
-                  return (
-                    <QqqTemperatureSection
-                      key={mapKey}
-                      data={chartState.data}
-                      loading={chartState.loading}
-                      error={chartState.error}
-                      onRetry={retryHandler}
-                      title={derivedTitle}
-                      modelName={modelKey || null}
-                      lastRebalance={section.lastRebalance || null}
-                      evaluation={section.evaluation || null}
-                    />
-                  );
-                })
-              : (
-                  <QqqTemperatureSection
-                    data={qqqData}
-                    loading={qqqLoading}
-                    error={qqqError}
-                    onRetry={handleRetryQqqDetails}
-                    title="QQQ temperature"
-                    modelName={null}
-                    lastRebalance={null}
-                    evaluation={null}
-                  />
-                )}
-          </>
+          <QqqTemperatureSection
+            data={qqqData}
+            loading={qqqLoading}
+            error={qqqError}
+            onRetry={handleRetryQqqDetails}
+            title="QQQ temperature"
+            modelName={null}
+            lastRebalance={null}
+            evaluation={null}
+          />
         )}
 
         {showContent && (
@@ -3491,6 +3608,32 @@ export default function App() {
                     onClick={() => setPortfolioViewTab('dividends')}
                   >
                     Dividends
+                  </button>
+                ) : null}
+                {shouldShowInvestmentModels ? (
+                  <button
+                    type="button"
+                    id={modelsTabId}
+                    role="tab"
+                    aria-selected={portfolioViewTab === 'models'}
+                    aria-controls={modelsPanelId}
+                    className={[
+                      portfolioViewTab === 'models' ? 'active' : '',
+                      modelsRequireAttention ? 'positions-card__tab--attention' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onClick={() => setPortfolioViewTab('models')}
+                  >
+                    <span className="positions-card__tab-label">
+                      Models
+                      {modelsRequireAttention ? (
+                        <>
+                          <span className="positions-card__tab-indicator" aria-hidden="true" />
+                          <span className="visually-hidden"> — action required</span>
+                        </>
+                      ) : null}
+                    </span>
                   </button>
                 ) : null}
               </div>
@@ -3522,6 +3665,37 @@ export default function App() {
                 hidden={!showDividendsPanel}
               >
                 <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
+              </div>
+            ) : null}
+            {shouldShowInvestmentModels ? (
+              <div
+                id={modelsPanelId}
+                role="tabpanel"
+                aria-labelledby={modelsTabId}
+                hidden={!showModelsPanel}
+              >
+                {investmentModelSections.map((section, index) => {
+                  const modelKey = section.model || '';
+                  const chartState = section.chart || { data: null, loading: false, error: null };
+                  const mapKey = `${section.accountId || 'account'}-${section.chartKey || modelKey || index}`;
+                  const retryHandler =
+                    section.chartKey && typeof handleRetryInvestmentModelChart === 'function'
+                      ? () => handleRetryInvestmentModelChart(section)
+                      : null;
+                  return (
+                    <QqqTemperatureSection
+                      key={mapKey}
+                      data={chartState.data}
+                      loading={chartState.loading}
+                      error={chartState.error}
+                      onRetry={retryHandler}
+                      title={section.displayTitle || null}
+                      modelName={modelKey || null}
+                      lastRebalance={section.lastRebalance || null}
+                      evaluation={section.evaluation || null}
+                    />
+                  );
+                })}
               </div>
             ) : null}
           </section>
