@@ -1822,9 +1822,22 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
   const balanceSummary = perAccountCombinedBalances ? perAccountCombinedBalances[account.id] : null;
   const balanceFingerprint = computeBalanceFingerprint(balanceSummary);
   const cagrKey = options && options.applyAccountCagrStartDate ? 'cagr:1' : 'cagr:0';
+  const cagrDateKey =
+    options && options.applyAccountCagrStartDate && typeof account.cagrStartDate === 'string'
+      ? 'cagrDate:' + account.cagrStartDate.trim()
+      : 'cagrDate:none';
   const adjustment = Number(account.netDepositAdjustment);
   const adjustmentKey = Number.isFinite(adjustment) ? 'adj:' + adjustment.toFixed(2) : 'adj:none';
-  return [loginId, accountId, tradingDay, fingerprint, balanceFingerprint, cagrKey, adjustmentKey].join('|');
+  return [
+    loginId,
+    accountId,
+    tradingDay,
+    fingerprint,
+    balanceFingerprint,
+    cagrKey,
+    cagrDateKey,
+    adjustmentKey,
+  ].join('|');
 }
 
 function pruneNetDepositsCache() {
