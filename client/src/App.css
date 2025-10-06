@@ -2302,7 +2302,13 @@ button.time-pill:hover .time-pill__icon {
 }
 
 .dividends-card--panel .dividends-card__table-wrapper {
-  padding: 0 24px 12px;
+  padding: 0 0 12px;
+}
+
+.dividends-card--panel .dividends-table thead th,
+.dividends-card--panel .dividends-table tbody td {
+  padding-left: 24px;
+  padding-right: 24px;
 }
 
 .dividends-card--panel .dividends-card__empty {
@@ -2310,7 +2316,7 @@ button.time-pill:hover .time-pill__icon {
 }
 
 .dividends-card--panel .dividends-card__footer {
-  padding: 12px 24px 0;
+  padding: 12px 24px;
 }
 
 .dividends-card__header {
@@ -2402,6 +2408,24 @@ button.time-pill:hover .time-pill__icon {
   color: var(--color-text-primary);
 }
 
+.dividends-table thead th:first-child,
+.dividends-table__cell--symbol {
+  width: 30%;
+  min-width: 216px;
+}
+
+.dividends-table thead th:nth-child(5) {
+  width: 20%;
+  min-width: 140px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.dividends-table tbody td:nth-child(5) {
+  width: 20%;
+  min-width: 140px;
+}
+
 .dividends-table__cell--numeric {
   text-align: right;
 }
@@ -2440,6 +2464,10 @@ button.time-pill:hover .time-pill__icon {
   border-top: 1px solid var(--color-divider);
   font-size: 0.85rem;
   color: var(--color-text-secondary);
+}
+
+.dividends-card__footer--flush {
+  border-top: none;
 }
 
 .dividends-card__footer-label {
