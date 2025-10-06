@@ -15,6 +15,30 @@ function buildQqqTemperatureUrl() {
   return url.toString();
 }
 
+function buildInvestmentModelTemperatureUrl(params) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/investment-model-temperature', base);
+  if (params && typeof params.model === 'string' && params.model.trim()) {
+    url.searchParams.set('model', params.model.trim());
+  }
+  if (params && typeof params.startDate === 'string' && params.startDate.trim()) {
+    url.searchParams.set('startDate', params.startDate.trim());
+  }
+  if (params && typeof params.endDate === 'string' && params.endDate.trim()) {
+    url.searchParams.set('endDate', params.endDate.trim());
+  }
+  if (params && typeof params.symbol === 'string' && params.symbol.trim()) {
+    url.searchParams.set('symbol', params.symbol.trim());
+  }
+  if (params && typeof params.leveragedSymbol === 'string' && params.leveragedSymbol.trim()) {
+    url.searchParams.set('leveragedSymbol', params.leveragedSymbol.trim());
+  }
+  if (params && typeof params.reserveSymbol === 'string' && params.reserveSymbol.trim()) {
+    url.searchParams.set('reserveSymbol', params.reserveSymbol.trim());
+  }
+  return url.toString();
+}
+
 function buildQuoteUrl(symbol) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/quote', base);
@@ -39,6 +63,35 @@ export async function getQqqTemperature() {
     const text = await response.text();
     throw new Error(text || 'Failed to load QQQ temperature data');
   }
+  return response.json();
+}
+
+export async function getInvestmentModelTemperature(params) {
+  const model = params && typeof params.model === 'string' ? params.model.trim() : '';
+  if (!model) {
+    throw new Error('Model is required');
+  }
+
+  const response = await fetch(buildInvestmentModelTemperatureUrl({ ...params, model }));
+  if (!response.ok) {
+    let message = 'Failed to load investment model chart';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse investment model chart error response', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read investment model chart error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
   return response.json();
 }
 

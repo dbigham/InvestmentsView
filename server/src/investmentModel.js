@@ -236,7 +236,9 @@ function ensureBridgeAvailable() {
   throw new InvestmentModelError(instructions, { code: 'BRIDGE_NOT_FOUND' });
 }
 
-function evaluateInvestmentModel(payload) {
+function executeBridgeRequest(payload, options) {
+  const contextLabel = options && options.contextLabel ? options.contextLabel : 'Investment model';
+
   return new Promise((resolve, reject) => {
     let location;
     try {
@@ -267,9 +269,23 @@ function evaluateInvestmentModel(payload) {
       return;
     }
 
-    const args = []
-      .concat(pythonInvocation.argsPrefix || [])
-      .concat([SCRIPT_NAME, '--integration-request', '-']);
+    let args;
+    try {
+      const builtArgs =
+        options && typeof options.buildArgs === 'function'
+          ? options.buildArgs({ location, pythonInvocation })
+          : [];
+      if (!Array.isArray(builtArgs)) {
+        throw new InvestmentModelError('Bridge configuration must return an argument array.', {
+          code: 'INVALID_CONFIGURATION',
+        });
+      }
+      args = [].concat(pythonInvocation.argsPrefix || [], builtArgs);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
     const child = spawn(pythonInvocation.command, args, {
       cwd: location.root,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -304,11 +320,11 @@ function evaluateInvestmentModel(payload) {
         const payloadForLog = serialized.length > 5000 ? serialized.slice(0, 5000) + '... (truncated)' : serialized;
         const fredKey = process.env.FRED_API_KEY || '';
         const fredSummary = fredKey ? 'present (ends ' + fredKey.slice(-4) + ')' : 'missing';
-        console.error('Investment model request payload:', payloadForLog);
+        console.error(contextLabel + ' request payload:', payloadForLog);
         console.error('FRED_API_KEY:', fredSummary);
         reject(
           new InvestmentModelError(
-            'Investment model bridge exited with status ' + code + (details ? ': ' + details : ''),
+            contextLabel + ' bridge exited with status ' + code + (details ? ': ' + details : ''),
             { code: 'NON_ZERO_EXIT' }
           )
         );
@@ -318,7 +334,7 @@ function evaluateInvestmentModel(payload) {
       const output = stdout.trim();
       if (!output) {
         reject(
-          new InvestmentModelError('Investment model bridge produced no output.', {
+          new InvestmentModelError(contextLabel + ' bridge produced no output.', {
             code: 'EMPTY_RESPONSE',
           })
         );
@@ -341,10 +357,10 @@ function evaluateInvestmentModel(payload) {
           const secondaryError = fallbackError instanceof Error ? fallbackError : new Error(String(fallbackError));
           const responseForLog = output.length > 5000 ? output.slice(0, 5000) + '... (truncated)' : output;
           const sanitizedForLog = sanitized.length > 5000 ? sanitized.slice(0, 5000) + '... (truncated)' : sanitized;
-          console.error('Investment model sanitized response:', sanitizedForLog);
-          console.error('Investment model raw response:', responseForLog);
+          console.error(contextLabel + ' sanitized response:', sanitizedForLog);
+          console.error(contextLabel + ' raw response:', responseForLog);
           reject(
-            new InvestmentModelError('Failed to parse investment model response. Raw output: ' + responseForLog, {
+            new InvestmentModelError('Failed to parse ' + contextLabel.toLowerCase() + ' response. Raw output: ' + responseForLog, {
               code: 'PARSE_ERROR',
               cause: secondaryError,
               rawOutput: output,
@@ -360,8 +376,33 @@ function evaluateInvestmentModel(payload) {
   });
 }
 
+function evaluateInvestmentModel(payload) {
+  return executeBridgeRequest(payload, {
+    contextLabel: 'Investment model',
+    buildArgs: () => [SCRIPT_NAME, '--integration-request', '-'],
+  });
+}
+
+const TEMPERATURE_CHART_SCRIPT = [
+  'import json',
+  'import sys',
+  'from strategy_tqqq_reserve import evaluate_temperature_chart_request',
+  'payload = json.load(sys.stdin)',
+  'response = evaluate_temperature_chart_request(payload)',
+  'json.dump(response, sys.stdout)',
+  'sys.stdout.write("\\n")',
+].join('; ');
+
+function evaluateInvestmentModelTemperatureChart(payload) {
+  return executeBridgeRequest(payload, {
+    contextLabel: 'Investment model temperature',
+    buildArgs: () => ['-c', TEMPERATURE_CHART_SCRIPT],
+  });
+}
+
 module.exports = {
   evaluateInvestmentModel,
+  evaluateInvestmentModelTemperatureChart,
   InvestmentModelError,
   resolveBridgeLocation,
   resolvePythonInvocation,

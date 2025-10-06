@@ -176,6 +176,113 @@ function applyInvestmentModelSetting(target, key, value) {
   container.investmentModel = normalized;
 }
 
+function normalizeInvestmentModelSymbol(value) {
+  if (value == null) {
+    return null;
+  }
+  const normalized = String(value).trim().toUpperCase();
+  return normalized || null;
+}
+
+function normalizeInvestmentModelEntry(value) {
+  if (value == null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const modelOnly = normalizeModelKey(value);
+    return modelOnly ? { model: modelOnly.toUpperCase() } : null;
+  }
+
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  const modelCandidate =
+    value.model ?? value.experiment ?? value.id ?? value.key ?? value.name ?? value.title;
+  const normalizedModel = normalizeModelKey(modelCandidate);
+  if (!normalizedModel) {
+    return null;
+  }
+
+  const entry = { model: normalizedModel.toUpperCase() };
+
+  const symbolCandidate = value.symbol ?? value.baseSymbol ?? value.base_symbol;
+  const normalizedSymbol = normalizeInvestmentModelSymbol(symbolCandidate);
+  if (normalizedSymbol) {
+    entry.symbol = normalizedSymbol;
+  }
+
+  const leveragedCandidate =
+    value.leveragedSymbol ?? value.leveraged_symbol ?? value.leveraged ?? value.leveragedsymbol;
+  const normalizedLeveraged = normalizeInvestmentModelSymbol(leveragedCandidate);
+  if (normalizedLeveraged) {
+    entry.leveragedSymbol = normalizedLeveraged;
+  }
+
+  const reserveCandidate = value.reserveSymbol ?? value.reserve_symbol ?? value.reserve;
+  const normalizedReserve = normalizeInvestmentModelSymbol(reserveCandidate);
+  if (normalizedReserve) {
+    entry.reserveSymbol = normalizedReserve;
+  }
+
+  const normalizedLastRebalance = normalizeDateOnly(
+    value.lastRebalance ?? value.last_rebalance ?? value.last_rebalance_date
+  );
+  if (normalizedLastRebalance) {
+    entry.lastRebalance = normalizedLastRebalance;
+  }
+
+  if (typeof value.title === 'string' && value.title.trim()) {
+    entry.title = value.title.trim();
+  } else if (typeof value.label === 'string' && value.label.trim()) {
+    entry.title = value.label.trim();
+  }
+
+  return entry;
+}
+
+function normalizeInvestmentModels(value) {
+  if (value == null) {
+    return [];
+  }
+
+  const source = Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  const normalized = [];
+
+  source.forEach((entry) => {
+    const normalizedEntry = normalizeInvestmentModelEntry(entry);
+    if (!normalizedEntry || !normalizedEntry.model) {
+      return;
+    }
+    const key = normalizedEntry.model.toUpperCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    normalized.push(normalizedEntry);
+  });
+
+  return normalized;
+}
+
+function applyInvestmentModelsSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeInvestmentModels(value);
+  if (!normalized.length) {
+    delete container.investmentModels;
+    return;
+  }
+  container.investmentModels = normalized;
+  if (!container.investmentModel && normalized[0] && normalized[0].model) {
+    container.investmentModel = normalized[0].model;
+  }
+}
+
 function applyNetDepositAdjustmentSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -428,6 +535,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'investmentModel')) {
       applyInvestmentModelSetting(settingsTarget, resolvedKey, entry.investmentModel);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'investmentModels')) {
+      applyInvestmentModelsSetting(settingsTarget, resolvedKey, entry.investmentModels);
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'lastRebalance')) {
       applyLastRebalanceSetting(settingsTarget, resolvedKey, entry.lastRebalance);
