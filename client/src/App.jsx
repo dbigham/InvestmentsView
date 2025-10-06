@@ -1711,12 +1711,37 @@ function normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency = 
 }
 
 
+function extractBalanceBuckets(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return [];
+  }
+
+  const buckets = [];
+  if (summary.combined && typeof summary.combined === 'object') {
+    buckets.push(summary.combined);
+  }
+  if (summary.perCurrency && typeof summary.perCurrency === 'object') {
+    buckets.push(summary.perCurrency);
+  }
+  if (!buckets.length) {
+    buckets.push(summary);
+  }
+  return buckets;
+}
+
 function resolveAccountTotalInBase(combined, currencyRates, baseCurrency = 'CAD') {
   if (!combined || typeof combined !== 'object') {
     return 0;
   }
 
   const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+
+  const bucketSources = extractBalanceBuckets(combined).filter(
+    (bucket) => bucket && typeof bucket === 'object'
+  );
+  if (!bucketSources.length) {
+    return 0;
+  }
 
   const pickBaseTotal = (entry) => {
     if (!entry || typeof entry !== 'object') {
@@ -1737,33 +1762,57 @@ function resolveAccountTotalInBase(combined, currencyRates, baseCurrency = 'CAD'
     return null;
   };
 
-  const baseKey = Object.keys(combined).find((key) => key && key.toUpperCase() === normalizedBase);
-  if (baseKey) {
-    const resolved = pickBaseTotal(combined[baseKey]);
-    if (resolved !== null) {
-      return resolved;
+  for (const bucket of bucketSources) {
+    const baseKey = Object.keys(bucket).find((key) => key && key.toUpperCase() === normalizedBase);
+    if (baseKey) {
+      const resolved = pickBaseTotal(bucket[baseKey]);
+      if (resolved !== null) {
+        return resolved;
+      }
     }
   }
 
-  for (const entryKey of Object.keys(combined)) {
-    const resolved = pickBaseTotal(combined[entryKey]);
-    if (resolved !== null) {
-      return resolved;
+  for (const bucket of bucketSources) {
+    for (const entryKey of Object.keys(bucket)) {
+      const resolved = pickBaseTotal(bucket[entryKey]);
+      if (resolved !== null) {
+        return resolved;
+      }
     }
   }
 
   let fallbackTotal = 0;
+  const seenCurrencies = new Set();
 
-  Object.entries(combined).forEach(([currency, values]) => {
-    if (!values || typeof values !== 'object') {
-      return;
-    }
-    const reference =
-      values.totalEquity ?? values.marketValue ?? values.cash ?? values.buyingPower ?? null;
-    if (!isFiniteNumber(reference)) {
-      return;
-    }
-    fallbackTotal += normalizeCurrencyAmount(reference, currency, currencyRates, baseCurrency);
+  bucketSources.forEach((bucket) => {
+    Object.entries(bucket).forEach(([currencyKey, values]) => {
+      if (!values || typeof values !== 'object') {
+        return;
+      }
+      const reference =
+        values.totalEquity ?? values.marketValue ?? values.cash ?? values.buyingPower ?? null;
+      if (!isFiniteNumber(reference)) {
+        return;
+      }
+
+      const entryCurrency =
+        typeof values.currency === 'string' && values.currency.trim()
+          ? values.currency.trim().toUpperCase()
+          : typeof currencyKey === 'string' && currencyKey.trim()
+            ? currencyKey.trim().toUpperCase()
+            : null;
+
+      const seenKey = entryCurrency || currencyKey;
+      if (seenKey) {
+        const normalizedKey = String(seenKey).toUpperCase();
+        if (seenCurrencies.has(normalizedKey)) {
+          return;
+        }
+        seenCurrencies.add(normalizedKey);
+      }
+
+      fallbackTotal += normalizeCurrencyAmount(reference, entryCurrency, currencyRates, baseCurrency);
+    });
   });
 
   return fallbackTotal;
@@ -1776,22 +1825,31 @@ function resolveAccountPnlInBase(combined, field, currencyRates, baseCurrency = 
 
   const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
 
+  const bucketSources = extractBalanceBuckets(combined).filter(
+    (bucket) => bucket && typeof bucket === 'object'
+  );
+  if (!bucketSources.length) {
+    return 0;
+  }
+
   let total = 0;
-  Object.entries(combined).forEach(([currencyKey, values]) => {
-    if (!values || typeof values !== 'object') {
-      return;
-    }
-    const amount = coerceNumber(values[field]);
-    if (amount === null) {
-      return;
-    }
-    const entryCurrency =
-      typeof values.currency === 'string' && values.currency.trim()
-        ? values.currency.toUpperCase()
-        : typeof currencyKey === 'string' && currencyKey.trim()
-          ? currencyKey.toUpperCase()
-          : normalizedBase;
-    total += normalizeCurrencyAmount(amount, entryCurrency, currencyRates, baseCurrency);
+  bucketSources.forEach((bucket) => {
+    Object.entries(bucket).forEach(([currencyKey, values]) => {
+      if (!values || typeof values !== 'object') {
+        return;
+      }
+      const amount = coerceNumber(values[field]);
+      if (amount === null) {
+        return;
+      }
+      const entryCurrency =
+        typeof values.currency === 'string' && values.currency.trim()
+          ? values.currency.trim().toUpperCase()
+          : typeof currencyKey === 'string' && currencyKey.trim()
+            ? currencyKey.trim().toUpperCase()
+            : normalizedBase;
+      total += normalizeCurrencyAmount(amount, entryCurrency, currencyRates, baseCurrency);
+    });
   });
 
   return total;
