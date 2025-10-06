@@ -35,7 +35,7 @@ const RETURN_BREAKDOWN_PERIODS = [
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
-const tokenFilePath = path.join(process.cwd(), 'token-store.json');
+const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
 
 let yahooFinance = null;
 let yahooFinanceLoadError = null;
@@ -348,7 +348,7 @@ allLogins.forEach((login) => {
   loginsById[login.id] = login;
 });
 
-const EARLIEST_FUNDING_CACHE_PATH = path.join(process.cwd(), 'earliest-funding-cache.json');
+const EARLIEST_FUNDING_CACHE_PATH = path.join(__dirname, '..', 'earliest-funding-cache.json');
 const EARLIEST_FUNDING_CACHE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 const earliestFundingPromises = new Map();
 
@@ -762,7 +762,7 @@ const DEBUG_XIRR = process.env.DEBUG_XIRR === 'true';
 const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
-const ACTIVITIES_CACHE_DIR = path.join(process.cwd(), '.cache', 'activities');
+const ACTIVITIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'activities');
 
 const activitiesMemoryCache = new Map();
 let activitiesCacheDirEnsured = false;
