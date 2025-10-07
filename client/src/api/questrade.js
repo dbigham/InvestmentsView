@@ -39,6 +39,18 @@ function buildInvestmentModelTemperatureUrl(params) {
   return url.toString();
 }
 
+function buildBenchmarkReturnsUrl(params) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/benchmark-returns', base);
+  if (params && typeof params.startDate === 'string' && params.startDate.trim()) {
+    url.searchParams.set('startDate', params.startDate.trim());
+  }
+  if (params && typeof params.endDate === 'string' && params.endDate.trim()) {
+    url.searchParams.set('endDate', params.endDate.trim());
+  }
+  return url.toString();
+}
+
 function buildQuoteUrl(symbol) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/quote', base);
@@ -116,6 +128,36 @@ export async function getQuote(symbol) {
         }
       } catch (nestedError) {
         console.warn('Failed to read quote error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function getBenchmarkReturns(params) {
+  const startDate = params && typeof params.startDate === 'string' ? params.startDate.trim() : '';
+  if (!startDate) {
+    throw new Error('startDate is required');
+  }
+
+  const endDate = params && typeof params.endDate === 'string' ? params.endDate.trim() : '';
+  const response = await fetch(buildBenchmarkReturnsUrl({ startDate, endDate }));
+  if (!response.ok) {
+    let message = 'Failed to load benchmark returns';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse benchmark returns error response as JSON', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read benchmark returns error response', nestedError);
       }
     }
     throw new Error(message);

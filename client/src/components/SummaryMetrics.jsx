@@ -5,6 +5,7 @@ import {
   classifyPnL,
   formatMoney,
   formatNumber,
+  formatPercent,
   formatSignedMoney,
   formatSignedPercent,
 } from '../utils/formatters';
@@ -281,6 +282,7 @@ export default function SummaryMetrics({
   showQqqTemperature,
   qqqSummary,
   onShowInvestmentModel,
+  benchmarkComparison,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -373,6 +375,108 @@ export default function SummaryMetrics({
   const dayPercent = formatPnlPercent(pnl?.dayPnl);
   const openPercent = formatPnlPercent(pnl?.openPnl);
   const totalPercent = formatPnlPercent(totalPnlValue);
+
+  const benchmarkStatus = benchmarkComparison?.status || 'idle';
+  const benchmarkData = benchmarkComparison?.data || null;
+
+  const describePeriodLength = (startIso, endIso) => {
+    if (!startIso) {
+      return null;
+    }
+    const start = new Date(`${startIso}T00:00:00Z`);
+    const effectiveEndIso = endIso || startIso;
+    const end = new Date(`${effectiveEndIso}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return null;
+    }
+    const diffMs = end.getTime() - start.getTime();
+    if (!Number.isFinite(diffMs) || diffMs < 0) {
+      return null;
+    }
+    const totalDays = diffMs / (1000 * 60 * 60 * 24);
+    const approxYears = totalDays / 365.25;
+    if (approxYears >= 1) {
+      const roundedYears = Math.round(approxYears * 10) / 10;
+      if (!Number.isFinite(roundedYears) || roundedYears <= 0) {
+        return null;
+      }
+      const formattedYears = roundedYears.toFixed(1).replace(/\.0$/, '');
+      if (formattedYears === '1') {
+        return '1 year';
+      }
+      return `${formattedYears} years`;
+    }
+    const approxMonths = totalDays / (365.25 / 12);
+    let roundedMonths = Math.round(approxMonths);
+    if (!Number.isFinite(roundedMonths)) {
+      return null;
+    }
+    if (roundedMonths <= 0 && totalDays > 0) {
+      roundedMonths = 1;
+    }
+    if (roundedMonths <= 0) {
+      return '0 months';
+    }
+    return `${roundedMonths} month${roundedMonths === 1 ? '' : 's'}`;
+  };
+
+  const totalExtraPercent = totalPercent ? `(${totalPercent})` : null;
+
+  let detailLines = [];
+  if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
+    detailLines = ['Benchmarks: Loading…'];
+  } else if (benchmarkStatus === 'error') {
+    detailLines = ['Benchmarks: Unavailable'];
+  } else if (benchmarkData) {
+    const { sp500, qqq, interestRate, startDate, endDate } = benchmarkData;
+    const qqqLabel = qqq?.name || 'QQQ';
+    const spLabel = sp500?.name || 'S&P 500';
+    const qqqValue = Number.isFinite(qqq?.returnRate)
+      ? formatSignedPercent(qqq.returnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : '—';
+    const spValue = Number.isFinite(sp500?.returnRate)
+      ? formatSignedPercent(sp500.returnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : '—';
+    const hasPeriodReturn = Number.isFinite(interestRate?.periodReturn);
+    const interestBase = hasPeriodReturn
+      ? interestRate.periodReturn
+      : Number.isFinite(interestRate?.averageRate)
+        ? interestRate.averageRate
+        : null;
+    const interestValue = Number.isFinite(interestBase)
+      ? formatPercent(interestBase * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : '—';
+    detailLines = [
+      `${qqqLabel}: ${qqqValue}`,
+      `${spLabel}: ${spValue}`,
+      `Interest: ${interestValue}`,
+    ];
+    const periodLabel = describePeriodLength(startDate, endDate);
+    if (periodLabel) {
+      detailLines.push(periodLabel);
+    }
+  }
+
+  const hasDetailLines = detailLines.length > 0;
+
+  const totalDetailBlock = hasDetailLines ? (
+    <div className="total-pnl-details">
+      {detailLines.map((line, index) => (
+        <span key={`total-detail-line-${index}`} className="total-pnl-details__line">
+          {line}
+        </span>
+      ))}
+    </div>
+  ) : null;
 
   return (
     <section className="equity-card">
@@ -487,9 +591,11 @@ export default function SummaryMetrics({
           <MetricRow
             label="Total P&L"
             value={formattedTotal}
-            extra={totalPercent ? `(${totalPercent})` : null}
+            extra={totalExtraPercent}
             tone={totalTone}
+            className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
           />
+          {totalDetailBlock}
           <MetricRow
             label="Annualized return"
             tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
@@ -551,6 +657,8 @@ SummaryMetrics.propTypes = {
     annualizedReturnAsOf: PropTypes.string,
     annualizedReturnIncomplete: PropTypes.bool,
     annualizedReturnStartDate: PropTypes.string,
+    periodStartDate: PropTypes.string,
+    periodEndDate: PropTypes.string,
     returnBreakdown: PropTypes.arrayOf(
       PropTypes.shape({
         period: PropTypes.string,
@@ -584,6 +692,45 @@ SummaryMetrics.propTypes = {
     message: PropTypes.string,
   }),
   onShowInvestmentModel: PropTypes.func,
+  benchmarkComparison: PropTypes.shape({
+    status: PropTypes.string,
+    data: PropTypes.shape({
+      startDate: PropTypes.string,
+      endDate: PropTypes.string,
+      sp500: PropTypes.shape({
+        name: PropTypes.string,
+        symbol: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        startPrice: PropTypes.number,
+        endPrice: PropTypes.number,
+        returnRate: PropTypes.number,
+        source: PropTypes.string,
+      }),
+      qqq: PropTypes.shape({
+        name: PropTypes.string,
+        symbol: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        startPrice: PropTypes.number,
+        endPrice: PropTypes.number,
+        returnRate: PropTypes.number,
+        source: PropTypes.string,
+      }),
+      interestRate: PropTypes.shape({
+        name: PropTypes.string,
+        symbol: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        averageRate: PropTypes.number,
+        periodReturn: PropTypes.number,
+        periodDays: PropTypes.number,
+        dataPoints: PropTypes.number,
+        source: PropTypes.string,
+      }),
+    }),
+    error: PropTypes.instanceOf(Error),
+  }),
 };
 
 SummaryMetrics.defaultProps = {
@@ -608,4 +755,5 @@ SummaryMetrics.defaultProps = {
   qqqSummary: null,
   fundingSummary: null,
   onShowInvestmentModel: null,
+  benchmarkComparison: null,
 };

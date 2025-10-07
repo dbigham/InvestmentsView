@@ -1552,6 +1552,28 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.equity-card__metric-row--total-with-details {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.total-pnl-details {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  gap: 2px;
+  padding: 6px 0 12px;
+  border-bottom: 1px dotted var(--color-border-strong);
+}
+
+.total-pnl-details__line {
+  display: block;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
 .pnl-heatmap-overlay {
   position: fixed;
   inset: 0;

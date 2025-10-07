@@ -84,6 +84,20 @@ function ensureYahooFinanceClient() {
 const QUOTE_CACHE_TTL_SECONDS = 60;
 const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
 
+const BENCHMARK_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+const benchmarkReturnCache = new Map();
+const interestRateCache = new Map();
+
+const BENCHMARK_SYMBOLS = {
+  sp500: { symbol: '^GSPC', name: 'S&P 500' },
+  qqq: { symbol: 'QQQ', name: 'QQQ' },
+};
+
+const INTEREST_RATE_SERIES = {
+  symbol: '^IRX',
+  name: '13-Week Treasury Bill Yield',
+};
+
 function resolveLoginDisplay(login) {
   if (!login) {
     return null;
@@ -215,6 +229,281 @@ function normalizeDateOnly(value) {
     }
   }
   return null;
+}
+
+function getBenchmarkCacheKey(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+  return [symbol, startDate, endDate].join('|');
+}
+
+function getCachedBenchmarkReturn(cacheKey) {
+  if (!cacheKey) {
+    return { hit: false };
+  }
+  const entry = benchmarkReturnCache.get(cacheKey);
+  if (!entry) {
+    return { hit: false };
+  }
+  if (Date.now() - entry.cachedAt > BENCHMARK_CACHE_MAX_AGE_MS) {
+    benchmarkReturnCache.delete(cacheKey);
+    return { hit: false };
+  }
+  return { hit: true, value: entry.value };
+}
+
+function setCachedBenchmarkReturn(cacheKey, value) {
+  if (!cacheKey) {
+    return;
+  }
+  benchmarkReturnCache.set(cacheKey, { value, cachedAt: Date.now() });
+}
+
+function getInterestRateCacheKey(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+  return [symbol, startDate, endDate].join('|');
+}
+
+function getCachedInterestRate(cacheKey) {
+  if (!cacheKey) {
+    return { hit: false };
+  }
+  const entry = interestRateCache.get(cacheKey);
+  if (!entry) {
+    return { hit: false };
+  }
+  if (Date.now() - entry.cachedAt > BENCHMARK_CACHE_MAX_AGE_MS) {
+    interestRateCache.delete(cacheKey);
+    return { hit: false };
+  }
+  return { hit: true, value: entry.value };
+}
+
+function setCachedInterestRate(cacheKey, value) {
+  if (!cacheKey) {
+    return;
+  }
+  interestRateCache.set(cacheKey, { value, cachedAt: Date.now() });
+}
+
+async function computeBenchmarkReturn(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+
+  const cacheKey = getBenchmarkCacheKey(symbol, startDate, endDate);
+  if (cacheKey) {
+    const cached = getCachedBenchmarkReturn(cacheKey);
+    if (cached.hit) {
+      return cached.value;
+    }
+  }
+
+  const finance = ensureYahooFinanceClient();
+
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null;
+  }
+
+  const exclusiveEnd = addDays(end, 1) || end;
+
+  const history = await finance.historical(symbol, {
+    period1: start,
+    period2: exclusiveEnd,
+    interval: '1d',
+  });
+
+  const normalized = Array.isArray(history)
+    ? history
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const entryDate =
+            entry.date instanceof Date && !Number.isNaN(entry.date.getTime())
+              ? entry.date
+              : typeof entry.date === 'string'
+                ? new Date(entry.date)
+                : null;
+          if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+            return null;
+          }
+          const adjClose = Number(entry.adjClose);
+          const close = Number(entry.close);
+          const price = Number.isFinite(adjClose)
+            ? adjClose
+            : Number.isFinite(close)
+              ? close
+              : Number.NaN;
+          if (!Number.isFinite(price) || price <= 0) {
+            return null;
+          }
+          return { date: entryDate, price };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.date - b.date)
+    : [];
+
+  if (!normalized.length) {
+    if (cacheKey) {
+      setCachedBenchmarkReturn(cacheKey, null);
+    }
+    return null;
+  }
+
+  const first = normalized[0];
+  const last = normalized[normalized.length - 1];
+
+  if (!first || !last || !Number.isFinite(first.price) || !Number.isFinite(last.price) || first.price <= 0) {
+    if (cacheKey) {
+      setCachedBenchmarkReturn(cacheKey, null);
+    }
+    return null;
+  }
+
+  const growth = (last.price - first.price) / first.price;
+  const payload = {
+    symbol,
+    startDate: formatDateOnly(first.date),
+    endDate: formatDateOnly(last.date),
+    startPrice: first.price,
+    endPrice: last.price,
+    returnRate: Number.isFinite(growth) ? growth : null,
+    source: 'yahoo-finance2',
+  };
+
+  if (cacheKey) {
+    setCachedBenchmarkReturn(cacheKey, payload);
+  }
+
+  return payload;
+}
+
+async function computeAverageInterestRate(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+
+  const cacheKey = getInterestRateCacheKey(symbol, startDate, endDate);
+  if (cacheKey) {
+    const cached = getCachedInterestRate(cacheKey);
+    if (cached.hit) {
+      return cached.value;
+    }
+  }
+
+  const finance = ensureYahooFinanceClient();
+
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null;
+  }
+
+  const exclusiveEnd = addDays(end, 1) || end;
+
+  const history = await finance.historical(symbol, {
+    period1: start,
+    period2: exclusiveEnd,
+    interval: '1d',
+  });
+
+  const normalized = Array.isArray(history)
+    ? history
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const entryDate =
+            entry.date instanceof Date && !Number.isNaN(entry.date.getTime())
+              ? entry.date
+              : typeof entry.date === 'string'
+                ? new Date(entry.date)
+                : null;
+          if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+            return null;
+          }
+          const adjClose = Number(entry.adjClose);
+          const close = Number(entry.close);
+          const rate = Number.isFinite(adjClose)
+            ? adjClose
+            : Number.isFinite(close)
+              ? close
+              : Number.NaN;
+          if (!Number.isFinite(rate)) {
+            return null;
+          }
+          return { date: entryDate, rate };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.date - b.date)
+    : [];
+
+  if (!normalized.length) {
+    if (cacheKey) {
+      setCachedInterestRate(cacheKey, null);
+    }
+    return null;
+  }
+
+  const sum = normalized.reduce((total, entry) => total + entry.rate, 0);
+  const averagePercent = Number.isFinite(sum) ? sum / normalized.length : Number.NaN;
+  const averageRate = Number.isFinite(averagePercent) ? averagePercent / 100 : null;
+
+  const requestedStart = new Date(`${startDate}T00:00:00Z`);
+  const requestedEnd = new Date(`${endDate}T00:00:00Z`);
+  const fallbackStart = normalized[0]?.date || null;
+  const fallbackEnd = normalized[normalized.length - 1]?.date || null;
+
+  let periodDays = null;
+  if (requestedStart instanceof Date && !Number.isNaN(requestedStart.getTime()) && requestedEnd instanceof Date && !Number.isNaN(requestedEnd.getTime())) {
+    const diffMs = requestedEnd.getTime() - requestedStart.getTime();
+    if (Number.isFinite(diffMs) && diffMs >= 0) {
+      periodDays = diffMs / DAY_IN_MS;
+    }
+  }
+
+  if (periodDays === null && fallbackStart instanceof Date && fallbackEnd instanceof Date) {
+    const diffMs = fallbackEnd.getTime() - fallbackStart.getTime();
+    if (Number.isFinite(diffMs) && diffMs >= 0) {
+      periodDays = diffMs / DAY_IN_MS;
+    }
+  }
+
+  let periodReturn = null;
+  if (Number.isFinite(periodDays) && periodDays >= 0 && Number.isFinite(averageRate)) {
+    const periodYears = periodDays / 365.25;
+    if (periodYears > 0) {
+      const growth = Math.pow(1 + averageRate, periodYears) - 1;
+      if (Number.isFinite(growth)) {
+        periodReturn = growth;
+      }
+    } else {
+      periodReturn = 0;
+    }
+  }
+
+  const payload = {
+    symbol,
+    startDate: formatDateOnly(normalized[0].date),
+    endDate: formatDateOnly(normalized[normalized.length - 1].date),
+    averageRate,
+    periodReturn,
+    periodDays: Number.isFinite(periodDays) ? periodDays : null,
+    dataPoints: normalized.length,
+    source: 'yahoo-finance2',
+  };
+
+  if (cacheKey) {
+    setCachedInterestRate(cacheKey, payload);
+  }
+
+  return payload;
 }
 
 function normalizeInvestmentModelConfig(raw) {
@@ -2391,6 +2680,33 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     annualizedReturn.startDate = appliedCagrStartDate.toISOString().slice(0, 10);
   }
 
+  let normalizedPeriodStart = null;
+  let normalizedPeriodEnd = formatDateOnly(now);
+  if (!normalizedPeriodEnd && typeof nowIsoString === 'string' && nowIsoString.trim()) {
+    normalizedPeriodEnd = nowIsoString.slice(0, 10);
+  }
+
+  if (Array.isArray(effectiveCashFlows)) {
+    for (const entry of effectiveCashFlows) {
+      const entryDate = parseCashFlowEntryDate(entry);
+      if (entryDate && (!normalizedPeriodStart || entryDate < new Date(`${normalizedPeriodStart}T00:00:00Z`))) {
+        normalizedPeriodStart = formatDateOnly(entryDate);
+      }
+    }
+  }
+
+  if (!normalizedPeriodStart && earliestFunding instanceof Date && !Number.isNaN(earliestFunding.getTime())) {
+    normalizedPeriodStart = formatDateOnly(earliestFunding);
+  }
+
+  if (normalizedPeriodStart && normalizedPeriodEnd) {
+    const startDateObj = new Date(`${normalizedPeriodStart}T00:00:00Z`);
+    const endDateObj = new Date(`${normalizedPeriodEnd}T00:00:00Z`);
+    if (Number.isNaN(startDateObj.getTime()) || Number.isNaN(endDateObj.getTime()) || startDateObj > endDateObj) {
+      normalizedPeriodStart = null;
+    }
+  }
+
   return {
     netDeposits: {
       perCurrency: perCurrencyObject,
@@ -2409,6 +2725,8 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
             netDepositsCad: accountAdjustment,
           }
         : undefined,
+    periodStartDate: normalizedPeriodStart || undefined,
+    periodEndDate: normalizedPeriodEnd || undefined,
   };
 }
 
@@ -3291,6 +3609,69 @@ app.get('/api/quote', async function (req, res) {
   }
 });
 
+app.get('/api/benchmark-returns', async function (req, res) {
+  const rawStart = typeof req.query.startDate === 'string' ? req.query.startDate : '';
+  const rawEnd = typeof req.query.endDate === 'string' ? req.query.endDate : '';
+
+  const normalizedStart = normalizeDateOnly(rawStart);
+  if (!normalizedStart) {
+    return res.status(400).json({ message: 'Query parameter "startDate" is required' });
+  }
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  let normalizedEnd = normalizeDateOnly(rawEnd) || todayIso;
+  if (normalizedEnd > todayIso) {
+    normalizedEnd = todayIso;
+  }
+
+  const startDateObj = new Date(`${normalizedStart}T00:00:00Z`);
+  const endDateObj = new Date(`${normalizedEnd}T00:00:00Z`);
+  if (Number.isNaN(startDateObj.getTime()) || Number.isNaN(endDateObj.getTime())) {
+    return res.status(400).json({ message: 'Invalid date range specified' });
+  }
+  if (startDateObj > endDateObj) {
+    return res.status(400).json({ message: 'startDate must be on or before endDate' });
+  }
+
+  try {
+    const [sp500Return, qqqReturn, interestRate] = await Promise.all([
+      computeBenchmarkReturn(BENCHMARK_SYMBOLS.sp500.symbol, normalizedStart, normalizedEnd),
+      computeBenchmarkReturn(BENCHMARK_SYMBOLS.qqq.symbol, normalizedStart, normalizedEnd),
+      computeAverageInterestRate(INTEREST_RATE_SERIES.symbol, normalizedStart, normalizedEnd),
+    ]);
+
+    return res.json({
+      startDate: normalizedStart,
+      endDate: normalizedEnd,
+      sp500: sp500Return
+        ? {
+            name: BENCHMARK_SYMBOLS.sp500.name,
+            ...sp500Return,
+          }
+        : null,
+      qqq: qqqReturn
+        ? {
+            name: BENCHMARK_SYMBOLS.qqq.name,
+            ...qqqReturn,
+          }
+        : null,
+      interestRate: interestRate
+        ? {
+            name: INTEREST_RATE_SERIES.name,
+            ...interestRate,
+          }
+        : null,
+    });
+  } catch (error) {
+    if (error && error.code === 'MISSING_DEPENDENCY') {
+      return res.status(503).json({ message: error.message });
+    }
+    const message = error && error.message ? error.message : 'Unknown error';
+    console.error('Failed to compute benchmark returns:', message);
+    return res.status(500).json({ message: 'Failed to compute benchmark returns', details: message });
+  }
+});
+
 app.get('/api/qqq-temperature', async function (req, res) {
   try {
     const summary = await getQqqTemperatureSummary();
@@ -3925,6 +4306,40 @@ app.get('/api/summary', async function (req, res) {
 
       if (aggregateTotals.cashFlowsCad.length > 0) {
         const aggregateAsOf = new Date().toISOString();
+        const aggregatePeriodEnd = aggregateAsOf.slice(0, 10);
+        let aggregatePeriodStartDate = null;
+        for (const entry of aggregateTotals.cashFlowsCad) {
+          const entryDate = parseCashFlowEntryDate(entry);
+          if (
+            entryDate &&
+            (!aggregatePeriodStartDate || entryDate < aggregatePeriodStartDate) &&
+            entryDate instanceof Date &&
+            !Number.isNaN(entryDate.getTime())
+          ) {
+            aggregatePeriodStartDate = entryDate;
+          }
+        }
+        let formattedAggregateStart = null;
+        if (aggregatePeriodStartDate) {
+          formattedAggregateStart = formatDateOnly(aggregatePeriodStartDate);
+        }
+        if (formattedAggregateStart && aggregatePeriodEnd) {
+          const startDateObj = new Date(`${formattedAggregateStart}T00:00:00Z`);
+          const endDateObj = new Date(`${aggregatePeriodEnd}T00:00:00Z`);
+          if (
+            Number.isNaN(startDateObj.getTime()) ||
+            Number.isNaN(endDateObj.getTime()) ||
+            startDateObj > endDateObj
+          ) {
+            formattedAggregateStart = null;
+          }
+        }
+        if (formattedAggregateStart) {
+          aggregateEntry.periodStartDate = formattedAggregateStart;
+        }
+        if (aggregatePeriodEnd) {
+          aggregateEntry.periodEndDate = aggregatePeriodEnd;
+        }
         let aggregateRate = null;
         if (!aggregateTotals.incomplete) {
           const computedRate = computeAccountAnnualizedReturn(aggregateTotals.cashFlowsCad, 'all');
