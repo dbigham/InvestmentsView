@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
+import TodoSummary from './components/TodoSummary';
 import PositionsTable from './components/PositionsTable';
 import {
   getSummary,
@@ -1127,6 +1128,244 @@ function buildCashBreakdownForCurrency({ currency, accountIds, accountsById, acc
   };
 }
 
+const TODO_CASH_THRESHOLD = 10;
+const TODO_AMOUNT_EPSILON = 0.009;
+const TODO_AMOUNT_TOLERANCE = 0.01;
+const TODO_TYPE_ORDER = { rebalance: 0, cash: 1 };
+
+function buildTodoItems({ accountIds, accountsById, accountBalances, investmentModelSections }) {
+  if (!Array.isArray(accountIds) || accountIds.length === 0) {
+    return [];
+  }
+
+  const uniqueAccountIds = Array.from(
+    new Set(
+      accountIds
+        .map((accountId) => {
+          if (accountId === null || accountId === undefined) {
+            return null;
+          }
+          const normalized = String(accountId).trim();
+          return normalized || null;
+        })
+        .filter(Boolean)
+    )
+  );
+
+  if (!uniqueAccountIds.length) {
+    return [];
+  }
+
+  const sectionsByAccount = new Map();
+  if (Array.isArray(investmentModelSections)) {
+    investmentModelSections.forEach((section) => {
+      if (!section || typeof section !== 'object') {
+        return;
+      }
+      const rawAccountId = section.accountId ?? null;
+      if (rawAccountId === undefined || rawAccountId === null) {
+        return;
+      }
+      const normalizedAccountId = String(rawAccountId).trim();
+      if (!normalizedAccountId) {
+        return;
+      }
+      if (!sectionsByAccount.has(normalizedAccountId)) {
+        sectionsByAccount.set(normalizedAccountId, []);
+      }
+      sectionsByAccount.get(normalizedAccountId).push(section);
+    });
+  }
+
+  const items = [];
+
+  uniqueAccountIds.forEach((accountId) => {
+    const account = accountsById && typeof accountsById.get === 'function' ? accountsById.get(accountId) : null;
+    let accountLabel = getAccountLabel(account);
+    if (typeof accountLabel === 'string') {
+      accountLabel = accountLabel.trim();
+    }
+    if (!accountLabel) {
+      accountLabel = accountId;
+    }
+
+    const balanceSummary = normalizeAccountBalanceSummary(
+      accountBalances && typeof accountBalances === 'object' ? accountBalances[accountId] : null
+    );
+    if (balanceSummary) {
+      ['CAD', 'USD'].forEach((currency) => {
+        const cashValue = resolveCashForCurrency(balanceSummary, currency);
+        if (
+          Number.isFinite(cashValue) &&
+          cashValue > 0 &&
+          cashValue >= TODO_CASH_THRESHOLD - TODO_AMOUNT_EPSILON
+        ) {
+          items.push({
+            id: `cash:${accountId}:${currency}`,
+            type: 'cash',
+            accountId,
+            accountLabel,
+            currency,
+            amount: cashValue,
+          });
+        }
+      });
+    }
+
+    const sections = sectionsByAccount.get(accountId) || [];
+    let accountRebalanceIndex = 0;
+    sections.forEach((section) => {
+      if (!section || typeof section !== 'object') {
+        return;
+      }
+      if (!isRebalanceAction(section.evaluationAction)) {
+        return;
+      }
+      const title =
+        (typeof section.title === 'string' && section.title.trim()) ||
+        (typeof section.model === 'string' && section.model.trim()
+          ? `${section.model.trim()} Investment Model`
+          : 'Investment Model');
+      const lastRebalance =
+        typeof section.lastRebalance === 'string' && section.lastRebalance.trim()
+          ? section.lastRebalance.trim()
+          : null;
+      const identifierSource =
+        (typeof section.model === 'string' && section.model.trim()) ||
+        (typeof section.chartKey === 'string' && section.chartKey.trim()) ||
+        (typeof section.title === 'string' && section.title.trim()) ||
+        `model-${accountRebalanceIndex}`;
+      accountRebalanceIndex += 1;
+      const modelName = typeof section.model === 'string' ? section.model.trim() : '';
+      const chartKey = typeof section.chartKey === 'string' ? section.chartKey.trim() : '';
+
+      items.push({
+        id: `rebalance:${accountId}:${identifierSource}`,
+        type: 'rebalance',
+        accountId,
+        accountLabel,
+        modelLabel: title,
+        lastRebalance,
+        model: modelName || null,
+        chartKey: chartKey || null,
+      });
+    });
+  });
+
+  items.sort((itemA, itemB) => {
+    const labelA = typeof itemA.accountLabel === 'string' ? itemA.accountLabel : '';
+    const labelB = typeof itemB.accountLabel === 'string' ? itemB.accountLabel : '';
+    if (labelA && labelB) {
+      const accountCompare = labelA.localeCompare(labelB, undefined, { sensitivity: 'base' });
+      if (accountCompare !== 0) {
+        return accountCompare;
+      }
+    } else if (labelA) {
+      return -1;
+    } else if (labelB) {
+      return 1;
+    }
+
+    const typeOrderA = TODO_TYPE_ORDER[itemA.type] ?? 99;
+    const typeOrderB = TODO_TYPE_ORDER[itemB.type] ?? 99;
+    if (typeOrderA !== typeOrderB) {
+      return typeOrderA - typeOrderB;
+    }
+
+    if (itemA.type === 'cash' && itemB.type === 'cash') {
+      const currencyCompare = (itemA.currency || '').localeCompare(itemB.currency || '', undefined, {
+        sensitivity: 'base',
+      });
+      if (currencyCompare !== 0) {
+        return currencyCompare;
+      }
+      return (itemB.amount || 0) - (itemA.amount || 0);
+    }
+
+    if (itemA.type === 'rebalance' && itemB.type === 'rebalance') {
+      return (itemA.modelLabel || '').localeCompare(itemB.modelLabel || '', undefined, {
+        sensitivity: 'base',
+      });
+    }
+
+    return (itemA.id || '').localeCompare(itemB.id || '', undefined, { sensitivity: 'base' });
+  });
+
+  return items;
+}
+
+function amountsApproximatelyEqual(a, b, tolerance = TODO_AMOUNT_TOLERANCE) {
+  const numericA = Number(a);
+  const numericB = Number(b);
+  const hasA = Number.isFinite(numericA);
+  const hasB = Number.isFinite(numericB);
+  if (!hasA && !hasB) {
+    return true;
+  }
+  if (!hasA || !hasB) {
+    return false;
+  }
+  return Math.abs(numericA - numericB) <= tolerance;
+}
+
+function areTodoListsEqual(listA, listB) {
+  if (listA === listB) {
+    return true;
+  }
+  if (!Array.isArray(listA) || !Array.isArray(listB)) {
+    return false;
+  }
+  if (listA.length !== listB.length) {
+    return false;
+  }
+  for (let index = 0; index < listA.length; index += 1) {
+    const itemA = listA[index];
+    const itemB = listB[index];
+    if (!itemA && !itemB) {
+      continue;
+    }
+    if (!itemA || !itemB) {
+      return false;
+    }
+    if ((itemA.id || '') !== (itemB.id || '')) {
+      return false;
+    }
+    if ((itemA.type || '') !== (itemB.type || '')) {
+      return false;
+    }
+    if ((itemA.accountId || '') !== (itemB.accountId || '')) {
+      return false;
+    }
+    if ((itemA.accountLabel || '') !== (itemB.accountLabel || '')) {
+      return false;
+    }
+    if (itemA.type === 'cash') {
+      if ((itemA.currency || '') !== (itemB.currency || '')) {
+        return false;
+      }
+      if (!amountsApproximatelyEqual(itemA.amount, itemB.amount)) {
+        return false;
+      }
+    } else if (itemA.type === 'rebalance') {
+      if ((itemA.modelLabel || '') !== (itemB.modelLabel || '')) {
+        return false;
+      }
+      if ((itemA.lastRebalance || '') !== (itemB.lastRebalance || '')) {
+        return false;
+      }
+      if ((itemA.model || '') !== (itemB.model || '')) {
+        return false;
+      }
+      if ((itemA.chartKey || '') !== (itemB.chartKey || '')) {
+        return false;
+      }
+    } else if ((itemA.title || '') !== (itemB.title || '')) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function findPositionDetails(positions, symbol) {
   if (!Array.isArray(positions) || !symbol) {
     return null;
@@ -1158,6 +1397,37 @@ function findPositionDetails(positions, symbol) {
   }
 
   return null;
+}
+
+function positionsAlignedWithAccount(positions, accountId) {
+  if (!accountId) {
+    return true;
+  }
+
+  if (!Array.isArray(positions)) {
+    return false;
+  }
+
+  const normalizedAccountId = String(accountId);
+
+  for (const position of positions) {
+    if (!position) {
+      continue;
+    }
+
+    const rowId = typeof position.rowId === 'string' ? position.rowId : '';
+    if (rowId.startsWith('all:')) {
+      return false;
+    }
+
+    if (position.accountId !== undefined && position.accountId !== null) {
+      if (String(position.accountId) !== normalizedAccountId) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 const DLR_SHARE_VALUE_USD = 10;
@@ -2251,6 +2521,8 @@ export default function App() {
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
+  const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
+  const [pendingTodoAction, setPendingTodoAction] = useState(null);
   const [activeInvestmentModelDialog, setActiveInvestmentModelDialog] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
@@ -3549,68 +3821,152 @@ export default function App() {
   const isRefreshing = loading && hasData;
   const showContent = hasData;
 
-  const getSummaryText = useCallback(() => {
+  const todoAccountIds = useMemo(() => {
+    if (!showContent) {
+      return [];
+    }
+    if (selectedAccount === 'all') {
+      if (!accountsInView.length) {
+        return [];
+      }
+      return accountsInView.map((accountId) => String(accountId));
+    }
+    if (selectedAccountInfo?.id) {
+      return [String(selectedAccountInfo.id)];
+    }
+    if (selectedAccount && selectedAccount !== 'all' && accountsById.has(selectedAccount)) {
+      return [String(selectedAccount)];
+    }
+    return [];
+  }, [showContent, selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
+
+  const todoScopeKey = useMemo(() => {
     if (!showContent) {
       return null;
     }
+    if (selectedAccount === 'all') {
+      if (!accountsInView.length) {
+        return null;
+      }
+      const sorted = [...accountsInView]
+        .map((accountId) => String(accountId))
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      return `all:${sorted.join(',')}`;
+    }
+    const directAccountId =
+      (selectedAccountInfo?.id && String(selectedAccountInfo.id)) ||
+      (selectedAccount && selectedAccount !== 'all' && accountsById.has(selectedAccount)
+        ? String(selectedAccount)
+        : null);
+    return directAccountId ? `account:${directAccountId}` : null;
+  }, [showContent, selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
 
-    return buildClipboardSummary({
-      selectedAccountId: selectedAccount,
-      accounts,
-      balances: activeBalances,
-      displayTotalEquity,
-      usdToCadRate,
-      pnl: activePnl,
-      positions: orderedPositions,
-      asOf,
-      currencyOption: activeCurrency,
+  const computeTodos = useCallback(() => {
+    if (!todoAccountIds.length) {
+      return [];
+    }
+    return buildTodoItems({
+      accountIds: todoAccountIds,
+      accountsById,
+      accountBalances,
+      investmentModelSections,
     });
-  }, [
-    showContent,
-    selectedAccount,
-    accounts,
-    activeBalances,
-    displayTotalEquity,
-    usdToCadRate,
-    activePnl,
-    orderedPositions,
-    asOf,
-    activeCurrency,
-  ]);
+  }, [todoAccountIds, accountsById, accountBalances, investmentModelSections]);
 
-  const handleCopySummary = useCallback(async () => {
-    const text = getSummaryText();
-    if (!text) {
+  useEffect(() => {
+    if (!showContent) {
+      setTodoState((prev) => {
+        if (!prev.items.length && !prev.checked && prev.scopeKey === null) {
+          return prev;
+        }
+        return { items: [], checked: false, scopeKey: null };
+      });
+      return;
+    }
+    if (!todoScopeKey) {
+      setTodoState((prev) => {
+        if (prev.scopeKey === null && !prev.items.length && !prev.checked) {
+          return prev;
+        }
+        return { items: [], checked: false, scopeKey: null };
+      });
+      return;
+    }
+    if (selectedAccount === 'all') {
+      const items = computeTodos();
+      setTodoState((prev) => {
+        if (prev.scopeKey === todoScopeKey && prev.checked && areTodoListsEqual(prev.items, items)) {
+          return prev;
+        }
+        return { items, checked: true, scopeKey: todoScopeKey };
+      });
+      return;
+    }
+    setTodoState((prev) => {
+      if (prev.scopeKey !== todoScopeKey) {
+        return { items: [], checked: false, scopeKey: todoScopeKey };
+      }
+      if (!prev.checked) {
+        return prev;
+      }
+      const items = computeTodos();
+      if (areTodoListsEqual(prev.items, items)) {
+        return prev;
+      }
+      return { ...prev, items };
+    });
+  }, [showContent, selectedAccount, todoScopeKey, computeTodos]);
+
+  const handleCheckTodos = useCallback(async () => {
+    if (!todoScopeKey) {
+      setTodoState((prev) => {
+        if (prev.scopeKey === null && !prev.items.length && !prev.checked) {
+          return prev;
+        }
+        return { items: [], checked: false, scopeKey: null };
+      });
+      return;
+    }
+    const items = computeTodos();
+    setTodoState((prev) => {
+      if (prev.scopeKey === todoScopeKey && prev.checked && areTodoListsEqual(prev.items, items)) {
+        return prev;
+      }
+      return { items, checked: true, scopeKey: todoScopeKey };
+    });
+  }, [computeTodos, todoScopeKey]);
+
+  const todoItems = todoState.items || [];
+
+  const handleTodoItemSelect = useCallback((item) => {
+    if (!item || typeof item !== 'object') {
       return;
     }
 
-    try {
-      await copyTextToClipboard(text);
-    } catch (error) {
-      console.error('Failed to copy account summary', error);
-    }
-  }, [getSummaryText]);
-
-  const handleEstimateFutureCagr = useCallback(async () => {
-    if (typeof window !== 'undefined') {
-      window.open(CHATGPT_ESTIMATE_URL, '_blank', 'noopener');
-    }
-
-    const summary = getSummaryText();
-    if (!summary) {
+    const normalizedType = typeof item.type === 'string' ? item.type.trim().toLowerCase() : '';
+    if (!normalizedType) {
       return;
     }
 
-    const prompt =
-      "Please review the general economic news for the last 1 year, 6 months, 1 month, 1 week, and 1 day, and then review the news and performance of the below companies for 1 year, 6 months, 1 week, and 1 day. Once you've digested all of the news, put that information to work coming up with your best estimate of the CAGR of this portfolio over the next 10 years.\n\nPortfolio:\n\n" +
-      summary;
+    const accountId =
+      item.accountId !== undefined && item.accountId !== null ? String(item.accountId) : null;
 
-    try {
-      await copyTextToClipboard(prompt);
-    } catch (error) {
-      console.error('Failed to copy CAGR estimate prompt', error);
+    if (normalizedType === 'cash') {
+      setPendingTodoAction({ type: 'cash', accountId });
+      return;
     }
-  }, [getSummaryText]);
+
+    if (normalizedType === 'rebalance') {
+      const modelName = typeof item.model === 'string' ? item.model.trim() : '';
+      const chartKey = typeof item.chartKey === 'string' ? item.chartKey.trim() : '';
+      setPendingTodoAction({
+        type: 'rebalance',
+        accountId,
+        model: modelName || null,
+        chartKey: chartKey || null,
+      });
+    }
+  }, []);
 
   const enhancePlanWithAccountContext = useCallback(
     (plan) => {
@@ -3697,6 +4053,162 @@ export default function App() {
     baseCurrency,
     enhancePlanWithAccountContext,
   ]);
+
+  useEffect(() => {
+    if (!pendingTodoAction) {
+      return;
+    }
+
+    const targetAccountId = pendingTodoAction.accountId ? String(pendingTodoAction.accountId) : null;
+    const selectedAccountId =
+      selectedAccount === 'all'
+        ? null
+        : selectedAccountInfo?.id
+        ? String(selectedAccountInfo.id)
+        : selectedAccount
+        ? String(selectedAccount)
+        : null;
+
+    if (targetAccountId && targetAccountId !== selectedAccountId) {
+      const targetAccount = accountsById.get(targetAccountId);
+      const nextSelection = targetAccount?.id ? String(targetAccount.id) : targetAccountId;
+      handleAccountChange(nextSelection);
+      return;
+    }
+
+    const expectedScope = targetAccountId ? `account:${targetAccountId}` : null;
+    if (expectedScope && todoScopeKey && todoScopeKey !== expectedScope) {
+      return;
+    }
+
+    if (loading || !data || !showContent) {
+      return;
+    }
+
+    if (pendingTodoAction.type === 'cash') {
+      if (
+        targetAccountId &&
+        !positionsAlignedWithAccount(orderedPositions, targetAccountId)
+      ) {
+        return;
+      }
+
+      handlePlanInvestEvenly();
+      setPendingTodoAction(null);
+      return;
+    }
+
+    if (pendingTodoAction.type === 'rebalance') {
+      const targetModel = pendingTodoAction.model
+        ? pendingTodoAction.model.toUpperCase()
+        : null;
+      const targetChartKey = pendingTodoAction.chartKey || null;
+      const section = investmentModelSections.find((candidate) => {
+        if (!candidate || typeof candidate !== 'object') {
+          return false;
+        }
+        if (
+          targetAccountId &&
+          String(candidate.accountId ?? '') !== String(targetAccountId)
+        ) {
+          return false;
+        }
+        const sectionModel =
+          typeof candidate.model === 'string' ? candidate.model.trim().toUpperCase() : '';
+        if (targetModel && sectionModel === targetModel) {
+          return true;
+        }
+        if (targetChartKey && candidate.chartKey === targetChartKey) {
+          return true;
+        }
+        return false;
+      });
+
+      if (!section) {
+        return;
+      }
+
+      handleShowAccountInvestmentModel(section);
+      setPendingTodoAction(null);
+    }
+  }, [
+    pendingTodoAction,
+    selectedAccount,
+    selectedAccountInfo,
+    accountsById,
+    todoScopeKey,
+    handleAccountChange,
+    loading,
+    data,
+    showContent,
+    handlePlanInvestEvenly,
+    investmentModelSections,
+    handleShowAccountInvestmentModel,
+    orderedPositions,
+  ]);
+
+  const getSummaryText = useCallback(() => {
+    if (!showContent) {
+      return null;
+    }
+
+    return buildClipboardSummary({
+      selectedAccountId: selectedAccount,
+      accounts,
+      balances: activeBalances,
+      displayTotalEquity,
+      usdToCadRate,
+      pnl: activePnl,
+      positions: orderedPositions,
+      asOf,
+      currencyOption: activeCurrency,
+    });
+  }, [
+    showContent,
+    selectedAccount,
+    accounts,
+    activeBalances,
+    displayTotalEquity,
+    usdToCadRate,
+    activePnl,
+    orderedPositions,
+    asOf,
+    activeCurrency,
+  ]);
+
+  const handleCopySummary = useCallback(async () => {
+    const text = getSummaryText();
+    if (!text) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(text);
+    } catch (error) {
+      console.error('Failed to copy account summary', error);
+    }
+  }, [getSummaryText]);
+
+  const handleEstimateFutureCagr = useCallback(async () => {
+    if (typeof window !== 'undefined') {
+      window.open(CHATGPT_ESTIMATE_URL, '_blank', 'noopener');
+    }
+
+    const summary = getSummaryText();
+    if (!summary) {
+      return;
+    }
+
+    const prompt =
+      "Please review the general economic news for the last 1 year, 6 months, 1 month, 1 week, and 1 day, and then review the news and performance of the below companies for 1 year, 6 months, 1 week, and 1 day. Once you've digested all of the news, put that information to work coming up with your best estimate of the CAGR of this portfolio over the next 10 years.\n\nPortfolio:\n\n" +
+      summary;
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy CAGR estimate prompt', error);
+    }
+  }, [getSummaryText]);
 
   const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
   const skipUsdToggle = investEvenlyPlan?.skipUsdPurchases ?? false;
@@ -3915,6 +4427,10 @@ export default function App() {
           </div>
         )}
 
+        {showContent && todoItems.length > 0 && (
+          <TodoSummary items={todoItems} onSelectItem={handleTodoItemSelect} />
+        )}
+
         {showContent && (
           <SummaryMetrics
             currencyOption={activeCurrency}
@@ -3941,6 +4457,7 @@ export default function App() {
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
             onPlanInvestEvenly={handlePlanInvestEvenly}
+            onCheckTodos={handleCheckTodos}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}

@@ -68,7 +68,14 @@ MetricRow.defaultProps = {
   tooltip: null,
 };
 
-function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disabled, chatUrl }) {
+function ActionMenu({
+  onCopySummary,
+  onEstimateCagr,
+  onPlanInvestEvenly,
+  onCheckTodos,
+  disabled,
+  chatUrl,
+}) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const containerRef = useRef(null);
@@ -78,6 +85,7 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
   const hasCopyAction = typeof onCopySummary === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
+  const hasTodoCheckAction = typeof onCheckTodos === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -163,6 +171,21 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
     }
   };
 
+  const handleCheckTodos = async () => {
+    if (!onCheckTodos || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onCheckTodos();
+    } catch (error) {
+      console.error('Failed to check for TODOs', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -194,6 +217,19 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
               >
                 Chat
               </a>
+            </li>
+          )}
+          {hasTodoCheckAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleCheckTodos}
+                disabled={busy}
+              >
+                Check for TODOs
+              </button>
             </li>
           )}
           {hasCopyAction && (
@@ -245,6 +281,7 @@ ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onCheckTodos: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -253,6 +290,7 @@ ActionMenu.defaultProps = {
   onCopySummary: null,
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
+  onCheckTodos: null,
   disabled: false,
   chatUrl: null,
 };
@@ -278,6 +316,7 @@ export default function SummaryMetrics({
   onCopySummary,
   onEstimateFutureCagr,
   onPlanInvestEvenly,
+  onCheckTodos,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -536,11 +575,16 @@ export default function SummaryMetrics({
               People
             </button>
           )}
-          {(onCopySummary || onEstimateFutureCagr || onPlanInvestEvenly || chatUrl) && (
+          {(onCopySummary ||
+            onEstimateFutureCagr ||
+            onPlanInvestEvenly ||
+            onCheckTodos ||
+            chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
+              onCheckTodos={onCheckTodos}
               chatUrl={chatUrl}
             />
           )}
@@ -683,6 +727,7 @@ SummaryMetrics.propTypes = {
   onCopySummary: PropTypes.func,
   onEstimateFutureCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onCheckTodos: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -750,6 +795,7 @@ SummaryMetrics.defaultProps = {
   onCopySummary: null,
   onEstimateFutureCagr: null,
   onPlanInvestEvenly: null,
+  onCheckTodos: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
