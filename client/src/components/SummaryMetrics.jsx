@@ -395,13 +395,14 @@ export default function SummaryMetrics({
   const annualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
     ? fundingSummary.annualizedReturnRate
     : null;
-  const formattedCagr =
+  const annualizedPercentDisplay =
     annualizedReturnRate === null
-      ? '—'
+      ? null
       : formatSignedPercent(annualizedReturnRate * 100, {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         });
+  const formattedCagr = annualizedPercentDisplay ?? '—';
   const cagrTone =
     annualizedReturnRate > 0 ? 'positive' : annualizedReturnRate < 0 ? 'negative' : 'neutral';
   const canShowReturnBreakdown =
@@ -492,7 +493,11 @@ export default function SummaryMetrics({
     return `${roundedMonths} month${roundedMonths === 1 ? '' : 's'}`;
   };
 
-  const totalExtraPercent = totalPercent ? `(${totalPercent})` : null;
+  const totalExtraPercent = annualizedPercentDisplay
+    ? `(${annualizedPercentDisplay})`
+    : totalPercent
+      ? `(${totalPercent})`
+      : null;
 
   let detailLines = [];
   if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
