@@ -686,8 +686,7 @@ export default function PnlHeatmapDialog({
     return totalMarketValue;
   }, [activeAccountOption, totalMarketValue]);
 
-  const hasAccountSelector = normalizedAccountOptions.length > 0;
-  const accountSelectDisabled = normalizedAccountOptions.length <= 1;
+  const hasAccountSelector = normalizedAccountOptions.length > 1;
 
   const nodes = useMemo(
     () => buildHeatmapNodes(activePositions, metricKey, styleMode),
@@ -791,7 +790,6 @@ export default function PnlHeatmapDialog({
                       className="pnl-heatmap-dialog__select"
                       value={accountSelection}
                       onChange={(event) => setAccountSelection(event.target.value)}
-                      disabled={accountSelectDisabled}
                     >
                       {normalizedAccountOptions.map((option) => (
                         <option key={option.value} value={option.value}>
