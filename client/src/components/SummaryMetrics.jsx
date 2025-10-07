@@ -554,17 +554,19 @@ export default function SummaryMetrics({
       return `${formattedYears} years`;
     }
     const approxMonths = totalDays / (365.25 / 12);
-    let roundedMonths = Math.round(approxMonths);
+    let roundedMonths = Math.round(approxMonths * 10) / 10;
     if (!Number.isFinite(roundedMonths)) {
       return null;
     }
     if (roundedMonths <= 0 && totalDays > 0) {
-      roundedMonths = 1;
+      roundedMonths = 0.1;
     }
-    if (roundedMonths <= 0) {
-      return '0 months';
+    if (roundedMonths < 0) {
+      return null;
     }
-    return `${roundedMonths} month${roundedMonths === 1 ? '' : 's'}`;
+    const formattedMonths = roundedMonths.toFixed(1);
+    const isSingular = Math.abs(roundedMonths - 1) < 1e-9;
+    return `${formattedMonths} month${isSingular ? '' : 's'}`;
   };
 
   let totalExtraPercent = null;
