@@ -230,7 +230,7 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
                 onClick={handleEstimateCagr}
                 disabled={busy}
               >
-                Estimate Future CAGR
+                Estimate future CAGR
               </button>
             </li>
           )}
