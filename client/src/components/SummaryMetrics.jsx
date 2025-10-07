@@ -281,6 +281,7 @@ export default function SummaryMetrics({
   showQqqTemperature,
   qqqSummary,
   onShowInvestmentModel,
+  benchmarkComparison,
 }) {
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -373,6 +374,53 @@ export default function SummaryMetrics({
   const dayPercent = formatPnlPercent(pnl?.dayPnl);
   const openPercent = formatPnlPercent(pnl?.openPnl);
   const totalPercent = formatPnlPercent(totalPnlValue);
+
+  const benchmarkStatus = benchmarkComparison?.status || 'idle';
+  const benchmarkData = benchmarkComparison?.data || null;
+  const benchmarkParts = [];
+
+  if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
+    benchmarkParts.push('Benchmarks: Loading…');
+  } else if (benchmarkStatus === 'error') {
+    benchmarkParts.push('Benchmarks: Unavailable');
+  } else if (benchmarkData) {
+    const { sp500, qqq } = benchmarkData;
+    if (sp500) {
+      const label = sp500.name || 'S&P 500';
+      if (Number.isFinite(sp500.returnRate)) {
+        benchmarkParts.push(
+          `${label}: ${formatSignedPercent(sp500.returnRate * 100, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}`
+        );
+      } else {
+        benchmarkParts.push(`${label}: —`);
+      }
+    }
+    if (qqq) {
+      const label = qqq.name || 'QQQ';
+      if (Number.isFinite(qqq.returnRate)) {
+        benchmarkParts.push(
+          `${label}: ${formatSignedPercent(qqq.returnRate * 100, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}`
+        );
+      } else {
+        benchmarkParts.push(`${label}: —`);
+      }
+    }
+  }
+
+  const totalExtraParts = [];
+  if (totalPercent) {
+    totalExtraParts.push(totalPercent);
+  }
+  if (benchmarkParts.length) {
+    totalExtraParts.push(...benchmarkParts);
+  }
+  const totalExtra = totalExtraParts.length ? `(${totalExtraParts.join('; ')})` : null;
 
   return (
     <section className="equity-card">
@@ -487,7 +535,7 @@ export default function SummaryMetrics({
           <MetricRow
             label="Total P&L"
             value={formattedTotal}
-            extra={totalPercent ? `(${totalPercent})` : null}
+            extra={totalExtra}
             tone={totalTone}
           />
           <MetricRow
@@ -551,6 +599,8 @@ SummaryMetrics.propTypes = {
     annualizedReturnAsOf: PropTypes.string,
     annualizedReturnIncomplete: PropTypes.bool,
     annualizedReturnStartDate: PropTypes.string,
+    periodStartDate: PropTypes.string,
+    periodEndDate: PropTypes.string,
     returnBreakdown: PropTypes.arrayOf(
       PropTypes.shape({
         period: PropTypes.string,
@@ -584,6 +634,34 @@ SummaryMetrics.propTypes = {
     message: PropTypes.string,
   }),
   onShowInvestmentModel: PropTypes.func,
+  benchmarkComparison: PropTypes.shape({
+    status: PropTypes.string,
+    data: PropTypes.shape({
+      startDate: PropTypes.string,
+      endDate: PropTypes.string,
+      sp500: PropTypes.shape({
+        name: PropTypes.string,
+        symbol: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        startPrice: PropTypes.number,
+        endPrice: PropTypes.number,
+        returnRate: PropTypes.number,
+        source: PropTypes.string,
+      }),
+      qqq: PropTypes.shape({
+        name: PropTypes.string,
+        symbol: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        startPrice: PropTypes.number,
+        endPrice: PropTypes.number,
+        returnRate: PropTypes.number,
+        source: PropTypes.string,
+      }),
+    }),
+    error: PropTypes.instanceOf(Error),
+  }),
 };
 
 SummaryMetrics.defaultProps = {
@@ -608,4 +686,5 @@ SummaryMetrics.defaultProps = {
   qqqSummary: null,
   fundingSummary: null,
   onShowInvestmentModel: null,
+  benchmarkComparison: null,
 };

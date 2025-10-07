@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import PositionsTable from './components/PositionsTable';
-import { getSummary, getQqqTemperature, getQuote, getInvestmentModelTemperature } from './api/questrade';
+import {
+  getSummary,
+  getQqqTemperature,
+  getQuote,
+  getInvestmentModelTemperature,
+  getBenchmarkReturns,
+} from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
@@ -2249,6 +2255,7 @@ export default function App() {
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
+  const [benchmarkSummary, setBenchmarkSummary] = useState({ status: 'idle', data: null, error: null });
   const [investmentModelCharts, setInvestmentModelCharts] = useState({});
   const investmentModelChartsRef = useRef({});
   const quoteCacheRef = useRef(new Map());
@@ -2721,6 +2728,14 @@ export default function App() {
     const returnBreakdown = Array.isArray(selectedAccountFunding?.returnBreakdown)
       ? selectedAccountFunding.returnBreakdown.filter((entry) => entry && typeof entry === 'object')
       : [];
+    const periodStartDate =
+      typeof selectedAccountFunding?.periodStartDate === 'string' && selectedAccountFunding.periodStartDate.trim()
+        ? selectedAccountFunding.periodStartDate.trim()
+        : null;
+    const periodEndDate =
+      typeof selectedAccountFunding?.periodEndDate === 'string' && selectedAccountFunding.periodEndDate.trim()
+        ? selectedAccountFunding.periodEndDate.trim()
+        : null;
     return {
       netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
       totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
@@ -2730,8 +2745,95 @@ export default function App() {
       annualizedReturnIncomplete,
       annualizedReturnStartDate,
       returnBreakdown,
+      periodStartDate,
+      periodEndDate,
     };
   }, [selectedAccountFunding, activeCurrency]);
+
+  const benchmarkPeriod = useMemo(() => {
+    if (!fundingSummaryForDisplay) {
+      return null;
+    }
+
+    const normalizeDate = (value) => {
+      if (typeof value !== 'string') {
+        return null;
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+        return trimmed.slice(0, 10);
+      }
+      const parsed = new Date(trimmed);
+      if (Number.isNaN(parsed.getTime())) {
+        return null;
+      }
+      return parsed.toISOString().slice(0, 10);
+    };
+
+    const normalizedStart = normalizeDate(fundingSummaryForDisplay.periodStartDate);
+    if (!normalizedStart) {
+      return null;
+    }
+
+    const normalizedEnd =
+      normalizeDate(fundingSummaryForDisplay.periodEndDate) ||
+      normalizeDate(fundingSummaryForDisplay.annualizedReturnAsOf) ||
+      normalizeDate(asOf);
+
+    return {
+      startDate: normalizedStart,
+      endDate: normalizedEnd || null,
+    };
+  }, [fundingSummaryForDisplay, asOf]);
+
+  useEffect(() => {
+    if (!benchmarkPeriod) {
+      setBenchmarkSummary({ status: 'idle', data: null, error: null });
+      return undefined;
+    }
+
+    let cancelled = false;
+    const desiredEnd = benchmarkPeriod.endDate || null;
+
+    setBenchmarkSummary((previous) => {
+      const previousStart = previous?.data?.startDate || null;
+      const previousEnd = previous?.data?.endDate || null;
+      if (previousStart === benchmarkPeriod.startDate && previousEnd === desiredEnd) {
+        if (previous?.status === 'ready') {
+          return { status: 'refreshing', data: previous.data, error: null };
+        }
+        if (previous?.status === 'refreshing' || previous?.status === 'loading') {
+          return previous;
+        }
+      }
+      return { status: 'loading', data: null, error: null };
+    });
+
+    getBenchmarkReturns({
+      startDate: benchmarkPeriod.startDate,
+      endDate: desiredEnd || undefined,
+    })
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        setBenchmarkSummary({ status: 'ready', data: result, error: null });
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        const normalizedError = err instanceof Error ? err : new Error('Failed to load benchmark returns');
+        setBenchmarkSummary({ status: 'error', data: null, error: normalizedError });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [benchmarkPeriod?.startDate, benchmarkPeriod?.endDate, refreshKey]);
   const displayTotalEquity = useMemo(() => {
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
@@ -3843,6 +3945,7 @@ export default function App() {
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
             onShowInvestmentModel={showingAllAccounts ? handleShowInvestmentModelDialog : null}
+            benchmarkComparison={benchmarkSummary}
           />
         )}
 
