@@ -4555,6 +4555,11 @@ app.get('/api/summary', async function (req, res) {
         rebalancePeriod: Number.isFinite(account.rebalancePeriod)
           ? Math.round(account.rebalancePeriod)
           : null,
+        ignoreSittingCash:
+          typeof account.ignoreSittingCash === 'number' &&
+          Number.isFinite(account.ignoreSittingCash)
+            ? Math.max(0, account.ignoreSittingCash)
+            : null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });
