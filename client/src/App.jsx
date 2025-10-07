@@ -8,6 +8,7 @@ import {
   getQuote,
   getInvestmentModelTemperature,
   getBenchmarkReturns,
+  markAccountRebalanced,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -18,13 +19,78 @@ import QqqTemperatureSection from './components/QqqTemperatureSection';
 import QqqTemperatureDialog from './components/QqqTemperatureDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
-import { formatMoney, formatNumber } from './utils/formatters';
+import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
 const MODEL_CHART_DEFAULT_START_DATE = '1980-01-01';
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function parseDateOnly(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parts = trimmed.split('-');
+  if (parts.length === 3) {
+    const year = Number(parts[0]);
+    const month = Number(parts[1]) - 1;
+    const day = Number(parts[2]);
+    if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
+      const timestamp = Date.UTC(year, month, day);
+      if (!Number.isNaN(timestamp)) {
+        return { date: new Date(timestamp), time: timestamp };
+      }
+    }
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const timestamp = Date.UTC(
+    parsed.getUTCFullYear(),
+    parsed.getUTCMonth(),
+    parsed.getUTCDate()
+  );
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  return { date: new Date(timestamp), time: timestamp };
+}
+
+function normalizePositiveInteger(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number') {
+    const rounded = Math.round(value);
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+    const rounded = Math.round(numeric);
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : null;
+  }
+  if (typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+      return normalizePositiveInteger(value.value);
+    }
+  }
+  return null;
+}
 
 function buildInvestmentModelChartKey(modelConfig) {
   if (!modelConfig || typeof modelConfig !== 'object') {
@@ -80,6 +146,10 @@ function resolveAccountModelsForDisplay(account) {
       if (typeof entry.lastRebalance === 'string' && entry.lastRebalance.trim()) {
         normalizedEntry.lastRebalance = entry.lastRebalance.trim();
       }
+      const normalizedPeriod = normalizePositiveInteger(entry.rebalancePeriod);
+      if (normalizedPeriod !== null) {
+        normalizedEntry.rebalancePeriod = normalizedPeriod;
+      }
       if (typeof entry.title === 'string' && entry.title.trim()) {
         normalizedEntry.title = entry.title.trim();
       }
@@ -102,6 +172,10 @@ function resolveAccountModelsForDisplay(account) {
     account.investmentModelLastRebalance.trim()
   ) {
     fallbackEntry.lastRebalance = account.investmentModelLastRebalance.trim();
+  }
+  const fallbackPeriod = normalizePositiveInteger(account.rebalancePeriod);
+  if (fallbackPeriod !== null) {
+    fallbackEntry.rebalancePeriod = fallbackPeriod;
   }
 
   return [fallbackEntry];
@@ -2262,6 +2336,102 @@ export default function App() {
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const todoItems = useMemo(() => {
+    if (!accounts.length) {
+      return [];
+    }
+    const items = [];
+    const seenIds = new Set();
+    const today = new Date();
+    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+
+    accounts.forEach((account) => {
+      if (!account) {
+        return;
+      }
+      const accountLabel = getAccountLabel(account);
+      const accountId = typeof account.id === 'string' && account.id ? account.id : null;
+      const rawAccountNumber =
+        account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+      const accountNumberValue = rawAccountNumber || null;
+      const models = resolveAccountModelsForDisplay(account);
+      models.forEach((model) => {
+        const last = typeof model.lastRebalance === 'string' ? model.lastRebalance.trim() : '';
+        if (!last) {
+          return;
+        }
+        const periodDays =
+          normalizePositiveInteger(model.rebalancePeriod) ??
+          normalizePositiveInteger(account.rebalancePeriod);
+        if (periodDays === null) {
+          return;
+        }
+        const parsedLast = parseDateOnly(last);
+        if (!parsedLast) {
+          return;
+        }
+        const dueTime = parsedLast.time + periodDays * MS_PER_DAY;
+        if (!Number.isFinite(dueTime)) {
+          return;
+        }
+        const dueDate = new Date(dueTime);
+        if (Number.isNaN(dueDate.getTime())) {
+          return;
+        }
+        const dueUtc = Date.UTC(
+          dueDate.getUTCFullYear(),
+          dueDate.getUTCMonth(),
+          dueDate.getUTCDate()
+        );
+        if (!Number.isFinite(dueUtc)) {
+          return;
+        }
+        if (todayUtc < dueUtc) {
+          return;
+        }
+
+        const accountKey = accountId || accountNumberValue;
+        const modelKey = typeof model.model === 'string' ? model.model.trim().toUpperCase() : 'ACCOUNT';
+        const todoId = `${accountKey || 'account'}:${modelKey || 'MODEL'}`;
+        if (seenIds.has(todoId)) {
+          return;
+        }
+        seenIds.add(todoId);
+
+        const overdueDays = todayUtc > dueUtc ? Math.floor((todayUtc - dueUtc) / MS_PER_DAY) : 0;
+        const dueIso = new Date(dueUtc).toISOString().slice(0, 10);
+        items.push({
+          id: todoId,
+          accountId,
+          accountNumber: accountNumberValue,
+          accountLabel,
+          modelKey: modelKey || null,
+          modelTitle: model.title || null,
+          lastRebalance: last,
+          dueDate: dueIso,
+          dueTimestamp: dueUtc,
+          overdueDays: overdueDays > 0 ? overdueDays : 0,
+          dueToday: overdueDays <= 0,
+          periodDays,
+        });
+      });
+    });
+
+    items.sort((a, b) => {
+      if (a.dueTimestamp !== b.dueTimestamp) {
+        return a.dueTimestamp - b.dueTimestamp;
+      }
+      const labelCompare = (a.accountLabel || '').localeCompare(b.accountLabel || '', undefined, {
+        sensitivity: 'base',
+      });
+      if (labelCompare !== 0) {
+        return labelCompare;
+      }
+      return (a.modelTitle || '').localeCompare(b.modelTitle || '', undefined, { sensitivity: 'base' });
+    });
+
+    return items;
+  }, [accounts]);
   const accountsById = useMemo(() => {
     const map = new Map();
     accounts.forEach((account) => {
@@ -2325,6 +2495,41 @@ export default function App() {
     [setActiveAccountId, setSelectedAccountState]
   );
 
+  const handleTodoSelect = useCallback(
+    (item) => {
+      if (!item) {
+        return;
+      }
+      if (selectedAccount !== 'all') {
+        return;
+      }
+      const directId = typeof item.accountId === 'string' && item.accountId ? item.accountId : null;
+      if (directId) {
+        setSelectedAccountState(directId);
+        setActiveAccountId(directId);
+        return;
+      }
+      if (item.accountNumber) {
+        const match = accounts.find((account) => {
+          if (!account) {
+            return false;
+          }
+          const accountNumber =
+            account.number !== undefined && account.number !== null
+              ? String(account.number)
+              : '';
+          const accountId = typeof account.id === 'string' ? account.id : '';
+          return accountNumber === item.accountNumber || accountId === item.accountNumber;
+        });
+        if (match && typeof match.id === 'string') {
+          setSelectedAccountState(match.id);
+          setActiveAccountId(match.id);
+        }
+      }
+    },
+    [selectedAccount, setSelectedAccountState, setActiveAccountId, accounts]
+  );
+
   const selectedAccountInfo = useMemo(() => {
     if (!selectedAccount || selectedAccount === 'all') {
       return null;
@@ -2340,6 +2545,45 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
+  const markRebalanceContext = useMemo(() => {
+    if (!selectedAccountInfo || selectedAccount === 'all') {
+      return null;
+    }
+    const rawNumber = selectedAccountInfo.number ?? selectedAccountInfo.accountNumber;
+    const accountNumber =
+      typeof rawNumber === 'string' ? rawNumber.trim() : rawNumber != null ? String(rawNumber).trim() : '';
+    if (!accountNumber) {
+      return null;
+    }
+    const models = resolveAccountModelsForDisplay(selectedAccountInfo);
+    const withRebalance = models.find((model) => {
+      return typeof model.lastRebalance === 'string' && model.lastRebalance.trim();
+    });
+    if (withRebalance) {
+      return {
+        accountId: typeof selectedAccountInfo.id === 'string' ? selectedAccountInfo.id : null,
+        accountNumber,
+        model:
+          typeof withRebalance.model === 'string' && withRebalance.model.trim()
+            ? withRebalance.model.trim().toUpperCase()
+            : null,
+        lastRebalance: withRebalance.lastRebalance,
+      };
+    }
+    const fallbackLast =
+      typeof selectedAccountInfo.investmentModelLastRebalance === 'string'
+        ? selectedAccountInfo.investmentModelLastRebalance.trim()
+        : '';
+    if (fallbackLast) {
+      return {
+        accountId: typeof selectedAccountInfo.id === 'string' ? selectedAccountInfo.id : null,
+        accountNumber,
+        model: null,
+        lastRebalance: fallbackLast,
+      };
+    }
+    return null;
+  }, [selectedAccountInfo, selectedAccount]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountFundingSource = data?.accountFunding;
@@ -2789,19 +3033,22 @@ export default function App() {
     };
   }, [fundingSummaryForDisplay, asOf]);
 
+  const benchmarkPeriodStart = benchmarkPeriod?.startDate || null;
+  const benchmarkPeriodEnd = benchmarkPeriod?.endDate || null;
+
   useEffect(() => {
-    if (!benchmarkPeriod) {
+    if (!benchmarkPeriodStart) {
       setBenchmarkSummary({ status: 'idle', data: null, error: null });
       return undefined;
     }
 
     let cancelled = false;
-    const desiredEnd = benchmarkPeriod.endDate || null;
+    const desiredEnd = benchmarkPeriodEnd || null;
 
     setBenchmarkSummary((previous) => {
       const previousStart = previous?.data?.startDate || null;
       const previousEnd = previous?.data?.endDate || null;
-      if (previousStart === benchmarkPeriod.startDate && previousEnd === desiredEnd) {
+      if (previousStart === benchmarkPeriodStart && previousEnd === desiredEnd) {
         if (previous?.status === 'ready') {
           return { status: 'refreshing', data: previous.data, error: null };
         }
@@ -2813,7 +3060,7 @@ export default function App() {
     });
 
     getBenchmarkReturns({
-      startDate: benchmarkPeriod.startDate,
+      startDate: benchmarkPeriodStart,
       endDate: desiredEnd || undefined,
     })
       .then((result) => {
@@ -2833,7 +3080,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [benchmarkPeriod?.startDate, benchmarkPeriod?.endDate, refreshKey]);
+  }, [benchmarkPeriodStart, benchmarkPeriodEnd, refreshKey]);
   const displayTotalEquity = useMemo(() => {
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
@@ -3612,6 +3859,20 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const handleMarkAccountAsRebalanced = useCallback(async () => {
+    if (!markRebalanceContext) {
+      return;
+    }
+    try {
+      await markAccountRebalanced(markRebalanceContext.accountNumber, {
+        model: markRebalanceContext.model,
+      });
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      console.error('Failed to update rebalance date', error);
+    }
+  }, [markRebalanceContext, setRefreshKey]);
+
   const enhancePlanWithAccountContext = useCallback(
     (plan) => {
       if (!plan) {
@@ -3908,6 +4169,58 @@ export default function App() {
           />
         </header>
 
+        {todoItems.length > 0 && (
+          <section className="todo-panel" aria-label="Account reminders">
+            <h2 className="todo-panel__title">TODOs</h2>
+            <ul className="todo-panel__list">
+              {todoItems.map((todo) => {
+                const dueLabel = todo.dueDate ? formatDate(todo.dueDate) : null;
+                const lastLabel = todo.lastRebalance ? formatDate(todo.lastRebalance) : null;
+                const statusLabel =
+                  todo.overdueDays > 0
+                    ? `${todo.overdueDays} day${todo.overdueDays === 1 ? '' : 's'} overdue`
+                    : 'Due today';
+                const detailParts = [];
+                if (dueLabel) {
+                  detailParts.push(`Due ${dueLabel}`);
+                }
+                if (lastLabel) {
+                  detailParts.push(`Last ${lastLabel}`);
+                }
+                if (Number.isFinite(todo.periodDays)) {
+                  detailParts.push(`Every ${todo.periodDays} days`);
+                }
+                const detailText = detailParts.join(' • ');
+                const modelLabel =
+                  todo.modelTitle || (todo.modelKey && todo.modelKey !== 'ACCOUNT' ? todo.modelKey : null);
+                const buttonLabel = modelLabel
+                  ? `Rebalance ${todo.accountLabel} — ${modelLabel}`
+                  : `Rebalance ${todo.accountLabel}`;
+                return (
+                  <li key={todo.id} className="todo-panel__item">
+                    <button
+                      type="button"
+                      className="todo-panel__button"
+                      onClick={() => handleTodoSelect(todo)}
+                      disabled={selectedAccount !== 'all'}
+                      data-status={todo.overdueDays > 0 ? 'overdue' : 'due'}
+                    >
+                      <span className="todo-panel__primary">{buttonLabel}</span>
+                      <span className="todo-panel__meta">
+                        {statusLabel}
+                        {detailText ? ` • ${detailText}` : ''}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {selectedAccount === 'all' ? (
+              <p className="todo-panel__hint">Select an item to jump to that account.</p>
+            ) : null}
+          </section>
+        )}
+
         {error && (
           <div className="status-message error">
             <strong>Unable to load data.</strong>
@@ -3940,6 +4253,7 @@ export default function App() {
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
+            onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}

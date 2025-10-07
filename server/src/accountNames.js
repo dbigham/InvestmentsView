@@ -143,6 +143,18 @@ function normalizeNumberLike(value) {
   return null;
 }
 
+function normalizePositiveInteger(value) {
+  const numeric = normalizeNumberLike(value);
+  if (numeric === null) {
+    return null;
+  }
+  const rounded = Math.round(numeric);
+  if (!Number.isFinite(rounded) || rounded <= 0) {
+    return null;
+  }
+  return rounded;
+}
+
 function applyShowDetailsSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -231,6 +243,13 @@ function normalizeInvestmentModelEntry(value) {
   );
   if (normalizedLastRebalance) {
     entry.lastRebalance = normalizedLastRebalance;
+  }
+
+  const normalizedRebalancePeriod = normalizePositiveInteger(
+    value.rebalancePeriod ?? value.rebalance_period ?? value.rebalancePeriodDays ?? value.rebalance_period_days
+  );
+  if (normalizedRebalancePeriod !== null) {
+    entry.rebalancePeriod = normalizedRebalancePeriod;
   }
 
   if (typeof value.title === 'string' && value.title.trim()) {
@@ -358,6 +377,19 @@ function applyLastRebalanceSetting(target, key, value) {
     return;
   }
   container.lastRebalance = normalized;
+}
+
+function applyRebalancePeriodSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizePositiveInteger(value);
+  if (normalized === null) {
+    delete container.rebalancePeriod;
+    return;
+  }
+  container.rebalancePeriod = normalized;
 }
 
 function recordOrdering(tracker, key) {
@@ -541,6 +573,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'lastRebalance')) {
       applyLastRebalanceSetting(settingsTarget, resolvedKey, entry.lastRebalance);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'rebalancePeriod')) {
+      applyRebalancePeriodSetting(settingsTarget, resolvedKey, entry.rebalancePeriod);
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'netDepositAdjustment')) {
       applyNetDepositAdjustmentSetting(settingsTarget, resolvedKey, entry.netDepositAdjustment);
@@ -892,6 +927,200 @@ function getDefaultAccountId() {
   }
 }
 
+function buildAccountKeySet(raw) {
+  const normalized = raw == null ? '' : String(raw).trim();
+  if (!normalized) {
+    return null;
+  }
+  const set = new Set();
+  set.add(normalized);
+  const colonIndex = normalized.lastIndexOf(':');
+  if (colonIndex >= 0) {
+    const suffix = normalized.slice(colonIndex + 1).trim();
+    if (suffix) {
+      set.add(suffix);
+    }
+  }
+  return set;
+}
+
+function matchesAccountKey(keySet, candidate) {
+  if (!keySet || candidate === undefined || candidate === null) {
+    return false;
+  }
+  const normalized = String(candidate).trim();
+  if (!normalized) {
+    return false;
+  }
+  return keySet.has(normalized);
+}
+
+function updateAccountConfigEntry(entry, newDate, modelKey) {
+  if (!entry || typeof entry !== 'object') {
+    return 0;
+  }
+  let updateCount = 0;
+  if (Object.prototype.hasOwnProperty.call(entry, 'lastRebalance')) {
+    entry.lastRebalance = newDate;
+    updateCount += 1;
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'investmentModelLastRebalance')) {
+    entry.investmentModelLastRebalance = newDate;
+    updateCount += 1;
+  }
+  if (Array.isArray(entry.investmentModels)) {
+    entry.investmentModels.forEach((modelEntry) => {
+      if (!modelEntry || typeof modelEntry !== 'object') {
+        return;
+      }
+      if (modelKey) {
+        const candidate =
+          typeof modelEntry.model === 'string' ? modelEntry.model.trim().toUpperCase() : null;
+        if (!candidate || candidate !== modelKey) {
+          return;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(modelEntry, 'lastRebalance')) {
+        modelEntry.lastRebalance = newDate;
+        updateCount += 1;
+      }
+    });
+  }
+  return updateCount;
+}
+
+function traverseAndUpdate(container, keySet, newDate, modelKey) {
+  if (!container) {
+    return { updated: false, count: 0 };
+  }
+
+  let updated = false;
+  let totalCount = 0;
+
+  const processEntry = (entry, fallbackKey) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const candidates = [
+      entry.number,
+      entry.accountNumber,
+      entry.accountId,
+      entry.id,
+      entry.key,
+      fallbackKey,
+    ];
+    if (candidates.some((candidate) => matchesAccountKey(keySet, candidate))) {
+      const delta = updateAccountConfigEntry(entry, newDate, modelKey);
+      if (delta > 0) {
+        updated = true;
+        totalCount += delta;
+      }
+    }
+  };
+
+  const walk = (node, fallbackKey) => {
+    if (!node) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item) => {
+        if (item && typeof item === 'object') {
+          processEntry(item);
+          walk(item);
+        } else {
+          walk(item);
+        }
+      });
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    processEntry(node, fallbackKey);
+
+    Object.entries(node).forEach(([key, value]) => {
+      if (matchesAccountKey(keySet, key) && value && typeof value === 'object') {
+        const delta = updateAccountConfigEntry(value, newDate, modelKey);
+        if (delta > 0) {
+          updated = true;
+          totalCount += delta;
+        }
+      }
+      walk(value, key);
+    });
+  };
+
+  walk(container);
+
+  return { updated, count: totalCount };
+}
+
+function updateAccountLastRebalance(accountKey, options = {}) {
+  const keySet = buildAccountKeySet(accountKey);
+  if (!keySet) {
+    const error = new Error('Account identifier is required');
+    error.code = 'INVALID_ACCOUNT';
+    throw error;
+  }
+
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath) {
+    const error = new Error('Accounts file path is not configured');
+    error.code = 'NO_FILE';
+    throw error;
+  }
+  if (!fs.existsSync(filePath)) {
+    const error = new Error('Accounts file not found at ' + filePath);
+    error.code = 'NO_FILE';
+    throw error;
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  if (!content.trim()) {
+    const error = new Error('Accounts file is empty');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    const error = new Error('Failed to parse accounts file');
+    error.code = 'PARSE_ERROR';
+    error.cause = parseError;
+    throw error;
+  }
+
+  const normalizedModel =
+    options && typeof options.model === 'string' && options.model.trim()
+      ? options.model.trim().toUpperCase()
+      : null;
+  const newDate = new Date().toISOString().slice(0, 10);
+  const updateResult = traverseAndUpdate(parsed, keySet, newDate, normalizedModel);
+  if (!updateResult.updated) {
+    const error = new Error('Account entry not found in configuration');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  const serialized = JSON.stringify(parsed, null, 2);
+  fs.writeFileSync(filePath, serialized + (serialized.endsWith('\n') ? '' : '\n'), 'utf-8');
+
+  cachedMarker = null;
+  cachedOverrides = {};
+  cachedPortalOverrides = {};
+  cachedChatOverrides = {};
+  cachedSettings = {};
+  cachedOrdering = [];
+  cachedDefaultAccount = null;
+  hasLoggedError = false;
+  loadAccountOverrides();
+
+  return { lastRebalance: newDate, updatedCount: updateResult.count };
+}
+
 module.exports = {
   getAccountNameOverrides,
   getAccountPortalOverrides,
@@ -899,6 +1128,7 @@ module.exports = {
   getAccountSettings,
   getAccountOrdering,
   getDefaultAccountId,
+  updateAccountLastRebalance,
   get accountNamesFilePath() {
     return resolvedFilePath;
   },

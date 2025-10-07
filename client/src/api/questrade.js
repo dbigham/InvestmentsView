@@ -60,6 +60,15 @@ function buildQuoteUrl(symbol) {
   return url.toString();
 }
 
+function buildMarkRebalancedUrl(accountKey) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  const encodedKey = encodeURIComponent(trimmedKey);
+  const path = `/api/accounts/${encodedKey}/mark-rebalanced`;
+  const url = new URL(path, base);
+  return url.toString();
+}
+
 export async function getSummary(accountId) {
   const response = await fetch(buildUrl(accountId));
   if (!response.ok) {
@@ -158,6 +167,43 @@ export async function getBenchmarkReturns(params) {
         }
       } catch (nestedError) {
         console.warn('Failed to read benchmark returns error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function markAccountRebalanced(accountKey, options = {}) {
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+
+  const model = options && typeof options.model === 'string' ? options.model.trim() : '';
+  const payload = model ? { model } : {};
+
+  const response = await fetch(buildMarkRebalancedUrl(trimmedKey), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Failed to update rebalance date';
+    try {
+      const errorPayload = await response.json();
+      message = errorPayload?.message || errorPayload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse markAccountRebalanced error response as JSON', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read markAccountRebalanced error response body', nestedError);
       }
     }
     throw new Error(message);

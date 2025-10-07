@@ -68,7 +68,14 @@ MetricRow.defaultProps = {
   tooltip: null,
 };
 
-function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disabled, chatUrl }) {
+function ActionMenu({
+  onCopySummary,
+  onEstimateCagr,
+  onPlanInvestEvenly,
+  onMarkRebalanced,
+  disabled,
+  chatUrl,
+}) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const containerRef = useRef(null);
@@ -78,6 +85,7 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
   const hasCopyAction = typeof onCopySummary === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
+  const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -163,6 +171,21 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
     }
   };
 
+  const handleMarkAsRebalanced = async () => {
+    if (!onMarkRebalanced || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onMarkRebalanced();
+    } catch (error) {
+      console.error('Failed to mark account as rebalanced', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -209,6 +232,19 @@ function ActionMenu({ onCopySummary, onEstimateCagr, onPlanInvestEvenly, disable
               </button>
             </li>
           )}
+          {hasMarkRebalancedAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleMarkAsRebalanced}
+                disabled={busy}
+              >
+                Mark as rebalanced
+              </button>
+            </li>
+          )}
           {hasInvestEvenlyAction && (
             <li role="none">
               <button
@@ -245,6 +281,7 @@ ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onMarkRebalanced: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -253,6 +290,7 @@ ActionMenu.defaultProps = {
   onCopySummary: null,
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
+  onMarkRebalanced: null,
   disabled: false,
   chatUrl: null,
 };
@@ -277,6 +315,7 @@ export default function SummaryMetrics({
   isAutoRefreshing,
   onCopySummary,
   onEstimateFutureCagr,
+  onMarkRebalanced,
   onPlanInvestEvenly,
   chatUrl,
   showQqqTemperature,
@@ -536,11 +575,16 @@ export default function SummaryMetrics({
               People
             </button>
           )}
-          {(onCopySummary || onEstimateFutureCagr || onPlanInvestEvenly || chatUrl) && (
+          {(onCopySummary ||
+            onEstimateFutureCagr ||
+            onPlanInvestEvenly ||
+            onMarkRebalanced ||
+            chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
+              onMarkRebalanced={onMarkRebalanced}
               chatUrl={chatUrl}
             />
           )}
@@ -682,6 +726,7 @@ SummaryMetrics.propTypes = {
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
   onEstimateFutureCagr: PropTypes.func,
+  onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
@@ -749,6 +794,7 @@ SummaryMetrics.defaultProps = {
   isAutoRefreshing: false,
   onCopySummary: null,
   onEstimateFutureCagr: null,
+  onMarkRebalanced: null,
   onPlanInvestEvenly: null,
   chatUrl: null,
   showQqqTemperature: false,
