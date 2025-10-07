@@ -10,7 +10,8 @@
         "symbol": "QQQ",
         "leveragedSymbol": "TQQQ",
         "reserveSymbol": "SGOV",
-        "lastRebalance": "2024-01-15"
+        "lastRebalance": "2024-01-15",
+        "rebalancePeriod": 90
       }
     ],
     "default": true

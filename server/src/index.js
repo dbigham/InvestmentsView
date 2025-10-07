@@ -13,6 +13,7 @@ const {
   getAccountOrdering,
   getAccountSettings,
   getDefaultAccountId,
+  updateAccountLastRebalance,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
@@ -557,6 +558,16 @@ function normalizeInvestmentModelConfig(raw) {
     result.lastRebalance = normalizedLast;
   }
 
+  const normalizedPeriod = normalizePositiveInteger(
+    raw.rebalancePeriod ??
+      raw.rebalance_period ??
+      raw.rebalancePeriodDays ??
+      raw.rebalance_period_days
+  );
+  if (normalizedPeriod !== null) {
+    result.rebalancePeriod = normalizedPeriod;
+  }
+
   if (typeof raw.title === 'string' && raw.title.trim()) {
     result.title = raw.title.trim();
   } else if (typeof raw.label === 'string' && raw.label.trim()) {
@@ -605,6 +616,7 @@ function resolveAccountInvestmentModels(account) {
     return normalizeInvestmentModelList({
       model: account.investmentModel,
       lastRebalance: account.investmentModelLastRebalance,
+      rebalancePeriod: account.rebalancePeriod,
     });
   }
 
@@ -1912,6 +1924,34 @@ async function fetchUsdToCadRate(date) {
     }
   }
   usdCadRateCache.set(keyDate, null);
+  return null;
+}
+
+function normalizePositiveInteger(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number') {
+    const rounded = Math.round(value);
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const numeric = Number.parseFloat(trimmed);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+    const rounded = Math.round(numeric);
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : null;
+  }
+  if (typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+      return normalizePositiveInteger(value.value);
+    }
+  }
   return null;
 }
 
@@ -3746,6 +3786,40 @@ app.get('/api/investment-model-temperature', async function (req, res) {
   }
 });
 
+app.post('/api/accounts/:accountKey/mark-rebalanced', function (req, res) {
+  const rawAccountKey = typeof req.params.accountKey === 'string' ? req.params.accountKey : '';
+  const accountKey = rawAccountKey.trim();
+  if (!accountKey) {
+    return res.status(400).json({ message: 'Account identifier is required' });
+  }
+
+  const modelParam = req.body && typeof req.body.model === 'string' ? req.body.model.trim() : '';
+
+  try {
+    const result = updateAccountLastRebalance(accountKey, {
+      model: modelParam ? modelParam : null,
+    });
+    return res.json({ lastRebalance: result.lastRebalance, updatedCount: result.updatedCount });
+  } catch (error) {
+    if (error && error.code === 'INVALID_ACCOUNT') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'NOT_FOUND') {
+      return res.status(404).json({ message: 'Account configuration not found' });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to mark account as rebalanced:', error);
+    return res.status(500).json({ message: 'Failed to update rebalance date' });
+  }
+});
+
 app.get('/api/summary', async function (req, res) {
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
@@ -3816,6 +3890,17 @@ app.get('/api/summary', async function (req, res) {
             } else if (normalizedInvestmentModels.length && normalizedInvestmentModels[0].model) {
               normalizedAccount.investmentModel = normalizedInvestmentModels[0].model;
             }
+            if (
+              normalizedAccount.rebalancePeriod === undefined &&
+              normalizedInvestmentModels.length
+            ) {
+              const withPeriod = normalizedInvestmentModels.find((entry) => {
+                return Number.isFinite(entry.rebalancePeriod);
+              });
+              if (withPeriod) {
+                normalizedAccount.rebalancePeriod = withPeriod.rebalancePeriod;
+              }
+            }
             if (typeof accountSettingsOverride.lastRebalance === 'string') {
               const trimmedDate = accountSettingsOverride.lastRebalance.trim();
               if (trimmedDate) {
@@ -3841,6 +3926,14 @@ app.get('/api/summary', async function (req, res) {
               Number.isFinite(accountSettingsOverride.netDepositAdjustment)
             ) {
               normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
+            }
+            if (
+              typeof accountSettingsOverride.rebalancePeriod === 'number' &&
+              Number.isFinite(accountSettingsOverride.rebalancePeriod)
+            ) {
+              normalizedAccount.rebalancePeriod = Math.round(
+                accountSettingsOverride.rebalancePeriod
+              );
             }
             if (typeof accountSettingsOverride.cagrStartDate === 'string') {
               const trimmedDate = accountSettingsOverride.cagrStartDate.trim();
@@ -4426,6 +4519,9 @@ app.get('/api/summary', async function (req, res) {
           leveragedSymbol: entry.leveragedSymbol || null,
           reserveSymbol: entry.reserveSymbol || null,
           lastRebalance: entry.lastRebalance || null,
+          rebalancePeriod: Number.isFinite(entry.rebalancePeriod)
+            ? Math.round(entry.rebalancePeriod)
+            : null,
           title: entry.title || null,
         };
       });
@@ -4450,6 +4546,9 @@ app.get('/api/summary', async function (req, res) {
         investmentModelLastRebalance:
           (primaryModel && primaryModel.lastRebalance) || account.investmentModelLastRebalance || null,
         investmentModels: serializedModels,
+        rebalancePeriod: Number.isFinite(account.rebalancePeriod)
+          ? Math.round(account.rebalancePeriod)
+          : null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });

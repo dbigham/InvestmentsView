@@ -14,20 +14,8 @@ function resolveCurrencyLabel(currency) {
 
 export default function TodoSummary({ items, onSelectItem }) {
   const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
-  if (!safeItems.length) {
-    return null;
-  }
-
   const headingId = useId();
   const resolvedHeadingId = headingId || 'todo-card-title';
-  const accountIds = new Set();
-  safeItems.forEach((item) => {
-    if (item && item.accountId) {
-      accountIds.add(item.accountId);
-    }
-  });
-  const showAccountContext = accountIds.size > 1;
-  const listId = `${resolvedHeadingId}-list`;
   const collapsible = safeItems.length > COLLAPSE_THRESHOLD;
   const [collapsed, setCollapsed] = useState(collapsible);
   const previousCountRef = useRef(safeItems.length);
@@ -44,6 +32,18 @@ export default function TodoSummary({ items, onSelectItem }) {
     }
   }, [safeItems.length, collapsible, collapsed]);
 
+  if (!safeItems.length) {
+    return null;
+  }
+
+  const accountIds = new Set();
+  safeItems.forEach((item) => {
+    if (item && item.accountId) {
+      accountIds.add(item.accountId);
+    }
+  });
+  const showAccountContext = accountIds.size > 1;
+  const listId = `${resolvedHeadingId}-list`;
   const countLabel = safeItems.length === 1 ? '1 ITEM' : `${safeItems.length} ITEMS`;
   const interactive = typeof onSelectItem === 'function';
 

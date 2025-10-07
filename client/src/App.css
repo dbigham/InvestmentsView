@@ -103,6 +103,87 @@ textarea {
   justify-content: flex-start;
 }
 
+.todo-panel {
+  margin: 0;
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.todo-panel__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.todo-panel__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.todo-panel__item {
+  margin: 0;
+  padding: 0;
+}
+
+.todo-panel__button {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.todo-panel__button:not(:disabled):hover {
+  border-color: var(--color-border-active);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.1);
+  cursor: pointer;
+}
+
+.todo-panel__button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.todo-panel__button[data-status='overdue'] {
+  border-color: rgba(208, 75, 75, 0.4);
+  background: #fff7f7;
+}
+
+.todo-panel__primary {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-text-primary);
+}
+
+.todo-panel__meta {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.todo-panel__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
 .status-message {
   padding: 16px 20px;
   border-radius: var(--radius-card);
