@@ -2187,6 +2187,49 @@ function resolveNormalizedPnl(position, field, currencyRates, baseCurrency = 'CA
   return normalizeCurrencyAmount(position[field], currency, currencyRates, baseCurrency);
 }
 
+function preparePositionsForHeatmap(positions, currencyRates, baseCurrency = 'CAD') {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return { positions: [], totalMarketValue: 0 };
+  }
+
+  const enriched = positions.map((position) => {
+    const normalizedMarketValue = resolveNormalizedMarketValue(position, currencyRates, baseCurrency);
+    const normalizedDayPnl = resolveNormalizedPnl(position, 'dayPnl', currencyRates, baseCurrency);
+    const normalizedOpenPnl = resolveNormalizedPnl(position, 'openPnl', currencyRates, baseCurrency);
+
+    return {
+      ...position,
+      normalizedMarketValue,
+      normalizedDayPnl,
+      normalizedOpenPnl,
+    };
+  });
+
+  const totalMarketValue = enriched.reduce((sum, entry) => {
+    const value = isFiniteNumber(entry.normalizedMarketValue) ? entry.normalizedMarketValue : 0;
+    return sum + value;
+  }, 0);
+
+  if (totalMarketValue <= 0) {
+    return {
+      positions: enriched.map((entry) => ({ ...entry, portfolioShare: 0 })),
+      totalMarketValue: 0,
+    };
+  }
+
+  const withShare = enriched.map((entry) => {
+    const share = isFiniteNumber(entry.normalizedMarketValue)
+      ? (entry.normalizedMarketValue / totalMarketValue) * 100
+      : 0;
+    return {
+      ...entry,
+      portfolioShare: share,
+    };
+  });
+
+  return { positions: withShare, totalMarketValue };
+}
+
 export default function App() {
   const [selectedAccountState, setSelectedAccountState] = useState('all');
   const [activeAccountId, setActiveAccountId] = useState('default');
@@ -2762,6 +2805,105 @@ export default function App() {
     baseCurrency,
     totalMarketValue,
   ]);
+
+  const heatmapAccountOptions = useMemo(() => {
+    if (!Array.isArray(rawPositions)) {
+      return [];
+    }
+
+    const accountOrder = accountsInView.map((accountId) => String(accountId));
+    const positionsByAccount = new Map();
+
+    rawPositions.forEach((position) => {
+      const rawAccountId = position?.accountId;
+      if (rawAccountId === undefined || rawAccountId === null) {
+        return;
+      }
+      const accountId = String(rawAccountId);
+      if (!positionsByAccount.has(accountId)) {
+        positionsByAccount.set(accountId, []);
+      }
+      positionsByAccount.get(accountId).push(position);
+    });
+
+    const entries = [];
+    const includeAllOption = accountOrder.length > 1;
+
+    if (includeAllOption) {
+      const aggregated = aggregatePositionsBySymbol(rawPositions, { currencyRates, baseCurrency });
+      const preparedAll = preparePositionsForHeatmap(aggregated, currencyRates, baseCurrency);
+      entries.push({
+        value: 'all',
+        label: 'All accounts',
+        positions: preparedAll.positions,
+        totalMarketValue: preparedAll.totalMarketValue,
+      });
+    }
+
+    accountOrder.forEach((accountId) => {
+      const account = accountsById.get(accountId);
+      if (!account) {
+        return;
+      }
+      const accountPositions = positionsByAccount.get(accountId) || [];
+      const prepared = preparePositionsForHeatmap(accountPositions, currencyRates, baseCurrency);
+      const baseLabel = getAccountLabel(account) || 'Account';
+      const accountNumber = typeof account.number === 'string' ? account.number.trim() : '';
+      const label = accountNumber && accountNumber !== baseLabel ? `${baseLabel} (${accountNumber})` : baseLabel;
+      entries.push({
+        value: accountId,
+        label,
+        positions: prepared.positions,
+        totalMarketValue: prepared.totalMarketValue,
+      });
+    });
+
+    if (!entries.length) {
+      const preparedAll = preparePositionsForHeatmap(rawPositions, currencyRates, baseCurrency);
+      entries.push({
+        value: 'all',
+        label: 'All accounts',
+        positions: preparedAll.positions,
+        totalMarketValue: preparedAll.totalMarketValue,
+      });
+    }
+
+    return entries;
+  }, [
+    rawPositions,
+    accountsInView,
+    accountsById,
+    currencyRates,
+    baseCurrency,
+  ]);
+
+  const heatmapDefaultAccount = useMemo(() => {
+    if (!heatmapAccountOptions.length) {
+      return null;
+    }
+
+    const normalizedSelected =
+      selectedAccount === undefined || selectedAccount === null ? null : String(selectedAccount);
+
+    if (normalizedSelected === 'all') {
+      const hasAll = heatmapAccountOptions.some((option) => option.value === 'all');
+      if (hasAll) {
+        return 'all';
+      }
+    } else if (normalizedSelected) {
+      const match = heatmapAccountOptions.find((option) => option.value === normalizedSelected);
+      if (match) {
+        return normalizedSelected;
+      }
+    }
+
+    const fallbackAll = heatmapAccountOptions.find((option) => option.value === 'all');
+    if (fallbackAll) {
+      return fallbackAll.value;
+    }
+
+    return heatmapAccountOptions[0].value;
+  }, [heatmapAccountOptions, selectedAccount]);
 
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
@@ -3762,6 +3904,8 @@ export default function App() {
           baseCurrency={baseCurrency}
           asOf={asOf}
           totalMarketValue={heatmapMarketValue}
+          accountOptions={heatmapAccountOptions}
+          initialAccount={heatmapDefaultAccount}
         />
       )}
     </div>

@@ -577,6 +577,8 @@ export default function PnlHeatmapDialog({
   baseCurrency,
   asOf,
   totalMarketValue,
+  accountOptions,
+  initialAccount,
 }) {
   const initialMetric = mode === 'open' ? 'open' : 'day';
   const [metricMode, setMetricMode] = useState(initialMetric);
@@ -594,9 +596,102 @@ export default function PnlHeatmapDialog({
   const formatPx = (value) => `${Number.parseFloat(value.toFixed(3))}`;
 
   const [styleMode, setStyleMode] = useState('style1');
+  const normalizedAccountOptions = useMemo(() => {
+    if (!Array.isArray(accountOptions) || accountOptions.length === 0) {
+      return [];
+    }
+    return accountOptions
+      .map((option) => {
+        if (!option || option.value === undefined || option.value === null) {
+          return null;
+        }
+        const value = String(option.value);
+        const label =
+          typeof option.label === 'string' && option.label.trim() ? option.label.trim() : value;
+        const optionPositions = Array.isArray(option.positions) ? option.positions : [];
+        const totalValue = isFiniteNumber(option.totalMarketValue) ? option.totalMarketValue : null;
+        return {
+          value,
+          label,
+          positions: optionPositions,
+          totalMarketValue: totalValue,
+        };
+      })
+      .filter(Boolean);
+  }, [accountOptions]);
+
+  const accountSelectId = useMemo(
+    () => `pnl-heatmap-account-${Math.random().toString(36).slice(2)}`,
+    []
+  );
+
+  const [accountSelection, setAccountSelection] = useState(() => {
+    if (!normalizedAccountOptions.length) {
+      return '';
+    }
+    const normalizedInitial =
+      initialAccount === undefined || initialAccount === null ? null : String(initialAccount);
+    if (
+      normalizedInitial &&
+      normalizedAccountOptions.some((option) => option.value === normalizedInitial)
+    ) {
+      return normalizedInitial;
+    }
+    return normalizedAccountOptions[0].value;
+  });
+
+  useEffect(() => {
+    if (!normalizedAccountOptions.length) {
+      setAccountSelection('');
+      return;
+    }
+    setAccountSelection((current) => {
+      if (current && normalizedAccountOptions.some((option) => option.value === current)) {
+        return current;
+      }
+      const normalizedInitial =
+        initialAccount === undefined || initialAccount === null ? null : String(initialAccount);
+      if (
+        normalizedInitial &&
+        normalizedAccountOptions.some((option) => option.value === normalizedInitial)
+      ) {
+        return normalizedInitial;
+      }
+      return normalizedAccountOptions[0].value;
+    });
+  }, [normalizedAccountOptions, initialAccount]);
+
+  const activeAccountOption = useMemo(() => {
+    if (!normalizedAccountOptions.length) {
+      return null;
+    }
+    const match = normalizedAccountOptions.find((option) => option.value === accountSelection);
+    if (match) {
+      return match;
+    }
+    return normalizedAccountOptions[0];
+  }, [normalizedAccountOptions, accountSelection]);
+
+  const activePositions = useMemo(() => {
+    if (activeAccountOption && Array.isArray(activeAccountOption.positions)) {
+      return activeAccountOption.positions;
+    }
+    return positions;
+  }, [activeAccountOption, positions]);
+
+  const activeMarketValue = useMemo(() => {
+    if (activeAccountOption && isFiniteNumber(activeAccountOption.totalMarketValue)) {
+      return activeAccountOption.totalMarketValue;
+    }
+    return totalMarketValue;
+  }, [activeAccountOption, totalMarketValue]);
+
+  const hasAccountSelector = normalizedAccountOptions.length > 0;
+  const accountSelectDisabled = normalizedAccountOptions.length <= 1;
+
   const nodes = useMemo(
-    () => buildHeatmapNodes(positions, metricKey, styleMode),
-    [positions, metricKey, styleMode]
+    () => buildHeatmapNodes(activePositions, metricKey, styleMode),
+    [activePositions, metricKey, styleMode]
   );
   const [colorMode, setColorMode] = useState('percent');
   const handleTileClick = useCallback((event, symbol) => {
@@ -613,10 +708,10 @@ export default function PnlHeatmapDialog({
   }, []);
 
   const totals = useMemo(() => {
-    if (!positions.length) {
+    if (!activePositions.length) {
       return { marketValue: 0, pnl: 0 };
     }
-    return positions.reduce(
+    return activePositions.reduce(
       (acc, position) => {
         const marketValue = isFiniteNumber(position.normalizedMarketValue)
           ? position.normalizedMarketValue
@@ -629,7 +724,7 @@ export default function PnlHeatmapDialog({
       },
       { marketValue: 0, pnl: 0 }
     );
-  }, [positions, metricKey]);
+  }, [activePositions, metricKey]);
 
   const styleTwoTotals = useMemo(() => {
     if (styleMode !== 'style2') {
@@ -649,7 +744,9 @@ export default function PnlHeatmapDialog({
     );
   }, [nodes, styleMode]);
 
-  const resolvedMarketValue = isFiniteNumber(totalMarketValue) ? totalMarketValue : totals.marketValue;
+  const resolvedMarketValue = isFiniteNumber(activeMarketValue)
+    ? activeMarketValue
+    : totals.marketValue;
 
   const asOfDisplay = asOf ? `As of ${formatDateTime(asOf)}` : null;
   const normalizedCurrency = typeof baseCurrency === 'string' && baseCurrency.trim()
@@ -683,6 +780,28 @@ export default function PnlHeatmapDialog({
             </p>
             {asOfDisplay && <p className="pnl-heatmap-dialog__timestamp">{asOfDisplay}</p>}
             <div className="pnl-heatmap-dialog__toolbar">
+              {hasAccountSelector ? (
+                <div className="pnl-heatmap-dialog__controls pnl-heatmap-dialog__controls--select">
+                  <label className="pnl-heatmap-dialog__label" htmlFor={accountSelectId}>
+                    Account
+                  </label>
+                  <div className="pnl-heatmap-dialog__select-wrapper">
+                    <select
+                      id={accountSelectId}
+                      className="pnl-heatmap-dialog__select"
+                      value={accountSelection}
+                      onChange={(event) => setAccountSelection(event.target.value)}
+                      disabled={accountSelectDisabled}
+                    >
+                      {normalizedAccountOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              ) : null}
               <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Select P&L metric">
                 <button
                   type="button"
@@ -908,36 +1027,47 @@ export default function PnlHeatmapDialog({
   );
 }
 
+const heatmapPositionShape = PropTypes.shape({
+  symbol: PropTypes.string,
+  symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+  description: PropTypes.string,
+  dayPnl: PropTypes.number,
+  openPnl: PropTypes.number,
+  normalizedMarketValue: PropTypes.number,
+  normalizedDayPnl: PropTypes.number,
+  normalizedOpenPnl: PropTypes.number,
+  portfolioShare: PropTypes.number,
+  rowId: PropTypes.string,
+  currentMarketValue: PropTypes.number,
+  currentPrice: PropTypes.number,
+  currency: PropTypes.string,
+  totalCost: PropTypes.number,
+  averageEntryPrice: PropTypes.number,
+  openQuantity: PropTypes.number,
+});
+
 PnlHeatmapDialog.propTypes = {
-  positions: PropTypes.arrayOf(
-    PropTypes.shape({
-      symbol: PropTypes.string,
-      symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
-      description: PropTypes.string,
-      dayPnl: PropTypes.number,
-      openPnl: PropTypes.number,
-      normalizedMarketValue: PropTypes.number,
-      normalizedDayPnl: PropTypes.number,
-      normalizedOpenPnl: PropTypes.number,
-      portfolioShare: PropTypes.number,
-      rowId: PropTypes.string,
-      currentMarketValue: PropTypes.number,
-      currentPrice: PropTypes.number,
-      currency: PropTypes.string,
-      totalCost: PropTypes.number,
-      averageEntryPrice: PropTypes.number,
-      openQuantity: PropTypes.number,
-    })
-  ).isRequired,
+  positions: PropTypes.arrayOf(heatmapPositionShape).isRequired,
   mode: PropTypes.oneOf(['day', 'open']).isRequired,
   onClose: PropTypes.func.isRequired,
   baseCurrency: PropTypes.string,
   asOf: PropTypes.string,
   totalMarketValue: PropTypes.number,
+  accountOptions: PropTypes.arrayOf(
+    PropTypes.shape({
+      value: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+      label: PropTypes.string.isRequired,
+      positions: PropTypes.arrayOf(heatmapPositionShape).isRequired,
+      totalMarketValue: PropTypes.number,
+    })
+  ),
+  initialAccount: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
 };
 
 PnlHeatmapDialog.defaultProps = {
   baseCurrency: 'CAD',
   asOf: null,
   totalMarketValue: null,
+  accountOptions: [],
+  initialAccount: null,
 };
