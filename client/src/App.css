@@ -1552,27 +1552,26 @@ textarea {
   color: var(--color-text-muted);
 }
 
-.total-pnl-extra {
-  display: inline-flex;
+.equity-card__metric-row--total-with-details {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.total-pnl-details {
+  align-self: stretch;
+  display: flex;
   flex-direction: column;
   align-items: flex-end;
   text-align: right;
   gap: 2px;
+  padding: 6px 0 12px;
+  border-bottom: 1px dotted var(--color-border-strong);
 }
 
-.total-pnl-extra__percent {
+.total-pnl-details__line {
   display: block;
-}
-
-.total-pnl-extra__details {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-}
-
-.total-pnl-extra__line {
-  display: block;
+  font-size: 13px;
+  color: var(--color-text-muted);
 }
 
 .pnl-heatmap-overlay {

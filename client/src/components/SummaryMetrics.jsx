@@ -460,22 +460,17 @@ export default function SummaryMetrics({
     }
   }
 
-  const totalExtra = totalExtraPercent || detailLines.length
-    ? (
-        <span className="total-pnl-extra">
-          {totalExtraPercent ? <span className="total-pnl-extra__percent">{totalExtraPercent}</span> : null}
-          {detailLines.length > 0 ? (
-            <span className="total-pnl-extra__details">
-              {detailLines.map((line, index) => (
-                <span key={`total-extra-line-${index}`} className="total-pnl-extra__line">
-                  {line}
-                </span>
-              ))}
-            </span>
-          ) : null}
+  const hasDetailLines = detailLines.length > 0;
+
+  const totalDetailBlock = hasDetailLines ? (
+    <div className="total-pnl-details">
+      {detailLines.map((line, index) => (
+        <span key={`total-detail-line-${index}`} className="total-pnl-details__line">
+          {line}
         </span>
-      )
-    : null;
+      ))}
+    </div>
+  ) : null;
 
   return (
     <section className="equity-card">
@@ -590,9 +585,11 @@ export default function SummaryMetrics({
           <MetricRow
             label="Total P&L"
             value={formattedTotal}
-            extra={totalExtra}
+            extra={totalExtraPercent}
             tone={totalTone}
+            className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
           />
+          {totalDetailBlock}
           <MetricRow
             label="Annualized return"
             tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
