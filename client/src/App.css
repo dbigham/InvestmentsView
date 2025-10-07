@@ -175,13 +175,13 @@ textarea {
   height: 10px;
   border-right: 2px solid var(--color-text-muted);
   border-bottom: 2px solid var(--color-text-muted);
-  transform: rotate(45deg);
+  transform: rotate(-135deg);
   transition: transform 0.2s ease;
   margin-left: 8px;
 }
 
 .todo-card--collapsed .todo-card__chevron {
-  transform: rotate(-135deg);
+  transform: rotate(45deg);
 }
 
 .todo-card__list {
@@ -197,7 +197,6 @@ textarea {
   padding: 12px 14px;
   border-radius: 8px;
   background: var(--color-neutral-soft);
-  border-left: 3px solid var(--color-border-active);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -208,7 +207,6 @@ textarea {
 }
 
 .todo-card__item--rebalance {
-  border-left-color: var(--color-negative);
   background: var(--color-negative-soft);
 }
 

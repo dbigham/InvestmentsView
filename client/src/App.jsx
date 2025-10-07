@@ -3926,7 +3926,7 @@ export default function App() {
       return;
     }
 
-    const targetAccountId = pendingTodoAction.accountId || null;
+    const targetAccountId = pendingTodoAction.accountId ? String(pendingTodoAction.accountId) : null;
     const selectedAccountId =
       selectedAccount === 'all'
         ? null
@@ -3937,7 +3937,14 @@ export default function App() {
         : null;
 
     if (targetAccountId && targetAccountId !== selectedAccountId) {
-      handleAccountChange(targetAccountId);
+      const targetAccount = accountsById.get(targetAccountId);
+      const nextSelection = targetAccount?.id ? String(targetAccount.id) : targetAccountId;
+      handleAccountChange(nextSelection);
+      return;
+    }
+
+    const expectedScope = targetAccountId ? `account:${targetAccountId}` : null;
+    if (expectedScope && todoScopeKey && todoScopeKey !== expectedScope) {
       return;
     }
 
@@ -3988,6 +3995,8 @@ export default function App() {
     pendingTodoAction,
     selectedAccount,
     selectedAccountInfo,
+    accountsById,
+    todoScopeKey,
     handleAccountChange,
     loading,
     data,
