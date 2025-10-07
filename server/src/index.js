@@ -3950,6 +3950,12 @@ app.get('/api/summary', async function (req, res) {
                 normalizedAccount.cagrStartDate = trimmedDate;
               }
             }
+            if (
+              typeof accountSettingsOverride.ignoreSittingCash === 'number' &&
+              Number.isFinite(accountSettingsOverride.ignoreSittingCash)
+            ) {
+              normalizedAccount.ignoreSittingCash = accountSettingsOverride.ignoreSittingCash;
+            }
           }
           const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
           if (defaultBeneficiary) {

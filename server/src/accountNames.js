@@ -328,6 +328,24 @@ function applyCagrStartDateSetting(target, key, value) {
   container.cagrStartDate = normalized;
 }
 
+function applyIgnoreSittingCashSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeNumberLike(value);
+  if (normalized === null) {
+    delete container.ignoreSittingCash;
+    return;
+  }
+  const rounded = Math.round(normalized);
+  if (!Number.isFinite(rounded) || rounded < 0) {
+    delete container.ignoreSittingCash;
+    return;
+  }
+  container.ignoreSittingCash = rounded;
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -582,6 +600,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'cagrStartDate')) {
       applyCagrStartDateSetting(settingsTarget, resolvedKey, entry.cagrStartDate);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'ignoreSittingCash')) {
+      applyIgnoreSittingCashSetting(settingsTarget, resolvedKey, entry.ignoreSittingCash);
     }
   }
 

@@ -14,7 +14,8 @@
         "rebalancePeriod": 90
       }
     ],
-    "default": true
+    "default": true,
+    "ignoreSittingCash": 250
   },
   "53384040": {
     "name": "Margin",
