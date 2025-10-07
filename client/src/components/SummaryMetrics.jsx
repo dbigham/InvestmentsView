@@ -571,8 +571,7 @@ export default function SummaryMetrics({
   let totalExtraPercentTooltip = null;
   if (deAnnualizedPercentDisplay !== null) {
     totalExtraPercent = `(${deAnnualizedPercentDisplay})`;
-    totalExtraPercentTooltip =
-      'Estimated cumulative total return by converting the XIRR annualized rate over the funding period (not the XIRR itself).';
+    totalExtraPercentTooltip = 'Estimated cumulative total return. (De-annualized XIRR)';
   } else if (totalPercent) {
     totalExtraPercent = `(${totalPercent})`;
     totalExtraPercentTooltip = 'Fallback calculation: Total P&L divided by cost basis.';
