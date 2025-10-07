@@ -1266,6 +1266,12 @@ function buildTodoItems({ accountIds, accountsById, accountBalances, investmentM
     const balanceSummary = normalizeAccountBalanceSummary(
       accountBalances && typeof accountBalances === 'object' ? accountBalances[accountId] : null
     );
+    const ignoreSittingCashThreshold =
+      account &&
+      typeof account.ignoreSittingCash === 'number' &&
+      Number.isFinite(account.ignoreSittingCash)
+        ? Math.max(0, account.ignoreSittingCash)
+        : null;
     if (balanceSummary) {
       ['CAD', 'USD'].forEach((currency) => {
         const cashValue = resolveCashForCurrency(balanceSummary, currency);
@@ -1274,6 +1280,12 @@ function buildTodoItems({ accountIds, accountsById, accountBalances, investmentM
           cashValue > 0 &&
           cashValue >= TODO_CASH_THRESHOLD - TODO_AMOUNT_EPSILON
         ) {
+          const shouldIgnoreCashTodo =
+            ignoreSittingCashThreshold !== null &&
+            cashValue <= ignoreSittingCashThreshold + TODO_AMOUNT_EPSILON;
+          if (shouldIgnoreCashTodo) {
+            return;
+          }
           items.push({
             id: `cash:${accountId}:${currency}`,
             type: 'cash',
