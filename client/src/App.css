@@ -198,6 +198,141 @@ textarea {
   color: var(--color-negative);
 }
 
+.todo-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.todo-card__header {
+  display: flex;
+}
+
+.todo-card__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  appearance: none;
+}
+
+.todo-card__toggle:disabled {
+  cursor: default;
+}
+
+.todo-card__toggle:focus-visible {
+  outline: 2px solid var(--color-border-active);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.todo-card__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.todo-card__count {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.todo-card__chevron {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--color-text-muted);
+  border-bottom: 2px solid var(--color-text-muted);
+  transform: rotate(-135deg);
+  transition: transform 0.2s ease;
+  margin-left: 8px;
+}
+
+.todo-card--collapsed .todo-card__chevron {
+  transform: rotate(45deg);
+}
+
+.todo-card__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.todo-card__item {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--color-neutral-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.todo-card__item--interactive {
+  cursor: pointer;
+}
+
+.todo-card__item--rebalance {
+  background: var(--color-negative-soft);
+}
+
+.todo-card__item-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  appearance: none;
+}
+
+.todo-card__item-button:disabled {
+  cursor: default;
+}
+
+.todo-card__item-button:not(:disabled):hover .todo-card__item-title,
+.todo-card__item-button:not(:disabled):focus-visible .todo-card__item-title {
+  text-decoration: underline;
+}
+
+.todo-card__item-button:focus-visible {
+  outline: 2px solid var(--color-border-active);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.todo-card__item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.todo-card__item-detail {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
 .account-selector {
   position: relative;
   min-width: 280px;
@@ -2250,6 +2385,14 @@ textarea {
   .equity-card,
   .positions-card {
     padding: 20px 20px 16px;
+  }
+
+  .todo-card {
+    padding: 18px 18px 16px;
+  }
+
+  .todo-card__item {
+    padding: 10px 12px;
   }
 
   .positions-card__models-panel {

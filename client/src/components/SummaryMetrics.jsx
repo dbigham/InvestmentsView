@@ -73,6 +73,7 @@ function ActionMenu({
   onEstimateCagr,
   onPlanInvestEvenly,
   onMarkRebalanced,
+  onCheckTodos,
   disabled,
   chatUrl,
 }) {
@@ -86,6 +87,7 @@ function ActionMenu({
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
   const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
+  const hasTodoCheckAction = typeof onCheckTodos === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -186,6 +188,21 @@ function ActionMenu({
     }
   };
 
+  const handleCheckTodos = async () => {
+    if (!onCheckTodos || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onCheckTodos();
+    } catch (error) {
+      console.error('Failed to check for TODOs', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -217,6 +234,19 @@ function ActionMenu({
               >
                 Chat
               </a>
+            </li>
+          )}
+          {hasTodoCheckAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleCheckTodos}
+                disabled={busy}
+              >
+                Check for TODOs
+              </button>
             </li>
           )}
           {hasCopyAction && (
@@ -282,6 +312,7 @@ ActionMenu.propTypes = {
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
+  onCheckTodos: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -291,6 +322,7 @@ ActionMenu.defaultProps = {
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
   onMarkRebalanced: null,
+  onCheckTodos: null,
   disabled: false,
   chatUrl: null,
 };
@@ -317,6 +349,7 @@ export default function SummaryMetrics({
   onEstimateFutureCagr,
   onMarkRebalanced,
   onPlanInvestEvenly,
+  onCheckTodos,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -579,12 +612,14 @@ export default function SummaryMetrics({
             onEstimateFutureCagr ||
             onPlanInvestEvenly ||
             onMarkRebalanced ||
+            onCheckTodos ||
             chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
               onMarkRebalanced={onMarkRebalanced}
+              onCheckTodos={onCheckTodos}
               chatUrl={chatUrl}
             />
           )}
@@ -728,6 +763,7 @@ SummaryMetrics.propTypes = {
   onEstimateFutureCagr: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onCheckTodos: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -796,6 +832,7 @@ SummaryMetrics.defaultProps = {
   onEstimateFutureCagr: null,
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
+  onCheckTodos: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
