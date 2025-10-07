@@ -201,6 +201,8 @@ function PositionsTable({
   pnlMode: externalPnlMode,
   onPnlModeChange,
   embedded = false,
+  investmentModelSymbolMap = null,
+  onShowInvestmentModel = null,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
@@ -403,6 +405,17 @@ function PositionsTable({
             position.symbolId ?? position.symbol ?? index
           }`;
           const rowKey = position.rowId || fallbackKey;
+          const normalizedSymbol =
+            typeof position.symbol === 'string' ? position.symbol.trim().toUpperCase() : '';
+          let modelSection = null;
+          if (normalizedSymbol && investmentModelSymbolMap) {
+            if (investmentModelSymbolMap instanceof Map) {
+              modelSection = investmentModelSymbolMap.get(normalizedSymbol) || null;
+            } else if (typeof investmentModelSymbolMap === 'object') {
+              modelSection = investmentModelSymbolMap[normalizedSymbol] || null;
+            }
+          }
+          const modelButtonLabel = modelSection?.displayTitle || modelSection?.title || modelSection?.model || 'Investment model';
 
           return (
             <div
@@ -412,7 +425,23 @@ function PositionsTable({
               onClick={(event) => handleRowNavigation(event, position.symbol)}
             >
               <div className="positions-table__cell positions-table__cell--symbol" role="cell">
-                <div className="positions-table__symbol-ticker">{position.symbol}</div>
+                <div className="positions-table__symbol-header">
+                  <div className="positions-table__symbol-ticker">{position.symbol}</div>
+                  {modelSection && typeof onShowInvestmentModel === 'function' ? (
+                    <button
+                      type="button"
+                      className="positions-table__model-link"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onShowInvestmentModel(modelSection);
+                      }}
+                      title={`View investment model guidance for ${modelButtonLabel}`}
+                      aria-label={`View investment model guidance for ${modelButtonLabel}`}
+                    >
+                      Model
+                    </button>
+                  ) : null}
+                </div>
                 <div className="positions-table__symbol-name" title={position.description || '\u2014'}>
                   {displayDescription}
                 </div>
@@ -505,6 +534,8 @@ PositionsTable.propTypes = {
   pnlMode: PropTypes.oneOf(['currency', 'percent']),
   onPnlModeChange: PropTypes.func,
   embedded: PropTypes.bool,
+  investmentModelSymbolMap: PropTypes.instanceOf(Map),
+  onShowInvestmentModel: PropTypes.func,
 };
 
 PositionsTable.defaultProps = {
@@ -515,6 +546,8 @@ PositionsTable.defaultProps = {
   pnlMode: null,
   onPnlModeChange: null,
   embedded: false,
+  investmentModelSymbolMap: null,
+  onShowInvestmentModel: null,
 };
 
 export default PositionsTable;
