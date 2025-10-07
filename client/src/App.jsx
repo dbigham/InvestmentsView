@@ -1230,6 +1230,9 @@ function buildTodoItems({ accountIds, accountsById, accountBalances, investmentM
         (typeof section.title === 'string' && section.title.trim()) ||
         `model-${accountRebalanceIndex}`;
       accountRebalanceIndex += 1;
+      const modelName = typeof section.model === 'string' ? section.model.trim() : '';
+      const chartKey = typeof section.chartKey === 'string' ? section.chartKey.trim() : '';
+
       items.push({
         id: `rebalance:${accountId}:${identifierSource}`,
         type: 'rebalance',
@@ -1237,6 +1240,8 @@ function buildTodoItems({ accountIds, accountsById, accountBalances, investmentM
         accountLabel,
         modelLabel: title,
         lastRebalance,
+        model: modelName || null,
+        chartKey: chartKey || null,
       });
     });
   });
@@ -1340,6 +1345,12 @@ function areTodoListsEqual(listA, listB) {
         return false;
       }
       if ((itemA.lastRebalance || '') !== (itemB.lastRebalance || '')) {
+        return false;
+      }
+      if ((itemA.model || '') !== (itemB.model || '')) {
+        return false;
+      }
+      if ((itemA.chartKey || '') !== (itemB.chartKey || '')) {
         return false;
       }
     } else if ((itemA.title || '') !== (itemB.title || '')) {
@@ -2474,6 +2485,7 @@ export default function App() {
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
+  const [pendingTodoAction, setPendingTodoAction] = useState(null);
   const [activeInvestmentModelDialog, setActiveInvestmentModelDialog] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
@@ -3793,6 +3805,112 @@ export default function App() {
 
   const todoItems = todoState.items || [];
 
+  const handleTodoItemSelect = useCallback((item) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+
+    const normalizedType = typeof item.type === 'string' ? item.type.trim().toLowerCase() : '';
+    if (!normalizedType) {
+      return;
+    }
+
+    const accountId =
+      item.accountId !== undefined && item.accountId !== null ? String(item.accountId) : null;
+
+    if (normalizedType === 'cash') {
+      setPendingTodoAction({ type: 'cash', accountId });
+      return;
+    }
+
+    if (normalizedType === 'rebalance') {
+      const modelName = typeof item.model === 'string' ? item.model.trim() : '';
+      const chartKey = typeof item.chartKey === 'string' ? item.chartKey.trim() : '';
+      setPendingTodoAction({
+        type: 'rebalance',
+        accountId,
+        model: modelName || null,
+        chartKey: chartKey || null,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pendingTodoAction) {
+      return;
+    }
+
+    const targetAccountId = pendingTodoAction.accountId || null;
+    const selectedAccountId =
+      selectedAccount === 'all'
+        ? null
+        : selectedAccountInfo?.id
+        ? String(selectedAccountInfo.id)
+        : selectedAccount
+        ? String(selectedAccount)
+        : null;
+
+    if (targetAccountId && targetAccountId !== selectedAccountId) {
+      handleAccountChange(targetAccountId);
+      return;
+    }
+
+    if (loading || !data || !showContent) {
+      return;
+    }
+
+    if (pendingTodoAction.type === 'cash') {
+      handlePlanInvestEvenly();
+      setPendingTodoAction(null);
+      return;
+    }
+
+    if (pendingTodoAction.type === 'rebalance') {
+      const targetModel = pendingTodoAction.model
+        ? pendingTodoAction.model.toUpperCase()
+        : null;
+      const targetChartKey = pendingTodoAction.chartKey || null;
+      const section = investmentModelSections.find((candidate) => {
+        if (!candidate || typeof candidate !== 'object') {
+          return false;
+        }
+        if (
+          targetAccountId &&
+          String(candidate.accountId ?? '') !== String(targetAccountId)
+        ) {
+          return false;
+        }
+        const sectionModel =
+          typeof candidate.model === 'string' ? candidate.model.trim().toUpperCase() : '';
+        if (targetModel && sectionModel === targetModel) {
+          return true;
+        }
+        if (targetChartKey && candidate.chartKey === targetChartKey) {
+          return true;
+        }
+        return false;
+      });
+
+      if (!section) {
+        return;
+      }
+
+      handleShowAccountInvestmentModel(section);
+      setPendingTodoAction(null);
+    }
+  }, [
+    pendingTodoAction,
+    selectedAccount,
+    selectedAccountInfo,
+    handleAccountChange,
+    loading,
+    data,
+    showContent,
+    handlePlanInvestEvenly,
+    investmentModelSections,
+    handleShowAccountInvestmentModel,
+  ]);
+
   const getSummaryText = useCallback(() => {
     if (!showContent) {
       return null;
@@ -4159,7 +4277,9 @@ export default function App() {
           </div>
         )}
 
-        {showContent && todoItems.length > 0 && <TodoSummary items={todoItems} />}
+        {showContent && todoItems.length > 0 && (
+          <TodoSummary items={todoItems} onSelectItem={handleTodoItemSelect} />
+        )}
 
         {showContent && (
           <SummaryMetrics

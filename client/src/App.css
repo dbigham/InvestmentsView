@@ -130,9 +130,29 @@ textarea {
 
 .todo-card__header {
   display: flex;
-  align-items: baseline;
+}
+
+.todo-card__toggle {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  appearance: none;
+}
+
+.todo-card__toggle:disabled {
+  cursor: default;
+}
+
+.todo-card__toggle:focus-visible {
+  outline: 2px solid var(--color-border-active);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .todo-card__title {
@@ -148,6 +168,20 @@ textarea {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-text-muted);
+}
+
+.todo-card__chevron {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--color-text-muted);
+  border-bottom: 2px solid var(--color-text-muted);
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+  margin-left: 8px;
+}
+
+.todo-card--collapsed .todo-card__chevron {
+  transform: rotate(-135deg);
 }
 
 .todo-card__list {
@@ -169,9 +203,44 @@ textarea {
   gap: 4px;
 }
 
+.todo-card__item--interactive {
+  cursor: pointer;
+}
+
 .todo-card__item--rebalance {
   border-left-color: var(--color-negative);
   background: var(--color-negative-soft);
+}
+
+.todo-card__item-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  appearance: none;
+}
+
+.todo-card__item-button:disabled {
+  cursor: default;
+}
+
+.todo-card__item-button:not(:disabled):hover .todo-card__item-title,
+.todo-card__item-button:not(:disabled):focus-visible .todo-card__item-title {
+  text-decoration: underline;
+}
+
+.todo-card__item-button:focus-visible {
+  outline: 2px solid var(--color-border-active);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .todo-card__item-title {
