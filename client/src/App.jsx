@@ -2202,7 +2202,7 @@ export default function App() {
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
-  const [showInvestmentModelDialog, setShowInvestmentModelDialog] = useState(false);
+  const [activeInvestmentModelDialog, setActiveInvestmentModelDialog] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
   const [qqqError, setQqqError] = useState(null);
@@ -2887,6 +2887,65 @@ export default function App() {
   }, [shouldShowInvestmentModels, investmentModelSections]);
   const showModelsPanel = shouldShowInvestmentModels && portfolioViewTab === 'models';
 
+  const investmentModelSymbolMap = useMemo(() => {
+    if (!selectedAccountInfo?.id) {
+      return null;
+    }
+    const targetAccountId = String(selectedAccountInfo.id);
+    const map = new Map();
+    investmentModelSections.forEach((section) => {
+      if (!section || typeof section !== 'object') {
+        return;
+      }
+      if (String(section.accountId ?? '') !== targetAccountId) {
+        return;
+      }
+      const symbols = [];
+      if (typeof section.symbol === 'string' && section.symbol.trim()) {
+        symbols.push(section.symbol.trim());
+      }
+      if (typeof section.leveragedSymbol === 'string' && section.leveragedSymbol.trim()) {
+        symbols.push(section.leveragedSymbol.trim());
+      }
+      symbols.forEach((symbol) => {
+        const normalized = symbol.toUpperCase();
+        if (normalized) {
+          map.set(normalized, section);
+        }
+      });
+    });
+    return map.size > 0 ? map : null;
+  }, [selectedAccountInfo, investmentModelSections]);
+
+  const activeAccountModelSection = useMemo(() => {
+    if (activeInvestmentModelDialog?.type !== 'account-model') {
+      return null;
+    }
+    const targetModel = String(activeInvestmentModelDialog.model || '').trim().toUpperCase();
+    if (!targetModel) {
+      return null;
+    }
+    const targetAccountId =
+      activeInvestmentModelDialog.accountId !== undefined && activeInvestmentModelDialog.accountId !== null
+        ? String(activeInvestmentModelDialog.accountId)
+        : null;
+    return (
+      investmentModelSections.find((section) => {
+        if (!section || typeof section !== 'object') {
+          return false;
+        }
+        const sectionModel = String(section.model || '').trim().toUpperCase();
+        if (!sectionModel || sectionModel !== targetModel) {
+          return false;
+        }
+        if (targetAccountId === null) {
+          return true;
+        }
+        return String(section.accountId ?? '') === targetAccountId;
+      }) || null
+    );
+  }, [activeInvestmentModelDialog, investmentModelSections]);
+
   useEffect(() => {
     if (portfolioViewTab !== 'positions' && portfolioViewTab !== 'dividends' && portfolioViewTab !== 'models') {
       setPortfolioViewTab('positions');
@@ -2904,10 +2963,28 @@ export default function App() {
   const showingAllAccounts = selectedAccount === 'all';
 
   useEffect(() => {
-    if (!showingAllAccounts) {
-      setShowInvestmentModelDialog(false);
+    if (!showingAllAccounts && activeInvestmentModelDialog?.type === 'global') {
+      setActiveInvestmentModelDialog(null);
     }
-  }, [showingAllAccounts]);
+  }, [showingAllAccounts, activeInvestmentModelDialog]);
+
+  useEffect(() => {
+    if (activeInvestmentModelDialog?.type !== 'account-model') {
+      return;
+    }
+    if (!selectedAccountInfo) {
+      setActiveInvestmentModelDialog(null);
+      return;
+    }
+    const dialogAccountId = activeInvestmentModelDialog.accountId;
+    if (
+      dialogAccountId !== undefined &&
+      dialogAccountId !== null &&
+      String(dialogAccountId) !== String(selectedAccountInfo.id)
+    ) {
+      setActiveInvestmentModelDialog(null);
+    }
+  }, [activeInvestmentModelDialog, selectedAccountInfo]);
 
   const cashBreakdownData = useMemo(() => {
     if (!cashBreakdownCurrency) {
@@ -3131,11 +3208,30 @@ export default function App() {
     if (!qqqData && !qqqLoading && !qqqError) {
       fetchQqqTemperature();
     }
-    setShowInvestmentModelDialog(true);
+    setActiveInvestmentModelDialog({ type: 'global' });
   }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
 
+  const handleShowAccountInvestmentModel = useCallback(
+    (modelSection) => {
+      if (!modelSection || typeof modelSection !== 'object') {
+        return;
+      }
+      if (typeof modelSection.model !== 'string' || !modelSection.model.trim()) {
+        return;
+      }
+      fetchInvestmentModelChart(modelSection);
+      const accountId = modelSection.accountId ?? null;
+      setActiveInvestmentModelDialog({
+        type: 'account-model',
+        accountId,
+        model: modelSection.model,
+      });
+    },
+    [fetchInvestmentModelChart]
+  );
+
   const handleCloseInvestmentModelDialog = useCallback(() => {
-    setShowInvestmentModelDialog(false);
+    setActiveInvestmentModelDialog(null);
   }, []);
   const handleRetryInvestmentModelChart = useCallback(
     (modelConfig) => {
@@ -3506,6 +3602,45 @@ export default function App() {
     setInvestEvenlyPlanInputs(null);
   }, []);
 
+  let showInvestmentModelDialog = Boolean(activeInvestmentModelDialog);
+  let investmentModelDialogData = null;
+  let investmentModelDialogLoading = false;
+  let investmentModelDialogError = null;
+  let investmentModelDialogOnRetry = null;
+  let investmentModelDialogModelName = null;
+  let investmentModelDialogLastRebalance = null;
+  let investmentModelDialogEvaluation = null;
+  let investmentModelDialogTitle = 'Investment Model';
+
+  if (activeInvestmentModelDialog?.type === 'global') {
+    investmentModelDialogData = qqqData;
+    investmentModelDialogLoading = qqqLoading;
+    investmentModelDialogError = qqqError;
+    investmentModelDialogOnRetry = fetchQqqTemperature;
+    investmentModelDialogModelName = 'A1';
+    investmentModelDialogLastRebalance = a1LastRebalance;
+    investmentModelDialogEvaluation = a1Evaluation;
+  } else if (activeInvestmentModelDialog?.type === 'account-model') {
+    const chartState = activeAccountModelSection?.chart || { data: null, loading: false, error: null };
+    investmentModelDialogData = chartState.data || null;
+    investmentModelDialogLoading = Boolean(chartState.loading);
+    investmentModelDialogError = chartState.error || null;
+    investmentModelDialogOnRetry =
+      activeAccountModelSection && activeAccountModelSection.chartKey
+        ? () => handleRetryInvestmentModelChart(activeAccountModelSection)
+        : null;
+    investmentModelDialogModelName =
+      activeAccountModelSection?.model || activeInvestmentModelDialog.model || null;
+    investmentModelDialogLastRebalance = activeAccountModelSection?.lastRebalance || null;
+    investmentModelDialogEvaluation = activeAccountModelSection?.evaluation || null;
+    investmentModelDialogTitle =
+      activeAccountModelSection?.displayTitle ||
+      activeAccountModelSection?.title ||
+      (investmentModelDialogModelName ? `${investmentModelDialogModelName} Investment Model` : 'Investment Model');
+  } else {
+    showInvestmentModelDialog = false;
+  }
+
   if (loading && !data) {
     return (
       <div className="summary-page summary-page--initial-loading">
@@ -3597,19 +3732,6 @@ export default function App() {
                 >
                   Positions
                 </button>
-                {hasDividendSummary ? (
-                  <button
-                    type="button"
-                    id={dividendsTabId}
-                    role="tab"
-                    aria-selected={portfolioViewTab === 'dividends'}
-                    aria-controls={dividendsPanelId}
-                    className={portfolioViewTab === 'dividends' ? 'active' : ''}
-                    onClick={() => setPortfolioViewTab('dividends')}
-                  >
-                    Dividends
-                  </button>
-                ) : null}
                 {shouldShowInvestmentModels ? (
                   <button
                     type="button"
@@ -3636,6 +3758,19 @@ export default function App() {
                     </span>
                   </button>
                 ) : null}
+                {hasDividendSummary ? (
+                  <button
+                    type="button"
+                    id={dividendsTabId}
+                    role="tab"
+                    aria-selected={portfolioViewTab === 'dividends'}
+                    aria-controls={dividendsPanelId}
+                    className={portfolioViewTab === 'dividends' ? 'active' : ''}
+                    onClick={() => setPortfolioViewTab('dividends')}
+                  >
+                    Dividends
+                  </button>
+                ) : null}
               </div>
             </header>
 
@@ -3654,19 +3789,11 @@ export default function App() {
                 pnlMode={positionsPnlMode}
                 onPnlModeChange={setPositionsPnlMode}
                 embedded
+                investmentModelSymbolMap={investmentModelSymbolMap}
+                onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
               />
             </div>
 
-            {hasDividendSummary ? (
-              <div
-                id={dividendsPanelId}
-                role="tabpanel"
-                aria-labelledby={dividendsTabId}
-                hidden={!showDividendsPanel}
-              >
-                <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
-              </div>
-            ) : null}
             {shouldShowInvestmentModels ? (
               <div
                 id={modelsPanelId}
@@ -3699,6 +3826,16 @@ export default function App() {
                     );
                   })
                   : null}
+              </div>
+            ) : null}
+            {hasDividendSummary ? (
+              <div
+                id={dividendsPanelId}
+                role="tabpanel"
+                aria-labelledby={dividendsTabId}
+                hidden={!showDividendsPanel}
+              >
+                <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
               </div>
             ) : null}
           </section>
@@ -3737,13 +3874,14 @@ export default function App() {
       {showInvestmentModelDialog && (
         <QqqTemperatureDialog
           onClose={handleCloseInvestmentModelDialog}
-          data={qqqData}
-          loading={qqqLoading}
-          error={qqqError}
-          onRetry={fetchQqqTemperature}
-          modelName="A1"
-          lastRebalance={a1LastRebalance}
-          evaluation={a1Evaluation}
+          data={investmentModelDialogData}
+          loading={investmentModelDialogLoading}
+          error={investmentModelDialogError}
+          onRetry={investmentModelDialogOnRetry}
+          modelName={investmentModelDialogModelName}
+          lastRebalance={investmentModelDialogLastRebalance}
+          evaluation={investmentModelDialogEvaluation}
+          title={investmentModelDialogTitle}
         />
       )}
       {investEvenlyPlan && (

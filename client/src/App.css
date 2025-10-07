@@ -1399,7 +1399,7 @@ textarea {
   border-radius: var(--radius-pill);
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface-alt);
-  color: var(--color-text-secondary);
+  color: var(--color-text-primary);
   font-size: 13px;
   line-height: 1.2;
   cursor: default;
@@ -1419,7 +1419,7 @@ textarea {
   background-repeat: no-repeat;
   background-position: center;
   background-size: 14px 14px;
-  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M0%200h24v24H0Z%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M17.65%206.35A8%208%200%201%200%2019.73%2014h-2.08A6%206%200%201%201%2012%206a5.92%205.92%200%200%201%204.22%201.78L13%2011h7V4Z%22%20fill%3D%22%236b7787%22%2F%3E%3C%2Fsvg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M0%200h24v24H0Z%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M17.65%206.35A8%208%200%201%200%2019.73%2014h-2.08A6%206%200%201%201%2012%206a5.92%205.92%200%200%201%204.22%201.78L13%2011h7V4Z%22%20fill%3D%22%231b2733%22%2F%3E%3C%2Fsvg%3E");
 }
 
 .time-pill--auto {
@@ -1935,10 +1935,38 @@ textarea {
   gap: 4px;
 }
 
+.positions-table__symbol-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .positions-table__symbol-ticker {
   font-size: 15px;
   font-weight: 600;
   color: var(--color-text-primary);
+}
+
+.positions-table__model-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.positions-table__model-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+.positions-table__model-link:focus-visible {
+  outline: 2px solid var(--color-border-active);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .positions-table__symbol-name {
@@ -2092,7 +2120,7 @@ button.time-pill:hover .time-pill__icon {
   background-repeat: no-repeat;
   background-position: center;
   background-size: 14px 14px;
-  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M0%200h24v24H0Z%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M17.65%206.35A8%208%200%201%200%2019.73%2014h-2.08A6%206%200%201%201%2012%206a5.92%205.92%200%200%201%204.22%201.78L13%2011h7V4Z%22%20fill%3D%22%236b7787%22%2F%3E%3C%2Fsvg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M0%200h24v24H0Z%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M17.65%206.35A8%208%200%201%200%2019.73%2014h-2.08A6%206%200%201%201%2012%206a5.92%205.92%200%200%201%204.22%201.78L13%2011h7V4Z%22%20fill%3D%22%231b2733%22%2F%3E%3C%2Fsvg%3E");
 }
 .positions-table__cell--currency span {
   text-transform: uppercase;

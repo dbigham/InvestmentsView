@@ -11,6 +11,7 @@ export default function QqqTemperatureDialog({
   modelName,
   lastRebalance,
   evaluation,
+  title,
 }) {
   useEffect(() => {
     function handleKeyDown(event) {
@@ -42,7 +43,7 @@ export default function QqqTemperatureDialog({
             loading={loading}
             error={error}
             onRetry={onRetry}
-            title="Investment Model"
+            title={title}
             modelName={modelName}
             lastRebalance={lastRebalance}
             evaluation={evaluation}
@@ -62,6 +63,7 @@ QqqTemperatureDialog.propTypes = {
   modelName: PropTypes.string,
   lastRebalance: PropTypes.string,
   evaluation: QqqTemperatureSection.propTypes.evaluation,
+  title: PropTypes.string,
 };
 
 QqqTemperatureDialog.defaultProps = {
@@ -72,4 +74,5 @@ QqqTemperatureDialog.defaultProps = {
   modelName: 'A1',
   lastRebalance: null,
   evaluation: QqqTemperatureSection.defaultProps.evaluation,
+  title: 'Investment Model',
 };
