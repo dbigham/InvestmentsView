@@ -2597,6 +2597,7 @@ export default function App() {
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
   const [pendingTodoAction, setPendingTodoAction] = useState(null);
+  const [selectedRebalanceReminder, setSelectedRebalanceReminder] = useState(null);
   const [activeInvestmentModelDialog, setActiveInvestmentModelDialog] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
@@ -2761,10 +2762,11 @@ export default function App() {
       if (!value) {
         return;
       }
+      setSelectedRebalanceReminder(null);
       setSelectedAccountState(value);
       setActiveAccountId(value);
     },
-    [setActiveAccountId, setSelectedAccountState]
+    [setActiveAccountId, setSelectedAccountState, setSelectedRebalanceReminder]
   );
 
   const handleTodoSelect = useCallback(
@@ -2776,12 +2778,66 @@ export default function App() {
         return;
       }
       const directId = typeof item.accountId === 'string' && item.accountId ? item.accountId : null;
-      if (directId) {
-        setSelectedAccountState(directId);
-        setActiveAccountId(directId);
+      const normalizedAccountNumber =
+        typeof item.accountNumber === 'string' && item.accountNumber.trim() ? item.accountNumber.trim() : null;
+      let resolvedAccountId = directId;
+      let resolvedAccountNumber = normalizedAccountNumber;
+
+      if (!resolvedAccountId && normalizedAccountNumber) {
+        const match = accounts.find((account) => {
+          if (!account) {
+            return false;
+          }
+          const accountNumber =
+            account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+          const accountId = typeof account.id === 'string' ? account.id : '';
+          return accountNumber === normalizedAccountNumber || accountId === normalizedAccountNumber;
+        });
+        if (match && typeof match.id === 'string' && match.id) {
+          resolvedAccountId = match.id;
+          const matchNumber =
+            match.number !== undefined && match.number !== null
+              ? String(match.number).trim()
+              : typeof match.accountNumber === 'string' && match.accountNumber.trim()
+              ? match.accountNumber.trim()
+              : null;
+          if (matchNumber) {
+            resolvedAccountNumber = matchNumber;
+          }
+        }
+      } else if (resolvedAccountId) {
+        const match = accounts.find((account) => {
+          if (!account) {
+            return false;
+          }
+          return (typeof account.id === 'string' ? account.id : '') === resolvedAccountId;
+        });
+        if (match) {
+          const matchNumber =
+            match.number !== undefined && match.number !== null
+              ? String(match.number).trim()
+              : typeof match.accountNumber === 'string' && match.accountNumber.trim()
+              ? match.accountNumber.trim()
+              : null;
+          if (matchNumber) {
+            resolvedAccountNumber = matchNumber;
+          }
+        }
+      }
+
+      setSelectedRebalanceReminder({
+        accountId: resolvedAccountId,
+        accountNumber: resolvedAccountNumber,
+        modelKey:
+          typeof item.modelKey === 'string' && item.modelKey.trim() ? item.modelKey.trim().toUpperCase() : null,
+      });
+
+      if (resolvedAccountId) {
+        setSelectedAccountState(resolvedAccountId);
+        setActiveAccountId(resolvedAccountId);
         return;
       }
-      if (item.accountNumber) {
+      if (normalizedAccountNumber) {
         const match = accounts.find((account) => {
           if (!account) {
             return false;
@@ -2791,7 +2847,7 @@ export default function App() {
               ? String(account.number)
               : '';
           const accountId = typeof account.id === 'string' ? account.id : '';
-          return accountNumber === item.accountNumber || accountId === item.accountNumber;
+          return accountNumber === normalizedAccountNumber || accountId === normalizedAccountNumber;
         });
         if (match && typeof match.id === 'string') {
           setSelectedAccountState(match.id);
@@ -2799,7 +2855,7 @@ export default function App() {
         }
       }
     },
-    [selectedAccount, setSelectedAccountState, setActiveAccountId, accounts]
+    [selectedAccount, accounts, setSelectedAccountState, setActiveAccountId, setSelectedRebalanceReminder]
   );
 
   const selectedAccountInfo = useMemo(() => {
@@ -2817,6 +2873,30 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
+
+  useEffect(() => {
+    if (!selectedRebalanceReminder) {
+      return;
+    }
+    if (selectedAccount === 'all') {
+      setSelectedRebalanceReminder(null);
+      return;
+    }
+    if (!selectedAccountInfo) {
+      setSelectedRebalanceReminder(null);
+      return;
+    }
+    const accountId = typeof selectedAccountInfo.id === 'string' ? selectedAccountInfo.id : null;
+    const rawNumber = selectedAccountInfo.number ?? selectedAccountInfo.accountNumber;
+    const accountNumber =
+      typeof rawNumber === 'string' ? rawNumber.trim() : rawNumber != null ? String(rawNumber).trim() : null;
+    const matchesId = accountId && selectedRebalanceReminder.accountId === accountId;
+    const matchesNumber = accountNumber && selectedRebalanceReminder.accountNumber === accountNumber;
+    if (!matchesId && !matchesNumber) {
+      setSelectedRebalanceReminder(null);
+    }
+  }, [selectedAccount, selectedAccountInfo, selectedRebalanceReminder, setSelectedRebalanceReminder]);
+
   const markRebalanceContext = useMemo(() => {
     if (!selectedAccountInfo || selectedAccount === 'all') {
       return null;
@@ -2827,18 +2907,58 @@ export default function App() {
     if (!accountNumber) {
       return null;
     }
+    const accountId = typeof selectedAccountInfo.id === 'string' ? selectedAccountInfo.id : null;
+    const reminderMatchesAccount = (() => {
+      if (!selectedRebalanceReminder) {
+        return false;
+      }
+      const reminderId =
+        typeof selectedRebalanceReminder.accountId === 'string' && selectedRebalanceReminder.accountId
+          ? selectedRebalanceReminder.accountId
+          : null;
+      const reminderNumber =
+        typeof selectedRebalanceReminder.accountNumber === 'string' && selectedRebalanceReminder.accountNumber
+          ? selectedRebalanceReminder.accountNumber
+          : null;
+      if (reminderId && accountId && reminderId === accountId) {
+        return true;
+      }
+      if (reminderNumber && reminderNumber === accountNumber) {
+        return true;
+      }
+      return false;
+    })();
+
+    const selectedModelKey = reminderMatchesAccount
+      ? typeof selectedRebalanceReminder?.modelKey === 'string' && selectedRebalanceReminder.modelKey
+        ? selectedRebalanceReminder.modelKey
+        : null
+      : null;
+
     const models = resolveAccountModelsForDisplay(selectedAccountInfo);
-    const withRebalance = models.find((model) => {
-      return typeof model.lastRebalance === 'string' && model.lastRebalance.trim();
-    });
+    let targetModel = null;
+    if (selectedModelKey) {
+      targetModel = models.find((model) => {
+        const modelName = typeof model.model === 'string' ? model.model.trim().toUpperCase() : '';
+        return modelName === selectedModelKey;
+      });
+    }
+
+    const withRebalance = targetModel
+      ? targetModel
+      : models.find((model) => typeof model.lastRebalance === 'string' && model.lastRebalance.trim());
+
     if (withRebalance) {
+      const resolvedModelName =
+        targetModel && selectedModelKey
+          ? selectedModelKey
+          : typeof withRebalance.model === 'string' && withRebalance.model.trim()
+          ? withRebalance.model.trim().toUpperCase()
+          : null;
       return {
-        accountId: typeof selectedAccountInfo.id === 'string' ? selectedAccountInfo.id : null,
+        accountId,
         accountNumber,
-        model:
-          typeof withRebalance.model === 'string' && withRebalance.model.trim()
-            ? withRebalance.model.trim().toUpperCase()
-            : null,
+        model: resolvedModelName,
         lastRebalance: withRebalance.lastRebalance,
       };
     }
@@ -2848,14 +2968,14 @@ export default function App() {
         : '';
     if (fallbackLast) {
       return {
-        accountId: typeof selectedAccountInfo.id === 'string' ? selectedAccountInfo.id : null,
+        accountId,
         accountNumber,
         model: null,
         lastRebalance: fallbackLast,
       };
     }
     return null;
-  }, [selectedAccountInfo, selectedAccount]);
+  }, [selectedAccountInfo, selectedAccount, selectedRebalanceReminder]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const balances = data?.balances || null;
   const accountFundingSource = data?.accountFunding;
