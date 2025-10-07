@@ -3472,7 +3472,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [benchmarkPeriodStart, benchmarkPeriodEnd, refreshKey]);
+  }, [benchmarkPeriodStart, benchmarkPeriodEnd]);
   const displayTotalEquity = useMemo(() => {
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
