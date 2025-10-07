@@ -86,10 +86,16 @@ const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod:
 
 const BENCHMARK_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const benchmarkReturnCache = new Map();
+const interestRateCache = new Map();
 
 const BENCHMARK_SYMBOLS = {
   sp500: { symbol: '^GSPC', name: 'S&P 500' },
   qqq: { symbol: 'QQQ', name: 'QQQ' },
+};
+
+const INTEREST_RATE_SERIES = {
+  symbol: '^IRX',
+  name: '13-Week Treasury Bill Yield',
 };
 
 function resolveLoginDisplay(login) {
@@ -254,6 +260,35 @@ function setCachedBenchmarkReturn(cacheKey, value) {
   benchmarkReturnCache.set(cacheKey, { value, cachedAt: Date.now() });
 }
 
+function getInterestRateCacheKey(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+  return [symbol, startDate, endDate].join('|');
+}
+
+function getCachedInterestRate(cacheKey) {
+  if (!cacheKey) {
+    return { hit: false };
+  }
+  const entry = interestRateCache.get(cacheKey);
+  if (!entry) {
+    return { hit: false };
+  }
+  if (Date.now() - entry.cachedAt > BENCHMARK_CACHE_MAX_AGE_MS) {
+    interestRateCache.delete(cacheKey);
+    return { hit: false };
+  }
+  return { hit: true, value: entry.value };
+}
+
+function setCachedInterestRate(cacheKey, value) {
+  if (!cacheKey) {
+    return;
+  }
+  interestRateCache.set(cacheKey, { value, cachedAt: Date.now() });
+}
+
 async function computeBenchmarkReturn(symbol, startDate, endDate) {
   if (!symbol || !startDate || !endDate) {
     return null;
@@ -344,6 +379,93 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
 
   if (cacheKey) {
     setCachedBenchmarkReturn(cacheKey, payload);
+  }
+
+  return payload;
+}
+
+async function computeAverageInterestRate(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+
+  const cacheKey = getInterestRateCacheKey(symbol, startDate, endDate);
+  if (cacheKey) {
+    const cached = getCachedInterestRate(cacheKey);
+    if (cached.hit) {
+      return cached.value;
+    }
+  }
+
+  const finance = ensureYahooFinanceClient();
+
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null;
+  }
+
+  const exclusiveEnd = addDays(end, 1) || end;
+
+  const history = await finance.historical(symbol, {
+    period1: start,
+    period2: exclusiveEnd,
+    interval: '1d',
+  });
+
+  const normalized = Array.isArray(history)
+    ? history
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const entryDate =
+            entry.date instanceof Date && !Number.isNaN(entry.date.getTime())
+              ? entry.date
+              : typeof entry.date === 'string'
+                ? new Date(entry.date)
+                : null;
+          if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+            return null;
+          }
+          const adjClose = Number(entry.adjClose);
+          const close = Number(entry.close);
+          const rate = Number.isFinite(adjClose)
+            ? adjClose
+            : Number.isFinite(close)
+              ? close
+              : Number.NaN;
+          if (!Number.isFinite(rate)) {
+            return null;
+          }
+          return { date: entryDate, rate };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.date - b.date)
+    : [];
+
+  if (!normalized.length) {
+    if (cacheKey) {
+      setCachedInterestRate(cacheKey, null);
+    }
+    return null;
+  }
+
+  const sum = normalized.reduce((total, entry) => total + entry.rate, 0);
+  const averagePercent = Number.isFinite(sum) ? sum / normalized.length : Number.NaN;
+  const averageRate = Number.isFinite(averagePercent) ? averagePercent / 100 : null;
+
+  const payload = {
+    symbol,
+    startDate: formatDateOnly(normalized[0].date),
+    endDate: formatDateOnly(normalized[normalized.length - 1].date),
+    averageRate,
+    dataPoints: normalized.length,
+    source: 'yahoo-finance2',
+  };
+
+  if (cacheKey) {
+    setCachedInterestRate(cacheKey, payload);
   }
 
   return payload;
@@ -3477,9 +3599,10 @@ app.get('/api/benchmark-returns', async function (req, res) {
   }
 
   try {
-    const [sp500Return, qqqReturn] = await Promise.all([
+    const [sp500Return, qqqReturn, interestRate] = await Promise.all([
       computeBenchmarkReturn(BENCHMARK_SYMBOLS.sp500.symbol, normalizedStart, normalizedEnd),
       computeBenchmarkReturn(BENCHMARK_SYMBOLS.qqq.symbol, normalizedStart, normalizedEnd),
+      computeAverageInterestRate(INTEREST_RATE_SERIES.symbol, normalizedStart, normalizedEnd),
     ]);
 
     return res.json({
@@ -3495,6 +3618,12 @@ app.get('/api/benchmark-returns', async function (req, res) {
         ? {
             name: BENCHMARK_SYMBOLS.qqq.name,
             ...qqqReturn,
+          }
+        : null,
+      interestRate: interestRate
+        ? {
+            name: INTEREST_RATE_SERIES.name,
+            ...interestRate,
           }
         : null,
     });

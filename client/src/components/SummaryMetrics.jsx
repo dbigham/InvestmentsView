@@ -5,6 +5,7 @@ import {
   classifyPnL,
   formatMoney,
   formatNumber,
+  formatPercent,
   formatSignedMoney,
   formatSignedPercent,
 } from '../utils/formatters';
@@ -377,50 +378,104 @@ export default function SummaryMetrics({
 
   const benchmarkStatus = benchmarkComparison?.status || 'idle';
   const benchmarkData = benchmarkComparison?.data || null;
-  const benchmarkParts = [];
 
+  const describePeriodLength = (startIso, endIso) => {
+    if (!startIso) {
+      return null;
+    }
+    const start = new Date(`${startIso}T00:00:00Z`);
+    const effectiveEndIso = endIso || startIso;
+    const end = new Date(`${effectiveEndIso}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return null;
+    }
+    const diffMs = end.getTime() - start.getTime();
+    if (!Number.isFinite(diffMs) || diffMs < 0) {
+      return null;
+    }
+    const totalDays = diffMs / (1000 * 60 * 60 * 24);
+    const approxYears = totalDays / 365.25;
+    if (approxYears >= 1) {
+      const roundedYears = Math.round(approxYears * 10) / 10;
+      if (!Number.isFinite(roundedYears) || roundedYears <= 0) {
+        return null;
+      }
+      const formattedYears = roundedYears.toFixed(1).replace(/\.0$/, '');
+      if (formattedYears === '1') {
+        return '1 year';
+      }
+      return `${formattedYears} years`;
+    }
+    const approxMonths = totalDays / (365.25 / 12);
+    let roundedMonths = Math.round(approxMonths);
+    if (!Number.isFinite(roundedMonths)) {
+      return null;
+    }
+    if (roundedMonths <= 0 && totalDays > 0) {
+      roundedMonths = 1;
+    }
+    if (roundedMonths <= 0) {
+      return '0 months';
+    }
+    return `${roundedMonths} month${roundedMonths === 1 ? '' : 's'}`;
+  };
+
+  const totalExtraPercent = totalPercent ? `(${totalPercent})` : null;
+
+  let detailLines = [];
   if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
-    benchmarkParts.push('Benchmarks: Loading…');
+    detailLines = ['Benchmarks: Loading…'];
   } else if (benchmarkStatus === 'error') {
-    benchmarkParts.push('Benchmarks: Unavailable');
+    detailLines = ['Benchmarks: Unavailable'];
   } else if (benchmarkData) {
-    const { sp500, qqq } = benchmarkData;
-    if (sp500) {
-      const label = sp500.name || 'S&P 500';
-      if (Number.isFinite(sp500.returnRate)) {
-        benchmarkParts.push(
-          `${label}: ${formatSignedPercent(sp500.returnRate * 100, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}`
-        );
-      } else {
-        benchmarkParts.push(`${label}: —`);
-      }
-    }
-    if (qqq) {
-      const label = qqq.name || 'QQQ';
-      if (Number.isFinite(qqq.returnRate)) {
-        benchmarkParts.push(
-          `${label}: ${formatSignedPercent(qqq.returnRate * 100, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}`
-        );
-      } else {
-        benchmarkParts.push(`${label}: —`);
-      }
+    const { sp500, qqq, interestRate, startDate, endDate } = benchmarkData;
+    const qqqLabel = qqq?.name || 'QQQ';
+    const spLabel = sp500?.name || 'S&P 500';
+    const qqqValue = Number.isFinite(qqq?.returnRate)
+      ? formatSignedPercent(qqq.returnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : '—';
+    const spValue = Number.isFinite(sp500?.returnRate)
+      ? formatSignedPercent(sp500.returnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : '—';
+    const interestValue = Number.isFinite(interestRate?.averageRate)
+      ? formatPercent(interestRate.averageRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })
+      : '—';
+    detailLines = [
+      `${qqqLabel}: ${qqqValue}`,
+      `${spLabel}: ${spValue}`,
+      `Interest rate: ${interestValue}`,
+    ];
+    const periodLabel = describePeriodLength(startDate, endDate);
+    if (periodLabel) {
+      detailLines.push(periodLabel);
     }
   }
 
-  const totalExtraParts = [];
-  if (totalPercent) {
-    totalExtraParts.push(totalPercent);
-  }
-  if (benchmarkParts.length) {
-    totalExtraParts.push(...benchmarkParts);
-  }
-  const totalExtra = totalExtraParts.length ? `(${totalExtraParts.join('; ')})` : null;
+  const totalExtra = totalExtraPercent || detailLines.length
+    ? (
+        <span className="total-pnl-extra">
+          {totalExtraPercent ? <span className="total-pnl-extra__percent">{totalExtraPercent}</span> : null}
+          {detailLines.length > 0 ? (
+            <span className="total-pnl-extra__details">
+              {detailLines.map((line, index) => (
+                <span key={`total-extra-line-${index}`} className="total-pnl-extra__line">
+                  {line}
+                </span>
+              ))}
+            </span>
+          ) : null}
+        </span>
+      )
+    : null;
 
   return (
     <section className="equity-card">
@@ -657,6 +712,15 @@ SummaryMetrics.propTypes = {
         startPrice: PropTypes.number,
         endPrice: PropTypes.number,
         returnRate: PropTypes.number,
+        source: PropTypes.string,
+      }),
+      interestRate: PropTypes.shape({
+        name: PropTypes.string,
+        symbol: PropTypes.string,
+        startDate: PropTypes.string,
+        endDate: PropTypes.string,
+        averageRate: PropTypes.number,
+        dataPoints: PropTypes.number,
         source: PropTypes.string,
       }),
     }),

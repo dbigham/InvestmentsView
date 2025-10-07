@@ -1552,6 +1552,29 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.total-pnl-extra {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  gap: 2px;
+}
+
+.total-pnl-extra__percent {
+  display: block;
+}
+
+.total-pnl-extra__details {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.total-pnl-extra__line {
+  display: block;
+}
+
 .pnl-heatmap-overlay {
   position: fixed;
   inset: 0;
