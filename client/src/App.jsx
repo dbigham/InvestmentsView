@@ -1393,6 +1393,37 @@ function findPositionDetails(positions, symbol) {
   return null;
 }
 
+function positionsAlignedWithAccount(positions, accountId) {
+  if (!accountId) {
+    return true;
+  }
+
+  if (!Array.isArray(positions)) {
+    return false;
+  }
+
+  const normalizedAccountId = String(accountId);
+
+  for (const position of positions) {
+    if (!position) {
+      continue;
+    }
+
+    const rowId = typeof position.rowId === 'string' ? position.rowId : '';
+    if (rowId.startsWith('all:')) {
+      return false;
+    }
+
+    if (position.accountId !== undefined && position.accountId !== null) {
+      if (String(position.accountId) !== normalizedAccountId) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 const DLR_SHARE_VALUE_USD = 10;
 const CENTS_PER_UNIT = 100;
 
@@ -3953,6 +3984,13 @@ export default function App() {
     }
 
     if (pendingTodoAction.type === 'cash') {
+      if (
+        targetAccountId &&
+        !positionsAlignedWithAccount(orderedPositions, targetAccountId)
+      ) {
+        return;
+      }
+
       handlePlanInvestEvenly();
       setPendingTodoAction(null);
       return;
@@ -4004,6 +4042,7 @@ export default function App() {
     handlePlanInvestEvenly,
     investmentModelSections,
     handleShowAccountInvestmentModel,
+    orderedPositions,
   ]);
 
   const getSummaryText = useCallback(() => {
