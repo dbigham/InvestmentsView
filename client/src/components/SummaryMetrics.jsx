@@ -10,6 +10,41 @@ import {
   formatSignedPercent,
 } from '../utils/formatters';
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DAYS_PER_YEAR = 365.25;
+
+function parseDateString(value, { assumeDateOnly = false } = {}) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const isoString = assumeDateOnly && /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? `${trimmed}T00:00:00Z`
+    : trimmed;
+  const parsed = new Date(isoString);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function computeElapsedYears(startDate, endDate) {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    return null;
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
+    return null;
+  }
+  const diffMs = endDate.getTime() - startDate.getTime();
+  if (!Number.isFinite(diffMs) || diffMs <= 0) {
+    return null;
+  }
+  return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
+}
+
 function MetricRow({ label, value, extra, tone, className, onActivate, tooltip }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   const interactive = typeof onActivate === 'function';
@@ -416,6 +451,36 @@ export default function SummaryMetrics({
       ? fundingSummary.totalEquityCad
       : null;
 
+  const resolvedPeriodStartDate =
+    parseDateString(fundingSummary?.periodStartDate, { assumeDateOnly: true }) ||
+    parseDateString(fundingSummary?.annualizedReturnStartDate, { assumeDateOnly: true });
+  const resolvedPeriodEndDate =
+    parseDateString(fundingSummary?.periodEndDate, { assumeDateOnly: true }) ||
+    parseDateString(fundingSummary?.annualizedReturnAsOf) ||
+    parseDateString(asOf);
+  let deAnnualizedReturnRate = null;
+  if (Number.isFinite(annualizedReturnRate)) {
+    const elapsedYears = computeElapsedYears(resolvedPeriodStartDate, resolvedPeriodEndDate);
+    if (Number.isFinite(elapsedYears) && elapsedYears > 0) {
+      const growthBase = 1 + annualizedReturnRate;
+      if (growthBase > 0) {
+        const growthFactor = Math.pow(growthBase, elapsedYears);
+        if (Number.isFinite(growthFactor)) {
+          deAnnualizedReturnRate = growthFactor - 1;
+        }
+      } else if (annualizedReturnRate <= -1) {
+        deAnnualizedReturnRate = -1;
+      }
+    }
+  }
+  const deAnnualizedPercentDisplay =
+    deAnnualizedReturnRate === null
+      ? null
+      : formatSignedPercent(deAnnualizedReturnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+
   const formatPnlPercent = (change) => {
     if (!Number.isFinite(change)) {
       if (change === 0) {
@@ -493,11 +558,12 @@ export default function SummaryMetrics({
     return `${roundedMonths} month${roundedMonths === 1 ? '' : 's'}`;
   };
 
-  const totalExtraPercent = annualizedPercentDisplay
-    ? `(${annualizedPercentDisplay})`
-    : totalPercent
-      ? `(${totalPercent})`
-      : null;
+  const totalExtraPercent =
+    deAnnualizedPercentDisplay !== null
+      ? `(${deAnnualizedPercentDisplay})`
+      : totalPercent
+        ? `(${totalPercent})`
+        : null;
 
   let detailLines = [];
   if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
