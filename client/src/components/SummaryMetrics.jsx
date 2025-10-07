@@ -443,8 +443,14 @@ export default function SummaryMetrics({
           maximumFractionDigits: 2,
         })
       : '—';
-    const interestValue = Number.isFinite(interestRate?.averageRate)
-      ? formatPercent(interestRate.averageRate * 100, {
+    const hasPeriodReturn = Number.isFinite(interestRate?.periodReturn);
+    const interestBase = hasPeriodReturn
+      ? interestRate.periodReturn
+      : Number.isFinite(interestRate?.averageRate)
+        ? interestRate.averageRate
+        : null;
+    const interestValue = Number.isFinite(interestBase)
+      ? formatPercent(interestBase * 100, {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         })
@@ -452,7 +458,7 @@ export default function SummaryMetrics({
     detailLines = [
       `${qqqLabel}: ${qqqValue}`,
       `${spLabel}: ${spValue}`,
-      `Interest rate: ${interestValue}`,
+      `Interest: ${interestValue}`,
     ];
     const periodLabel = describePeriodLength(startDate, endDate);
     if (periodLabel) {
@@ -717,6 +723,8 @@ SummaryMetrics.propTypes = {
         startDate: PropTypes.string,
         endDate: PropTypes.string,
         averageRate: PropTypes.number,
+        periodReturn: PropTypes.number,
+        periodDays: PropTypes.number,
         dataPoints: PropTypes.number,
         source: PropTypes.string,
       }),

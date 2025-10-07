@@ -455,11 +455,46 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
   const averagePercent = Number.isFinite(sum) ? sum / normalized.length : Number.NaN;
   const averageRate = Number.isFinite(averagePercent) ? averagePercent / 100 : null;
 
+  const requestedStart = new Date(`${startDate}T00:00:00Z`);
+  const requestedEnd = new Date(`${endDate}T00:00:00Z`);
+  const fallbackStart = normalized[0]?.date || null;
+  const fallbackEnd = normalized[normalized.length - 1]?.date || null;
+
+  let periodDays = null;
+  if (requestedStart instanceof Date && !Number.isNaN(requestedStart.getTime()) && requestedEnd instanceof Date && !Number.isNaN(requestedEnd.getTime())) {
+    const diffMs = requestedEnd.getTime() - requestedStart.getTime();
+    if (Number.isFinite(diffMs) && diffMs >= 0) {
+      periodDays = diffMs / DAY_IN_MS;
+    }
+  }
+
+  if (periodDays === null && fallbackStart instanceof Date && fallbackEnd instanceof Date) {
+    const diffMs = fallbackEnd.getTime() - fallbackStart.getTime();
+    if (Number.isFinite(diffMs) && diffMs >= 0) {
+      periodDays = diffMs / DAY_IN_MS;
+    }
+  }
+
+  let periodReturn = null;
+  if (Number.isFinite(periodDays) && periodDays >= 0 && Number.isFinite(averageRate)) {
+    const periodYears = periodDays / 365.25;
+    if (periodYears > 0) {
+      const growth = Math.pow(1 + averageRate, periodYears) - 1;
+      if (Number.isFinite(growth)) {
+        periodReturn = growth;
+      }
+    } else {
+      periodReturn = 0;
+    }
+  }
+
   const payload = {
     symbol,
     startDate: formatDateOnly(normalized[0].date),
     endDate: formatDateOnly(normalized[normalized.length - 1].date),
     averageRate,
+    periodReturn,
+    periodDays: Number.isFinite(periodDays) ? periodDays : null,
     dataPoints: normalized.length,
     source: 'yahoo-finance2',
   };
