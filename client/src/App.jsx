@@ -3835,6 +3835,92 @@ export default function App() {
     }
   }, []);
 
+  const enhancePlanWithAccountContext = useCallback(
+    (plan) => {
+      if (!plan) {
+        return null;
+      }
+
+      const accountName =
+        (selectedAccountInfo?.displayName && selectedAccountInfo.displayName.trim()) ||
+        (selectedAccountInfo?.name && selectedAccountInfo.name.trim()) ||
+        null;
+      const accountNumber = selectedAccountInfo?.number || null;
+      const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
+      const contextLabel =
+        accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
+
+      return {
+        ...plan,
+        accountName: accountName || null,
+        accountNumber: accountNumber || null,
+        accountLabel: contextLabel || null,
+        accountUrl: accountUrl || null,
+      };
+    },
+    [selectedAccountInfo, selectedAccount]
+  );
+
+  const handlePlanInvestEvenly = useCallback(async () => {
+    const priceOverrides = new Map();
+    const dlrDetails = findPositionDetails(orderedPositions, 'DLR.TO');
+    const hasDlrPrice = coercePositiveNumber(dlrDetails?.price) !== null;
+
+    if (!hasDlrPrice) {
+      const cachedOverride = quoteCacheRef.current.get('DLR.TO');
+      if (cachedOverride && coercePositiveNumber(cachedOverride.price)) {
+        priceOverrides.set('DLR.TO', cachedOverride);
+      } else {
+        try {
+          const quote = await getQuote('DLR.TO');
+          if (quote && coercePositiveNumber(quote.price)) {
+            const override = {
+              price: coercePositiveNumber(quote.price),
+              currency:
+                typeof quote.currency === 'string' && quote.currency.trim()
+                  ? quote.currency.trim().toUpperCase()
+                  : null,
+              description: typeof quote.name === 'string' ? quote.name : null,
+            };
+            quoteCacheRef.current.set('DLR.TO', override);
+            priceOverrides.set('DLR.TO', override);
+          }
+        } catch (error) {
+          console.error('Failed to load DLR.TO quote for invest evenly plan', error);
+        }
+      }
+    }
+
+    const planInputs = {
+      positions: orderedPositions,
+      balances,
+      currencyRates,
+      baseCurrency,
+      priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
+      cashOverrides: null,
+    };
+
+    const plan = buildInvestEvenlyPlan(planInputs);
+
+    if (!plan) {
+      if (typeof window !== 'undefined') {
+        window.alert('Unable to build an invest evenly plan. Ensure cash balances and prices are available.');
+      }
+      return;
+    }
+
+    console.log('Invest cash evenly plan summary:\n' + plan.summaryText);
+
+    setInvestEvenlyPlan(enhancePlanWithAccountContext(plan));
+    setInvestEvenlyPlanInputs(planInputs);
+  }, [
+    orderedPositions,
+    balances,
+    currencyRates,
+    baseCurrency,
+    enhancePlanWithAccountContext,
+  ]);
+
   useEffect(() => {
     if (!pendingTodoAction) {
       return;
@@ -3973,92 +4059,6 @@ export default function App() {
       console.error('Failed to copy CAGR estimate prompt', error);
     }
   }, [getSummaryText]);
-
-  const enhancePlanWithAccountContext = useCallback(
-    (plan) => {
-      if (!plan) {
-        return null;
-      }
-
-      const accountName =
-        (selectedAccountInfo?.displayName && selectedAccountInfo.displayName.trim()) ||
-        (selectedAccountInfo?.name && selectedAccountInfo.name.trim()) ||
-        null;
-      const accountNumber = selectedAccountInfo?.number || null;
-      const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
-      const contextLabel =
-        accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
-
-      return {
-        ...plan,
-        accountName: accountName || null,
-        accountNumber: accountNumber || null,
-        accountLabel: contextLabel || null,
-        accountUrl: accountUrl || null,
-      };
-    },
-    [selectedAccountInfo, selectedAccount]
-  );
-
-  const handlePlanInvestEvenly = useCallback(async () => {
-    const priceOverrides = new Map();
-    const dlrDetails = findPositionDetails(orderedPositions, 'DLR.TO');
-    const hasDlrPrice = coercePositiveNumber(dlrDetails?.price) !== null;
-
-    if (!hasDlrPrice) {
-      const cachedOverride = quoteCacheRef.current.get('DLR.TO');
-      if (cachedOverride && coercePositiveNumber(cachedOverride.price)) {
-        priceOverrides.set('DLR.TO', cachedOverride);
-      } else {
-        try {
-          const quote = await getQuote('DLR.TO');
-          if (quote && coercePositiveNumber(quote.price)) {
-            const override = {
-              price: coercePositiveNumber(quote.price),
-              currency:
-                typeof quote.currency === 'string' && quote.currency.trim()
-                  ? quote.currency.trim().toUpperCase()
-                  : null,
-              description: typeof quote.name === 'string' ? quote.name : null,
-            };
-            quoteCacheRef.current.set('DLR.TO', override);
-            priceOverrides.set('DLR.TO', override);
-          }
-        } catch (error) {
-          console.error('Failed to load DLR.TO quote for invest evenly plan', error);
-        }
-      }
-    }
-
-    const planInputs = {
-      positions: orderedPositions,
-      balances,
-      currencyRates,
-      baseCurrency,
-      priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
-      cashOverrides: null,
-    };
-
-    const plan = buildInvestEvenlyPlan(planInputs);
-
-    if (!plan) {
-      if (typeof window !== 'undefined') {
-        window.alert('Unable to build an invest evenly plan. Ensure cash balances and prices are available.');
-      }
-      return;
-    }
-
-    console.log('Invest cash evenly plan summary:\n' + plan.summaryText);
-
-    setInvestEvenlyPlan(enhancePlanWithAccountContext(plan));
-    setInvestEvenlyPlanInputs(planInputs);
-  }, [
-    orderedPositions,
-    balances,
-    currencyRates,
-    baseCurrency,
-    enhancePlanWithAccountContext,
-  ]);
 
   const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
   const skipUsdToggle = investEvenlyPlan?.skipUsdPurchases ?? false;
