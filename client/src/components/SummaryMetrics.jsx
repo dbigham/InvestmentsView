@@ -45,7 +45,7 @@ function computeElapsedYears(startDate, endDate) {
   return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
 }
 
-function MetricRow({ label, value, extra, tone, className, onActivate, tooltip }) {
+function MetricRow({ label, value, extra, tone, className, onActivate, tooltip, extraTooltip }) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   const interactive = typeof onActivate === 'function';
 
@@ -75,12 +75,19 @@ function MetricRow({ label, value, extra, tone, className, onActivate, tooltip }
     label
   );
 
+  const extraContent =
+    extra && extraTooltip ? (
+      <span title={extraTooltip}>{extra}</span>
+    ) : (
+      extra
+    );
+
   return (
     <div className={rowClass} {...interactiveProps}>
       <dt>{labelContent}</dt>
       <dd>
         <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
-        {extra && <span className="equity-card__metric-extra">{extra}</span>}
+        {extra && <span className="equity-card__metric-extra">{extraContent}</span>}
       </dd>
     </div>
   );
@@ -94,6 +101,7 @@ MetricRow.propTypes = {
   className: PropTypes.string,
   onActivate: PropTypes.func,
   tooltip: PropTypes.string,
+  extraTooltip: PropTypes.string,
 };
 
 MetricRow.defaultProps = {
@@ -101,6 +109,7 @@ MetricRow.defaultProps = {
   className: '',
   onActivate: null,
   tooltip: null,
+  extraTooltip: null,
 };
 
 function ActionMenu({
@@ -558,12 +567,15 @@ export default function SummaryMetrics({
     return `${roundedMonths} month${roundedMonths === 1 ? '' : 's'}`;
   };
 
-  const totalExtraPercent =
-    deAnnualizedPercentDisplay !== null
-      ? `(${deAnnualizedPercentDisplay})`
-      : totalPercent
-        ? `(${totalPercent})`
-        : null;
+  let totalExtraPercent = null;
+  let totalExtraPercentTooltip = null;
+  if (deAnnualizedPercentDisplay !== null) {
+    totalExtraPercent = `(${deAnnualizedPercentDisplay})`;
+    totalExtraPercentTooltip = 'Estimated cumulative total return. (De-annualized XIRR)';
+  } else if (totalPercent) {
+    totalExtraPercent = `(${totalPercent})`;
+    totalExtraPercentTooltip = 'Fallback calculation: Total P&L divided by cost basis.';
+  }
 
   let detailLines = [];
   if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
@@ -742,6 +754,7 @@ export default function SummaryMetrics({
             label="Total P&L"
             value={formattedTotal}
             extra={totalExtraPercent}
+            extraTooltip={totalExtraPercentTooltip}
             tone={totalTone}
             className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
           />
