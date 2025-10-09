@@ -1894,20 +1894,59 @@ function normalizeCurrency(code) {
 const usdCadRateCache = new Map();
 
 async function fetchLatestUsdToCadRate() {
-  try {
-    const response = await axios.get('https://api.exchangerate.host/latest', {
-      params: { base: 'USD', symbols: 'CAD' },
-    });
-    const value =
-      response &&
-      response.data &&
-      response.data.rates &&
-      Number.parseFloat(response.data.rates.CAD);
-    if (Number.isFinite(value) && value > 0) {
-      return value;
+  const providers = [
+    async function awesomeApiProvider() {
+      const response = await axios.get(
+        'https://economia.awesomeapi.com.br/json/last/USD-CAD',
+        { timeout: 5000 }
+      );
+      const payload = response && response.data && response.data.USDCAD;
+      if (!payload || typeof payload !== 'object') {
+        return null;
+      }
+      const bid = Number.parseFloat(payload.bid);
+      const ask = Number.parseFloat(payload.ask);
+      if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask > 0) {
+        return (bid + ask) / 2;
+      }
+      if (Number.isFinite(bid) && bid > 0) {
+        return bid;
+      }
+      if (Number.isFinite(ask) && ask > 0) {
+        return ask;
+      }
+      const price = Number.parseFloat(payload.price);
+      if (Number.isFinite(price) && price > 0) {
+        return price;
+      }
+      return null;
+    },
+    async function openErApiProvider() {
+      const response = await axios.get('https://open.er-api.com/v6/latest/USD', {
+        timeout: 5000,
+      });
+      const value =
+        response &&
+        response.data &&
+        response.data.rates &&
+        Number.parseFloat(response.data.rates.CAD);
+      return Number.isFinite(value) && value > 0 ? value : null;
+    },
+  ];
+
+  for (const provider of providers) {
+    try {
+      const rate = await provider();
+      if (Number.isFinite(rate) && rate > 0) {
+        return rate;
+      }
+    } catch (error) {
+      const message =
+        error &&
+        (error.message ||
+          (typeof error.toString === 'function' ? error.toString() : String(error)));
+      console.warn('[FX] Failed USD/CAD rate provider:', message);
     }
-  } catch (error) {
-    console.warn('[FX] Failed to fetch latest USD/CAD rate:', error.message || error);
   }
   return null;
 }
