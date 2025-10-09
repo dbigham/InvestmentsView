@@ -12,6 +12,9 @@ const TIMEFRAME_OPTIONS = [
   { value: '1Y', label: '1 year' },
   { value: '5Y', label: '5 years' },
   { value: '10Y', label: '10 years' },
+  { value: '15Y', label: '15 years' },
+  { value: '20Y', label: '20 years' },
+  { value: '25Y', label: '25 years' },
   { value: 'ALL', label: 'All time' },
 ];
 
@@ -71,6 +74,15 @@ function subtractInterval(date, option) {
       break;
     case '10Y':
       result.setFullYear(result.getFullYear() - 10);
+      break;
+    case '15Y':
+      result.setFullYear(result.getFullYear() - 15);
+      break;
+    case '20Y':
+      result.setFullYear(result.getFullYear() - 20);
+      break;
+    case '25Y':
+      result.setFullYear(result.getFullYear() - 25);
       break;
     default:
       return null;
