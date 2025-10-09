@@ -4640,6 +4640,19 @@ app.get('/api/summary', async function (req, res) {
       };
     });
 
+    // Fetch latest intraday USD→CAD rate (best-effort; non-blocking for rest of payload)
+    let latestUsdToCadRate = null;
+    try {
+      latestUsdToCadRate = await fetchLatestUsdToCadRate();
+      if (!(Number.isFinite(latestUsdToCadRate) && latestUsdToCadRate > 0)) {
+        latestUsdToCadRate = null;
+      }
+    } catch (fxError) {
+      // Intentionally non-fatal; omit field on failure
+      console.warn('[FX] Failed to resolve intraday USD/CAD rate for summary:', fxError?.message || String(fxError));
+      latestUsdToCadRate = null;
+    }
+
     res.json({
       accounts: responseAccounts,
       filteredAccountIds: selectedContexts.map(function (context) {
@@ -4658,6 +4671,7 @@ app.get('/api/summary', async function (req, res) {
       accountFunding: accountFundingSummaries,
       accountDividends: accountDividendSummaries,
       asOf: new Date().toISOString(),
+      usdToCadRate: latestUsdToCadRate,
     });
   } catch (error) {
     if (error.response) {
@@ -4674,7 +4688,6 @@ app.get('/health', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on port ' + PORT);
 });
-
 
 
 
