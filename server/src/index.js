@@ -1893,11 +1893,48 @@ function normalizeCurrency(code) {
 
 const usdCadRateCache = new Map();
 
+async function fetchLatestUsdToCadRate() {
+  try {
+    const response = await axios.get('https://api.exchangerate.host/latest', {
+      params: { base: 'USD', symbols: 'CAD' },
+    });
+    const value =
+      response &&
+      response.data &&
+      response.data.rates &&
+      Number.parseFloat(response.data.rates.CAD);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  } catch (error) {
+    console.warn('[FX] Failed to fetch latest USD/CAD rate:', error.message || error);
+  }
+  return null;
+}
+
 async function fetchUsdToCadRate(date) {
   const keyDate = formatDateOnly(date);
   if (!keyDate) {
     return null;
   }
+
+  const todayKey = formatDateOnly(new Date());
+  if (keyDate === todayKey) {
+    const latestCacheKey = keyDate + ':latest';
+    if (usdCadRateCache.has(latestCacheKey)) {
+      const cachedLatest = usdCadRateCache.get(latestCacheKey);
+      if (Number.isFinite(cachedLatest) && cachedLatest > 0) {
+        return cachedLatest;
+      }
+    }
+    const latestRate = await fetchLatestUsdToCadRate();
+    if (Number.isFinite(latestRate) && latestRate > 0) {
+      usdCadRateCache.set(latestCacheKey, latestRate);
+      return latestRate;
+    }
+    usdCadRateCache.set(latestCacheKey, null);
+  }
+
   if (usdCadRateCache.has(keyDate)) {
     return usdCadRateCache.get(keyDate);
   }
