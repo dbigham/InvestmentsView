@@ -651,8 +651,8 @@ export default function SummaryMetrics({
               >
                 <span className="equity-card__subtext-value">
                   {`USD → CAD: ${formatNumber(usdToCadRate, {
-                    minimumFractionDigits: 3,
-                    maximumFractionDigits: 3,
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
                   })}`}
                 </span>
               </a>

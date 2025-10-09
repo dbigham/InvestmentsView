@@ -3138,12 +3138,16 @@ export default function App() {
   const currencyRates = useMemo(() => buildCurrencyRateMap(balances, baseCurrency), [balances]);
 
   const usdToCadRate = useMemo(() => {
-    const rate = currencyRates.get('USD');
-    if (isFiniteNumber(rate) && rate > 0) {
-      return rate;
+    const apiRate = isFiniteNumber(data?.usdToCadRate) && data.usdToCadRate > 0 ? data.usdToCadRate : null;
+    if (apiRate !== null) {
+      return apiRate;
+    }
+    const derived = currencyRates.get('USD');
+    if (isFiniteNumber(derived) && derived > 0) {
+      return derived;
     }
     return null;
-  }, [currencyRates]);
+  }, [data?.usdToCadRate, currencyRates]);
 
   const positions = useMemo(() => {
     if (selectedAccount === 'all') {
@@ -5115,6 +5119,5 @@ export default function App() {
     </div>
   );
 }
-
 
 

@@ -1893,11 +1893,87 @@ function normalizeCurrency(code) {
 
 const usdCadRateCache = new Map();
 
+async function fetchLatestUsdToCadRate() {
+  const providers = [
+    async function awesomeApiProvider() {
+      const response = await axios.get(
+        'https://economia.awesomeapi.com.br/json/last/USD-CAD',
+        { timeout: 5000 }
+      );
+      const payload = response && response.data && response.data.USDCAD;
+      if (!payload || typeof payload !== 'object') {
+        return null;
+      }
+      const bid = Number.parseFloat(payload.bid);
+      const ask = Number.parseFloat(payload.ask);
+      if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask > 0) {
+        return (bid + ask) / 2;
+      }
+      if (Number.isFinite(bid) && bid > 0) {
+        return bid;
+      }
+      if (Number.isFinite(ask) && ask > 0) {
+        return ask;
+      }
+      const price = Number.parseFloat(payload.price);
+      if (Number.isFinite(price) && price > 0) {
+        return price;
+      }
+      return null;
+    },
+    async function openErApiProvider() {
+      const response = await axios.get('https://open.er-api.com/v6/latest/USD', {
+        timeout: 5000,
+      });
+      const value =
+        response &&
+        response.data &&
+        response.data.rates &&
+        Number.parseFloat(response.data.rates.CAD);
+      return Number.isFinite(value) && value > 0 ? value : null;
+    },
+  ];
+
+  for (const provider of providers) {
+    try {
+      const rate = await provider();
+      if (Number.isFinite(rate) && rate > 0) {
+        return rate;
+      }
+    } catch (error) {
+      const message =
+        error &&
+        (error.message ||
+          (typeof error.toString === 'function' ? error.toString() : String(error)));
+      console.warn('[FX] Failed USD/CAD rate provider:', message);
+    }
+  }
+  return null;
+}
+
 async function fetchUsdToCadRate(date) {
   const keyDate = formatDateOnly(date);
   if (!keyDate) {
     return null;
   }
+
+  const todayKey = formatDateOnly(new Date());
+  if (keyDate === todayKey) {
+    const latestCacheKey = keyDate + ':latest';
+    if (usdCadRateCache.has(latestCacheKey)) {
+      const cachedLatest = usdCadRateCache.get(latestCacheKey);
+      if (Number.isFinite(cachedLatest) && cachedLatest > 0) {
+        return cachedLatest;
+      }
+    }
+    const latestRate = await fetchLatestUsdToCadRate();
+    if (Number.isFinite(latestRate) && latestRate > 0) {
+      usdCadRateCache.set(latestCacheKey, latestRate);
+      return latestRate;
+    }
+    usdCadRateCache.set(latestCacheKey, null);
+  }
+
   if (usdCadRateCache.has(keyDate)) {
     return usdCadRateCache.get(keyDate);
   }
@@ -4564,6 +4640,19 @@ app.get('/api/summary', async function (req, res) {
       };
     });
 
+    // Fetch latest intraday USD→CAD rate (best-effort; non-blocking for rest of payload)
+    let latestUsdToCadRate = null;
+    try {
+      latestUsdToCadRate = await fetchLatestUsdToCadRate();
+      if (!(Number.isFinite(latestUsdToCadRate) && latestUsdToCadRate > 0)) {
+        latestUsdToCadRate = null;
+      }
+    } catch (fxError) {
+      // Intentionally non-fatal; omit field on failure
+      console.warn('[FX] Failed to resolve intraday USD/CAD rate for summary:', fxError?.message || String(fxError));
+      latestUsdToCadRate = null;
+    }
+
     res.json({
       accounts: responseAccounts,
       filteredAccountIds: selectedContexts.map(function (context) {
@@ -4582,6 +4671,7 @@ app.get('/api/summary', async function (req, res) {
       accountFunding: accountFundingSummaries,
       accountDividends: accountDividendSummaries,
       asOf: new Date().toISOString(),
+      usdToCadRate: latestUsdToCadRate,
     });
   } catch (error) {
     if (error.response) {
@@ -4598,7 +4688,6 @@ app.get('/health', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on port ' + PORT);
 });
-
 
 
 
