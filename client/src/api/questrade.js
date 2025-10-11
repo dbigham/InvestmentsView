@@ -69,6 +69,27 @@ function buildMarkRebalancedUrl(accountKey) {
   return url.toString();
 }
 
+function buildTotalPnlSeriesUrl(accountKey, params = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+  const encodedKey = encodeURIComponent(trimmedKey);
+  const path = `/api/accounts/${encodedKey}/total-pnl-series`;
+  const url = new URL(path, base);
+  if (params && typeof params.startDate === 'string' && params.startDate.trim()) {
+    url.searchParams.set('startDate', params.startDate.trim());
+  }
+  if (params && typeof params.endDate === 'string' && params.endDate.trim()) {
+    url.searchParams.set('endDate', params.endDate.trim());
+  }
+  if (params && params.applyAccountCagrStartDate === false) {
+    url.searchParams.set('applyAccountCagrStartDate', 'false');
+  }
+  return url.toString();
+}
+
 export async function getSummary(accountId) {
   const response = await fetch(buildUrl(accountId));
   if (!response.ok) {
@@ -204,6 +225,35 @@ export async function markAccountRebalanced(accountKey, options = {}) {
         }
       } catch (nestedError) {
         console.warn('Failed to read markAccountRebalanced error response body', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function getTotalPnlSeries(accountKey, params = {}) {
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+
+  const response = await fetch(buildTotalPnlSeriesUrl(trimmedKey, params));
+  if (!response.ok) {
+    let message = 'Failed to load Total P&L series';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse total P&L series error response as JSON', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read total P&L series error response', nestedError);
       }
     }
     throw new Error(message);

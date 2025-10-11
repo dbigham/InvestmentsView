@@ -10,6 +10,7 @@ import {
   getInvestmentModelTemperature,
   getBenchmarkReturns,
   markAccountRebalanced,
+  getTotalPnlSeries,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -18,6 +19,7 @@ import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import QqqTemperatureDialog from './components/QqqTemperatureDialog';
+import TotalPnlDialog from './components/TotalPnlDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
@@ -2618,6 +2620,13 @@ export default function App() {
   const [investmentModelCharts, setInvestmentModelCharts] = useState({});
   const investmentModelChartsRef = useRef({});
   const quoteCacheRef = useRef(new Map());
+  const [showTotalPnlDialog, setShowTotalPnlDialog] = useState(false);
+  const [totalPnlSeriesState, setTotalPnlSeriesState] = useState({
+    status: 'idle',
+    data: null,
+    error: null,
+    accountKey: null,
+  });
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -2886,6 +2895,36 @@ export default function App() {
     );
   }, [accounts, selectedAccount]);
 
+  const selectedAccountKey = useMemo(() => {
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    if (selectedAccountInfo.id) {
+      return String(selectedAccountInfo.id);
+    }
+    if (selectedAccountInfo.number) {
+      return String(selectedAccountInfo.number);
+    }
+    if (selectedAccount && selectedAccount !== 'all') {
+      return String(selectedAccount);
+    }
+    return null;
+  }, [selectedAccountInfo, selectedAccount]);
+
+  const totalPnlDialogAccountLabel = useMemo(() => {
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    const label = getAccountLabel(selectedAccountInfo);
+    if (label) {
+      return label;
+    }
+    if (selectedAccountInfo.number) {
+      return String(selectedAccountInfo.number);
+    }
+    return null;
+  }, [selectedAccountInfo]);
+
   useEffect(() => {
     if (!selectedRebalanceReminder) {
       return;
@@ -2908,6 +2947,11 @@ export default function App() {
       setSelectedRebalanceReminder(null);
     }
   }, [selectedAccount, selectedAccountInfo, selectedRebalanceReminder, setSelectedRebalanceReminder]);
+
+  useEffect(() => {
+    setShowTotalPnlDialog(false);
+    setTotalPnlSeriesState({ status: 'idle', data: null, error: null, accountKey: null });
+  }, [selectedAccountKey]);
 
   const markRebalanceContext = useMemo(() => {
     if (!selectedAccountInfo || selectedAccount === 'all') {
@@ -4103,6 +4147,50 @@ export default function App() {
     qqqError,
     fetchQqqTemperature,
   ]);
+  const fetchTotalPnlSeries = useCallback(async (accountKey) => {
+    if (!accountKey) {
+      return;
+    }
+    setTotalPnlSeriesState((prev) => ({
+      status: 'loading',
+      data: prev.accountKey === accountKey ? prev.data : null,
+      error: null,
+      accountKey,
+    }));
+    try {
+      const payload = await getTotalPnlSeries(accountKey);
+      setTotalPnlSeriesState({ status: 'success', data: payload, error: null, accountKey });
+    } catch (err) {
+      const normalized = err instanceof Error ? err : new Error('Failed to load Total P&L series');
+      setTotalPnlSeriesState({ status: 'error', data: null, error: normalized, accountKey });
+    }
+  }, []);
+
+  const handleShowTotalPnlDialog = useCallback(() => {
+    if (!selectedAccountKey) {
+      return;
+    }
+    setShowTotalPnlDialog(true);
+    if (
+      totalPnlSeriesState.accountKey !== selectedAccountKey ||
+      totalPnlSeriesState.status === 'error' ||
+      totalPnlSeriesState.status === 'idle'
+    ) {
+      fetchTotalPnlSeries(selectedAccountKey);
+    }
+  }, [selectedAccountKey, fetchTotalPnlSeries, totalPnlSeriesState]);
+
+  const handleRetryTotalPnlSeries = useCallback(() => {
+    if (!selectedAccountKey) {
+      return;
+    }
+    fetchTotalPnlSeries(selectedAccountKey);
+  }, [fetchTotalPnlSeries, selectedAccountKey]);
+
+  const handleCloseTotalPnlDialog = useCallback(() => {
+    setShowTotalPnlDialog(false);
+  }, []);
+
   const handleShowInvestmentModelDialog = useCallback(() => {
     if (!qqqData && !qqqLoading && !qqqError) {
       fetchQqqTemperature();
@@ -4794,6 +4882,15 @@ export default function App() {
     showInvestmentModelDialog = false;
   }
 
+  const totalPnlDialogData =
+    totalPnlSeriesState.accountKey === selectedAccountKey ? totalPnlSeriesState.data : null;
+  const totalPnlDialogLoading =
+    totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'loading';
+  const totalPnlDialogError =
+    totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'error'
+      ? totalPnlSeriesState.error
+      : null;
+
   if (loading && !data) {
     return (
       <div className="summary-page summary-page--initial-loading">
@@ -4900,6 +4997,7 @@ export default function App() {
                 : null
             }
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
+            onShowTotalPnl={showingAllAccounts ? null : handleShowTotalPnlDialog}
             onShowAnnualizedReturn={handleShowAnnualizedReturnDetails}
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
@@ -5096,6 +5194,16 @@ export default function App() {
           title={investmentModelDialogTitle}
         />
       )}
+      {showTotalPnlDialog && (
+        <TotalPnlDialog
+          onClose={handleCloseTotalPnlDialog}
+          data={totalPnlDialogData}
+          loading={totalPnlDialogLoading}
+          error={totalPnlDialogError}
+          onRetry={handleRetryTotalPnlSeries}
+          accountLabel={totalPnlDialogAccountLabel}
+        />
+      )}
       {investEvenlyPlan && (
         <InvestEvenlyDialog
           plan={investEvenlyPlan}
@@ -5119,5 +5227,3 @@ export default function App() {
     </div>
   );
 }
-
-

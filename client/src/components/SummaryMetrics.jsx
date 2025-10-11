@@ -386,6 +386,7 @@ export default function SummaryMetrics({
   peopleDisabled,
   onShowCashBreakdown,
   onShowPnlBreakdown,
+  onShowTotalPnl,
   onShowAnnualizedReturn,
   isRefreshing,
   isAutoRefreshing,
@@ -752,14 +753,15 @@ export default function SummaryMetrics({
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
-          <MetricRow
-            label="Total P&L"
-            value={formattedTotal}
-            extra={totalExtraPercent}
-            extraTooltip={totalExtraPercentTooltip}
-            tone={totalTone}
-            className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
-          />
+            <MetricRow
+              label="Total P&L"
+              value={formattedTotal}
+              extra={totalExtraPercent}
+              extraTooltip={totalExtraPercentTooltip}
+              tone={totalTone}
+              className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
+              onActivate={onShowTotalPnl}
+            />
           {totalDetailBlock}
           <MetricRow
             label="Annualized return"
@@ -842,6 +844,7 @@ SummaryMetrics.propTypes = {
   peopleDisabled: PropTypes.bool,
   onShowCashBreakdown: PropTypes.func,
   onShowPnlBreakdown: PropTypes.func,
+  onShowTotalPnl: PropTypes.func,
   onShowAnnualizedReturn: PropTypes.func,
   isRefreshing: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
@@ -911,6 +914,7 @@ SummaryMetrics.defaultProps = {
   peopleDisabled: false,
   onShowCashBreakdown: null,
   onShowPnlBreakdown: null,
+  onShowTotalPnl: null,
   onShowAnnualizedReturn: null,
   isRefreshing: false,
   isAutoRefreshing: false,

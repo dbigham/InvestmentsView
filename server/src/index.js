@@ -88,6 +88,38 @@ const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod:
 const BENCHMARK_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
+const priceHistoryCache = new Map();
+const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
+
+function getPriceHistoryCacheKey(symbol, startDate, endDate) {
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+  return [symbol, startDate, endDate].join('|');
+}
+
+function getCachedPriceHistory(cacheKey) {
+  if (!cacheKey) {
+    return { hit: false };
+  }
+  if (!priceHistoryCache.has(cacheKey)) {
+    return { hit: false };
+  }
+  return { hit: true, value: priceHistoryCache.get(cacheKey) };
+}
+
+function setCachedPriceHistory(cacheKey, value) {
+  if (!cacheKey) {
+    return;
+  }
+  if (!priceHistoryCache.has(cacheKey) && priceHistoryCache.size >= PRICE_HISTORY_CACHE_MAX_ENTRIES) {
+    const firstKey = priceHistoryCache.keys().next().value;
+    if (firstKey) {
+      priceHistoryCache.delete(firstKey);
+    }
+  }
+  priceHistoryCache.set(cacheKey, value);
+}
 
 const BENCHMARK_SYMBOLS = {
   sp500: { symbol: '^GSPC', name: 'S&P 500' },
@@ -2003,6 +2035,70 @@ async function fetchUsdToCadRate(date) {
   return null;
 }
 
+async function fetchUsdToCadRateRange(startDateKey, endDateKey) {
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing FRED_API_KEY environment variable');
+  }
+
+  const url = new URL('https://api.stlouisfed.org/fred/series/observations');
+  url.searchParams.set('series_id', USD_TO_CAD_SERIES);
+  url.searchParams.set('observation_start', startDateKey);
+  url.searchParams.set('observation_end', endDateKey);
+  url.searchParams.set('api_key', apiKey);
+  url.searchParams.set('file_type', 'json');
+
+  try {
+    const response = await axios.get(url.toString());
+    const observations = response.data && response.data.observations;
+    if (Array.isArray(observations)) {
+      observations.forEach((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const dateKey = typeof entry.date === 'string' ? entry.date.trim() : null;
+        if (!dateKey) {
+          return;
+        }
+        const value = Number(entry.value);
+        if (Number.isFinite(value) && value > 0) {
+          usdCadRateCache.set(dateKey, value);
+        } else if (!usdCadRateCache.has(dateKey)) {
+          usdCadRateCache.set(dateKey, null);
+        }
+      });
+    }
+  } catch (error) {
+    console.warn('[FX] Failed to prefetch USD/CAD range:', error?.message || String(error));
+  }
+}
+
+async function ensureUsdToCadRates(dateKeys) {
+  if (!Array.isArray(dateKeys) || dateKeys.length === 0) {
+    return;
+  }
+  const uniqueKeys = Array.from(new Set(dateKeys)).filter(Boolean).sort();
+  const firstKey = uniqueKeys[0];
+  const lastKey = uniqueKeys[uniqueKeys.length - 1];
+  if (!usdCadRateCache.has(firstKey) || !usdCadRateCache.has(lastKey)) {
+    await fetchUsdToCadRateRange(firstKey, lastKey);
+  }
+  let lastKnown = null;
+  uniqueKeys.forEach((key) => {
+    if (!key) {
+      return;
+    }
+    const cached = usdCadRateCache.get(key);
+    if (Number.isFinite(cached) && cached > 0) {
+      lastKnown = cached;
+      return;
+    }
+    if (lastKnown !== null) {
+      usdCadRateCache.set(key, lastKnown);
+    }
+  });
+}
+
 function normalizePositiveInteger(value) {
   if (value === null || value === undefined) {
     return null;
@@ -3098,6 +3194,610 @@ async function computeDividendBreakdown(login, account, options = {}) {
   };
 }
 
+function enumerateDateKeys(startDate, endDate) {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    return [];
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
+    return [];
+  }
+  if (startDate > endDate) {
+    return [];
+  }
+  const keys = [];
+  let cursor = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  const endTime = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate());
+  while (cursor.getTime() <= endTime) {
+    keys.push(formatDateOnly(cursor));
+    cursor = addDays(cursor, 1) || new Date(cursor.getTime() + DAY_IN_MS);
+  }
+  return keys;
+}
+
+async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey) {
+  if (!symbol || !startDateKey || !endDateKey) {
+    return null;
+  }
+
+  const startDate = new Date(`${startDateKey}T00:00:00Z`);
+  const endDate = new Date(`${endDateKey}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
+    return null;
+  }
+
+  const exclusiveEnd = addDays(endDate, 1) || new Date(endDate.getTime() + DAY_IN_MS);
+
+  const finance = ensureYahooFinanceClient();
+  const history = await finance.historical(symbol, {
+    period1: startDate,
+    period2: exclusiveEnd,
+    interval: '1d',
+  });
+
+  if (!Array.isArray(history) || history.length === 0) {
+    return [];
+  }
+
+  const normalized = history
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const entryDate =
+        entry.date instanceof Date && !Number.isNaN(entry.date.getTime())
+          ? entry.date
+          : typeof entry.date === 'string'
+            ? new Date(entry.date)
+            : null;
+      if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+        return null;
+      }
+      const adjClose = Number(entry.adjClose);
+      const close = Number(entry.close);
+      const price = Number.isFinite(adjClose)
+        ? adjClose
+        : Number.isFinite(close)
+          ? close
+          : Number.NaN;
+      if (!Number.isFinite(price) || price <= 0) {
+        return null;
+      }
+      return { date: entryDate, price };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.date - b.date);
+
+  return normalized;
+}
+
+function buildDailyPriceSeries(normalizedHistory, dateKeys) {
+  const series = new Map();
+  if (!Array.isArray(normalizedHistory) || normalizedHistory.length === 0 || !Array.isArray(dateKeys)) {
+    return series;
+  }
+  let cursorIndex = 0;
+  let lastPrice = null;
+  for (const dateKey of dateKeys) {
+    const targetTime = Date.parse(`${dateKey}T00:00:00Z`);
+    if (!Number.isFinite(targetTime)) {
+      continue;
+    }
+    while (
+      cursorIndex < normalizedHistory.length &&
+      normalizedHistory[cursorIndex].date instanceof Date &&
+      !Number.isNaN(normalizedHistory[cursorIndex].date.getTime()) &&
+      normalizedHistory[cursorIndex].date.getTime() <= targetTime
+    ) {
+      lastPrice = normalizedHistory[cursorIndex].price;
+      cursorIndex += 1;
+    }
+    if (Number.isFinite(lastPrice)) {
+      series.set(dateKey, lastPrice);
+    }
+  }
+  if (series.size > 0) {
+    let carry = null;
+    for (const dateKey of dateKeys) {
+      if (!dateKey) {
+        continue;
+      }
+      if (series.has(dateKey)) {
+        const value = series.get(dateKey);
+        if (Number.isFinite(value)) {
+          carry = value;
+        }
+      } else if (Number.isFinite(carry)) {
+        series.set(dateKey, carry);
+      }
+    }
+    const firstKnownKey = dateKeys.find((key) => Number.isFinite(series.get(key)));
+    if (firstKnownKey) {
+      const firstValue = series.get(firstKnownKey);
+      for (const dateKey of dateKeys) {
+        if (dateKey === firstKnownKey) {
+          break;
+        }
+        if (!series.has(dateKey) && Number.isFinite(firstValue)) {
+          series.set(dateKey, firstValue);
+        }
+      }
+    }
+  }
+  return series;
+}
+
+function adjustNumericMap(map, key, delta, epsilon = 1e-8) {
+  if (!map || !key || !Number.isFinite(delta)) {
+    return;
+  }
+  const current = map.has(key) ? map.get(key) : 0;
+  const next = current + delta;
+  if (Math.abs(next) < epsilon) {
+    map.delete(key);
+  } else {
+    map.set(key, next);
+  }
+}
+
+async function computeDailyNetDeposits(activityContext, account, accountKey) {
+  const activities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
+  const fundingActivities = dedupeActivities(filterFundingActivities(activities));
+  const perDay = new Map();
+  let conversionIncomplete = false;
+  for (const activity of fundingActivities) {
+    const details = resolveActivityAmountDetails(activity);
+    if (!details) {
+      continue;
+    }
+    const { amount, currency, timestamp } = details;
+    const { cadAmount } = await convertAmountToCad(amount, currency, timestamp, accountKey);
+    if (!Number.isFinite(cadAmount)) {
+      if (currency && currency !== 'CAD') {
+        conversionIncomplete = true;
+      }
+      continue;
+    }
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+      conversionIncomplete = true;
+      continue;
+    }
+    const dateKey = formatDateOnly(timestamp);
+    if (!dateKey) {
+      conversionIncomplete = true;
+      continue;
+    }
+    adjustNumericMap(perDay, dateKey, cadAmount, CASH_FLOW_EPSILON);
+  }
+
+  const accountAdjustment =
+    account && typeof account.netDepositAdjustment === 'number' && Number.isFinite(account.netDepositAdjustment)
+      ? account.netDepositAdjustment
+      : 0;
+  if (accountAdjustment !== 0) {
+    const adjustmentDate =
+      activityContext.earliestFunding instanceof Date && !Number.isNaN(activityContext.earliestFunding.getTime())
+        ? activityContext.earliestFunding
+        : activityContext.crawlStart instanceof Date && !Number.isNaN(activityContext.crawlStart.getTime())
+          ? activityContext.crawlStart
+          : activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
+            ? activityContext.now
+            : null;
+    if (adjustmentDate) {
+      const dateKey = formatDateOnly(adjustmentDate);
+      if (dateKey) {
+        adjustNumericMap(perDay, dateKey, accountAdjustment, CASH_FLOW_EPSILON);
+      }
+    }
+  }
+
+  return { perDay, conversionIncomplete };
+}
+
+const LEDGER_QUANTITY_EPSILON = 1e-8;
+
+function adjustHolding(holdings, symbol, delta) {
+  if (!symbol || !Number.isFinite(delta)) {
+    return;
+  }
+  const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
+  const next = current + delta;
+  if (Math.abs(next) < LEDGER_QUANTITY_EPSILON) {
+    holdings.delete(symbol);
+  } else {
+    holdings.set(symbol, next);
+  }
+}
+
+function adjustCash(cashByCurrency, currency, delta) {
+  if (!currency || !Number.isFinite(delta)) {
+    return;
+  }
+  const current = cashByCurrency.has(currency) ? cashByCurrency.get(currency) : 0;
+  const next = current + delta;
+  if (Math.abs(next) < 0.00001) {
+    cashByCurrency.delete(currency);
+  } else {
+    cashByCurrency.set(currency, next);
+  }
+}
+
+async function resolveUsdRateForDate(dateKey, accountKey, cache) {
+  if (!dateKey) {
+    return null;
+  }
+  if (cache.has(dateKey)) {
+    return cache.get(dateKey);
+  }
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) {
+    cache.set(dateKey, null);
+    return null;
+  }
+  const rate = await resolveUsdToCadRate(date, accountKey);
+  cache.set(dateKey, Number.isFinite(rate) && rate > 0 ? rate : null);
+  return cache.get(dateKey);
+}
+
+function computeLedgerEquitySnapshot(dateKey, holdings, cashByCurrency, symbolMeta, priceSeriesMap, usdRate) {
+  let cadValue = 0;
+  let usdValue = 0;
+  const missingPrices = [];
+  const unsupportedCurrencies = new Set();
+
+  for (const [symbol, quantity] of holdings.entries()) {
+    if (!Number.isFinite(quantity) || Math.abs(quantity) < LEDGER_QUANTITY_EPSILON) {
+      continue;
+    }
+    const meta = symbolMeta.get(symbol) || {};
+    const currency = meta.currency || 'CAD';
+    const series = priceSeriesMap.get(symbol);
+    const price = series && series.size ? series.get(dateKey) : null;
+    if (!Number.isFinite(price) || price <= 0) {
+      missingPrices.push(symbol);
+      continue;
+    }
+    const positionValue = quantity * price;
+    if (!Number.isFinite(positionValue)) {
+      missingPrices.push(symbol);
+      continue;
+    }
+    if (currency === 'USD') {
+      usdValue += positionValue;
+    } else if (currency === 'CAD' || !currency) {
+      cadValue += positionValue;
+    } else {
+      unsupportedCurrencies.add(currency);
+    }
+  }
+
+  const cadCash = cashByCurrency.get('CAD') || 0;
+  const usdCash = cashByCurrency.get('USD') || 0;
+  cadValue += cadCash;
+  usdValue += usdCash;
+
+  let equityCad = cadValue;
+  if (Math.abs(usdValue) > 0.00001) {
+    if (Number.isFinite(usdRate) && usdRate > 0) {
+      equityCad += usdValue * usdRate;
+    } else {
+      unsupportedCurrencies.add('USD');
+    }
+  }
+
+  return {
+    equityCad,
+    missingPrices,
+    unsupportedCurrencies: Array.from(unsupportedCurrencies),
+    cadCash,
+    usdCash,
+    cadSecurityValue: cadValue - cadCash,
+    usdSecurityValue: usdValue - usdCash,
+  };
+}
+
+async function computeTotalPnlSeries(login, account, perAccountCombinedBalances, options = {}) {
+  if (!account || !account.id) {
+    return null;
+  }
+
+  const accountKey = account.id;
+  const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
+  if (!activityContext) {
+    return null;
+  }
+
+  const netDepositOptions = {
+    applyAccountCagrStartDate:
+      Object.prototype.hasOwnProperty.call(options, 'applyAccountCagrStartDate')
+        ? !!options.applyAccountCagrStartDate
+        : true,
+  };
+
+  const netDepositsSummary = await computeNetDepositsCore(account, perAccountCombinedBalances, netDepositOptions, activityContext);
+  if (!netDepositsSummary) {
+    return null;
+  }
+
+  const startDateIso =
+    typeof options.startDate === 'string' && options.startDate.trim()
+      ? options.startDate.trim()
+      : netDepositsSummary.periodStartDate || formatDateOnly(activityContext.crawlStart) || formatDateOnly(activityContext.now);
+  const cagrStartDate =
+    options && options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
+      ? account.cagrStartDate.trim()
+      : null;
+  const displayStartIso = cagrStartDate || startDateIso;
+  const endDateIso =
+    typeof options.endDate === 'string' && options.endDate.trim()
+      ? options.endDate.trim()
+      : netDepositsSummary.periodEndDate || formatDateOnly(activityContext.now);
+
+  const startDate = parseDateOnlyString(startDateIso);
+  const displayStartDate = parseDateOnlyString(displayStartIso);
+  const endDate = parseDateOnlyString(endDateIso);
+  if (!startDate || !endDate || startDate > endDate) {
+    return null;
+  }
+
+  const dateKeys = enumerateDateKeys(startDate, endDate);
+  if (!dateKeys.length) {
+    return null;
+  }
+
+  await ensureUsdToCadRates(dateKeys);
+
+  const processedActivities = [];
+  const symbolIds = new Set();
+  const symbolMeta = new Map();
+
+  const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
+  rawActivities.forEach((activity) => {
+    const timestamp = resolveActivityTimestamp(activity);
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+      return;
+    }
+    const dateKey = formatDateOnly(timestamp);
+    if (!dateKey) {
+      return;
+    }
+    processedActivities.push({ activity, timestamp, dateKey });
+
+    const rawSymbol = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
+    const symbol = rawSymbol || null;
+    const symbolId = Number(activity.symbolId);
+    const currency = normalizeCurrency(activity.currency) || null;
+
+    if (Number.isFinite(symbolId) && symbolId > 0) {
+      symbolIds.add(symbolId);
+    }
+
+    if (!symbol) {
+      return;
+    }
+
+    if (!symbolMeta.has(symbol)) {
+      symbolMeta.set(symbol, {
+        symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+        currency,
+      });
+    } else {
+      const meta = symbolMeta.get(symbol);
+      if (!meta.currency && currency) {
+        meta.currency = currency;
+      }
+      if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
+        meta.symbolId = symbolId;
+      }
+    }
+  });
+
+  processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+
+  let symbolDetails = {};
+  if (symbolIds.size > 0) {
+    try {
+      symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
+    } catch (symbolError) {
+      symbolDetails = {};
+    }
+  }
+
+  for (const [symbol, meta] of symbolMeta.entries()) {
+    if (!meta.currency && meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]) {
+      const detailCurrency = normalizeCurrency(symbolDetails[meta.symbolId].currency);
+      if (detailCurrency) {
+        meta.currency = detailCurrency;
+      }
+    }
+    if (!meta.currency) {
+      meta.currency = 'CAD';
+    }
+  }
+
+  const symbols = Array.from(symbolMeta.keys());
+  const priceSeriesMap = new Map();
+  const missingPriceSymbols = new Set();
+  if (symbols.length) {
+    const startKey = dateKeys[0];
+    const endKey = dateKeys[dateKeys.length - 1];
+    await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
+      const cacheKey = getPriceHistoryCacheKey(symbol, startKey, endKey);
+      let history = null;
+      if (cacheKey) {
+        const cached = getCachedPriceHistory(cacheKey);
+        if (cached.hit) {
+          history = cached.value;
+        }
+      }
+      if (!history) {
+        try {
+          history = await fetchSymbolPriceHistory(symbol, startKey, endKey);
+        } catch (priceError) {
+          history = null;
+        }
+        if (history && cacheKey) {
+          setCachedPriceHistory(cacheKey, history);
+        }
+      }
+      if (Array.isArray(history)) {
+        priceSeriesMap.set(symbol, buildDailyPriceSeries(history, dateKeys));
+      } else {
+        priceSeriesMap.set(symbol, new Map());
+        missingPriceSymbols.add(symbol);
+      }
+    });
+  }
+
+  const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(activityContext, account, accountKey);
+
+  const holdings = new Map();
+  const cashByCurrency = new Map();
+  const usdRateCache = new Map();
+  const points = [];
+  const issues = new Set();
+  let cumulativeNetDeposits = 0;
+  let activityIndex = 0;
+
+  for (const dateKey of dateKeys) {
+    while (activityIndex < processedActivities.length && processedActivities[activityIndex].dateKey <= dateKey) {
+      const entry = processedActivities[activityIndex];
+      const { activity } = entry;
+      const currency = normalizeCurrency(activity.currency);
+      const netAmount = Number(activity.netAmount);
+      const quantity = Number(activity.quantity);
+      const rawSymbol = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
+      const symbol = rawSymbol || null;
+
+      if (symbol && Number.isFinite(quantity) && Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON) {
+        adjustHolding(holdings, symbol, quantity);
+      }
+
+      if (currency && Number.isFinite(netAmount) && Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10) {
+        adjustCash(cashByCurrency, currency, netAmount);
+      }
+
+      activityIndex += 1;
+    }
+
+    const dailyDelta = dailyNetDepositsMap.has(dateKey) ? dailyNetDepositsMap.get(dateKey) : 0;
+    if (Number.isFinite(dailyDelta) && Math.abs(dailyDelta) >= CASH_FLOW_EPSILON / 10) {
+      cumulativeNetDeposits += dailyDelta;
+    }
+
+    let usdRate = null;
+    const needsUsdRate =
+      cashByCurrency.has('USD') && Math.abs(cashByCurrency.get('USD')) >= 0.00001;
+    if (!needsUsdRate) {
+      for (const symbol of holdings.keys()) {
+        const meta = symbolMeta.get(symbol);
+        if (meta && meta.currency === 'USD' && Math.abs(holdings.get(symbol)) >= LEDGER_QUANTITY_EPSILON) {
+          usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+          break;
+        }
+      }
+    } else {
+      usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+    }
+
+    const snapshot = computeLedgerEquitySnapshot(
+      dateKey,
+      holdings,
+      cashByCurrency,
+      symbolMeta,
+      priceSeriesMap,
+      usdRate
+    );
+
+    if (snapshot.missingPrices.length) {
+      snapshot.missingPrices.forEach((symbol) => missingPriceSymbols.add(symbol));
+    }
+    if (snapshot.unsupportedCurrencies.length) {
+      snapshot.unsupportedCurrencies.forEach((code) => issues.add('unsupported-currency:' + code));
+    }
+    if (usdRate === null && (Math.abs(snapshot.usdCash) > 0.00001 || Math.abs(snapshot.usdSecurityValue) > 0.00001)) {
+      issues.add('missing-usd-rate:' + dateKey);
+    }
+
+    const equityCad = Number.isFinite(snapshot.equityCad) ? snapshot.equityCad : null;
+    const cumulativeNetDepositsCad = Number.isFinite(cumulativeNetDeposits) ? cumulativeNetDeposits : null;
+    let totalPnlCad = null;
+    if (Number.isFinite(equityCad) && Number.isFinite(cumulativeNetDepositsCad)) {
+      totalPnlCad = equityCad - cumulativeNetDepositsCad;
+    }
+
+    points.push({
+      date: dateKey,
+      equityCad,
+      cumulativeNetDepositsCad,
+      totalPnlCad,
+      usdToCadRate: Number.isFinite(usdRate) ? usdRate : undefined,
+    });
+  }
+
+  const summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+    ? netDepositsSummary.totalPnl.combinedCad
+    : null;
+  const summaryNetDeposits = netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
+    ? netDepositsSummary.netDeposits.combinedCad
+    : null;
+  const summaryEquity = Number.isFinite(netDepositsSummary.totalEquityCad)
+    ? netDepositsSummary.totalEquityCad
+    : null;
+
+  if (points.length) {
+    const first = points[0];
+    if (first && Number.isFinite(first.totalPnlCad) && Math.abs(first.totalPnlCad) < 0.01) {
+      first.totalPnlCad = 0;
+    }
+    const last = points[points.length - 1];
+    if (last) {
+      if (summaryEquity !== null) {
+        last.equityCad = summaryEquity;
+        if (Number.isFinite(last.cumulativeNetDepositsCad)) {
+          last.totalPnlCad = summaryEquity - last.cumulativeNetDepositsCad;
+        }
+      }
+      if (summaryTotalPnl !== null) {
+        if (!Number.isFinite(last.totalPnlCad) || Math.abs(last.totalPnlCad - summaryTotalPnl) > 0.05) {
+          last.totalPnlCad = summaryTotalPnl;
+          if (Number.isFinite(last.cumulativeNetDepositsCad)) {
+            last.equityCad = summaryTotalPnl + last.cumulativeNetDepositsCad;
+          }
+        }
+      }
+    }
+  }
+
+  if (conversionIncomplete) {
+    issues.add('funding-conversion-incomplete');
+  }
+  if (missingPriceSymbols.size) {
+    issues.add('missing-price-data');
+  }
+
+  const filteredPoints = displayStartDate
+    ? points.filter((point) => {
+        const pointDate = parseDateOnlyString(point.date);
+        return pointDate ? pointDate >= displayStartDate : true;
+      })
+    : points;
+
+  return {
+    accountId: accountKey,
+    periodStartDate: dateKeys[0],
+    displayStartDate: displayStartDate ? formatDateOnly(displayStartDate) : undefined,
+    periodEndDate: dateKeys[dateKeys.length - 1],
+    points: filteredPoints,
+    summary: {
+      totalPnlCad: summaryTotalPnl,
+      totalEquityCad: summaryEquity,
+      netDepositsCad: summaryNetDeposits,
+    },
+    issues: issues.size ? Array.from(issues) : undefined,
+    missingPriceSymbols: missingPriceSymbols.size ? Array.from(missingPriceSymbols) : undefined,
+  };
+}
+
 
 const BALANCE_NUMERIC_FIELDS = [
   'totalEquity',
@@ -3252,6 +3952,78 @@ function summarizeAccountBalances(balanceEntry) {
   }
 
   return summary;
+}
+
+async function resolveAccountContextByKey(accountKey) {
+  if (!accountKey) {
+    return null;
+  }
+  const normalizedKey = String(accountKey).trim();
+  if (!normalizedKey) {
+    return null;
+  }
+  const loweredKey = normalizedKey.toLowerCase();
+  const colonIndex = loweredKey.indexOf(':');
+  const targetKeys = [loweredKey];
+  let loginFilter = null;
+  if (colonIndex > 0) {
+    loginFilter = loweredKey.slice(0, colonIndex);
+    const accountPortion = loweredKey.slice(colonIndex + 1);
+    if (accountPortion) {
+      targetKeys.push(accountPortion);
+    }
+  }
+
+  for (const login of allLogins) {
+    const loginIdLower = String(login.id || '').trim().toLowerCase();
+    if (loginFilter && loginIdLower !== loginFilter) {
+      continue;
+    }
+    let accounts;
+    try {
+      accounts = await fetchAccounts(login);
+    } catch (error) {
+      throw error;
+    }
+    if (!Array.isArray(accounts)) {
+      continue;
+    }
+    for (const rawAccount of accounts) {
+      if (!rawAccount) {
+        continue;
+      }
+      const candidates = [];
+      if (rawAccount.id != null) {
+        candidates.push(String(rawAccount.id).trim().toLowerCase());
+      }
+      if (rawAccount.number != null) {
+        candidates.push(String(rawAccount.number).trim().toLowerCase());
+      }
+      if (rawAccount.accountNumber != null) {
+        candidates.push(String(rawAccount.accountNumber).trim().toLowerCase());
+      }
+      if (rawAccount.name != null) {
+        candidates.push(String(rawAccount.name).trim().toLowerCase());
+      }
+      if (targetKeys.some((key) => candidates.includes(key))) {
+        const normalizedAccount = Object.assign({}, rawAccount);
+        const derivedId =
+          (rawAccount.id != null && String(rawAccount.id).trim()) ||
+          (rawAccount.number != null && String(rawAccount.number).trim()) ||
+          (rawAccount.accountNumber != null && String(rawAccount.accountNumber).trim()) ||
+          normalizedKey;
+        const derivedNumber =
+          (rawAccount.number != null && String(rawAccount.number).trim()) ||
+          (rawAccount.accountNumber != null && String(rawAccount.accountNumber).trim()) ||
+          (rawAccount.id != null && String(rawAccount.id).trim()) ||
+          normalizedKey;
+        normalizedAccount.id = derivedId;
+        normalizedAccount.number = derivedNumber;
+        return { login, account: normalizedAccount };
+      }
+    }
+  }
+  return null;
 }
 
 function finalizeBalances(summary) {
@@ -4681,28 +5453,94 @@ app.get('/api/summary', async function (req, res) {
   }
 });
 
+app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) {
+  const rawAccountKey = typeof req.params.accountKey === 'string' ? req.params.accountKey.trim() : '';
+  if (!rawAccountKey) {
+    return res.status(400).json({ message: 'Account identifier is required' });
+  }
+
+  try {
+    const resolved = await resolveAccountContextByKey(rawAccountKey);
+    if (!resolved) {
+      return res.status(404).json({ message: 'Account not found' });
+    }
+
+    const { login, account } = resolved;
+    const normalizedAccount = Object.assign({}, account);
+    const accountId = normalizedAccount.id || normalizedAccount.number || rawAccountKey;
+    normalizedAccount.id = accountId;
+    normalizedAccount.number = normalizedAccount.number || rawAccountKey;
+
+    const balancesRaw = await fetchBalances(login, normalizedAccount.number);
+    const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+    const perAccountCombinedBalances = { [accountId]: balanceSummary };
+
+    const options = {};
+    if (typeof req.query.startDate === 'string' && req.query.startDate.trim()) {
+      options.startDate = req.query.startDate.trim();
+    }
+    if (typeof req.query.endDate === 'string' && req.query.endDate.trim()) {
+      options.endDate = req.query.endDate.trim();
+    }
+    if (req.query.applyAccountCagrStartDate === 'false' || req.query.applyAccountCagrStartDate === '0') {
+      options.applyAccountCagrStartDate = false;
+    }
+
+    const series = await computeTotalPnlSeries(login, normalizedAccount, perAccountCombinedBalances, options);
+    if (!series) {
+      return res.status(503).json({ message: 'Total P&L series unavailable' });
+    }
+
+    return res.json(series);
+  } catch (error) {
+    if (error.response) {
+      return res.status(error.response.status).json({ message: 'Questrade API error', details: error.response.data });
+    }
+    console.error('Failed to compute total P&L series for account ' + rawAccountKey + ':', error.message || error);
+    return res.status(500).json({ message: 'Failed to compute total P&L series', details: error.message || String(error) });
+  }
+});
+
 app.get('/health', function (req, res) {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.listen(PORT, function () {
-  console.log('Server listening on port ' + PORT);
-});
+if (require.main === module) {
+  app.listen(PORT, function () {
+    console.log('Server listening on port ' + PORT);
+  });
+}
 
+function getAllLogins() {
+  return allLogins.map((login) => Object.assign({}, login));
+}
 
+function getLoginById(loginId) {
+  if (!loginId) {
+    return null;
+  }
+  return loginsById[loginId] || null;
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
+module.exports = {
+  app,
+  computeTotalPnlSeries,
+  computeNetDeposits,
+  computeNetDepositsCore,
+  buildAccountActivityContext,
+  resolveAccountActivityContext,
+  filterFundingActivities,
+  dedupeActivities,
+  resolveActivityAmountDetails,
+  convertAmountToCad,
+  resolveUsdToCadRate,
+  fetchAccounts,
+  fetchBalances,
+  fetchPositions,
+  summarizeAccountBalances,
+  getAllLogins,
+  getLoginById,
+};
 
 
 
