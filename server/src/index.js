@@ -85,6 +85,8 @@ function ensureYahooFinanceClient() {
 const QUOTE_CACHE_TTL_SECONDS = 60;
 const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
 
+let customPriceHistoryFetcher = null;
+
 const BENCHMARK_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
@@ -3395,6 +3397,95 @@ async function computeDailyNetDeposits(activityContext, account, accountKey) {
 
 const LEDGER_QUANTITY_EPSILON = 1e-8;
 
+function extractActivityPriceHint(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+
+  const directPrice = Number(activity.price);
+  if (Number.isFinite(directPrice) && directPrice > 0) {
+    return Math.abs(directPrice);
+  }
+
+  const quantity = Number(activity.quantity);
+  if (!Number.isFinite(quantity) || Math.abs(quantity) < LEDGER_QUANTITY_EPSILON) {
+    return null;
+  }
+
+  const grossAmount = Number(activity.grossAmount);
+  if (Number.isFinite(grossAmount) && Math.abs(grossAmount) >= CASH_FLOW_EPSILON / 10) {
+    const derived = Math.abs(grossAmount) / Math.abs(quantity);
+    if (Number.isFinite(derived) && derived > 0) {
+      return derived;
+    }
+  }
+
+  const netAmount = Number(activity.netAmount);
+  if (Number.isFinite(netAmount) && Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10) {
+    const derived = Math.abs(netAmount) / Math.abs(quantity);
+    if (Number.isFinite(derived) && derived > 0) {
+      return derived;
+    }
+  }
+
+  const amountInfo = resolveActivityAmount(activity);
+  if (
+    amountInfo &&
+    Number.isFinite(amountInfo.amount) &&
+    Math.abs(amountInfo.amount) >= CASH_FLOW_EPSILON / 10
+  ) {
+    const derived = Math.abs(amountInfo.amount) / Math.abs(quantity);
+    if (Number.isFinite(derived) && derived > 0) {
+      return derived;
+    }
+  }
+
+  return null;
+}
+
+function buildPriceSeriesFromHints(hints, dateKeys) {
+  if (!Array.isArray(hints) || !Array.isArray(dateKeys) || dateKeys.length === 0) {
+    return new Map();
+  }
+
+  const entriesByDate = new Map();
+  hints.forEach((hint) => {
+    if (!hint) {
+      return;
+    }
+    const price = Number(hint.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      return;
+    }
+    let timestamp = hint.timestamp;
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+      const parsed = typeof hint.dateKey === 'string' ? parseDateOnlyString(hint.dateKey) : null;
+      timestamp = parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : null;
+    }
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+      return;
+    }
+    const normalized = new Date(
+      Date.UTC(timestamp.getUTCFullYear(), timestamp.getUTCMonth(), timestamp.getUTCDate())
+    );
+    const dateKey = formatDateOnly(normalized);
+    if (!dateKey) {
+      return;
+    }
+    const existing = entriesByDate.get(dateKey);
+    if (!existing || normalized > existing.date) {
+      entriesByDate.set(dateKey, { date: normalized, price });
+    }
+  });
+
+  if (!entriesByDate.size) {
+    return new Map();
+  }
+
+  const normalizedHistory = Array.from(entriesByDate.values()).sort((a, b) => a.date - b.date);
+  return buildDailyPriceSeries(normalizedHistory, dateKeys);
+}
+
 function adjustHolding(holdings, symbol, delta) {
   if (!symbol || !Number.isFinite(delta)) {
     return;
@@ -3549,6 +3640,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const processedActivities = [];
   const symbolIds = new Set();
   const symbolMeta = new Map();
+  const priceHintsBySymbol = new Map();
 
   const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   rawActivities.forEach((activity) => {
@@ -3573,6 +3665,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
     if (!symbol) {
       return;
+    }
+
+    if (!priceHintsBySymbol.has(symbol)) {
+      priceHintsBySymbol.set(symbol, []);
+    }
+    const priceHint = extractActivityPriceHint(activity);
+    if (Number.isFinite(priceHint) && priceHint > 0) {
+      priceHintsBySymbol.get(symbol).push({ price: priceHint, timestamp, dateKey });
     }
 
     if (!symbolMeta.has(symbol)) {
@@ -3631,16 +3731,36 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       }
       if (!history) {
         try {
-          history = await fetchSymbolPriceHistory(symbol, startKey, endKey);
+          const useCustomFetcher = typeof customPriceHistoryFetcher === 'function';
+          const fetcher = useCustomFetcher ? customPriceHistoryFetcher : fetchSymbolPriceHistory;
+          history = await fetcher(symbol, startKey, endKey);
         } catch (priceError) {
           history = null;
         }
-        if (history && cacheKey) {
+        const shouldCache = !customPriceHistoryFetcher && cacheKey;
+        if (history && shouldCache) {
           setCachedPriceHistory(cacheKey, history);
         }
       }
-      if (Array.isArray(history)) {
-        priceSeriesMap.set(symbol, buildDailyPriceSeries(history, dateKeys));
+      let series = null;
+      if (Array.isArray(history) && history.length > 0) {
+        series = buildDailyPriceSeries(history, dateKeys);
+      }
+      const hints = priceHintsBySymbol.get(symbol);
+      const hintSeries =
+        Array.isArray(hints) && hints.length > 0 ? buildPriceSeriesFromHints(hints, dateKeys) : null;
+
+      if (series && series.size > 0) {
+        if (hintSeries && hintSeries.size > 0) {
+          hintSeries.forEach((price, dateKey) => {
+            if (!Number.isFinite(series.get(dateKey))) {
+              series.set(dateKey, price);
+            }
+          });
+        }
+        priceSeriesMap.set(symbol, series);
+      } else if (hintSeries && hintSeries.size > 0) {
+        priceSeriesMap.set(symbol, hintSeries);
       } else {
         priceSeriesMap.set(symbol, new Map());
         missingPriceSymbols.add(symbol);
@@ -5522,6 +5642,14 @@ function getLoginById(loginId) {
   return loginsById[loginId] || null;
 }
 
+function setPriceHistoryFetcherForTests(fetcher) {
+  if (typeof fetcher === 'function') {
+    customPriceHistoryFetcher = fetcher;
+  } else {
+    customPriceHistoryFetcher = null;
+  }
+}
+
 module.exports = {
   app,
   computeTotalPnlSeries,
@@ -5540,6 +5668,7 @@ module.exports = {
   summarizeAccountBalances,
   getAllLogins,
   getLoginById,
+  __setPriceHistoryFetcherForTests: setPriceHistoryFetcherForTests,
 };
 
 
