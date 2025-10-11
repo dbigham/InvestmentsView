@@ -1923,6 +1923,28 @@ function normalizeCurrency(code) {
   return code.trim().toUpperCase();
 }
 
+const CAD_SYMBOL_SUFFIXES = ['.TO', '.TSX', '.TSXV', '.NE', '.NEO', '.CN', '.CA', '.V'];
+
+function inferSymbolCurrency(symbol, currentCurrency) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const trimmed = symbol.trim().toUpperCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (CAD_SYMBOL_SUFFIXES.some((suffix) => trimmed.endsWith(suffix))) {
+    return 'CAD';
+  }
+
+  if (/^[A-Z]{1,5}$/.test(trimmed)) {
+    return 'USD';
+  }
+
+  return null;
+}
+
 const usdCadRateCache = new Map();
 
 async function fetchLatestUsdToCadRate() {
@@ -3603,12 +3625,19 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
 
   for (const [symbol, meta] of symbolMeta.entries()) {
-    if (!meta.currency && meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]) {
-      const detailCurrency = normalizeCurrency(symbolDetails[meta.symbolId].currency);
-      if (detailCurrency) {
-        meta.currency = detailCurrency;
+    const detail = meta.symbolId && symbolDetails ? symbolDetails[meta.symbolId] : null;
+    const detailCurrency = detail ? normalizeCurrency(detail.currency) : null;
+    if (detailCurrency) {
+      meta.currency = detailCurrency;
+    }
+
+    if (!meta.currency || (meta.currency === 'CAD' && detailCurrency !== 'CAD')) {
+      const inferredCurrency = inferSymbolCurrency(symbol, meta.currency);
+      if (inferredCurrency) {
+        meta.currency = inferredCurrency;
       }
     }
+
     if (!meta.currency) {
       meta.currency = 'CAD';
     }
