@@ -227,3 +227,120 @@ test('computeTotalPnlSeries resolves USD securities when activities report CAD c
   assert.equal(firstPoint.date, '2025-09-01');
   assert.ok(Math.abs(firstPoint.totalPnlCad || 0) < 1e-6, 'Expected no loss on first day');
 });
+
+test('computeTotalPnlSeries normalizes Yahoo symbols for class share tickers', async (t) => {
+  const originalFredKey = process.env.FRED_API_KEY;
+  process.env.FRED_API_KEY = 'TEST_KEY';
+
+  const seenSymbols = [];
+
+  t.mock.method(axios, 'get', async (url) => {
+    if (typeof url === 'string' && url.startsWith('https://api.stlouisfed.org/fred/series/observations')) {
+      return {
+        data: {
+          observations: [
+            { date: '2025-09-01', value: '1.35' },
+            { date: '2025-09-02', value: '1.35' },
+          ],
+        },
+      };
+    }
+    if (typeof url === 'string' && url.startsWith('https://login.questrade.com/oauth2/token')) {
+      return {
+        data: {
+          access_token: 'test-access',
+          api_server: 'https://mock.api/',
+          expires_in: 1800,
+          refresh_token: 'test-refresh',
+        },
+      };
+    }
+    throw new Error(`Unexpected axios.get url: ${url}`);
+  });
+
+  t.mock.method(axios, 'request', async (config) => {
+    if (config && typeof config.url === 'string' && config.url.startsWith('https://mock.api/v1/symbols')) {
+      const ids = config.params && config.params.ids ? String(config.params.ids) : '';
+      const entries = ids.split(',').filter(Boolean).map((id) => ({ symbolId: Number(id), currency: 'USD' }));
+      return { data: { symbols: entries }, headers: {} };
+    }
+    throw new Error(`Unexpected axios.request url: ${config && config.url}`);
+  });
+
+  t.mock.method(yahooFinance, 'historical', async (symbol) => {
+    seenSymbols.push(symbol);
+    return [
+      { date: new Date('2025-09-01T00:00:00Z'), adjClose: 400 },
+    ];
+  });
+
+  t.after(() => {
+    process.env.FRED_API_KEY = originalFredKey;
+    t.mock.restoreAll();
+  });
+
+  const account = { id: 'CLASS-SHARE-TEST' };
+  const now = new Date('2025-09-02T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2025-09-01T00:00:00Z'),
+    crawlStart: new Date('2025-09-01T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2025-09-01T00:00:00.000000-04:00',
+        transactionDate: '2025-09-01T00:00:00.000000-04:00',
+        settlementDate: '2025-09-01T00:00:00.000000-04:00',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: 540,
+        grossAmount: 540,
+        symbol: '',
+        symbolId: 0,
+      },
+      {
+        tradeDate: '2025-09-01T00:00:00.000000-04:00',
+        transactionDate: '2025-09-01T00:00:00.000000-04:00',
+        settlementDate: '2025-09-01T00:00:00.000000-04:00',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -540,
+        grossAmount: -540,
+        quantity: 1,
+        price: 540,
+        symbol: 'BRK.B',
+        symbolId: 987654,
+      },
+    ],
+    fingerprint: 'class-share-test',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 540,
+        },
+      },
+    },
+  };
+
+  const result = await computeTotalPnlSeries(
+    { id: 'login-1', refreshToken: 'test-refresh' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false }
+  );
+
+  assert.ok(result, 'Expected series result');
+  assert.deepEqual(seenSymbols, ['BRK-B']);
+  assert.ok(Math.abs(result.summary.totalPnlCad || 0) < 1e-6, 'Expected zero P&L when FX adjusted');
+  assert.ok(Math.abs(result.summary.totalEquityCad - 540) < 1e-6, 'Expected equity to equal 540 CAD');
+  assert.ok(Math.abs(result.summary.netDepositsCad - 540) < 1e-6, 'Expected deposits to equal 540 CAD');
+});
