@@ -248,6 +248,7 @@ const STYLE_TWO_MIN_SHARE = 0.005;
 const MERGED_SYMBOL_ALIASES = new Map([
   ['QQQM', 'QQQ'],
   ['IBIT.U', 'IBIT'],
+  ['VBIL', 'SGOV'],
 ]);
 
 function normalizeMergedSymbol(position, fallbackId) {

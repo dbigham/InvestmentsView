@@ -3603,11 +3603,13 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
 
   for (const [symbol, meta] of symbolMeta.entries()) {
-    if (!meta.currency && meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]) {
-      const detailCurrency = normalizeCurrency(symbolDetails[meta.symbolId].currency);
-      if (detailCurrency) {
-        meta.currency = detailCurrency;
-      }
+    const detail =
+      meta && meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]
+        ? symbolDetails[meta.symbolId]
+        : null;
+    const detailCurrency = detail ? normalizeCurrency(detail.currency) : null;
+    if (detailCurrency && meta.currency !== detailCurrency) {
+      meta.currency = detailCurrency;
     }
     if (!meta.currency) {
       meta.currency = 'CAD';
@@ -5541,7 +5543,6 @@ module.exports = {
   getAllLogins,
   getLoginById,
 };
-
 
 
 
