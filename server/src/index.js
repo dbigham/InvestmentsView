@@ -1923,6 +1923,56 @@ function normalizeCurrency(code) {
   return code.trim().toUpperCase();
 }
 
+const ACTIVITY_DESCRIPTION_SYMBOL_HINTS = [
+  {
+    symbol: 'SPY',
+    keywords: ['SPDR S&P 500 ETF TRUST'],
+  },
+  {
+    symbol: 'TQQQ',
+    keywords: ['PROSHARES TRUST ULTRAPRO QQQ'],
+  },
+  {
+    symbol: 'BIL',
+    keywords: ['SPDR SERIES TRUST SPDR BLOOMBERG 1 3 MONTH T BILL ETF'],
+  },
+].map((entry) => ({
+  symbol: entry.symbol,
+  keywords: Array.isArray(entry.keywords)
+    ? entry.keywords
+        .map((keyword) =>
+          typeof keyword === 'string' ? keyword.replace(/\s+/g, ' ').trim().toUpperCase() : null
+        )
+        .filter(Boolean)
+    : [],
+}));
+
+function resolveActivitySymbol(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return '';
+  }
+  const rawSymbol = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
+  if (rawSymbol) {
+    return rawSymbol;
+  }
+  const type = typeof activity.type === 'string' ? activity.type.trim().toLowerCase() : '';
+  if (type !== 'trades') {
+    return '';
+  }
+  const description =
+    typeof activity.description === 'string' ? activity.description : '';
+  if (!description) {
+    return '';
+  }
+  const normalizedDescription = description.replace(/\s+/g, ' ').trim().toUpperCase();
+  for (const entry of ACTIVITY_DESCRIPTION_SYMBOL_HINTS) {
+    if (entry.keywords.some((keyword) => normalizedDescription.includes(keyword))) {
+      return entry.symbol;
+    }
+  }
+  return '';
+}
+
 const usdCadRateCache = new Map();
 
 async function fetchLatestUsdToCadRate() {
@@ -3560,10 +3610,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!dateKey) {
       return;
     }
-    processedActivities.push({ activity, timestamp, dateKey });
+    const resolvedSymbol = resolveActivitySymbol(activity);
+    processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol || null });
 
-    const rawSymbol = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
-    const symbol = rawSymbol || null;
     const symbolId = Number(activity.symbolId);
     const currency = normalizeCurrency(activity.currency) || null;
 
@@ -3571,17 +3620,17 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       symbolIds.add(symbolId);
     }
 
-    if (!symbol) {
+    if (!resolvedSymbol) {
       return;
     }
 
-    if (!symbolMeta.has(symbol)) {
-      symbolMeta.set(symbol, {
+    if (!symbolMeta.has(resolvedSymbol)) {
+      symbolMeta.set(resolvedSymbol, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
         currency,
       });
     } else {
-      const meta = symbolMeta.get(symbol);
+      const meta = symbolMeta.get(resolvedSymbol);
       if (!meta.currency && currency) {
         meta.currency = currency;
       }
@@ -3665,8 +3714,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const currency = normalizeCurrency(activity.currency);
       const netAmount = Number(activity.netAmount);
       const quantity = Number(activity.quantity);
-      const rawSymbol = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
-      const symbol = rawSymbol || null;
+      const symbol = entry && entry.symbol ? entry.symbol : resolveActivitySymbol(activity) || null;
 
       if (symbol && Number.isFinite(quantity) && Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON) {
         adjustHolding(holdings, symbol, quantity);
@@ -5541,9 +5589,6 @@ module.exports = {
   getAllLogins,
   getLoginById,
 };
-
-
-
 
 
 
