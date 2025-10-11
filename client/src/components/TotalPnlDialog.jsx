@@ -5,6 +5,7 @@ import { formatDate, formatMoney } from '../utils/formatters';
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
+const AXIS_TARGET_INTERVALS = 4;
 
 const TIMEFRAME_OPTIONS = [
   { value: '1M', label: '1 month' },
@@ -103,6 +104,62 @@ function filterSeries(points, timeframe) {
   return filtered;
 }
 
+function niceNumber(value, round) {
+  if (!Number.isFinite(value) || value === 0) {
+    return 0;
+  }
+  const exponent = Math.floor(Math.log10(Math.abs(value)));
+  const fraction = Math.abs(value) / 10 ** exponent;
+  let niceFraction;
+  if (round) {
+    if (fraction < 1.5) {
+      niceFraction = 1;
+    } else if (fraction < 3) {
+      niceFraction = 2;
+    } else if (fraction < 7) {
+      niceFraction = 5;
+    } else {
+      niceFraction = 10;
+    }
+  } else if (fraction <= 1) {
+    niceFraction = 1;
+  } else if (fraction <= 2) {
+    niceFraction = 2;
+  } else if (fraction <= 5) {
+    niceFraction = 5;
+  } else {
+    niceFraction = 10;
+  }
+  return Math.sign(value) * niceFraction * 10 ** exponent;
+}
+
+function buildAxisScale(minDomain, maxDomain) {
+  if (!Number.isFinite(minDomain) || !Number.isFinite(maxDomain)) {
+    return { minDomain, maxDomain, tickSpacing: 0, ticks: [] };
+  }
+  const rawRange = maxDomain - minDomain;
+  if (rawRange === 0) {
+    return { minDomain, maxDomain, tickSpacing: 0, ticks: [minDomain] };
+  }
+  const niceRange = niceNumber(rawRange, false) || rawRange;
+  const spacing = niceNumber(niceRange / AXIS_TARGET_INTERVALS, true) || rawRange / AXIS_TARGET_INTERVALS;
+  const niceMin = Math.floor(minDomain / spacing) * spacing;
+  const niceMax = Math.ceil(maxDomain / spacing) * spacing;
+  const ticks = [];
+  for (let value = niceMin; value <= niceMax + spacing * 0.5; value += spacing) {
+    const rounded = Math.abs(value) < spacing * 1e-6 ? 0 : Number(value.toFixed(6));
+    if (!ticks.length || Math.abs(ticks[ticks.length - 1] - rounded) > spacing * 1e-6) {
+      ticks.push(rounded);
+    }
+  }
+  return {
+    minDomain: niceMin,
+    maxDomain: niceMax,
+    tickSpacing: spacing,
+    ticks,
+  };
+}
+
 function buildChartMetrics(series) {
   if (!Array.isArray(series) || series.length === 0) {
     return null;
@@ -112,8 +169,9 @@ function buildChartMetrics(series) {
   const maxValue = Math.max(...values, 0);
   const range = maxValue - minValue;
   const padding = range === 0 ? Math.max(10, Math.abs(maxValue) * 0.1 || 10) : Math.max(10, range * 0.1);
-  const minDomain = minValue - padding;
-  const maxDomain = maxValue + padding;
+  const rawMinDomain = minValue - padding;
+  const rawMaxDomain = maxValue + padding;
+  const { minDomain, maxDomain, ticks } = buildAxisScale(rawMinDomain, rawMaxDomain);
   const domainRange = maxDomain - minDomain || 1;
   const innerWidth = CHART_WIDTH - PADDING.left - PADDING.right;
   const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
@@ -145,6 +203,7 @@ function buildChartMetrics(series) {
     domainRange,
     innerWidth,
     innerHeight,
+    axisTicks: ticks,
   };
 }
 
@@ -272,13 +331,18 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
       return null;
     }
     const leftPercent = Math.min(94, Math.max(0, (point.x / CHART_WIDTH) * 100));
-    const verticalOffset = point.trend > 0 ? -24 : point.trend < 0 ? 24 : 0;
-    const adjustedY = Math.min(
-      CHART_HEIGHT - PADDING.bottom,
-      Math.max(PADDING.top, point.y + verticalOffset)
-    );
-    const topPercent = Math.min(92, Math.max(8, (adjustedY / CHART_HEIGHT) * 100));
-    return { left: `${leftPercent}%`, top: `${topPercent}%` };
+    const offset = 40;
+    let preferAbove = point.trend > 0;
+    if (point.trend === 0) {
+      preferAbove = point.y >= CHART_HEIGHT / 2;
+    }
+    let anchorY = preferAbove ? point.y - offset : point.y + offset;
+    const minAnchor = PADDING.top + 8;
+    const maxAnchor = CHART_HEIGHT - PADDING.bottom - 8;
+    anchorY = Math.min(maxAnchor, Math.max(minAnchor, anchorY));
+    const topPercent = Math.max(4, Math.min(96, (anchorY / CHART_HEIGHT) * 100));
+    const transform = preferAbove ? 'translate(-50%, -100%)' : 'translate(-50%, 0)';
+    return { left: `${leftPercent}%`, top: `${topPercent}%`, transform };
   }, [marker, hoverPoint]);
 
   const hoverLabel = hoverPoint
@@ -292,19 +356,18 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
     if (!hasChart) {
       return [];
     }
-    const ticks = 4;
-    const values = [];
-    for (let i = 0; i <= ticks; i += 1) {
-      const value = chartMetrics.minDomain + (chartMetrics.domainRange * i) / ticks;
-      values.push({ value, y: chartMetrics.yFor(value) });
-    }
-    return values;
+    return chartMetrics.axisTicks.map((value) => ({ value, y: chartMetrics.yFor(value) }));
   }, [chartMetrics, hasChart]);
 
   const handleMouseMove = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    const scaleX = CHART_WIDTH / rect.width;
+    const scaleY = CHART_HEIGHT / rect.height;
+    const x = (event.clientX - rect.left) * scaleX;
+    const y = (event.clientY - rect.top) * scaleY;
     setHover({ x, y });
   };
 
