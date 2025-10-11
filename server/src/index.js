@@ -1923,6 +1923,62 @@ function normalizeCurrency(code) {
   return code.trim().toUpperCase();
 }
 
+const CAD_SYMBOL_SUFFIXES = ['.TO', '.TSX', '.TSXV', '.NE', '.NEO', '.CN', '.CA', '.V'];
+const YAHOO_SYMBOL_OVERRIDES = {
+  'BRK.B': 'BRK-B',
+  'BRK.A': 'BRK-A',
+  'BF.B': 'BF-B',
+};
+
+function inferSymbolCurrency(symbol, currentCurrency) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const trimmed = symbol.trim().toUpperCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (CAD_SYMBOL_SUFFIXES.some((suffix) => trimmed.endsWith(suffix))) {
+    return 'CAD';
+  }
+
+  if (/^[A-Z]{1,5}$/.test(trimmed)) {
+    return 'USD';
+  }
+
+  return null;
+}
+
+function resolveYahooPriceHistorySymbol(symbol) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const trimmed = symbol.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const upper = trimmed.toUpperCase();
+  if (YAHOO_SYMBOL_OVERRIDES[upper]) {
+    return YAHOO_SYMBOL_OVERRIDES[upper];
+  }
+
+  if (CAD_SYMBOL_SUFFIXES.some((suffix) => upper.endsWith(suffix))) {
+    return upper;
+  }
+
+  if (/^[A-Z]{1,5}-[A-Z]{1,3}$/.test(upper)) {
+    return upper;
+  }
+
+  if (/^[A-Z]{1,5}\.[A-Z]{1,3}$/.test(upper)) {
+    return upper.replace('.', '-');
+  }
+
+  return upper;
+}
+
 const usdCadRateCache = new Map();
 
 async function fetchLatestUsdToCadRate() {
@@ -3228,7 +3284,8 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey) {
   const exclusiveEnd = addDays(endDate, 1) || new Date(endDate.getTime() + DAY_IN_MS);
 
   const finance = ensureYahooFinanceClient();
-  const history = await finance.historical(symbol, {
+  const yahooSymbol = resolveYahooPriceHistorySymbol(symbol) || symbol;
+  const history = await finance.historical(yahooSymbol, {
     period1: startDate,
     period2: exclusiveEnd,
     interval: '1d',
@@ -3603,12 +3660,19 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
 
   for (const [symbol, meta] of symbolMeta.entries()) {
-    if (!meta.currency && meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]) {
-      const detailCurrency = normalizeCurrency(symbolDetails[meta.symbolId].currency);
-      if (detailCurrency) {
-        meta.currency = detailCurrency;
+    const detail = meta.symbolId && symbolDetails ? symbolDetails[meta.symbolId] : null;
+    const detailCurrency = detail ? normalizeCurrency(detail.currency) : null;
+    if (detailCurrency) {
+      meta.currency = detailCurrency;
+    }
+
+    if (!meta.currency || (meta.currency === 'CAD' && detailCurrency !== 'CAD')) {
+      const inferredCurrency = inferSymbolCurrency(symbol, meta.currency);
+      if (inferredCurrency) {
+        meta.currency = inferredCurrency;
       }
     }
+
     if (!meta.currency) {
       meta.currency = 'CAD';
     }
