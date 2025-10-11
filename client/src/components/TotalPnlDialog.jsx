@@ -233,7 +233,7 @@ function formatIssues(issues) {
 
 export default function TotalPnlDialog({ onClose, data, loading, error, onRetry, accountLabel }) {
   const headingId = useId();
-  const [timeframe, setTimeframe] = useState('1Y');
+  const [timeframe, setTimeframe] = useState('ALL');
   const [hover, setHover] = useState(null);
   const selectRef = useRef(null);
 
@@ -249,7 +249,7 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
   }, [onClose]);
 
   useEffect(() => {
-    setTimeframe('1Y');
+    setTimeframe('ALL');
   }, [data?.accountId]);
 
   useEffect(() => {
@@ -332,17 +332,12 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
     }
     const leftPercent = Math.min(94, Math.max(0, (point.x / CHART_WIDTH) * 100));
     const offset = 40;
-    let preferAbove = point.trend > 0;
-    if (point.trend === 0) {
-      preferAbove = point.y >= CHART_HEIGHT / 2;
-    }
-    let anchorY = preferAbove ? point.y - offset : point.y + offset;
+    let anchorY = point.y - offset;
     const minAnchor = PADDING.top + 8;
     const maxAnchor = CHART_HEIGHT - PADDING.bottom - 8;
     anchorY = Math.min(maxAnchor, Math.max(minAnchor, anchorY));
     const topPercent = Math.max(4, Math.min(96, (anchorY / CHART_HEIGHT) * 100));
-    const transform = preferAbove ? 'translate(-50%, -100%)' : 'translate(-50%, 0)';
-    return { left: `${leftPercent}%`, top: `${topPercent}%`, transform };
+    return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
   }, [marker, hoverPoint]);
 
   const hoverLabel = hoverPoint
