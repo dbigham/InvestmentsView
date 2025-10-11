@@ -2767,11 +2767,13 @@ button.time-pill:hover .time-pill__icon {
 
 .pnl-dialog__label-amount {
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .pnl-dialog__label-date {
   color: var(--color-text-muted);
   font-size: 0.72rem;
+  white-space: nowrap;
 }
 
 .qqq-section__chart-footer {
