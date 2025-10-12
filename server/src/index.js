@@ -3553,45 +3553,38 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
         const applyCagr = Object.prototype.hasOwnProperty.call(options, 'applyAccountCagrStartDate')
           ? !!options.applyAccountCagrStartDate
           : true;
-        const cagrStartDate =
-          applyCagr && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
-            ? account.cagrStartDate.trim()
-            : null;
-        if (
-          result &&
-          applyCagr &&
-          cagrStartDate &&
-          result.netDeposits &&
-          Number.isFinite(result.netDeposits.combinedCad) &&
-          Number.isFinite(result.totalEquityCad)
-        ) {
-          const singleDaySeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
-            applyAccountCagrStartDate: false,
-            startDate: cagrStartDate,
-            endDate: cagrStartDate,
+        if (result && applyCagr && result.netDeposits && Number.isFinite(result.netDeposits.combinedCad)) {
+          const series = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
+            applyAccountCagrStartDate: applyCagr,
             activityContext,
+            precomputedNetDepositsSummary: result,
           });
-          const startPoint =
-            singleDaySeries && Array.isArray(singleDaySeries.points) && singleDaySeries.points.length
-              ? singleDaySeries.points[0]
-              : null;
-          const startEquity =
-            startPoint && Number.isFinite(Number(startPoint.equityCad)) ? Number(startPoint.equityCad) : null;
-          if (Number.isFinite(startEquity)) {
-            const adjustedNetDeposits = result.netDeposits.combinedCad + startEquity;
-            result.netDeposits.combinedCad =
-              Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-            if (result.totalPnl && Number.isFinite(result.totalPnl.combinedCad)) {
-              const adjustedTotalPnl = result.totalEquityCad - result.netDeposits.combinedCad;
-              result.totalPnl.combinedCad =
-                Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
+          const summary = series && series.summary ? series.summary : null;
+          if (summary) {
+            if (result.netDeposits && Object.prototype.hasOwnProperty.call(result.netDeposits, 'combinedCad')) {
+              const alignedNetDeposits = Number(summary.netDepositsCad);
+              if (Number.isFinite(alignedNetDeposits)) {
+                result.netDeposits.combinedCad =
+                  Math.abs(alignedNetDeposits) < CASH_FLOW_EPSILON ? 0 : alignedNetDeposits;
+              }
+            }
+            if (result.totalPnl && Object.prototype.hasOwnProperty.call(result.totalPnl, 'combinedCad')) {
+              const alignedTotalPnl = Number(summary.totalPnlCad);
+              if (Number.isFinite(alignedTotalPnl)) {
+                result.totalPnl.combinedCad =
+                  Math.abs(alignedTotalPnl) < CASH_FLOW_EPSILON ? 0 : alignedTotalPnl;
+              }
+            }
+            const alignedEquity = Number(summary.totalEquityCad);
+            if (Number.isFinite(alignedEquity)) {
+              result.totalEquityCad = alignedEquity;
             }
           }
         }
-      } catch (adjustmentError) {
-        const adjustmentMessage =
-          adjustmentError && adjustmentError.message ? adjustmentError.message : String(adjustmentError);
-        debugTotalPnl(account.id || account.number || 'unknown', 'CAGR adjustment failed', adjustmentMessage);
+      } catch (alignmentError) {
+        const alignmentMessage =
+          alignmentError && alignmentError.message ? alignmentError.message : String(alignmentError);
+        debugTotalPnl(account.id || account.number || 'unknown', 'CAGR summary alignment failed', alignmentMessage);
       }
       setNetDepositsCacheEntry(cacheKey, result);
       return result;
@@ -4134,7 +4127,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         : true,
   };
 
-  const netDepositsSummary = await computeNetDepositsCore(account, perAccountCombinedBalances, netDepositOptions, activityContext);
+  const providedNetDepositsSummary =
+    options && options.precomputedNetDepositsSummary
+      ? cloneNetDepositsSummary(options.precomputedNetDepositsSummary)
+      : null;
+
+  const netDepositsSummary =
+    providedNetDepositsSummary ||
+    (await computeNetDepositsCore(account, perAccountCombinedBalances, netDepositOptions, activityContext));
   if (!netDepositsSummary) {
     return null;
   }
