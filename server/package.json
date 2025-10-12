@@ -17,11 +17,11 @@
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.5",
     "node-cache": "^5.1.2",
     "proxy-from-env": "^1.1.0",
     "tough-cookie": "^6.0.0",
-    "undici": "^6.19.8",
-    "https-proxy-agent": "^7.0.5",
+    "undici": "^7.16.0",
     "yahoo-finance2": "^2.13.3"
   },
   "devDependencies": {
