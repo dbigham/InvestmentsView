@@ -1834,6 +1834,146 @@ const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
 const ACTIVITIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'activities');
+const FX_CACHE_DIR = path.join(__dirname, '..', '.cache', 'fx');
+const USD_CAD_CACHE_FILE_PATH = path.join(FX_CACHE_DIR, 'usd-cad-rates.json');
+
+const usdCadRateCache = new Map();
+let fxCacheDirEnsured = false;
+let usdCadRateCacheLoaded = false;
+let usdCadRateCacheDirty = false;
+let usdCadRateCacheFlushTimeout = null;
+
+function ensureFxCacheDir() {
+  if (fxCacheDirEnsured) {
+    return;
+  }
+  try {
+    fs.mkdirSync(FX_CACHE_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('[FX] Failed to ensure FX cache directory:', error?.message || String(error));
+  }
+  fxCacheDirEnsured = true;
+}
+
+function flushUsdCadRateCacheSync() {
+  if (usdCadRateCacheFlushTimeout) {
+    clearTimeout(usdCadRateCacheFlushTimeout);
+    usdCadRateCacheFlushTimeout = null;
+  }
+  if (!usdCadRateCacheDirty) {
+    return;
+  }
+  usdCadRateCacheDirty = false;
+  try {
+    ensureFxCacheDir();
+    const entries = Array.from(usdCadRateCache.entries())
+      .filter(([key]) => typeof key === 'string' && key)
+      .map(([key, value]) => ({
+        key,
+        value: value === null ? null : Number(value),
+      }))
+      .filter((entry) =>
+        entry.value === null || (Number.isFinite(entry.value) && entry.value > 0)
+      );
+    const payload = {
+      updatedAt: new Date().toISOString(),
+      entries,
+    };
+    fs.writeFileSync(USD_CAD_CACHE_FILE_PATH, JSON.stringify(payload));
+  } catch (error) {
+    console.warn('[FX] Failed to persist USD/CAD rate cache:', error?.message || String(error));
+  }
+}
+
+function scheduleUsdCadRateCachePersist() {
+  usdCadRateCacheDirty = true;
+  if (usdCadRateCacheFlushTimeout) {
+    return;
+  }
+  usdCadRateCacheFlushTimeout = setTimeout(() => {
+    usdCadRateCacheFlushTimeout = null;
+    flushUsdCadRateCacheSync();
+  }, 1000);
+  if (typeof usdCadRateCacheFlushTimeout.unref === 'function') {
+    usdCadRateCacheFlushTimeout.unref();
+  }
+}
+
+function updateUsdCadRateCache(key, value, { persist = true } = {}) {
+  if (!key || typeof key !== 'string') {
+    return;
+  }
+  let normalizedValue = null;
+  if (value === null) {
+    normalizedValue = null;
+  } else {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return;
+    }
+    normalizedValue = numeric;
+  }
+  const existing = usdCadRateCache.has(key) ? usdCadRateCache.get(key) : undefined;
+  if (existing === normalizedValue) {
+    return;
+  }
+  usdCadRateCache.set(key, normalizedValue);
+  if (persist) {
+    scheduleUsdCadRateCachePersist();
+  }
+}
+
+function loadUsdCadRateCacheFromDisk() {
+  if (usdCadRateCacheLoaded) {
+    return;
+  }
+  usdCadRateCacheLoaded = true;
+  try {
+    ensureFxCacheDir();
+    if (!fs.existsSync(USD_CAD_CACHE_FILE_PATH)) {
+      return;
+    }
+    const contents = fs.readFileSync(USD_CAD_CACHE_FILE_PATH, 'utf-8');
+    if (!contents) {
+      return;
+    }
+    const parsed = JSON.parse(contents);
+    const rawEntries = Array.isArray(parsed?.entries)
+      ? parsed.entries
+      : parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? Object.entries(parsed)
+      : [];
+    const initialSize = usdCadRateCache.size;
+    for (const entry of rawEntries) {
+      if (!entry) {
+        continue;
+      }
+      if (Array.isArray(entry)) {
+        const [entryKey, entryValue] = entry;
+        if (typeof entryKey === 'string') {
+          updateUsdCadRateCache(entryKey, entryValue, { persist: false });
+        }
+        continue;
+      }
+      if (typeof entry === 'object') {
+        const entryKey = typeof entry.key === 'string' ? entry.key : null;
+        if (!entryKey) {
+          continue;
+        }
+        updateUsdCadRateCache(entryKey, entry.value ?? null, { persist: false });
+      }
+    }
+    const loadedEntries = usdCadRateCache.size - initialSize;
+    if (loadedEntries > 0) {
+      console.log(`[FX] Loaded ${loadedEntries} cached USD/CAD rate entries from disk.`);
+    }
+  } catch (error) {
+    console.warn('[FX] Failed to load USD/CAD rate cache:', error?.message || String(error));
+  }
+}
+
+loadUsdCadRateCacheFromDisk();
+process.on('exit', flushUsdCadRateCacheSync);
 
 const activitiesMemoryCache = new Map();
 let activitiesCacheDirEnsured = false;
@@ -2564,8 +2704,6 @@ function resolveActivitySymbol(activity) {
   return '';
 }
 
-const usdCadRateCache = new Map();
-
 async function fetchLatestUsdToCadRate() {
   const providers = [
     async function awesomeApiProvider() {
@@ -2641,10 +2779,10 @@ async function fetchUsdToCadRate(date) {
     }
     const latestRate = await fetchLatestUsdToCadRate();
     if (Number.isFinite(latestRate) && latestRate > 0) {
-      usdCadRateCache.set(latestCacheKey, latestRate);
+      updateUsdCadRateCache(latestCacheKey, latestRate);
       return latestRate;
     }
-    usdCadRateCache.set(latestCacheKey, null);
+    updateUsdCadRateCache(latestCacheKey, null);
   }
 
   if (usdCadRateCache.has(keyDate)) {
@@ -2668,11 +2806,11 @@ async function fetchUsdToCadRate(date) {
   if (Array.isArray(observations) && observations.length > 0) {
     const value = Number(observations[0].value);
     if (Number.isFinite(value) && value > 0) {
-      usdCadRateCache.set(keyDate, value);
+      updateUsdCadRateCache(keyDate, value);
       return value;
     }
   }
-  usdCadRateCache.set(keyDate, null);
+  updateUsdCadRateCache(keyDate, null);
   return null;
 }
 
@@ -2703,9 +2841,9 @@ async function fetchUsdToCadRateRange(startDateKey, endDateKey) {
         }
         const value = Number(entry.value);
         if (Number.isFinite(value) && value > 0) {
-          usdCadRateCache.set(dateKey, value);
+          updateUsdCadRateCache(dateKey, value);
         } else if (!usdCadRateCache.has(dateKey)) {
-          usdCadRateCache.set(dateKey, null);
+          updateUsdCadRateCache(dateKey, null);
         }
       });
     }
@@ -2735,7 +2873,7 @@ async function ensureUsdToCadRates(dateKeys) {
       return;
     }
     if (lastKnown !== null) {
-      usdCadRateCache.set(key, lastKnown);
+      updateUsdCadRateCache(key, lastKnown);
     }
   });
 }
