@@ -13,6 +13,16 @@ const {
   summarizeAccountBalances,
 } = require('../index.js');
 
+function maskTokenForLog(token) {
+  if (!token || typeof token !== 'string') {
+    return '<missing>';
+  }
+  if (token.length <= 8) {
+    return token;
+  }
+  return token.slice(0, 4) + '…' + token.slice(-4);
+}
+
 function parseArgs(argv) {
   const options = {};
   const positional = [];
@@ -61,16 +71,41 @@ async function resolveAccountContext(identifier) {
     throw new Error('No Questrade logins available. Seed token-store.json before running this script.');
   }
 
+  console.log('[print-total-pnl] Loaded logins:',
+    logins.map((login) => `${login.id}:${maskTokenForLog(login.refreshToken)}`));
+
   const normalizedIdentifier = identifier ? identifier.toLowerCase() : null;
 
   for (const loginInfo of logins) {
     const login = getLoginById(loginInfo.id) || loginInfo;
+    console.log('[print-total-pnl] Fetching accounts for login', login.id, {
+      label: login.label || null,
+      email: login.email || null,
+      refreshToken: maskTokenForLog(login.refreshToken),
+    });
     let accounts;
     try {
       accounts = await fetchAccounts(login);
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
-      console.error('Failed to fetch accounts for login', login.id + ':', message);
+      const status = error && error.response ? error.response.status : null;
+      const headers = error && error.response ? error.response.headers : null;
+      const body = error && error.response ? error.response.data : null;
+      let bodyPreview = body;
+      if (typeof body === 'string') {
+        bodyPreview = body.slice(0, 500);
+      } else if (body && typeof body === 'object') {
+        try {
+          bodyPreview = JSON.stringify(body).slice(0, 500);
+        } catch (serializationError) {
+          bodyPreview = '[unable to serialize body]';
+        }
+      }
+      console.error('Failed to fetch accounts for login', login.id + ':', message, {
+        status,
+        headers,
+        bodyPreview,
+      });
       continue;
     }
 
@@ -105,6 +140,12 @@ async function resolveAccountContext(identifier) {
           id: account.id || accountNumber,
           loginId: login.id,
           number: accountNumber,
+        });
+        console.log('[print-total-pnl] Matched account', normalizedAccount.number, {
+          accountId: normalizedAccount.id,
+          loginId: login.id,
+          type: normalizedAccount.type || normalizedAccount.clientAccountType || null,
+          name: normalizedAccount.name || null,
         });
         return { login, account: normalizedAccount };
       }
@@ -148,8 +189,18 @@ async function main() {
   const context = await resolveAccountContext(identifier);
   const { login, account } = context;
 
+  console.log('[print-total-pnl] Using login/account combination', {
+    loginId: login.id,
+    loginLabel: login.label || null,
+    loginEmail: login.email || null,
+    accountId: account.id,
+    accountNumber: account.number,
+    refreshToken: maskTokenForLog(login.refreshToken),
+  });
+
   let balancesRaw;
   try {
+    console.log('[print-total-pnl] Fetching balances for account', account.number || account.id);
     balancesRaw = await fetchBalances(login, account.number || account.id);
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
@@ -159,6 +210,13 @@ async function main() {
 
   const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
   const perAccountCombinedBalances = { [account.id]: balanceSummary };
+
+  console.log('[print-total-pnl] Computing total P&L series', {
+    startDate,
+    endDate,
+    applyAccountCagrStartDate: keepCagrStart,
+    balanceKeys: Object.keys(balanceSummary || {}),
+  });
 
   const seriesOptions = {
     applyAccountCagrStartDate: keepCagrStart,
@@ -204,6 +262,9 @@ async function main() {
 
 main().catch((error) => {
   const message = error && error.message ? error.message : String(error);
-  console.error(message);
+  const status = error && error.response ? error.response.status : null;
+  const headers = error && error.response ? error.response.headers : null;
+  const request = error && error.request ? error.request : null;
+  console.error(message, { status, headers, request });
   process.exit(1);
 });

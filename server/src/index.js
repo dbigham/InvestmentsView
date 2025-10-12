@@ -1,10 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { CookieJar } = require('tough-cookie');
 const NodeCache = require('node-cache');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
+const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
+const { getProxyForUrl } = require('proxy-from-env');
 require('dotenv').config();
 const {
   getAccountNameOverrides,
@@ -39,6 +43,104 @@ const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const tokenCache = new NodeCache();
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
+const QUESTRADE_API_MAX_ATTEMPTS = 4;
+const QUESTRADE_API_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
+const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ECONNREFUSED',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+]);
+
+function maskTokenForLog(token) {
+  if (!token || typeof token !== 'string') {
+    return '<missing>';
+  }
+  if (token.length <= 8) {
+    return token;
+  }
+  return token.slice(0, 4) + '…' + token.slice(-4);
+}
+
+function summarizeCookieHeader(cookieHeader) {
+  if (!cookieHeader) {
+    return [];
+  }
+  if (Array.isArray(cookieHeader)) {
+    return cookieHeader
+      .map((cookie) => String(cookie).split(';')[0])
+      .map((pair) => pair.split('=')[0].trim())
+      .filter(Boolean);
+  }
+  return String(cookieHeader)
+    .split(';')
+    .map((pair) => pair.split('=')[0].trim())
+    .filter(Boolean);
+}
+
+function decodeResponseBody(buffer, encoding) {
+  if (!buffer) {
+    return '';
+  }
+  const normalized = String(encoding || '').toLowerCase();
+  try {
+    if (!normalized || normalized === 'identity') {
+      return buffer.toString('utf8');
+    }
+    if (normalized.includes('br')) {
+      return zlib.brotliDecompressSync(buffer).toString('utf8');
+    }
+    if (normalized.includes('gzip')) {
+      return zlib.gunzipSync(buffer).toString('utf8');
+    }
+    if (normalized.includes('deflate')) {
+      return zlib.inflateSync(buffer).toString('utf8');
+    }
+  } catch (error) {
+    console.warn('[Questrade][refresh] Failed to decode response body', {
+      message: error.message,
+      encoding: normalized,
+    });
+  }
+  return buffer.toString('utf8');
+}
+
+function collectSetCookieValues(value) {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return [value];
+}
+
+const dispatcherCache = new Map();
+
+function getDispatcherForUrl(targetUrl, { reuse = false } = {}) {
+  const proxyUri = getProxyForUrl(targetUrl);
+  if (!reuse) {
+    return {
+      dispatcher: proxyUri ? new UndiciProxyAgent({ uri: proxyUri }) : new UndiciAgent(),
+      proxyUri,
+      shouldClose: true,
+    };
+  }
+
+  const cacheKey = proxyUri || 'direct';
+  if (!dispatcherCache.has(cacheKey)) {
+    dispatcherCache.set(cacheKey, proxyUri ? new UndiciProxyAgent({ uri: proxyUri }) : new UndiciAgent());
+  }
+  return { dispatcher: dispatcherCache.get(cacheKey), proxyUri, shouldClose: false };
+}
 
 let yahooFinance = null;
 let yahooFinanceLoadError = null;
@@ -1113,6 +1215,11 @@ function updateLoginRefreshToken(login, nextRefreshToken) {
   if (!login || !nextRefreshToken || nextRefreshToken === login.refreshToken) {
     return;
   }
+  console.log(
+    '[Questrade][refresh] Persisting new refresh token for login',
+    resolveLoginDisplay(login),
+    '(' + maskTokenForLog(login.refreshToken) + ' → ' + maskTokenForLog(nextRefreshToken) + ')'
+  );
   login.refreshToken = nextRefreshToken;
   login.updatedAt = new Date().toISOString();
   persistTokenStore(tokenStoreState);
@@ -1124,22 +1231,140 @@ async function refreshAccessToken(login) {
   }
 
   const tokenUrl = 'https://login.questrade.com/oauth2/token';
-  const params = {
-    grant_type: 'refresh_token',
-    refresh_token: login.refreshToken,
+  const maxRedirects = 5;
+  const jar = new CookieJar();
+  const baseHeaders = {
+    'User-Agent': 'python-requests/2.32.5',
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Encoding': 'gzip, compress, deflate, br',
   };
 
-  let response;
+  const { dispatcher, proxyUri, shouldClose } = getDispatcherForUrl(tokenUrl);
+
+  console.log('[Questrade][refresh] Starting refresh for login', resolveLoginDisplay(login), {
+    token: maskTokenForLog(login.refreshToken),
+    proxy: proxyUri || false,
+  });
+
+  let responsePayload = null;
+  let currentUrl = tokenUrl;
+  let includeParams = true;
+
   try {
-    response = await axios.get(tokenUrl, { params });
-  } catch (error) {
-    const status = error.response ? error.response.status : 'NO_RESPONSE';
-    const payload = error.response ? error.response.data : error.message;
-    console.error('Failed to refresh Questrade token for login ' + resolveLoginDisplay(login), status, payload);
-    throw error;
+    for (let attempt = 0; attempt <= maxRedirects; attempt += 1) {
+      const requestUrlObj = new URL(currentUrl);
+      if (includeParams) {
+        requestUrlObj.searchParams.set('grant_type', 'refresh_token');
+        requestUrlObj.searchParams.set('refresh_token', login.refreshToken);
+      }
+      const requestUrl = requestUrlObj.toString();
+      const headers = { ...baseHeaders };
+      const cookieHeader = await jar.getCookieString(requestUrl);
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
+
+      console.log('[Questrade][refresh]', {
+        step: 'request',
+        attempt: attempt + 1,
+        url: requestUrl,
+        cookies: summarizeCookieHeader(headers.Cookie),
+      });
+
+      let rawResponse;
+      try {
+        rawResponse = await undiciRequest(requestUrl, {
+          method: 'GET',
+          headers,
+          dispatcher,
+        });
+      } catch (error) {
+        console.error('[Questrade][refresh] Network error during refresh', {
+          login: resolveLoginDisplay(login),
+          attempt: attempt + 1,
+          message: error.message,
+        });
+        throw error;
+      }
+
+      const headersObject = {};
+      Object.entries(rawResponse.headers || {}).forEach(([key, value]) => {
+        headersObject[key.toLowerCase()] = value;
+      });
+
+      const bodyBuffer = Buffer.from(await rawResponse.body.arrayBuffer());
+      const decodedBody = decodeResponseBody(bodyBuffer, headersObject['content-encoding']);
+      let data = decodedBody;
+      const contentType = headersObject['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        try {
+          data = JSON.parse(decodedBody || '{}');
+        } catch (parseError) {
+          console.warn('[Questrade][refresh] Failed to parse JSON response', {
+            message: parseError.message,
+          });
+        }
+      }
+
+      const status = rawResponse.statusCode;
+      const setCookieHeader = headersObject['set-cookie'];
+      const inboundCookieNames = summarizeCookieHeader(setCookieHeader);
+
+      console.log('[Questrade][refresh]', {
+        step: 'response',
+        attempt: attempt + 1,
+        status,
+        location: headersObject.location || null,
+        setCookies: inboundCookieNames,
+      });
+
+      for (const cookie of collectSetCookieValues(setCookieHeader)) {
+        try {
+          await jar.setCookie(cookie, requestUrl);
+        } catch (cookieError) {
+          console.warn('[Questrade][refresh] Failed to persist response cookie', {
+            message: cookieError.message,
+          });
+        }
+      }
+
+      if (status >= 300 && status < 400 && headersObject.location) {
+        const nextUrl = new URL(headersObject.location, requestUrl).toString();
+        console.log('[Questrade][refresh]', {
+          step: 'redirect',
+          attempt: attempt + 1,
+          nextUrl,
+        });
+        currentUrl = nextUrl;
+        includeParams = false;
+        continue;
+      }
+
+      responsePayload = {
+        status,
+        headers: headersObject,
+        data,
+      };
+      break;
+    }
+  } finally {
+    if (shouldClose && dispatcher && typeof dispatcher.close === 'function') {
+      try {
+        await dispatcher.close();
+      } catch (closeError) {
+        console.warn('[Questrade][refresh] Failed to close dispatcher', { message: closeError.message });
+      }
+    }
   }
 
-  const tokenData = response.data;
+  if (!responsePayload || responsePayload.status < 200 || responsePayload.status >= 300) {
+    const status = responsePayload ? responsePayload.status : 'NO_RESPONSE';
+    const payload = responsePayload ? responsePayload.data : null;
+    console.error('Failed to refresh Questrade token for login ' + resolveLoginDisplay(login), status, payload);
+    throw new Error('Unable to refresh Questrade token: ' + status);
+  }
+
+  const tokenData = responsePayload.data || {};
   const cacheTtl = Math.max((tokenData.expires_in || 1800) - 60, 60);
   const tokenContext = {
     accessToken: tokenData.access_token,
@@ -1150,9 +1375,16 @@ async function refreshAccessToken(login) {
   };
   tokenCache.set(getTokenCacheKey(login.id), tokenContext, cacheTtl);
 
-  if (tokenData.refresh_token && tokenData.refresh_token !== login.refreshToken) {
+  const refreshRotated = Boolean(tokenData.refresh_token && tokenData.refresh_token !== login.refreshToken);
+  if (refreshRotated) {
     updateLoginRefreshToken(login, tokenData.refresh_token);
   }
+
+  console.log('[Questrade][refresh] Completed refresh for login', resolveLoginDisplay(login), {
+    expiresIn: tokenData.expires_in,
+    apiServer: tokenData.api_server,
+    refreshTokenRotated: refreshRotated ? maskTokenForLog(tokenData.refresh_token) : false,
+  });
 
   return tokenContext;
 }
@@ -1161,60 +1393,299 @@ async function getTokenContext(login) {
   const cacheKey = getTokenCacheKey(login.id);
   const cached = tokenCache.get(cacheKey);
   if (cached) {
+    console.log('[Questrade][token-cache] Using cached access token for login', resolveLoginDisplay(login), {
+      acquiredAt: new Date(cached.acquiredAt).toISOString(),
+      expiresIn: cached.expiresIn,
+      apiServer: cached.apiServer,
+    });
     return cached;
   }
+  console.log('[Questrade][token-cache] Cache miss for login', resolveLoginDisplay(login));
   return refreshAccessToken(login);
+}
+
+function isRetryableStatus(status) {
+  if (!status) {
+    return false;
+  }
+  return QUESTRADE_API_RETRYABLE_STATUS.has(Number(status));
+}
+
+function isRetryableErrorCode(code) {
+  if (!code) {
+    return false;
+  }
+  return QUESTRADE_API_RETRYABLE_ERROR_CODES.has(String(code));
+}
+
+function isRetryableError(error) {
+  if (!error) {
+    return false;
+  }
+  if (isRetryableStatus(error?.response?.status)) {
+    return true;
+  }
+  if (isRetryableErrorCode(error.code)) {
+    return true;
+  }
+  if (!error.response && error.request) {
+    // Network-level failure without any response payload.
+    return true;
+  }
+  return false;
+}
+
+function computeRetryDelayMs(attempt) {
+  const clampedAttempt = Math.max(1, attempt);
+  const backoff = 500 * 2 ** (clampedAttempt - 1);
+  const capped = Math.min(backoff, 5000);
+  const jitter = Math.floor(Math.random() * 250);
+  return capped + jitter;
+}
+
+async function performUndiciApiRequest(config) {
+  if (!config || !config.url) {
+    throw new Error('Request configuration with URL is required');
+  }
+
+  const method = config.method || 'GET';
+  const headers = Object.assign(
+    {
+      'User-Agent': 'python-requests/2.32.5',
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Encoding': 'gzip, compress, deflate, br',
+    },
+    config.headers || {}
+  );
+
+  const requestUrl = new URL(config.url);
+  if (config.params && typeof config.params === 'object') {
+    for (const [key, value] of Object.entries(config.params)) {
+      if (value == null) {
+        continue;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((entry) => {
+          if (entry != null) {
+            requestUrl.searchParams.append(key, entry);
+          }
+        });
+        continue;
+      }
+      requestUrl.searchParams.set(key, value);
+    }
+  }
+
+  let body = null;
+  if (config.data !== undefined && config.data !== null) {
+    if (typeof config.data === 'string' || Buffer.isBuffer(config.data)) {
+      body = config.data;
+    } else {
+      let hasContentType = false;
+      for (const headerKey of Object.keys(headers)) {
+        if (headerKey.toLowerCase() === 'content-type') {
+          hasContentType = true;
+          break;
+        }
+      }
+      if (!hasContentType) {
+        headers['Content-Type'] = 'application/json';
+      }
+      body = JSON.stringify(config.data);
+    }
+  }
+
+  const initialUrl = requestUrl.toString();
+  const maxRedirects = Number.isFinite(config.maxRedirects) ? config.maxRedirects : 5;
+  let redirectCount = 0;
+  let currentUrl = initialUrl;
+
+  while (redirectCount <= maxRedirects) {
+    const { dispatcher } = getDispatcherForUrl(currentUrl, { reuse: true });
+
+    let rawResponse;
+    try {
+      rawResponse = await undiciRequest(currentUrl, {
+        method,
+        headers,
+        body,
+        dispatcher,
+      });
+    } catch (error) {
+      const networkError = error instanceof Error ? error : new Error(String(error));
+      if (networkError && networkError.cause && !networkError.code) {
+        networkError.code = networkError.cause.code;
+      }
+      networkError.request = {
+        method,
+        url: currentUrl,
+        headers,
+        bodyLength: body ? Buffer.byteLength(typeof body === 'string' ? body : String(body)) : 0,
+      };
+      throw networkError;
+    }
+
+    const headersObject = {};
+    Object.entries(rawResponse.headers || {}).forEach(([key, value]) => {
+      headersObject[key.toLowerCase()] = value;
+    });
+
+    const bodyBuffer = Buffer.from(await rawResponse.body.arrayBuffer());
+    const decodedBody = decodeResponseBody(bodyBuffer, headersObject['content-encoding']);
+
+    const statusCode = rawResponse.statusCode;
+    console.log('[Questrade][api] Response', {
+      url: currentUrl,
+      status: statusCode,
+      location: headersObject.location || null,
+    });
+    if (statusCode >= 300 && statusCode < 400 && headersObject.location) {
+      redirectCount += 1;
+      console.warn('[Questrade][api] Received redirect', {
+        status: statusCode,
+        location: headersObject.location,
+        attempt: redirectCount,
+        url: currentUrl,
+      });
+      if (redirectCount > maxRedirects) {
+        const redirectError = new Error('Maximum number of redirects exceeded for ' + config.url);
+        redirectError.response = {
+          status: statusCode,
+          headers: headersObject,
+          data: decodedBody,
+        };
+        redirectError.request = { method, url: currentUrl, headers };
+        throw redirectError;
+      }
+      currentUrl = new URL(headersObject.location, currentUrl).toString();
+      continue;
+    }
+
+    let parsedData = decodedBody;
+    const contentType = headersObject['content-type'] || '';
+    if (contentType.includes('application/json')) {
+      try {
+        parsedData = decodedBody ? JSON.parse(decodedBody) : null;
+      } catch (parseError) {
+        console.warn('[Questrade][api] Failed to parse JSON response', {
+          message: parseError.message,
+          url: currentUrl,
+        });
+      }
+    }
+
+    const responsePayload = {
+      status: statusCode,
+      headers: headersObject,
+      data: parsedData,
+    };
+
+    if (statusCode >= 200 && statusCode < 300) {
+      return responsePayload;
+    }
+
+    const error = new Error('Questrade API request failed with status ' + statusCode);
+    error.response = responsePayload;
+    error.request = { method, url: currentUrl, headers };
+    throw error;
+  }
+
+  throw new Error('Maximum number of redirects exceeded for ' + config.url);
 }
 
 async function questradeRequest(login, pathSegment, options = {}) {
   if (!login) {
     throw new Error('Questrade login context is required for API requests');
   }
-  const { method = 'GET', params, data, headers = {} } = options;
-  const tokenContext = await getTokenContext(login);
-  const url = new URL(pathSegment, tokenContext.apiServer).toString();
+  const { method = 'GET', params, data, headers = {}, maxAttempts } = options;
+  const attemptsLimit = Math.max(1, Number.isFinite(maxAttempts) ? maxAttempts : QUESTRADE_API_MAX_ATTEMPTS);
 
-  const baseConfig = {
-    method,
-    url,
-    params,
-    data,
-    headers: Object.assign(
-      {
-        Authorization: 'Bearer ' + tokenContext.accessToken,
-      },
-      headers
-    ),
-  };
+  let tokenContext = await getTokenContext(login);
+  let attempt = 0;
+  let lastError = null;
 
-  try {
-    const response = await enqueueRequest(() => axios(baseConfig));
-    return response.data;
-  } catch (error) {
-    if (error.response && error.response.status === 401) {
-      tokenCache.del(getTokenCacheKey(login.id));
-      const freshContext = await refreshAccessToken(login);
-      const retryConfig = {
+  while (attempt < attemptsLimit) {
+    attempt += 1;
+    const requestUrl = new URL(pathSegment, tokenContext.apiServer).toString();
+    const requestConfig = {
+      method,
+      url: requestUrl,
+      params,
+      data,
+      headers: Object.assign(
+        {
+          Authorization: 'Bearer ' + tokenContext.accessToken,
+        },
+        headers
+      ),
+    };
+
+    try {
+      const response = await enqueueRequest(() => performUndiciApiRequest(requestConfig));
+      return response.data;
+    } catch (error) {
+      lastError = error;
+      const status = error?.response?.status || null;
+      const responseHeaders = error?.response?.headers || null;
+      const responseData = error?.response?.data;
+      const bodyPreview =
+        typeof responseData === 'string'
+          ? responseData.slice(0, 500)
+          : responseData && typeof responseData === 'object'
+            ? JSON.stringify(responseData).slice(0, 500)
+            : responseData;
+
+      if (status === 401) {
+        console.warn('[Questrade][api] Received 401, refreshing token before retry', {
+          login: resolveLoginDisplay(login),
+          path: pathSegment,
+          attempt,
+        });
+        tokenCache.del(getTokenCacheKey(login.id));
+        tokenContext = await refreshAccessToken(login);
+        attempt -= 1; // Do not count the auth retry against the attempt budget.
+        continue;
+      }
+
+      const retryable = isRetryableError(error);
+      if (retryable && attempt < attemptsLimit) {
+        const delayMs = computeRetryDelayMs(attempt);
+        console.warn('[Questrade][api] Retrying request after recoverable error', {
+          login: resolveLoginDisplay(login),
+          method,
+          url: requestUrl,
+          status,
+          code: error.code || null,
+          attempt,
+          remainingAttempts: attemptsLimit - attempt,
+          delayMs,
+        });
+        await delay(delayMs);
+        continue;
+      }
+
+      console.error('[Questrade][api] Request failed', {
+        login: resolveLoginDisplay(login),
         method,
-        url: new URL(pathSegment, freshContext.apiServer).toString(),
-        params,
-        data,
-        headers: Object.assign(
-          {
-            Authorization: 'Bearer ' + freshContext.accessToken,
-          },
-          headers
-        ),
-      };
-      const retryResponse = await enqueueRequest(() => axios(retryConfig));
-      return retryResponse.data;
+        url: requestUrl,
+        status,
+        headers: responseHeaders,
+        bodyPreview,
+        attempt,
+        attemptsLimit,
+      });
+
+      if (status) {
+        error.message = 'Questrade API request failed with status ' + status + ' for ' + pathSegment;
+      }
+      break;
     }
-    console.error(
-      'Questrade API error for login ' + resolveLoginDisplay(login) + ':',
-      error.response ? error.response.data : error.message
-    );
-    throw error;
   }
+
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error('Questrade request failed without capturing an error');
 }
 
 async function fetchAccounts(login) {
@@ -2072,7 +2543,7 @@ async function fetchUsdToCadRate(date) {
   url.searchParams.set('api_key', apiKey);
   url.searchParams.set('file_type', 'json');
 
-  const response = await axios.get(url.toString());
+  const response = await performUndiciApiRequest({ url: url.toString() });
   const observations = response.data && response.data.observations;
   if (Array.isArray(observations) && observations.length > 0) {
     const value = Number(observations[0].value);
@@ -2099,7 +2570,7 @@ async function fetchUsdToCadRateRange(startDateKey, endDateKey) {
   url.searchParams.set('file_type', 'json');
 
   try {
-    const response = await axios.get(url.toString());
+    const response = await performUndiciApiRequest({ url: url.toString() });
     const observations = response.data && response.data.observations;
     if (Array.isArray(observations)) {
       observations.forEach((entry) => {
