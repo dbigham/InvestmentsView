@@ -3577,6 +3577,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     }
   }
 
+  const allTimeCashFlows = cashFlowEntries;
   let effectiveCashFlows = cashFlowEntries;
   let appliedCagrStartDate = null;
   let preCagrNetDepositsCad = null;
@@ -3637,6 +3638,10 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
       });
     }
   }
+
+  const annualizedReturnRateAllTime = !conversionIncomplete
+    ? computeAccountAnnualizedReturn(allTimeCashFlows, accountKey)
+    : null;
 
   const annualizedReturnRate = !conversionIncomplete
     ? computeAccountAnnualizedReturn(effectiveCashFlows, accountKey)
@@ -3702,6 +3707,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   }
 
   let annualizedReturn = undefined;
+  let annualizedReturnAllTime = undefined;
   if (Number.isFinite(annualizedReturnRate)) {
     annualizedReturn = {
       rate: annualizedReturnRate,
@@ -3721,6 +3727,27 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
 
   if (annualizedReturn && appliedCagrStartDate) {
     annualizedReturn.startDate = appliedCagrStartDate.toISOString().slice(0, 10);
+  }
+
+  if (Number.isFinite(annualizedReturnRateAllTime)) {
+    annualizedReturnAllTime = {
+      rate: annualizedReturnRateAllTime,
+      method: 'xirr',
+      cashFlowCount: allTimeCashFlows.length,
+      asOf: nowIsoString,
+      incomplete: incompleteReturnData || undefined,
+    };
+  } else if (incompleteReturnData && allTimeCashFlows.length > 0) {
+    annualizedReturnAllTime = {
+      method: 'xirr',
+      cashFlowCount: allTimeCashFlows.length,
+      asOf: nowIsoString,
+      incomplete: true,
+    };
+  }
+
+  if (annualizedReturnAllTime && originalPeriodStartDate instanceof Date) {
+    annualizedReturnAllTime.startDate = originalPeriodStartDate.toISOString().slice(0, 10);
   }
 
   let normalizedPeriodStart = null;
@@ -3762,6 +3789,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     },
     totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
     annualizedReturn,
+    annualizedReturnAllTime,
     returnBreakdown: returnBreakdown.length ? returnBreakdown : undefined,
     cashFlowsCad: effectiveCashFlows.length > 0 ? effectiveCashFlows : undefined,
     adjustments:
@@ -6070,6 +6098,12 @@ app.get('/api/summary', async function (req, res) {
         if (fundingSummary.annualizedReturn && fundingSummary.annualizedReturn.incomplete) {
           aggregateTotals.incomplete = true;
         }
+        if (
+          fundingSummary.annualizedReturnAllTime &&
+          fundingSummary.annualizedReturnAllTime.incomplete
+        ) {
+          aggregateTotals.incomplete = true;
+        }
       });
 
       const aggregateEntry = {};
@@ -6136,20 +6170,24 @@ app.get('/api/summary', async function (req, res) {
           }
         }
         if (Number.isFinite(aggregateRate)) {
-          aggregateEntry.annualizedReturn = {
+          const aggregateAnnualized = {
             rate: aggregateRate,
             method: 'xirr',
             cashFlowCount: aggregateTotals.cashFlowsCad.length,
             asOf: aggregateAsOf,
             incomplete: aggregateTotals.incomplete || undefined,
           };
+          aggregateEntry.annualizedReturn = aggregateAnnualized;
+          aggregateEntry.annualizedReturnAllTime = Object.assign({}, aggregateAnnualized);
         } else if (aggregateTotals.incomplete) {
-          aggregateEntry.annualizedReturn = {
+          const incompleteAnnualized = {
             method: 'xirr',
             cashFlowCount: aggregateTotals.cashFlowsCad.length,
             asOf: aggregateAsOf,
             incomplete: true,
           };
+          aggregateEntry.annualizedReturn = incompleteAnnualized;
+          aggregateEntry.annualizedReturnAllTime = Object.assign({}, incompleteAnnualized);
         }
         const aggregateBreakdown = computeReturnBreakdownFromCashFlows(
           aggregateTotals.cashFlowsCad,

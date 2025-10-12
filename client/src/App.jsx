@@ -3423,17 +3423,17 @@ export default function App() {
       return trimmed || null;
     };
 
-    const annualizedReturn = selectedAccountFunding?.annualizedReturn || null;
-    const annualizedReturnRate = isFiniteNumber(annualizedReturn?.rate) ? annualizedReturn.rate : null;
-    const annualizedReturnAsOf =
-      typeof annualizedReturn?.asOf === 'string' && annualizedReturn.asOf.trim()
-        ? annualizedReturn.asOf.trim()
-        : null;
-    const annualizedReturnIncomplete = annualizedReturn?.incomplete === true;
-    const annualizedReturnStartDate =
-      typeof annualizedReturn?.startDate === 'string' && annualizedReturn.startDate.trim()
-        ? annualizedReturn.startDate.trim()
-        : null;
+    const extractAnnualizedDetails = (rawValue) => {
+      if (!rawValue || typeof rawValue !== 'object') {
+        return null;
+      }
+      const rate = isFiniteNumber(rawValue.rate) ? rawValue.rate : null;
+      const asOf =
+        typeof rawValue.asOf === 'string' && rawValue.asOf.trim() ? rawValue.asOf.trim() : null;
+      const startDate = normalizeDate(rawValue.startDate);
+      const incomplete = rawValue.incomplete === true;
+      return { rate, asOf, startDate, incomplete };
+    };
 
     const returnBreakdown = Array.isArray(selectedAccountFunding?.returnBreakdown)
       ? selectedAccountFunding.returnBreakdown.filter((entry) => entry && typeof entry === 'object')
@@ -3446,10 +3446,6 @@ export default function App() {
 
     const baseSummary = {
       totalEquityCad,
-      annualizedReturnRate,
-      annualizedReturnAsOf,
-      annualizedReturnIncomplete,
-      annualizedReturnStartDate,
       returnBreakdown,
       periodEndDate,
     };
@@ -3462,11 +3458,33 @@ export default function App() {
       : null;
     const effectivePeriodStart = normalizeDate(selectedAccountFunding?.periodStartDate);
 
+    const normalizedOriginalPeriodStart =
+      normalizeDate(selectedAccountFunding?.originalPeriodStartDate) || null;
+
+    const effectiveAnnualizedRaw = extractAnnualizedDetails(selectedAccountFunding?.annualizedReturn);
+    const allTimeAnnualizedRaw = extractAnnualizedDetails(
+      selectedAccountFunding?.annualizedReturnAllTime
+    );
+
+    const effectiveAnnualized = {
+      rate: effectiveAnnualizedRaw?.rate ?? null,
+      asOf: effectiveAnnualizedRaw?.asOf ?? null,
+      incomplete:
+        typeof effectiveAnnualizedRaw?.incomplete === 'boolean'
+          ? effectiveAnnualizedRaw.incomplete
+          : false,
+      startDate: effectiveAnnualizedRaw?.startDate ?? effectivePeriodStart ?? null,
+    };
+
     const effectiveVariant = {
       ...baseSummary,
       netDepositsCad: effectiveNetDeposits,
       totalPnlCad: effectiveTotalPnl,
       periodStartDate: effectivePeriodStart,
+      annualizedReturnRate: effectiveAnnualized.rate,
+      annualizedReturnAsOf: effectiveAnnualized.asOf,
+      annualizedReturnIncomplete: effectiveAnnualized.incomplete,
+      annualizedReturnStartDate: effectiveAnnualized.startDate,
     };
 
     const allTimeNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
@@ -3476,13 +3494,32 @@ export default function App() {
       ? selectedAccountFunding.totalPnl.allTimeCad
       : effectiveVariant.totalPnlCad;
     const allTimePeriodStart =
-      normalizeDate(selectedAccountFunding?.originalPeriodStartDate) || effectiveVariant.periodStartDate;
+      normalizedOriginalPeriodStart || effectiveVariant.periodStartDate;
+
+    const allTimeAnnualized = {
+      rate: allTimeAnnualizedRaw?.rate ?? effectiveAnnualized.rate ?? null,
+      asOf: allTimeAnnualizedRaw?.asOf ?? effectiveAnnualized.asOf ?? null,
+      incomplete:
+        typeof allTimeAnnualizedRaw?.incomplete === 'boolean'
+          ? allTimeAnnualizedRaw.incomplete
+          : effectiveAnnualized.incomplete,
+      startDate:
+        allTimeAnnualizedRaw?.startDate ??
+        normalizedOriginalPeriodStart ??
+        effectiveAnnualized.startDate ??
+        allTimePeriodStart ??
+        null,
+    };
 
     const allTimeVariant = {
       ...baseSummary,
       netDepositsCad: allTimeNetDeposits,
       totalPnlCad: allTimeTotalPnl,
       periodStartDate: allTimePeriodStart,
+      annualizedReturnRate: allTimeAnnualized.rate,
+      annualizedReturnAsOf: allTimeAnnualized.asOf,
+      annualizedReturnIncomplete: allTimeAnnualized.incomplete,
+      annualizedReturnStartDate: allTimeAnnualized.startDate,
     };
 
     const rawCagrStartDate =
