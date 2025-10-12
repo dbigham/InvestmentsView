@@ -160,7 +160,8 @@ function printSeriesPreview(points, count) {
     console.log('No data points available.');
     return;
   }
-  const preview = points.slice(-count);
+  const normalizedCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : points.length;
+  const preview = points.slice(0, normalizedCount);
   console.log('Date       | Net Deposits | Equity CAD | Total P&L');
   console.log('-----------+--------------+------------+-----------');
   preview.forEach((point) => {
