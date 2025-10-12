@@ -1849,6 +1849,8 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
   return result;
 }
 
+const PLAIN_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 function parseDateOnlyString(value) {
   if (typeof value !== 'string') {
     return null;
@@ -1857,11 +1859,20 @@ function parseDateOnlyString(value) {
   if (!trimmed) {
     return null;
   }
-  const parsed = new Date(`${trimmed}T00:00:00Z`);
+
+  let parsed;
+  const plainMatch = PLAIN_DATE_PATTERN.exec(trimmed);
+  if (plainMatch) {
+    parsed = new Date(`${trimmed}T00:00:00Z`);
+  } else {
+    parsed = new Date(trimmed);
+  }
+
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
-  return parsed;
+
+  return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
 }
 
 function parseCashFlowEntryDate(entry) {
