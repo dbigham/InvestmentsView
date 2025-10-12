@@ -3874,6 +3874,89 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
+  let baselineCagrAdjustment = null;
+  if (
+    netDepositOptions.applyAccountCagrStartDate !== false &&
+    typeof displayStartIso === 'string' &&
+    displayStartIso &&
+    typeof cagrStartDate === 'string' &&
+    points.length > 0
+  ) {
+    const baselineIndex = points.findIndex(function (point) {
+      return point && typeof point.date === 'string' && point.date === displayStartIso;
+    });
+    if (baselineIndex >= 0) {
+      const baselinePoint = points[baselineIndex];
+      const baselineEquityCandidate = baselinePoint ? Number(baselinePoint.equityCad) : null;
+      const baselineNetDepositsCandidate = baselinePoint
+        ? Number(baselinePoint.cumulativeNetDepositsCad)
+        : null;
+      let baselineTotalPnlCandidate = baselinePoint ? Number(baselinePoint.totalPnlCad) : null;
+      if (!Number.isFinite(baselineTotalPnlCandidate)) {
+        if (Number.isFinite(baselineEquityCandidate) && Number.isFinite(baselineNetDepositsCandidate)) {
+          baselineTotalPnlCandidate = baselineEquityCandidate - baselineNetDepositsCandidate;
+        }
+      }
+      if (Number.isFinite(baselineTotalPnlCandidate) && Math.abs(baselineTotalPnlCandidate) >= CASH_FLOW_EPSILON) {
+        baselineCagrAdjustment = baselineTotalPnlCandidate;
+        for (let i = baselineIndex; i < points.length; i += 1) {
+          const point = points[i];
+          if (!point || typeof point !== 'object') {
+            continue;
+          }
+          if (Number.isFinite(point.cumulativeNetDepositsCad)) {
+            const adjustedDeposits = point.cumulativeNetDepositsCad + baselineCagrAdjustment;
+            point.cumulativeNetDepositsCad =
+              Math.abs(adjustedDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedDeposits;
+          }
+          if (Number.isFinite(point.totalPnlCad)) {
+            const adjustedPnl = point.totalPnlCad - baselineCagrAdjustment;
+            point.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
+          } else if (
+            Number.isFinite(point.equityCad) &&
+            Number.isFinite(point.cumulativeNetDepositsCad)
+          ) {
+            const derivedPnl = point.equityCad - point.cumulativeNetDepositsCad;
+            point.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+          }
+        }
+
+        if (
+          netDepositsSummary.netDeposits &&
+          Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
+        ) {
+          const adjustedNetDeposits = netDepositsSummary.netDeposits.combinedCad + baselineCagrAdjustment;
+          netDepositsSummary.netDeposits.combinedCad =
+            Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
+        }
+        if (netDepositsSummary.totalPnl) {
+          if (Number.isFinite(netDepositsSummary.totalPnl.combinedCad)) {
+            let recalculatedTotalPnl = netDepositsSummary.totalPnl.combinedCad - baselineCagrAdjustment;
+            if (
+              Number.isFinite(netDepositsSummary.totalEquityCad) &&
+              netDepositsSummary.netDeposits &&
+              Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
+            ) {
+              recalculatedTotalPnl =
+                netDepositsSummary.totalEquityCad - netDepositsSummary.netDeposits.combinedCad;
+            }
+            netDepositsSummary.totalPnl.combinedCad =
+              Math.abs(recalculatedTotalPnl) < CASH_FLOW_EPSILON ? 0 : recalculatedTotalPnl;
+          } else if (
+            Number.isFinite(netDepositsSummary.totalEquityCad) &&
+            netDepositsSummary.netDeposits &&
+            Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
+          ) {
+            const derivedTotalPnl =
+              netDepositsSummary.totalEquityCad - netDepositsSummary.netDeposits.combinedCad;
+            netDepositsSummary.totalPnl.combinedCad =
+              Math.abs(derivedTotalPnl) < CASH_FLOW_EPSILON ? 0 : derivedTotalPnl;
+          }
+        }
+      }
+    }
+  }
+
   const summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
     ? netDepositsSummary.totalPnl.combinedCad
     : null;
@@ -3940,19 +4023,21 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       ? rebasedPoints[0].totalPnlCad
       : null;
     rebasedPoints.forEach((entry, index) => {
+      const originalTotalPnl = Number.isFinite(entry.totalPnlCad) ? entry.totalPnlCad : null;
       if (baselineNetDeposits !== null && Number.isFinite(entry.cumulativeNetDepositsCad)) {
         const adjustedNetDeposits = entry.cumulativeNetDepositsCad - baselineNetDeposits;
         entry.cumulativeNetDepositsCad =
           Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-        if (Number.isFinite(entry.equityCad)) {
+        if (originalTotalPnl !== null) {
+          const adjustedPnl =
+            baselineTotalPnl !== null ? originalTotalPnl - baselineTotalPnl : originalTotalPnl;
+          entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
+        } else if (Number.isFinite(entry.equityCad)) {
           const derivedPnl = entry.equityCad - entry.cumulativeNetDepositsCad;
           entry.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
-        } else if (baselineTotalPnl !== null && Number.isFinite(entry.totalPnlCad)) {
-          const adjustedPnl = entry.totalPnlCad - baselineTotalPnl;
-          entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
         }
-      } else if (baselineTotalPnl !== null && Number.isFinite(entry.totalPnlCad)) {
-        const adjustedPnl = entry.totalPnlCad - baselineTotalPnl;
+      } else if (baselineTotalPnl !== null && originalTotalPnl !== null) {
+        const adjustedPnl = originalTotalPnl - baselineTotalPnl;
         entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
       }
       if (index === 0) {
