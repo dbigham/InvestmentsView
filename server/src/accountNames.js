@@ -346,42 +346,51 @@ function applyIgnoreSittingCashSetting(target, key, value) {
   container.ignoreSittingCash = rounded;
 }
 
+const PLAIN_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
   }
+
+  let parsed = null;
+
   if (value instanceof Date) {
     const time = value.getTime();
-    if (Number.isNaN(time)) {
-      return null;
+    if (!Number.isNaN(time)) {
+      parsed = new Date(time);
     }
-    return new Date(time).toISOString().slice(0, 10);
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  } else if (typeof value === 'number' && Number.isFinite(value)) {
     const derived = new Date(value);
-    if (Number.isNaN(derived.getTime())) {
-      return null;
+    if (!Number.isNaN(derived.getTime())) {
+      parsed = derived;
     }
-    return derived.toISOString().slice(0, 10);
-  }
-  if (typeof value === 'string') {
+  } else if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!trimmed) {
       return null;
     }
-    const parsed = new Date(`${trimmed}T00:00:00Z`);
-    if (Number.isNaN(parsed.getTime())) {
-      return null;
+    const plainMatch = PLAIN_DATE_PATTERN.exec(trimmed);
+    const raw = plainMatch ? `${trimmed}T00:00:00Z` : trimmed;
+    const derived = new Date(raw);
+    if (!Number.isNaN(derived.getTime())) {
+      parsed = derived;
     }
-    return parsed.toISOString().slice(0, 10);
-  }
-  if (typeof value === 'object') {
+  } else if (typeof value === 'object') {
     if (Object.prototype.hasOwnProperty.call(value, 'date')) {
       return normalizeDateOnly(value.date);
     }
     return null;
   }
-  return null;
+
+  if (!(parsed instanceof Date) || Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const normalized = new Date(
+    Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate())
+  );
+  return normalized.toISOString().slice(0, 10);
 }
 
 function applyLastRebalanceSetting(target, key, value) {
