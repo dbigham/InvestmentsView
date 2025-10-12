@@ -3874,7 +3874,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
-  let baselineCagrAdjustment = null;
+  let baselineEquityInjection = null;
   if (
     netDepositOptions.applyAccountCagrStartDate !== false &&
     typeof displayStartIso === 'string' &&
@@ -3897,27 +3897,49 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           baselineTotalPnlCandidate = baselineEquityCandidate - baselineNetDepositsCandidate;
         }
       }
-      if (Number.isFinite(baselineTotalPnlCandidate) && Math.abs(baselineTotalPnlCandidate) >= CASH_FLOW_EPSILON) {
-        baselineCagrAdjustment = baselineTotalPnlCandidate;
+      const baselineEquity = Number.isFinite(baselineEquityCandidate) ? baselineEquityCandidate : null;
+      const baselineNetDeposits = Number.isFinite(baselineNetDepositsCandidate)
+        ? baselineNetDepositsCandidate
+        : null;
+      const baselineTotalPnl = Number.isFinite(baselineTotalPnlCandidate)
+        ? baselineTotalPnlCandidate
+        : baselineEquity !== null && baselineNetDeposits !== null
+          ? baselineEquity - baselineNetDeposits
+          : null;
+      if (baselineEquity !== null && baselineNetDeposits !== null) {
+        baselineEquityInjection = baselineEquity;
+
         for (let i = baselineIndex; i < points.length; i += 1) {
           const point = points[i];
           if (!point || typeof point !== 'object') {
             continue;
           }
-          if (Number.isFinite(point.cumulativeNetDepositsCad)) {
-            const adjustedDeposits = point.cumulativeNetDepositsCad + baselineCagrAdjustment;
+
+          const originalNetDeposits = Number.isFinite(point.cumulativeNetDepositsCad)
+            ? point.cumulativeNetDepositsCad
+            : null;
+
+          if (originalNetDeposits !== null) {
+            const adjustedDeposits = originalNetDeposits - baselineNetDeposits + baselineEquity;
             point.cumulativeNetDepositsCad =
               Math.abs(adjustedDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedDeposits;
-          }
-          if (Number.isFinite(point.totalPnlCad)) {
-            const adjustedPnl = point.totalPnlCad - baselineCagrAdjustment;
+            if (Number.isFinite(point.equityCad)) {
+              const derivedPnl = point.equityCad - point.cumulativeNetDepositsCad;
+              point.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+            } else if (baselineTotalPnl !== null && Number.isFinite(point.totalPnlCad)) {
+              const adjustedPnl = point.totalPnlCad - baselineTotalPnl;
+              point.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
+            }
+          } else if (baselineTotalPnl !== null && Number.isFinite(point.totalPnlCad)) {
+            const adjustedPnl = point.totalPnlCad - baselineTotalPnl;
             point.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
-          } else if (
-            Number.isFinite(point.equityCad) &&
-            Number.isFinite(point.cumulativeNetDepositsCad)
-          ) {
-            const derivedPnl = point.equityCad - point.cumulativeNetDepositsCad;
-            point.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+          }
+
+          if (i === baselineIndex) {
+            point.cumulativeNetDepositsCad = baselineEquity;
+            if (Number.isFinite(point.totalPnlCad)) {
+              point.totalPnlCad = 0;
+            }
           }
         }
 
@@ -3925,24 +3947,13 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           netDepositsSummary.netDeposits &&
           Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
         ) {
-          const adjustedNetDeposits = netDepositsSummary.netDeposits.combinedCad + baselineCagrAdjustment;
+          const adjustedNetDeposits = netDepositsSummary.netDeposits.combinedCad + baselineEquity;
           netDepositsSummary.netDeposits.combinedCad =
             Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
         }
+
         if (netDepositsSummary.totalPnl) {
-          if (Number.isFinite(netDepositsSummary.totalPnl.combinedCad)) {
-            let recalculatedTotalPnl = netDepositsSummary.totalPnl.combinedCad - baselineCagrAdjustment;
-            if (
-              Number.isFinite(netDepositsSummary.totalEquityCad) &&
-              netDepositsSummary.netDeposits &&
-              Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
-            ) {
-              recalculatedTotalPnl =
-                netDepositsSummary.totalEquityCad - netDepositsSummary.netDeposits.combinedCad;
-            }
-            netDepositsSummary.totalPnl.combinedCad =
-              Math.abs(recalculatedTotalPnl) < CASH_FLOW_EPSILON ? 0 : recalculatedTotalPnl;
-          } else if (
+          if (
             Number.isFinite(netDepositsSummary.totalEquityCad) &&
             netDepositsSummary.netDeposits &&
             Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
@@ -3951,7 +3962,39 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
               netDepositsSummary.totalEquityCad - netDepositsSummary.netDeposits.combinedCad;
             netDepositsSummary.totalPnl.combinedCad =
               Math.abs(derivedTotalPnl) < CASH_FLOW_EPSILON ? 0 : derivedTotalPnl;
+          } else if (
+            baselineTotalPnl !== null &&
+            Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+          ) {
+            const adjustedTotalPnl = netDepositsSummary.totalPnl.combinedCad - baselineTotalPnl;
+            netDepositsSummary.totalPnl.combinedCad =
+              Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
           }
+        } else if (
+          Number.isFinite(netDepositsSummary.totalEquityCad) &&
+          netDepositsSummary.netDeposits &&
+          Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
+        ) {
+          const derivedTotalPnl =
+            netDepositsSummary.totalEquityCad - netDepositsSummary.netDeposits.combinedCad;
+          const preservedAllTime =
+            netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
+              ? netDepositsSummary.totalPnl.allTimeCad
+              : undefined;
+          netDepositsSummary.totalPnl = {
+            combinedCad: Math.abs(derivedTotalPnl) < CASH_FLOW_EPSILON ? 0 : derivedTotalPnl,
+          };
+          if (preservedAllTime !== undefined) {
+            netDepositsSummary.totalPnl.allTimeCad = preservedAllTime;
+          }
+        }
+
+        if (baselineEquityInjection !== null) {
+          netDepositsSummary.metadata = Object.assign({}, netDepositsSummary.metadata, {
+            baselineEquityInjectedCad: baselineEquityInjection,
+            baselineNetDepositsCad: baselineNetDeposits,
+            baselineTotalPnlCad: baselineTotalPnl,
+          });
         }
       }
     }
@@ -4016,35 +4059,52 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const rebasedPoints = filteredPoints.map((point) => ({ ...point }));
   if (cagrStartDate && displayStartDate && rebasedPoints.length) {
+    const baselineEquity = Number.isFinite(rebasedPoints[0].equityCad)
+      ? rebasedPoints[0].equityCad
+      : null;
     const baselineNetDeposits = Number.isFinite(rebasedPoints[0].cumulativeNetDepositsCad)
       ? rebasedPoints[0].cumulativeNetDepositsCad
       : null;
     const baselineTotalPnl = Number.isFinite(rebasedPoints[0].totalPnlCad)
       ? rebasedPoints[0].totalPnlCad
-      : null;
+      : baselineEquity !== null && baselineNetDeposits !== null
+        ? baselineEquity - baselineNetDeposits
+        : null;
+
     rebasedPoints.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+
       const originalTotalPnl = Number.isFinite(entry.totalPnlCad) ? entry.totalPnlCad : null;
-      if (baselineNetDeposits !== null && Number.isFinite(entry.cumulativeNetDepositsCad)) {
-        const adjustedNetDeposits = entry.cumulativeNetDepositsCad - baselineNetDeposits;
+      const originalNetDeposits = Number.isFinite(entry.cumulativeNetDepositsCad)
+        ? entry.cumulativeNetDepositsCad
+        : null;
+
+      if (baselineEquity !== null && baselineNetDeposits !== null && originalNetDeposits !== null) {
+        const adjustedNetDeposits = originalNetDeposits - baselineNetDeposits + baselineEquity;
         entry.cumulativeNetDepositsCad =
           Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-        if (originalTotalPnl !== null) {
-          const adjustedPnl =
-            baselineTotalPnl !== null ? originalTotalPnl - baselineTotalPnl : originalTotalPnl;
-          entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
-        } else if (Number.isFinite(entry.equityCad)) {
-          const derivedPnl = entry.equityCad - entry.cumulativeNetDepositsCad;
-          entry.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
-        }
+      }
+
+      if (Number.isFinite(entry.equityCad) && Number.isFinite(entry.cumulativeNetDepositsCad)) {
+        const derivedPnl = entry.equityCad - entry.cumulativeNetDepositsCad;
+        entry.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
       } else if (baselineTotalPnl !== null && originalTotalPnl !== null) {
         const adjustedPnl = originalTotalPnl - baselineTotalPnl;
         entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
       }
+
       if (index === 0) {
-        if (Number.isFinite(entry.cumulativeNetDepositsCad)) {
-          entry.cumulativeNetDepositsCad = 0;
+        if (baselineEquity !== null) {
+          entry.cumulativeNetDepositsCad = baselineEquity;
         }
         if (Number.isFinite(entry.totalPnlCad)) {
+          entry.totalPnlCad = 0;
+        } else if (
+          Number.isFinite(entry.equityCad) &&
+          Number.isFinite(entry.cumulativeNetDepositsCad)
+        ) {
           entry.totalPnlCad = 0;
         }
       }
