@@ -3530,6 +3530,8 @@ export default function App() {
     if (lastAccountForRange.current === currentAccount) {
       if (!cagrStartDate && totalPnlRange !== 'all') {
         setTotalPnlRange('all');
+      } else if (cagrStartDate && totalPnlRange !== 'cagr') {
+        setTotalPnlRange('cagr');
       }
       return;
     }

@@ -3668,43 +3668,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
   }
 
   const pendingPromise = execute()
-    .then(async (result) => {
-      try {
-        const applyCagr = Object.prototype.hasOwnProperty.call(options, 'applyAccountCagrStartDate')
-          ? !!options.applyAccountCagrStartDate
-          : true;
-        const cagrStartDate = applyCagr && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
-          ? account.cagrStartDate.trim()
-          : null;
-        if (
-          result &&
-          applyCagr &&
-          cagrStartDate &&
-          result.netDeposits && Number.isFinite(result.netDeposits.combinedCad) &&
-          Number.isFinite(result.totalEquityCad)
-        ) {
-          const singleDaySeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
-            applyAccountCagrStartDate: false,
-            startDate: cagrStartDate,
-            endDate: cagrStartDate,
-            activityContext,
-          });
-          const startEquity =
-            singleDaySeries && Array.isArray(singleDaySeries.points) && singleDaySeries.points.length > 0
-              ? Number(singleDaySeries.points[0].equityCad)
-              : null;
-          if (Number.isFinite(startEquity)) {
-            const adjustedNetDeposits = result.netDeposits.combinedCad + startEquity;
-            const adjustedTotalPnl = result.totalEquityCad - adjustedNetDeposits;
-            result.netDeposits.combinedCad = Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-            if (result.totalPnl && Number.isFinite(result.totalPnl.combinedCad)) {
-              result.totalPnl.combinedCad = Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
-            }
-          }
-        }
-      } catch (_) {
-        // ignore adjustment failures, keep original result
-      }
+    .then((result) => {
       setNetDepositsCacheEntry(cacheKey, result);
       return result;
     })
