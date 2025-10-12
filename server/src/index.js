@@ -3548,7 +3548,51 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
   }
 
   const pendingPromise = execute()
-    .then((result) => {
+    .then(async (result) => {
+      try {
+        const applyCagr = Object.prototype.hasOwnProperty.call(options, 'applyAccountCagrStartDate')
+          ? !!options.applyAccountCagrStartDate
+          : true;
+        const cagrStartDate =
+          applyCagr && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
+            ? account.cagrStartDate.trim()
+            : null;
+        if (
+          result &&
+          applyCagr &&
+          cagrStartDate &&
+          result.netDeposits &&
+          Number.isFinite(result.netDeposits.combinedCad) &&
+          Number.isFinite(result.totalEquityCad)
+        ) {
+          const singleDaySeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
+            applyAccountCagrStartDate: false,
+            startDate: cagrStartDate,
+            endDate: cagrStartDate,
+            activityContext,
+          });
+          const startPoint =
+            singleDaySeries && Array.isArray(singleDaySeries.points) && singleDaySeries.points.length
+              ? singleDaySeries.points[0]
+              : null;
+          const startEquity =
+            startPoint && Number.isFinite(Number(startPoint.equityCad)) ? Number(startPoint.equityCad) : null;
+          if (Number.isFinite(startEquity)) {
+            const adjustedNetDeposits = result.netDeposits.combinedCad + startEquity;
+            result.netDeposits.combinedCad =
+              Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
+            if (result.totalPnl && Number.isFinite(result.totalPnl.combinedCad)) {
+              const adjustedTotalPnl = result.totalEquityCad - result.netDeposits.combinedCad;
+              result.totalPnl.combinedCad =
+                Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
+            }
+          }
+        }
+      } catch (adjustmentError) {
+        const adjustmentMessage =
+          adjustmentError && adjustmentError.message ? adjustmentError.message : String(adjustmentError);
+        debugTotalPnl(account.id || account.number || 'unknown', 'CAGR adjustment failed', adjustmentMessage);
+      }
       setNetDepositsCacheEntry(cacheKey, result);
       return result;
     })
@@ -4309,14 +4353,15 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
-  const summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
-    ? netDepositsSummary.totalPnl.combinedCad
-    : null;
+  let summaryTotalPnl =
+    netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+      ? netDepositsSummary.totalPnl.combinedCad
+      : null;
   const summaryTotalPnlAllTime =
     netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
       ? netDepositsSummary.totalPnl.allTimeCad
       : summaryTotalPnl;
-  const summaryNetDeposits =
+  let summaryNetDeposits =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
       ? netDepositsSummary.netDeposits.combinedCad
       : null;
@@ -4366,6 +4411,16 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       })
     : points;
 
+  const baselinePoint = filteredPoints.length ? filteredPoints[0] : null;
+  const baselineEquity =
+    baselinePoint && Number.isFinite(Number(baselinePoint.equityCad))
+      ? Number(baselinePoint.equityCad)
+      : null;
+  const baselineTotalPnl =
+    baselinePoint && Number.isFinite(Number(baselinePoint.totalPnlCad))
+      ? Number(baselinePoint.totalPnlCad)
+      : null;
+
   const rebasedPoints = filteredPoints.map((point) => ({ ...point }));
   if (cagrStartDate && displayStartDate && rebasedPoints.length) {
     const baselineNetDeposits = Number.isFinite(rebasedPoints[0].cumulativeNetDepositsCad)
@@ -4403,6 +4458,25 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const effectivePeriodStart = rebasedPoints.length ? rebasedPoints[0].date : dateKeys[0];
   const effectivePeriodEnd = rebasedPoints.length ? rebasedPoints[rebasedPoints.length - 1].date : dateKeys[dateKeys.length - 1];
+
+  const shouldApplyBaseline =
+    options.applyAccountCagrStartDate !== false &&
+    cagrStartDate &&
+    displayStartDate &&
+    summaryNetDeposits !== null &&
+    Number.isFinite(baselineEquity);
+
+  if (shouldApplyBaseline) {
+    const adjustedNetDeposits = summaryNetDeposits + baselineEquity;
+    summaryNetDeposits = Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
+    if (summaryEquity !== null) {
+      const adjustedTotalPnl = summaryEquity - summaryNetDeposits;
+      summaryTotalPnl = Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
+    } else if (summaryTotalPnl !== null && Number.isFinite(baselineTotalPnl)) {
+      const adjustedTotalPnl = summaryTotalPnl + baselineTotalPnl;
+      summaryTotalPnl = Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
+    }
+  }
 
   return {
     accountId: accountKey,
