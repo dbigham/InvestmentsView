@@ -4465,10 +4465,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
-  const summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+  let summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
     ? netDepositsSummary.totalPnl.combinedCad
     : null;
-  const summaryTotalPnlAllTime =
+  let summaryTotalPnlAllTime =
     netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
       ? netDepositsSummary.totalPnl.allTimeCad
       : summaryTotalPnl;
