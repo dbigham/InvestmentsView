@@ -4523,38 +4523,33 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     : points;
 
   const rebasedPoints = filteredPoints.map((point) => ({ ...point }));
+  let cagrBaselineTotalPnl = null;
   if (cagrStartDate && displayStartDate && rebasedPoints.length) {
-    const baselineNetDeposits = Number.isFinite(rebasedPoints[0].cumulativeNetDepositsCad)
-      ? rebasedPoints[0].cumulativeNetDepositsCad
-      : null;
-    const baselineTotalPnl = Number.isFinite(rebasedPoints[0].totalPnlCad)
-      ? rebasedPoints[0].totalPnlCad
-      : null;
-    rebasedPoints.forEach((entry, index) => {
-      if (baselineNetDeposits !== null && Number.isFinite(entry.cumulativeNetDepositsCad)) {
-        const adjustedNetDeposits = entry.cumulativeNetDepositsCad - baselineNetDeposits;
-        entry.cumulativeNetDepositsCad =
-          Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-        if (Number.isFinite(entry.equityCad)) {
-          const derivedPnl = entry.equityCad - entry.cumulativeNetDepositsCad;
-          entry.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
-        } else if (baselineTotalPnl !== null && Number.isFinite(entry.totalPnlCad)) {
-          const adjustedPnl = entry.totalPnlCad - baselineTotalPnl;
+    const baselinePoint = rebasedPoints[0];
+    if (baselinePoint && Number.isFinite(baselinePoint.totalPnlCad)) {
+      cagrBaselineTotalPnl = baselinePoint.totalPnlCad;
+      rebasedPoints.forEach((entry, index) => {
+        if (Number.isFinite(entry.totalPnlCad)) {
+          const adjustedPnl = entry.totalPnlCad - cagrBaselineTotalPnl;
           entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
         }
-      } else if (baselineTotalPnl !== null && Number.isFinite(entry.totalPnlCad)) {
-        const adjustedPnl = entry.totalPnlCad - baselineTotalPnl;
-        entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
-      }
-      if (index === 0) {
-        if (Number.isFinite(entry.cumulativeNetDepositsCad)) {
-          entry.cumulativeNetDepositsCad = 0;
-        }
-        if (Number.isFinite(entry.totalPnlCad)) {
+        if (index === 0 && Number.isFinite(entry.totalPnlCad)) {
           entry.totalPnlCad = 0;
         }
-      }
-    });
+      });
+    }
+  }
+
+  if (cagrBaselineTotalPnl !== null) {
+    if (Number.isFinite(summaryTotalPnl)) {
+      const adjustedSummary = summaryTotalPnl - cagrBaselineTotalPnl;
+      summaryTotalPnl = Math.abs(adjustedSummary) < CASH_FLOW_EPSILON ? 0 : adjustedSummary;
+    }
+    if (Number.isFinite(summaryTotalPnlAllTime)) {
+      const adjustedSummaryAllTime = summaryTotalPnlAllTime - cagrBaselineTotalPnl;
+      summaryTotalPnlAllTime =
+        Math.abs(adjustedSummaryAllTime) < CASH_FLOW_EPSILON ? 0 : adjustedSummaryAllTime;
+    }
   }
 
   const effectivePeriodStart = rebasedPoints.length ? rebasedPoints[0].date : dateKeys[0];
