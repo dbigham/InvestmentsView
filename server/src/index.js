@@ -3668,43 +3668,7 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
   }
 
   const pendingPromise = execute()
-    .then(async (result) => {
-      try {
-        const applyCagr = Object.prototype.hasOwnProperty.call(options, 'applyAccountCagrStartDate')
-          ? !!options.applyAccountCagrStartDate
-          : true;
-        const cagrStartDate = applyCagr && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
-          ? account.cagrStartDate.trim()
-          : null;
-        if (
-          result &&
-          applyCagr &&
-          cagrStartDate &&
-          result.netDeposits && Number.isFinite(result.netDeposits.combinedCad) &&
-          Number.isFinite(result.totalEquityCad)
-        ) {
-          const singleDaySeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
-            applyAccountCagrStartDate: false,
-            startDate: cagrStartDate,
-            endDate: cagrStartDate,
-            activityContext,
-          });
-          const startEquity =
-            singleDaySeries && Array.isArray(singleDaySeries.points) && singleDaySeries.points.length > 0
-              ? Number(singleDaySeries.points[0].equityCad)
-              : null;
-          if (Number.isFinite(startEquity)) {
-            const adjustedNetDeposits = result.netDeposits.combinedCad + startEquity;
-            const adjustedTotalPnl = result.totalEquityCad - adjustedNetDeposits;
-            result.netDeposits.combinedCad = Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-            if (result.totalPnl && Number.isFinite(result.totalPnl.combinedCad)) {
-              result.totalPnl.combinedCad = Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
-            }
-          }
-        }
-      } catch (_) {
-        // ignore adjustment failures, keep original result
-      }
+    .then((result) => {
       setNetDepositsCacheEntry(cacheKey, result);
       return result;
     })
@@ -5786,6 +5750,56 @@ app.get('/api/summary', async function (req, res) {
           'Failed to compute net deposits for account ' + context.account.id + ':',
           message
         );
+      }
+
+      let totalPnlSeries = null;
+      if (accountFundingSummaries[context.account.id]) {
+        try {
+          totalPnlSeries = await computeTotalPnlSeries(
+            context.login,
+            context.account,
+            perAccountCombinedBalances,
+            { applyAccountCagrStartDate: true, activityContext: sharedActivityContext }
+          );
+        } catch (seriesError) {
+          const message =
+            seriesError && seriesError.message ? seriesError.message : String(seriesError);
+          console.warn(
+            'Failed to compute total P&L series for account ' + context.account.id + ':',
+            message
+          );
+        }
+
+        if (totalPnlSeries && totalPnlSeries.summary) {
+          const summary = totalPnlSeries.summary;
+          const fundingSummary = accountFundingSummaries[context.account.id];
+          if (fundingSummary) {
+            if (!fundingSummary.totalPnl || typeof fundingSummary.totalPnl !== 'object') {
+              fundingSummary.totalPnl = {};
+            }
+            if (Number.isFinite(summary.totalPnlCad)) {
+              fundingSummary.totalPnl.combinedCad = summary.totalPnlCad;
+            }
+            if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+              fundingSummary.totalPnl.allTimeCad = summary.totalPnlAllTimeCad;
+            }
+            if (Number.isFinite(summary.netDepositsCad)) {
+              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+              if (!Number.isFinite(fundingSummary.netDeposits.combinedCad)) {
+                fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
+              }
+            }
+            if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+              if (!Number.isFinite(fundingSummary.netDeposits.allTimeCad)) {
+                fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
+              }
+            }
+            if (Number.isFinite(summary.totalEquityCad) && !Number.isFinite(fundingSummary.totalEquityCad)) {
+              fundingSummary.totalEquityCad = summary.totalEquityCad;
+            }
+          }
+        }
       }
 
       try {

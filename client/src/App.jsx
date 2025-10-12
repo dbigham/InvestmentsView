@@ -2630,6 +2630,7 @@ export default function App() {
   });
   const [totalPnlRange, setTotalPnlRange] = useState('all');
   const lastAccountForRange = useRef(null);
+  const lastCagrStartDate = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -3527,21 +3528,28 @@ export default function App() {
 
   useEffect(() => {
     const currentAccount = selectedAccountKey || null;
-    if (lastAccountForRange.current === currentAccount) {
-      if (!cagrStartDate && totalPnlRange !== 'all') {
-        setTotalPnlRange('all');
-      }
+    const normalizedCagrStartDate = cagrStartDate || null;
+    const accountChanged = lastAccountForRange.current !== currentAccount;
+    const cagrChanged = lastCagrStartDate.current !== normalizedCagrStartDate;
+
+    if (!accountChanged && !cagrChanged) {
       return;
     }
+
     lastAccountForRange.current = currentAccount;
+    lastCagrStartDate.current = normalizedCagrStartDate;
+
     if (!currentAccount) {
       setTotalPnlRange('all');
-    } else if (cagrStartDate) {
+      return;
+    }
+
+    if (normalizedCagrStartDate) {
       setTotalPnlRange('cagr');
     } else {
       setTotalPnlRange('all');
     }
-  }, [selectedAccountKey, cagrStartDate, totalPnlRange]);
+  }, [selectedAccountKey, cagrStartDate]);
 
   const handleTotalPnlRangeChange = useCallback(
     (nextValue) => {
