@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   computeTotalPnlSeries,
+  computeNetDeposits,
 } = require('../src/index.js');
 
 test('computeTotalPnlSeries handles cash-only activities', async () => {
@@ -102,4 +103,74 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
   assert.ok(Math.abs(result.summary.netDepositsCad - 975) < 1e-6);
 
   assert.ok(!result.issues, 'Expected no issues for cash-only scenario');
+});
+
+test('computeNetDeposits respects CAGR start baseline equity', async () => {
+  const account = {
+    id: 'TEST-ACCOUNT',
+    number: 'TEST-ACCOUNT',
+    cagrStartDate: '2025-01-15',
+  };
+
+  const now = new Date('2025-01-31T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.number,
+    earliestFunding: new Date('2025-01-01T00:00:00Z'),
+    crawlStart: new Date('2025-01-01T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2025-01-01T00:00:00.000000-05:00',
+        transactionDate: '2025-01-01T00:00:00.000000-05:00',
+        settlementDate: '2025-01-01T00:00:00.000000-05:00',
+        type: 'Deposits',
+        action: 'DEP',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+        symbol: '',
+        symbolId: 0,
+      },
+      {
+        tradeDate: '2025-01-20T00:00:00.000000-05:00',
+        transactionDate: '2025-01-20T00:00:00.000000-05:00',
+        settlementDate: '2025-01-20T00:00:00.000000-05:00',
+        type: 'Deposits',
+        action: 'DEP',
+        currency: 'CAD',
+        netAmount: 300,
+        grossAmount: 300,
+        symbol: '',
+        symbolId: 0,
+      },
+    ],
+    fingerprint: 'test-fingerprint-cagr',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 1600,
+        },
+      },
+    },
+  };
+
+  const result = await computeNetDeposits(
+    { id: 'login-1' },
+    account,
+    balances,
+    { applyAccountCagrStartDate: true, activityContext }
+  );
+
+  assert.ok(result, 'Expected funding summary result');
+  assert.ok(result.netDeposits, 'Expected net deposits block');
+  assert.ok(Math.abs(result.netDeposits.combinedCad - 1600) < 1e-6, 'Net deposits should include baseline equity before CAGR start');
+  assert.ok(result.totalPnl, 'Expected total P&L block');
+  assert.ok(Math.abs(result.totalPnl.combinedCad - 0) < 1e-6, 'Total P&L should exclude pre-start equity');
 });

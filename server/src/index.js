@@ -3563,20 +3563,72 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
           result.netDeposits && Number.isFinite(result.netDeposits.combinedCad) &&
           Number.isFinite(result.totalEquityCad)
         ) {
-          const singleDaySeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
-            applyAccountCagrStartDate: false,
-            startDate: cagrStartDate,
-            endDate: cagrStartDate,
-            activityContext,
-          });
-          const startEquity =
-            singleDaySeries && Array.isArray(singleDaySeries.points) && singleDaySeries.points.length > 0
-              ? Number(singleDaySeries.points[0].equityCad)
-              : null;
-          if (Number.isFinite(startEquity)) {
-            const adjustedNetDeposits = result.netDeposits.combinedCad + startEquity;
+          let baselineEquity = null;
+          const parsedCagrStart = parseDateOnlyString(cagrStartDate);
+          if (parsedCagrStart instanceof Date && !Number.isNaN(parsedCagrStart.getTime())) {
+            const baselineDate = addDays(parsedCagrStart, -1);
+            if (baselineDate instanceof Date && !Number.isNaN(baselineDate.getTime())) {
+              const baselineDateIso = formatDateOnly(baselineDate);
+              if (baselineDateIso) {
+                let baselineStartIso = baselineDateIso;
+                if (
+                  activityContext &&
+                  activityContext.earliestFunding instanceof Date &&
+                  !Number.isNaN(activityContext.earliestFunding.getTime())
+                ) {
+                  const earliestFundingIso = formatDateOnly(activityContext.earliestFunding);
+                  if (earliestFundingIso && earliestFundingIso < baselineStartIso) {
+                    baselineStartIso = earliestFundingIso;
+                  }
+                }
+                const baselineSeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
+                  applyAccountCagrStartDate: false,
+                  startDate: baselineStartIso,
+                  endDate: baselineDateIso,
+                  activityContext,
+                });
+                if (baselineSeries && Array.isArray(baselineSeries.points) && baselineSeries.points.length > 0) {
+                  const baselinePoint = baselineSeries.points
+                    .slice()
+                    .reverse()
+                    .find((point) => {
+                      if (!point || typeof point.date !== 'string') {
+                        return false;
+                      }
+                      return point.date <= baselineDateIso && Number.isFinite(point.equityCad);
+                    });
+                  if (baselinePoint && Number.isFinite(baselinePoint.equityCad)) {
+                    baselineEquity = Number(baselinePoint.equityCad);
+                  }
+                }
+              }
+            }
+          }
+
+          if (!Number.isFinite(baselineEquity)) {
+            const singleDaySeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
+              applyAccountCagrStartDate: false,
+              startDate: cagrStartDate,
+              endDate: cagrStartDate,
+              activityContext,
+            });
+            if (singleDaySeries && Array.isArray(singleDaySeries.points) && singleDaySeries.points.length > 0) {
+              const pointEquity = Number(singleDaySeries.points[0].equityCad);
+              if (Number.isFinite(pointEquity)) {
+                baselineEquity = pointEquity;
+              }
+            }
+          }
+
+          if (Number.isFinite(baselineEquity)) {
+            const adjustedNetDeposits = result.netDeposits.combinedCad + baselineEquity;
             const adjustedTotalPnl = result.totalEquityCad - adjustedNetDeposits;
             result.netDeposits.combinedCad = Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
+            if (result.netDeposits.perCurrency) {
+              const currentCad = Number(result.netDeposits.perCurrency.CAD) || 0;
+              const nextCad = currentCad + baselineEquity;
+              result.netDeposits.perCurrency.CAD = Math.abs(nextCad) < CASH_FLOW_EPSILON ? 0 : nextCad;
+            }
             if (result.totalPnl && Number.isFinite(result.totalPnl.combinedCad)) {
               result.totalPnl.combinedCad = Math.abs(adjustedTotalPnl) < CASH_FLOW_EPSILON ? 0 : adjustedTotalPnl;
             }
