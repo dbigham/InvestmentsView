@@ -1,0 +1,14 @@
+{
+    "accounts": [
+      {
+        "number": "53413864",
+        "name": "Eli",
+        "portalAccountId": "7a48966a-bb1c-4642-0286-2d7414929820",
+        "chatURL": "https://chatgpt.com/c/68cc9ff9-3774-8330-bd16-81b4a514fd98",
+        "cagrStartDate": "2025-05-18",
+        "lastRebalance": "2025-09-25",
+        "rebalancePeriod": 90,
+        "default": true
+      }
+    ]
+  }
