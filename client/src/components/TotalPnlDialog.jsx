@@ -413,11 +413,11 @@ export default function TotalPnlDialog({
 
   return (
     <div className="qqq-dialog-overlay" role="presentation" onClick={handleOverlayClick}>
-      <div className="qqq-dialog" role="dialog" aria-modal="true" aria-labelledby={headingId}>
+      <div className="qqq-dialog pnl-dialog__container" role="dialog" aria-modal="true" aria-labelledby={headingId}>
         <button type="button" className="qqq-dialog__close" onClick={onClose} aria-label="Close">
           ×
         </button>
-        <div className="qqq-dialog__content">
+        <div className="qqq-dialog__content pnl-dialog__content">
           <section className="pnl-dialog" aria-labelledby={headingId}>
             <div className="pnl-dialog__header">
               <h2 id={headingId}>Total P&amp;L</h2>
