@@ -257,7 +257,7 @@ async function main() {
     console.log('Missing price symbols:', series.missingPriceSymbols.join(', '));
   }
 
-  const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : 10;
+  const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : series.points.length;
   printSeriesPreview(series.points, previewCount);
 }
 
