@@ -2626,7 +2626,10 @@ export default function App() {
     data: null,
     error: null,
     accountKey: null,
+    mode: 'cagr',
   });
+  const [totalPnlRange, setTotalPnlRange] = useState('all');
+  const lastAccountForRange = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
@@ -3403,48 +3406,153 @@ export default function App() {
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
-  const fundingSummaryForDisplay = useMemo(() => {
+  const fundingSummaryVariants = useMemo(() => {
     if (!selectedAccountFunding) {
       return null;
     }
     if (!activeCurrency || activeCurrency.scope !== 'combined' || activeCurrency.currency !== 'CAD') {
       return null;
     }
-    const netDepositsCad = selectedAccountFunding?.netDeposits?.combinedCad;
-    const totalPnlCad = selectedAccountFunding?.totalPnl?.combinedCad;
-    const totalEquityCad = selectedAccountFunding?.totalEquityCad;
+
+    const normalizeDate = (value) => {
+      if (typeof value !== 'string') {
+        return null;
+      }
+      const trimmed = value.trim();
+      return trimmed || null;
+    };
+
     const annualizedReturn = selectedAccountFunding?.annualizedReturn || null;
-    const annualizedReturnRate = annualizedReturn?.rate;
-    const annualizedReturnAsOf = annualizedReturn?.asOf || null;
+    const annualizedReturnRate = isFiniteNumber(annualizedReturn?.rate) ? annualizedReturn.rate : null;
+    const annualizedReturnAsOf =
+      typeof annualizedReturn?.asOf === 'string' && annualizedReturn.asOf.trim()
+        ? annualizedReturn.asOf.trim()
+        : null;
     const annualizedReturnIncomplete = annualizedReturn?.incomplete === true;
     const annualizedReturnStartDate =
       typeof annualizedReturn?.startDate === 'string' && annualizedReturn.startDate.trim()
-        ? annualizedReturn.startDate
+        ? annualizedReturn.startDate.trim()
         : null;
+
     const returnBreakdown = Array.isArray(selectedAccountFunding?.returnBreakdown)
       ? selectedAccountFunding.returnBreakdown.filter((entry) => entry && typeof entry === 'object')
       : [];
-    const periodStartDate =
-      typeof selectedAccountFunding?.periodStartDate === 'string' && selectedAccountFunding.periodStartDate.trim()
-        ? selectedAccountFunding.periodStartDate.trim()
-        : null;
-    const periodEndDate =
-      typeof selectedAccountFunding?.periodEndDate === 'string' && selectedAccountFunding.periodEndDate.trim()
-        ? selectedAccountFunding.periodEndDate.trim()
-        : null;
-    return {
-      netDepositsCad: isFiniteNumber(netDepositsCad) ? netDepositsCad : null,
-      totalPnlCad: isFiniteNumber(totalPnlCad) ? totalPnlCad : null,
-      totalEquityCad: isFiniteNumber(totalEquityCad) ? totalEquityCad : null,
-      annualizedReturnRate: isFiniteNumber(annualizedReturnRate) ? annualizedReturnRate : null,
-      annualizedReturnAsOf: annualizedReturnAsOf,
+
+    const periodEndDate = normalizeDate(selectedAccountFunding?.periodEndDate);
+    const totalEquityCad = isFiniteNumber(selectedAccountFunding?.totalEquityCad)
+      ? selectedAccountFunding.totalEquityCad
+      : null;
+
+    const baseSummary = {
+      totalEquityCad,
+      annualizedReturnRate,
+      annualizedReturnAsOf,
       annualizedReturnIncomplete,
       annualizedReturnStartDate,
       returnBreakdown,
-      periodStartDate,
       periodEndDate,
     };
+
+    const effectiveNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
+      ? selectedAccountFunding.netDeposits.combinedCad
+      : null;
+    const effectiveTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
+      ? selectedAccountFunding.totalPnl.combinedCad
+      : null;
+    const effectivePeriodStart = normalizeDate(selectedAccountFunding?.periodStartDate);
+
+    const effectiveVariant = {
+      ...baseSummary,
+      netDepositsCad: effectiveNetDeposits,
+      totalPnlCad: effectiveTotalPnl,
+      periodStartDate: effectivePeriodStart,
+    };
+
+    const allTimeNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
+      ? selectedAccountFunding.netDeposits.allTimeCad
+      : effectiveVariant.netDepositsCad;
+    const allTimeTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnl?.allTimeCad)
+      ? selectedAccountFunding.totalPnl.allTimeCad
+      : effectiveVariant.totalPnlCad;
+    const allTimePeriodStart =
+      normalizeDate(selectedAccountFunding?.originalPeriodStartDate) || effectiveVariant.periodStartDate;
+
+    const allTimeVariant = {
+      ...baseSummary,
+      netDepositsCad: allTimeNetDeposits,
+      totalPnlCad: allTimeTotalPnl,
+      periodStartDate: allTimePeriodStart,
+    };
+
+    const rawCagrStartDate =
+      typeof selectedAccountFunding?.cagrStartDate === 'string' && selectedAccountFunding.cagrStartDate.trim()
+        ? selectedAccountFunding.cagrStartDate.trim()
+        : null;
+
+    return {
+      effective: effectiveVariant,
+      allTime: allTimeVariant,
+      metadata: {
+        cagrStartDate: rawCagrStartDate,
+      },
+    };
   }, [selectedAccountFunding, activeCurrency]);
+
+  const cagrStartDate = fundingSummaryVariants?.metadata?.cagrStartDate || null;
+
+  const fundingSummaryForDisplay = useMemo(() => {
+    if (!fundingSummaryVariants) {
+      return null;
+    }
+    if (totalPnlRange === 'all') {
+      return { ...fundingSummaryVariants.allTime, mode: 'all' };
+    }
+    return { ...fundingSummaryVariants.effective, mode: 'cagr' };
+  }, [fundingSummaryVariants, totalPnlRange]);
+
+  const totalPnlRangeOptions = useMemo(() => {
+    if (!fundingSummaryVariants) {
+      return [];
+    }
+    const options = [];
+    if (cagrStartDate) {
+      const formatted = formatDate(cagrStartDate);
+      if (formatted && formatted !== '\u2014') {
+        options.push({ value: 'cagr', label: `From ${formatted.replace(',', '')}` });
+      }
+    }
+    options.push({ value: 'all', label: 'From start' });
+    return options;
+  }, [fundingSummaryVariants, cagrStartDate]);
+
+  useEffect(() => {
+    const currentAccount = selectedAccountKey || null;
+    if (lastAccountForRange.current === currentAccount) {
+      if (!cagrStartDate && totalPnlRange !== 'all') {
+        setTotalPnlRange('all');
+      }
+      return;
+    }
+    lastAccountForRange.current = currentAccount;
+    if (!currentAccount) {
+      setTotalPnlRange('all');
+    } else if (cagrStartDate) {
+      setTotalPnlRange('cagr');
+    } else {
+      setTotalPnlRange('all');
+    }
+  }, [selectedAccountKey, cagrStartDate, totalPnlRange]);
+
+  const handleTotalPnlRangeChange = useCallback(
+    (nextValue) => {
+      const normalized = nextValue === 'all' ? 'all' : 'cagr';
+      if (normalized === 'cagr' && !cagrStartDate) {
+        return;
+      }
+      setTotalPnlRange((current) => (current === normalized ? current : normalized));
+    },
+    [cagrStartDate]
+  );
 
   const benchmarkPeriod = useMemo(() => {
     if (!fundingSummaryForDisplay) {
@@ -4147,22 +4255,29 @@ export default function App() {
     qqqError,
     fetchQqqTemperature,
   ]);
-  const fetchTotalPnlSeries = useCallback(async (accountKey) => {
+  const fetchTotalPnlSeries = useCallback(async (accountKey, options = {}) => {
     if (!accountKey) {
       return;
     }
+    const applyCagr = options && options.applyAccountCagrStartDate !== false;
+    const mode = applyCagr ? 'cagr' : 'all';
+    const normalizedOptions =
+      options && typeof options === 'object'
+        ? { ...options, applyAccountCagrStartDate: applyCagr }
+        : { applyAccountCagrStartDate: applyCagr };
     setTotalPnlSeriesState((prev) => ({
       status: 'loading',
-      data: prev.accountKey === accountKey ? prev.data : null,
+      data: prev.accountKey === accountKey && prev.mode === mode ? prev.data : null,
       error: null,
       accountKey,
+      mode,
     }));
     try {
-      const payload = await getTotalPnlSeries(accountKey);
-      setTotalPnlSeriesState({ status: 'success', data: payload, error: null, accountKey });
+      const payload = await getTotalPnlSeries(accountKey, normalizedOptions);
+      setTotalPnlSeriesState({ status: 'success', data: payload, error: null, accountKey, mode });
     } catch (err) {
       const normalized = err instanceof Error ? err : new Error('Failed to load Total P&L series');
-      setTotalPnlSeriesState({ status: 'error', data: null, error: normalized, accountKey });
+      setTotalPnlSeriesState({ status: 'error', data: null, error: normalized, accountKey, mode });
     }
   }, []);
 
@@ -4173,6 +4288,7 @@ export default function App() {
     setShowTotalPnlDialog(true);
     if (
       totalPnlSeriesState.accountKey !== selectedAccountKey ||
+      totalPnlSeriesState.mode !== 'cagr' ||
       totalPnlSeriesState.status === 'error' ||
       totalPnlSeriesState.status === 'idle'
     ) {
@@ -4184,12 +4300,32 @@ export default function App() {
     if (!selectedAccountKey) {
       return;
     }
-    fetchTotalPnlSeries(selectedAccountKey);
-  }, [fetchTotalPnlSeries, selectedAccountKey]);
+    const applyCagr = totalPnlSeriesState.mode !== 'all';
+    fetchTotalPnlSeries(selectedAccountKey, { applyAccountCagrStartDate: applyCagr });
+  }, [fetchTotalPnlSeries, selectedAccountKey, totalPnlSeriesState.mode]);
 
   const handleCloseTotalPnlDialog = useCallback(() => {
     setShowTotalPnlDialog(false);
   }, []);
+
+  const handleChangeTotalPnlSeriesMode = useCallback(
+    (mode) => {
+      if (!selectedAccountKey) {
+        return;
+      }
+      const normalizedMode = mode === 'all' ? 'all' : 'cagr';
+      if (
+        totalPnlSeriesState.accountKey === selectedAccountKey &&
+        totalPnlSeriesState.mode === normalizedMode &&
+        totalPnlSeriesState.status === 'success'
+      ) {
+        return;
+      }
+      const applyCagr = normalizedMode !== 'all';
+      fetchTotalPnlSeries(selectedAccountKey, { applyAccountCagrStartDate: applyCagr });
+    },
+    [selectedAccountKey, fetchTotalPnlSeries, totalPnlSeriesState]
+  );
 
   const handleShowInvestmentModelDialog = useCallback(() => {
     if (!qqqData && !qqqLoading && !qqqError) {
@@ -5011,6 +5147,9 @@ export default function App() {
             qqqSummary={qqqSummary}
             onShowInvestmentModel={showingAllAccounts ? handleShowInvestmentModelDialog : null}
             benchmarkComparison={benchmarkSummary}
+            totalPnlRangeOptions={totalPnlRangeOptions}
+            selectedTotalPnlRange={totalPnlRange}
+            onTotalPnlRangeChange={handleTotalPnlRangeChange}
           />
         )}
 
@@ -5195,14 +5334,18 @@ export default function App() {
         />
       )}
       {showTotalPnlDialog && (
-        <TotalPnlDialog
-          onClose={handleCloseTotalPnlDialog}
-          data={totalPnlDialogData}
-          loading={totalPnlDialogLoading}
-          error={totalPnlDialogError}
-          onRetry={handleRetryTotalPnlSeries}
-          accountLabel={totalPnlDialogAccountLabel}
-        />
+      <TotalPnlDialog
+        onClose={handleCloseTotalPnlDialog}
+        data={totalPnlDialogData}
+        loading={totalPnlDialogLoading}
+        error={totalPnlDialogError}
+        onRetry={handleRetryTotalPnlSeries}
+        accountLabel={totalPnlDialogAccountLabel}
+        supportsCagrToggle={Boolean(cagrStartDate)}
+        mode={totalPnlSeriesState.mode}
+        onModeChange={handleChangeTotalPnlSeriesMode}
+        cagrStartDate={cagrStartDate}
+      />
       )}
       {investEvenlyPlan && (
         <InvestEvenlyDialog

@@ -752,6 +752,22 @@ textarea {
   font-size: 0.95rem;
 }
 
+.pnl-dialog__range-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.pnl-dialog__range-toggle input {
+  margin: 0;
+}
+
+.pnl-dialog__range-toggle-row {
+  margin-top: 12px;
+}
+
 .pnl-dialog__summary {
   display: flex;
   flex-wrap: wrap;
@@ -1879,6 +1895,32 @@ textarea {
   align-items: baseline;
   gap: 8px;
   font-variant-numeric: tabular-nums;
+}
+
+.total-pnl-range {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.total-pnl-range__select {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  background-color: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.total-pnl-range__select:focus {
+  outline: none;
+  border-color: var(--color-border-active);
+  color: var(--color-text-primary);
+}
+
+.total-pnl-range__text {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .equity-card__metric-value {

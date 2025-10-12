@@ -231,11 +231,26 @@ function formatIssues(issues) {
   }).filter(Boolean);
 }
 
-export default function TotalPnlDialog({ onClose, data, loading, error, onRetry, accountLabel }) {
+export default function TotalPnlDialog({
+  onClose,
+  data,
+  loading,
+  error,
+  onRetry,
+  accountLabel,
+  supportsCagrToggle,
+  mode,
+  onModeChange,
+  cagrStartDate,
+}) {
   const headingId = useId();
   const [timeframe, setTimeframe] = useState('ALL');
   const [hover, setHover] = useState(null);
   const selectRef = useRef(null);
+  const isCagrMode = mode !== 'all';
+  const formattedCagrStart = cagrStartDate ? formatDate(cagrStartDate) : null;
+  const cagrToggleLabel = formattedCagrStart ? `From ${formattedCagrStart.replace(',', '')}` : null;
+  const showRangeToggle = supportsCagrToggle && typeof onModeChange === 'function' && cagrToggleLabel;
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -250,7 +265,7 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
 
   useEffect(() => {
     setTimeframe('ALL');
-  }, [data?.accountId]);
+  }, [data?.accountId, mode]);
 
   useEffect(() => {
     function handleDocumentClick(event) {
@@ -264,6 +279,16 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
     document.addEventListener('mousedown', handleDocumentClick);
     return () => document.removeEventListener('mousedown', handleDocumentClick);
   }, []);
+
+  const handleRangeToggle = (event) => {
+    if (typeof onModeChange !== 'function') {
+      return;
+    }
+    const nextMode = event.target.checked ? 'cagr' : 'all';
+    if (nextMode !== mode) {
+      onModeChange(nextMode);
+    }
+  };
 
   const filteredSeries = useMemo(() => filterSeries(data?.points, timeframe), [data?.points, timeframe]);
   const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
@@ -464,6 +489,20 @@ export default function TotalPnlDialog({ onClose, data, loading, error, onRetry,
               </div>
             </div>
 
+            {showRangeToggle ? (
+              <div className="pnl-dialog__range-toggle-row">
+                <label className="pnl-dialog__range-toggle">
+                  <input
+                    type="checkbox"
+                    checked={isCagrMode}
+                    onChange={handleRangeToggle}
+                    disabled={loading}
+                  />
+                  <span>{cagrToggleLabel}</span>
+                </label>
+              </div>
+            ) : null}
+
             {loading && (
               <div className="qqq-section__status" role="status">
                 Loading Total P&amp;L…
@@ -604,6 +643,10 @@ TotalPnlDialog.propTypes = {
   error: PropTypes.instanceOf(Error),
   onRetry: PropTypes.func,
   accountLabel: PropTypes.string,
+  supportsCagrToggle: PropTypes.bool,
+  mode: PropTypes.oneOf(['cagr', 'all']),
+  onModeChange: PropTypes.func,
+  cagrStartDate: PropTypes.string,
 };
 
 TotalPnlDialog.defaultProps = {
@@ -612,4 +655,8 @@ TotalPnlDialog.defaultProps = {
   error: null,
   onRetry: null,
   accountLabel: null,
+  supportsCagrToggle: false,
+  mode: 'cagr',
+  onModeChange: null,
+  cagrStartDate: null,
 };

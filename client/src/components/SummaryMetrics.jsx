@@ -94,7 +94,7 @@ function MetricRow({ label, value, extra, tone, className, onActivate, tooltip, 
 }
 
 MetricRow.propTypes = {
-  label: PropTypes.string.isRequired,
+  label: PropTypes.node.isRequired,
   value: PropTypes.string.isRequired,
   extra: PropTypes.node,
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
@@ -400,17 +400,21 @@ export default function SummaryMetrics({
   qqqSummary,
   onShowInvestmentModel,
   benchmarkComparison,
+  totalPnlRangeOptions,
+  selectedTotalPnlRange,
+  onTotalPnlRangeChange,
 }) {
+  const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
   const buyingPower = balances?.buyingPower ?? null;
 
-  const totalPnlValue = Number.isFinite(pnl?.totalPnl)
-    ? pnl.totalPnl
-    : Number.isFinite(fundingSummary?.totalPnlCad)
-      ? fundingSummary.totalPnlCad
+  const totalPnlValue = Number.isFinite(fundingSummary?.totalPnlCad)
+    ? fundingSummary.totalPnlCad
+    : Number.isFinite(pnl?.totalPnl)
+      ? pnl.totalPnl
       : null;
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
@@ -624,6 +628,42 @@ export default function SummaryMetrics({
     }
   }
 
+  const normalizedRangeOptions = Array.isArray(totalPnlRangeOptions) ? totalPnlRangeOptions : [];
+  const resolvedRangeValue = normalizedRangeOptions.some((option) => option.value === selectedTotalPnlRange)
+    ? selectedTotalPnlRange
+    : normalizedRangeOptions[0]?.value || 'all';
+  const showRangeSelector =
+    normalizedRangeOptions.length > 1 && typeof onTotalPnlRangeChange === 'function';
+  const handleTotalPnlRangeSelect = (event) => {
+    if (typeof onTotalPnlRangeChange === 'function') {
+      onTotalPnlRangeChange(event.target.value);
+    }
+  };
+  let totalPnlRangeSelector = null;
+  if (normalizedRangeOptions.length > 0) {
+    if (showRangeSelector) {
+      totalPnlRangeSelector = (
+        <select
+          id={totalPnlRangeId}
+          className="total-pnl-range__select"
+          value={resolvedRangeValue}
+          onChange={handleTotalPnlRangeSelect}
+          aria-label="Select Total P&L range"
+        >
+          {normalizedRangeOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      );
+    } else {
+      totalPnlRangeSelector = (
+        <span className="total-pnl-range__text">{normalizedRangeOptions[0].label}</span>
+      );
+    }
+  }
+
   const hasDetailLines = detailLines.length > 0;
 
   const totalDetailBlock = hasDetailLines ? (
@@ -633,6 +673,18 @@ export default function SummaryMetrics({
           {line}
         </span>
       ))}
+    </div>
+  ) : null;
+
+  const totalPnlRangeNode = totalPnlRangeSelector ? (
+    <div
+      className="total-pnl-range"
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {totalPnlRangeSelector}
     </div>
   ) : null;
 
@@ -762,6 +814,7 @@ export default function SummaryMetrics({
               className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
               onActivate={onShowTotalPnl}
             />
+          {totalPnlRangeNode}
           {totalDetailBlock}
           <MetricRow
             label="Annualized return"
@@ -901,6 +954,14 @@ SummaryMetrics.propTypes = {
     }),
     error: PropTypes.instanceOf(Error),
   }),
+  totalPnlRangeOptions: PropTypes.arrayOf(
+    PropTypes.shape({
+      value: PropTypes.string.isRequired,
+      label: PropTypes.string.isRequired,
+    })
+  ),
+  selectedTotalPnlRange: PropTypes.string,
+  onTotalPnlRangeChange: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -929,4 +990,7 @@ SummaryMetrics.defaultProps = {
   fundingSummary: null,
   onShowInvestmentModel: null,
   benchmarkComparison: null,
+  totalPnlRangeOptions: [],
+  selectedTotalPnlRange: null,
+  onTotalPnlRangeChange: null,
 };
