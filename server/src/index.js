@@ -6171,7 +6171,13 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     normalizedAccount.id = accountId;
     normalizedAccount.number = normalizedAccount.number || rawAccountKey;
 
-    const balancesRaw = await fetchBalances(login, normalizedAccount.number);
+    const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
+    const effectiveAccount = Object.assign({}, accountWithOverrides, {
+      id: accountId,
+      number: accountWithOverrides.number || normalizedAccount.number || rawAccountKey,
+    });
+
+    const balancesRaw = await fetchBalances(login, effectiveAccount.number);
     const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
     const perAccountCombinedBalances = { [accountId]: balanceSummary };
 
@@ -6186,7 +6192,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       options.applyAccountCagrStartDate = false;
     }
 
-    const series = await computeTotalPnlSeries(login, normalizedAccount, perAccountCombinedBalances, options);
+    const series = await computeTotalPnlSeries(login, effectiveAccount, perAccountCombinedBalances, options);
     if (!series) {
       return res.status(503).json({ message: 'Total P&L series unavailable' });
     }

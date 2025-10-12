@@ -14,7 +14,7 @@ const TIMEFRAME_OPTIONS = [
   { value: '1Y', label: '1 year' },
   { value: '3Y', label: '3 years' },
   { value: '5Y', label: '5 years' },
-  { value: 'ALL', label: 'All time' },
+  { value: 'ALL', label: 'All' },
 ];
 
 function parseDateOnly(value) {
@@ -413,11 +413,11 @@ export default function TotalPnlDialog({
 
   return (
     <div className="qqq-dialog-overlay" role="presentation" onClick={handleOverlayClick}>
-      <div className="qqq-dialog" role="dialog" aria-modal="true" aria-labelledby={headingId}>
+      <div className="qqq-dialog pnl-dialog__container" role="dialog" aria-modal="true" aria-labelledby={headingId}>
         <button type="button" className="qqq-dialog__close" onClick={onClose} aria-label="Close">
           ×
         </button>
-        <div className="qqq-dialog__content">
+        <div className="qqq-dialog__content pnl-dialog__content">
           <section className="pnl-dialog" aria-labelledby={headingId}>
             <div className="pnl-dialog__header">
               <h2 id={headingId}>Total P&amp;L</h2>
@@ -447,7 +447,7 @@ export default function TotalPnlDialog({
 
             <div className="pnl-dialog__controls">
               <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
-                Time frame
+                Show
               </label>
               <div className="select-control" ref={selectRef}>
                 <button
