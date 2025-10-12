@@ -11,6 +11,7 @@ const {
   fetchAccounts,
   fetchBalances,
   summarizeAccountBalances,
+  applyAccountSettingsOverrides,
 } = require('../index.js');
 
 function maskTokenForLog(token) {
@@ -188,7 +189,8 @@ async function main() {
   const keepCagrStart = options['no-cagr-start'] ? false : true;
 
   const context = await resolveAccountContext(identifier);
-  const { login, account } = context;
+  const { login, account: baseAccount } = context;
+  const account = applyAccountSettingsOverrides(baseAccount, login);
 
   console.log('[print-total-pnl] Using login/account combination', {
     loginId: login.id,

@@ -1081,6 +1081,126 @@ function resolveAccountOverrideValue(overrides, account, login) {
   return null;
 }
 
+function applyAccountSettingsOverrideToAccount(target, override) {
+  if (!target || override === undefined) {
+    return;
+  }
+
+  if (override === null) {
+    return;
+  }
+
+  if (typeof override === 'boolean') {
+    target.showQQQDetails = override;
+    return;
+  }
+
+  if (!override || typeof override !== 'object') {
+    return;
+  }
+
+  if (typeof override.showQQQDetails === 'boolean') {
+    target.showQQQDetails = override.showQQQDetails;
+  }
+
+  let normalizedInvestmentModels = [];
+  if (Object.prototype.hasOwnProperty.call(override, 'investmentModels')) {
+    normalizedInvestmentModels = normalizeInvestmentModelList(override.investmentModels);
+    if (normalizedInvestmentModels.length) {
+      target.investmentModels = normalizedInvestmentModels;
+    }
+  }
+
+  if (typeof override.investmentModel === 'string') {
+    const trimmedModel = override.investmentModel.trim();
+    if (trimmedModel) {
+      target.investmentModel = trimmedModel;
+    }
+  } else if (normalizedInvestmentModels.length && normalizedInvestmentModels[0].model) {
+    target.investmentModel = normalizedInvestmentModels[0].model;
+  }
+
+  if (target.rebalancePeriod === undefined && normalizedInvestmentModels.length) {
+    const withPeriod = normalizedInvestmentModels.find((entry) => {
+      return Number.isFinite(entry.rebalancePeriod);
+    });
+    if (withPeriod) {
+      target.rebalancePeriod = withPeriod.rebalancePeriod;
+    }
+  }
+
+  if (typeof override.lastRebalance === 'string') {
+    const trimmedDate = override.lastRebalance.trim();
+    if (trimmedDate) {
+      target.investmentModelLastRebalance = trimmedDate;
+    }
+  } else if (
+    override.lastRebalance &&
+    typeof override.lastRebalance === 'object' &&
+    typeof override.lastRebalance.date === 'string'
+  ) {
+    const trimmedDate = override.lastRebalance.date.trim();
+    if (trimmedDate) {
+      target.investmentModelLastRebalance = trimmedDate;
+    }
+  } else if (!target.investmentModelLastRebalance && normalizedInvestmentModels.length) {
+    const withRebalance = normalizedInvestmentModels.find((entry) => entry.lastRebalance);
+    if (withRebalance) {
+      target.investmentModelLastRebalance = withRebalance.lastRebalance;
+    }
+  }
+
+  if (
+    typeof override.netDepositAdjustment === 'number' &&
+    Number.isFinite(override.netDepositAdjustment)
+  ) {
+    target.netDepositAdjustment = override.netDepositAdjustment;
+  }
+
+  if (typeof override.rebalancePeriod === 'number' && Number.isFinite(override.rebalancePeriod)) {
+    target.rebalancePeriod = Math.round(override.rebalancePeriod);
+  }
+
+  if (typeof override.cagrStartDate === 'string') {
+    const trimmedDate = override.cagrStartDate.trim();
+    if (trimmedDate) {
+      target.cagrStartDate = trimmedDate;
+    }
+  } else if (
+    override.cagrStartDate &&
+    typeof override.cagrStartDate === 'object' &&
+    typeof override.cagrStartDate.date === 'string'
+  ) {
+    const trimmedDate = override.cagrStartDate.date.trim();
+    if (trimmedDate) {
+      target.cagrStartDate = trimmedDate;
+    }
+  }
+
+  if (
+    typeof override.ignoreSittingCash === 'number' &&
+    Number.isFinite(override.ignoreSittingCash)
+  ) {
+    target.ignoreSittingCash = override.ignoreSittingCash;
+  }
+}
+
+function applyAccountSettingsOverrides(account, login) {
+  if (!account) {
+    return account;
+  }
+
+  const accountSettings = getAccountSettings();
+  const override = resolveAccountOverrideValue(accountSettings, account, login);
+  if (override === null || override === undefined) {
+    return Object.assign({}, account);
+  }
+
+  const normalizedAccount = Object.assign({}, account);
+  applyAccountSettingsOverrideToAccount(normalizedAccount, override);
+  return normalizedAccount;
+}
+
 function resolveAccountDisplayName(overrides, account, login) {
   return resolveAccountOverrideValue(overrides, account, login);
 }
@@ -4345,10 +4465,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
-  const summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+  let summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
     ? netDepositsSummary.totalPnl.combinedCad
     : null;
-  const summaryTotalPnlAllTime =
+  let summaryTotalPnlAllTime =
     netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
       ? netDepositsSummary.totalPnl.allTimeCad
       : summaryTotalPnl;
@@ -4403,38 +4523,33 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     : points;
 
   const rebasedPoints = filteredPoints.map((point) => ({ ...point }));
+  let cagrBaselineTotalPnl = null;
   if (cagrStartDate && displayStartDate && rebasedPoints.length) {
-    const baselineNetDeposits = Number.isFinite(rebasedPoints[0].cumulativeNetDepositsCad)
-      ? rebasedPoints[0].cumulativeNetDepositsCad
-      : null;
-    const baselineTotalPnl = Number.isFinite(rebasedPoints[0].totalPnlCad)
-      ? rebasedPoints[0].totalPnlCad
-      : null;
-    rebasedPoints.forEach((entry, index) => {
-      if (baselineNetDeposits !== null && Number.isFinite(entry.cumulativeNetDepositsCad)) {
-        const adjustedNetDeposits = entry.cumulativeNetDepositsCad - baselineNetDeposits;
-        entry.cumulativeNetDepositsCad =
-          Math.abs(adjustedNetDeposits) < CASH_FLOW_EPSILON ? 0 : adjustedNetDeposits;
-        if (Number.isFinite(entry.equityCad)) {
-          const derivedPnl = entry.equityCad - entry.cumulativeNetDepositsCad;
-          entry.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
-        } else if (baselineTotalPnl !== null && Number.isFinite(entry.totalPnlCad)) {
-          const adjustedPnl = entry.totalPnlCad - baselineTotalPnl;
+    const baselinePoint = rebasedPoints[0];
+    if (baselinePoint && Number.isFinite(baselinePoint.totalPnlCad)) {
+      cagrBaselineTotalPnl = baselinePoint.totalPnlCad;
+      rebasedPoints.forEach((entry, index) => {
+        if (Number.isFinite(entry.totalPnlCad)) {
+          const adjustedPnl = entry.totalPnlCad - cagrBaselineTotalPnl;
           entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
         }
-      } else if (baselineTotalPnl !== null && Number.isFinite(entry.totalPnlCad)) {
-        const adjustedPnl = entry.totalPnlCad - baselineTotalPnl;
-        entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
-      }
-      if (index === 0) {
-        if (Number.isFinite(entry.cumulativeNetDepositsCad)) {
-          entry.cumulativeNetDepositsCad = 0;
-        }
-        if (Number.isFinite(entry.totalPnlCad)) {
+        if (index === 0 && Number.isFinite(entry.totalPnlCad)) {
           entry.totalPnlCad = 0;
         }
-      }
-    });
+      });
+    }
+  }
+
+  if (cagrBaselineTotalPnl !== null) {
+    if (Number.isFinite(summaryTotalPnl)) {
+      const adjustedSummary = summaryTotalPnl - cagrBaselineTotalPnl;
+      summaryTotalPnl = Math.abs(adjustedSummary) < CASH_FLOW_EPSILON ? 0 : adjustedSummary;
+    }
+    if (Number.isFinite(summaryTotalPnlAllTime)) {
+      const adjustedSummaryAllTime = summaryTotalPnlAllTime - cagrBaselineTotalPnl;
+      summaryTotalPnlAllTime =
+        Math.abs(adjustedSummaryAllTime) < CASH_FLOW_EPSILON ? 0 : adjustedSummaryAllTime;
+    }
   }
 
   const effectivePeriodStart = rebasedPoints.length ? rebasedPoints[0].date : dateKeys[0];
@@ -5375,96 +5490,7 @@ app.get('/api/summary', async function (req, res) {
             normalizedAccount.chatURL = null;
           }
           const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
-          if (typeof accountSettingsOverride === 'boolean') {
-            normalizedAccount.showQQQDetails = accountSettingsOverride;
-          } else if (accountSettingsOverride && typeof accountSettingsOverride === 'object') {
-            if (typeof accountSettingsOverride.showQQQDetails === 'boolean') {
-              normalizedAccount.showQQQDetails = accountSettingsOverride.showQQQDetails;
-            }
-            let normalizedInvestmentModels = [];
-            if (Object.prototype.hasOwnProperty.call(accountSettingsOverride, 'investmentModels')) {
-              normalizedInvestmentModels = normalizeInvestmentModelList(
-                accountSettingsOverride.investmentModels
-              );
-              if (normalizedInvestmentModels.length) {
-                normalizedAccount.investmentModels = normalizedInvestmentModels;
-              }
-            }
-            if (typeof accountSettingsOverride.investmentModel === 'string') {
-              const trimmedModel = accountSettingsOverride.investmentModel.trim();
-              if (trimmedModel) {
-                normalizedAccount.investmentModel = trimmedModel;
-              }
-            } else if (normalizedInvestmentModels.length && normalizedInvestmentModels[0].model) {
-              normalizedAccount.investmentModel = normalizedInvestmentModels[0].model;
-            }
-            if (
-              normalizedAccount.rebalancePeriod === undefined &&
-              normalizedInvestmentModels.length
-            ) {
-              const withPeriod = normalizedInvestmentModels.find((entry) => {
-                return Number.isFinite(entry.rebalancePeriod);
-              });
-              if (withPeriod) {
-                normalizedAccount.rebalancePeriod = withPeriod.rebalancePeriod;
-              }
-            }
-            if (typeof accountSettingsOverride.lastRebalance === 'string') {
-              const trimmedDate = accountSettingsOverride.lastRebalance.trim();
-              if (trimmedDate) {
-                normalizedAccount.investmentModelLastRebalance = trimmedDate;
-              }
-            } else if (
-              accountSettingsOverride.lastRebalance &&
-              typeof accountSettingsOverride.lastRebalance === 'object' &&
-              typeof accountSettingsOverride.lastRebalance.date === 'string'
-            ) {
-              const trimmedDate = accountSettingsOverride.lastRebalance.date.trim();
-              if (trimmedDate) {
-                normalizedAccount.investmentModelLastRebalance = trimmedDate;
-              }
-            } else if (!normalizedAccount.investmentModelLastRebalance && normalizedInvestmentModels.length) {
-              const withRebalance = normalizedInvestmentModels.find((entry) => entry.lastRebalance);
-              if (withRebalance) {
-                normalizedAccount.investmentModelLastRebalance = withRebalance.lastRebalance;
-              }
-            }
-            if (
-              typeof accountSettingsOverride.netDepositAdjustment === 'number' &&
-              Number.isFinite(accountSettingsOverride.netDepositAdjustment)
-            ) {
-              normalizedAccount.netDepositAdjustment = accountSettingsOverride.netDepositAdjustment;
-            }
-            if (
-              typeof accountSettingsOverride.rebalancePeriod === 'number' &&
-              Number.isFinite(accountSettingsOverride.rebalancePeriod)
-            ) {
-              normalizedAccount.rebalancePeriod = Math.round(
-                accountSettingsOverride.rebalancePeriod
-              );
-            }
-            if (typeof accountSettingsOverride.cagrStartDate === 'string') {
-              const trimmedDate = accountSettingsOverride.cagrStartDate.trim();
-              if (trimmedDate) {
-                normalizedAccount.cagrStartDate = trimmedDate;
-              }
-            } else if (
-              accountSettingsOverride.cagrStartDate &&
-              typeof accountSettingsOverride.cagrStartDate === 'object' &&
-              typeof accountSettingsOverride.cagrStartDate.date === 'string'
-            ) {
-              const trimmedDate = accountSettingsOverride.cagrStartDate.date.trim();
-              if (trimmedDate) {
-                normalizedAccount.cagrStartDate = trimmedDate;
-              }
-            }
-            if (
-              typeof accountSettingsOverride.ignoreSittingCash === 'number' &&
-              Number.isFinite(accountSettingsOverride.ignoreSittingCash)
-            ) {
-              normalizedAccount.ignoreSittingCash = accountSettingsOverride.ignoreSittingCash;
-            }
-          }
+          applyAccountSettingsOverrideToAccount(normalizedAccount, accountSettingsOverride);
           const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
           if (defaultBeneficiary) {
             normalizedAccount.beneficiary = defaultBeneficiary;
@@ -6200,4 +6226,5 @@ module.exports = {
   summarizeAccountBalances,
   getAllLogins,
   getLoginById,
+  applyAccountSettingsOverrides,
 };
