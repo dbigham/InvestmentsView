@@ -735,7 +735,7 @@ textarea {
 }
 
 .pnl-dialog {
-  padding: 0 8px 4px 8px;
+  padding: 0 8px 24px 8px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -773,7 +773,7 @@ textarea {
 }
 
 .pnl-dialog__range-toggle-row {
-  margin-top: 6px;
+  margin-top: 0px;
 }
 
 .pnl-dialog__summary {

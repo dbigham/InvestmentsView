@@ -14,7 +14,7 @@ const TIMEFRAME_OPTIONS = [
   { value: '1Y', label: '1 year' },
   { value: '3Y', label: '3 years' },
   { value: '5Y', label: '5 years' },
-  { value: 'ALL', label: 'All time' },
+  { value: 'ALL', label: 'All' },
 ];
 
 function parseDateOnly(value) {
@@ -447,7 +447,7 @@ export default function TotalPnlDialog({
 
             <div className="pnl-dialog__controls">
               <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
-                Time frame
+                Show
               </label>
               <div className="select-control" ref={selectRef}>
                 <button
