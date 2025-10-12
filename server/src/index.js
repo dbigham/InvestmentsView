@@ -5752,6 +5752,56 @@ app.get('/api/summary', async function (req, res) {
         );
       }
 
+      let totalPnlSeries = null;
+      if (accountFundingSummaries[context.account.id]) {
+        try {
+          totalPnlSeries = await computeTotalPnlSeries(
+            context.login,
+            context.account,
+            perAccountCombinedBalances,
+            { applyAccountCagrStartDate: true, activityContext: sharedActivityContext }
+          );
+        } catch (seriesError) {
+          const message =
+            seriesError && seriesError.message ? seriesError.message : String(seriesError);
+          console.warn(
+            'Failed to compute total P&L series for account ' + context.account.id + ':',
+            message
+          );
+        }
+
+        if (totalPnlSeries && totalPnlSeries.summary) {
+          const summary = totalPnlSeries.summary;
+          const fundingSummary = accountFundingSummaries[context.account.id];
+          if (fundingSummary) {
+            if (!fundingSummary.totalPnl || typeof fundingSummary.totalPnl !== 'object') {
+              fundingSummary.totalPnl = {};
+            }
+            if (Number.isFinite(summary.totalPnlCad)) {
+              fundingSummary.totalPnl.combinedCad = summary.totalPnlCad;
+            }
+            if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+              fundingSummary.totalPnl.allTimeCad = summary.totalPnlAllTimeCad;
+            }
+            if (Number.isFinite(summary.netDepositsCad)) {
+              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+              if (!Number.isFinite(fundingSummary.netDeposits.combinedCad)) {
+                fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
+              }
+            }
+            if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+              if (!Number.isFinite(fundingSummary.netDeposits.allTimeCad)) {
+                fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
+              }
+            }
+            if (Number.isFinite(summary.totalEquityCad) && !Number.isFinite(fundingSummary.totalEquityCad)) {
+              fundingSummary.totalEquityCad = summary.totalEquityCad;
+            }
+          }
+        }
+      }
+
       try {
         const dividendSummary = await computeDividendBreakdown(context.login, context.account, {
           activityContext: sharedActivityContext,
