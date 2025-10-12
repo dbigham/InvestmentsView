@@ -4488,6 +4488,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const rebasedPoints = filteredPoints.map((point) => ({ ...point }));
   let cagrBaselineTotalPnl = null;
+  // Preserve the unadjusted all-time total P&L so summary consumers (UI/CLI)
+  // can continue to report the true lifetime value even when we rebase the
+  // series for CAGR comparisons.
+  const rawSummaryTotalPnlAllTime = summaryTotalPnlAllTime;
   if (cagrStartDate && displayStartDate && rebasedPoints.length) {
     const baselinePoint = rebasedPoints[0];
     if (baselinePoint && Number.isFinite(baselinePoint.totalPnlCad)) {
@@ -4509,12 +4513,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const adjustedSummary = summaryTotalPnl - cagrBaselineTotalPnl;
       summaryTotalPnl = Math.abs(adjustedSummary) < CASH_FLOW_EPSILON ? 0 : adjustedSummary;
     }
-    if (Number.isFinite(summaryTotalPnlAllTime)) {
-      const adjustedSummaryAllTime = summaryTotalPnlAllTime - cagrBaselineTotalPnl;
-      summaryTotalPnlAllTime =
-        Math.abs(adjustedSummaryAllTime) < CASH_FLOW_EPSILON ? 0 : adjustedSummaryAllTime;
-    }
   }
+
+  // Restore the all-time total P&L so it remains comparable with "From start"
+  // calculations that bypass the CAGR baseline adjustment.
+  summaryTotalPnlAllTime = rawSummaryTotalPnlAllTime;
 
   const effectivePeriodStart = rebasedPoints.length ? rebasedPoints[0].date : dateKeys[0];
   const effectivePeriodEnd = rebasedPoints.length ? rebasedPoints[rebasedPoints.length - 1].date : dateKeys[dateKeys.length - 1];
