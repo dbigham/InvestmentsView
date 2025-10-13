@@ -384,8 +384,8 @@ async function main() {
     ? series.summary.totalPnlSinceDisplayStartCad
     : series.summary.totalPnlCad;
   console.log('  Total P&L CAD    :', formatNumber(summaryPnlDisplay));
-  if (useDisplayStartRelative && Number.isFinite(series.summary.totalPnlCad)) {
-    console.log('  Total P&L (all-time) CAD :', formatNumber(series.summary.totalPnlCad));
+  if (useDisplayStartRelative && Number.isFinite(series.summary.totalPnlAllTimeCad)) {
+    console.log('  Total P&L (all-time) CAD :', formatNumber(series.summary.totalPnlAllTimeCad));
   }
 
   const baselineEquity =
