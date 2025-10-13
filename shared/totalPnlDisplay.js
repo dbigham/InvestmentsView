@@ -189,5 +189,8 @@ const totalPnlDisplay = {
   subtractInterval,
 };
 
-module.exports = totalPnlDisplay;
-module.exports.default = totalPnlDisplay;
+exports.TOTAL_PNL_TIMEFRAME_OPTIONS = TOTAL_PNL_TIMEFRAME_OPTIONS;
+exports.buildTotalPnlDisplaySeries = buildTotalPnlDisplaySeries;
+exports.parseDateOnly = parseDateOnly;
+exports.subtractInterval = subtractInterval;
+exports.default = totalPnlDisplay;
