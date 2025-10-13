@@ -661,6 +661,11 @@ TotalPnlDialog.propTypes = {
         equityCad: PropTypes.number,
         totalPnlCad: PropTypes.number,
       }),
+      seriesStartTotals: PropTypes.shape({
+        cumulativeNetDepositsCad: PropTypes.number,
+        equityCad: PropTypes.number,
+        totalPnlCad: PropTypes.number,
+      }),
     }),
     issues: PropTypes.arrayOf(PropTypes.string),
   }),
