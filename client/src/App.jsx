@@ -3459,9 +3459,11 @@ export default function App() {
     const effectiveNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
       ? selectedAccountFunding.netDeposits.combinedCad
       : null;
-    const effectiveTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
-      ? selectedAccountFunding.totalPnl.combinedCad
-      : null;
+    const effectiveTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
+      ? selectedAccountFunding.totalPnlSinceDisplayStartCad
+      : isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
+        ? selectedAccountFunding.totalPnl.combinedCad
+        : null;
     const effectiveTotalPnlDelta = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
       ? selectedAccountFunding.totalPnlSinceDisplayStartCad
       : null;
