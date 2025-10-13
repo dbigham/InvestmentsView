@@ -310,6 +310,22 @@ async function main() {
     return;
   }
 
+  let baselinePoint = null;
+  if (keepCagrStart && series.displayStartDate) {
+    try {
+      const baselineOptions = Object.assign({}, seriesOptions, {
+        applyAccountCagrStartDate: false,
+      });
+      const baselineSeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, baselineOptions);
+      if (baselineSeries && Array.isArray(baselineSeries.points)) {
+        baselinePoint = baselineSeries.points.find((point) => point && point.date === series.displayStartDate);
+      }
+    } catch (baselineError) {
+      const message = baselineError && baselineError.message ? baselineError.message : String(baselineError);
+      console.warn('Unable to compute baseline (no-CAGR) series for comparison:', message);
+    }
+  }
+
   let fundingSummary = null;
   try {
     fundingSummary = await computeNetDeposits(login, account, perAccountCombinedBalances, {
@@ -338,6 +354,12 @@ async function main() {
       : null;
   if (baselineEquity !== null) {
     console.log('  Start equity CAD :', formatNumber(baselineEquity));
+  }
+
+  if (baselinePoint) {
+    console.log('  Pre-period (rolled) net deposits:', formatNumber(baselinePoint.cumulativeNetDepositsCad));
+    console.log('  Pre-period (rolled) equity CAD  :', formatNumber(baselinePoint.equityCad));
+    console.log('  Pre-period (rolled) total P&L   :', formatNumber(baselinePoint.totalPnlCad));
   }
 
   if (fundingSummary) {
