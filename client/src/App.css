@@ -811,6 +811,7 @@ textarea {
   color: var(--color-accent);
 }
 
+
 .pnl-dialog__controls {
   display: flex;
   align-items: center;

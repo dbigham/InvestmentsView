@@ -3,6 +3,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const {
   computeTotalPnlSeries,
@@ -14,6 +15,10 @@ const {
   summarizeAccountBalances,
   applyAccountSettingsOverrides,
 } = require('../index.js');
+
+const sharedModulePromise = import(
+  pathToFileURL(path.join(__dirname, '../../../shared/totalPnlDisplay.js')).href
+);
 
 function maskTokenForLog(token) {
   if (!token || typeof token !== 'string') {
@@ -227,25 +232,38 @@ async function resolveAccountContext(identifier) {
   throw new Error('Unable to locate account with identifier: ' + (identifier || '<none provided>'));
 }
 
-function printSeriesPreview(points, count) {
+function printSeriesPreview(points, count, { useDisplayStartRelative } = {}) {
   if (!Array.isArray(points) || !points.length) {
     console.log('No data points available.');
     return;
   }
   const normalizedCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : points.length;
   const preview = points.slice(0, normalizedCount);
-  console.log('Date       | Net Deposits | Equity CAD | Total P&L');
+  const netDepositsLabel = useDisplayStartRelative ? 'Δ Net Deposits' : 'Net Deposits';
+  const equityLabel = useDisplayStartRelative ? 'Δ Equity CAD' : 'Equity CAD';
+  const pnlLabel = useDisplayStartRelative ? 'Δ Total P&L' : 'Total P&L';
+  console.log(`Date       | ${netDepositsLabel.padStart(12)} | ${equityLabel.padStart(10)} | ${pnlLabel.padStart(9)}`);
   console.log('-----------+--------------+------------+-----------');
   preview.forEach((point) => {
     const date = point.date || 'unknown';
-    const netDeposits = formatNumber(point.cumulativeNetDepositsCad);
-    const equity = formatNumber(point.equityCad);
-    const pnl = formatNumber(point.totalPnlCad);
+    const netDepositsValue = useDisplayStartRelative && Number.isFinite(point.cumulativeNetDepositsSinceDisplayStartCad)
+      ? point.cumulativeNetDepositsSinceDisplayStartCad
+      : point.cumulativeNetDepositsCad;
+    const equityValue = useDisplayStartRelative && Number.isFinite(point.equitySinceDisplayStartCad)
+      ? point.equitySinceDisplayStartCad
+      : point.equityCad;
+    const pnlValue = useDisplayStartRelative && Number.isFinite(point.totalPnlSinceDisplayStartCad)
+      ? point.totalPnlSinceDisplayStartCad
+      : point.totalPnlCad;
+    const netDeposits = formatNumber(netDepositsValue);
+    const equity = formatNumber(equityValue);
+    const pnl = formatNumber(pnlValue);
     console.log(`${date} | ${netDeposits.padStart(12)} | ${equity.padStart(10)} | ${pnl.padStart(9)}`);
   });
 }
 
 async function main() {
+  const { buildTotalPnlDisplaySeries } = await sharedModulePromise;
   const { options, positional } = parseArgs(process.argv.slice(2));
 
   const identifier = normalizeIdentifier(options.account || options.id || positional[0] || null);
@@ -310,6 +328,11 @@ async function main() {
     return;
   }
 
+  const displaySeries = buildTotalPnlDisplaySeries(series.points, 'ALL', {
+    displayStartDate: series.displayStartDate,
+    displayStartTotals: series.summary?.displayStartTotals,
+  });
+
   let baselinePoint = null;
   if (keepCagrStart && series.displayStartDate) {
     try {
@@ -343,15 +366,27 @@ async function main() {
     console.warn('Failed to compute funding summary for account', identifier + ':', message);
   }
 
-  const lastPoint = series.points && series.points.length ? series.points[series.points.length - 1] : null;
+  const lastPoint = displaySeries && displaySeries.length ? displaySeries[displaySeries.length - 1] : null;
 
   console.log('Account:', account.number || account.id, '-', account.name || account.type || '');
   console.log('Period :', series.periodStartDate, '→', series.periodEndDate);
-  console.log('Points :', Array.isArray(series.points) ? series.points.length : 0);
+  console.log('Points :', Array.isArray(displaySeries) ? displaySeries.length : 0);
+  const hasRelativeSeries = Array.isArray(displaySeries)
+    && displaySeries.some((point) => Number.isFinite(point && point.totalPnlSinceDisplayStartCad));
+  const useDisplayStartRelative = !keepCagrStart && hasRelativeSeries;
+
   console.log('Summary:');
   console.log('  Net deposits CAD:', formatNumber(series.summary.netDepositsCad));
   console.log('  Total equity CAD :', formatNumber(series.summary.totalEquityCad));
-  console.log('  Total P&L CAD    :', formatNumber(series.summary.totalPnlCad));
+
+  const summaryPnlDisplay = useDisplayStartRelative
+    && Number.isFinite(series.summary.totalPnlSinceDisplayStartCad)
+    ? series.summary.totalPnlSinceDisplayStartCad
+    : series.summary.totalPnlCad;
+  console.log('  Total P&L CAD    :', formatNumber(summaryPnlDisplay));
+  if (useDisplayStartRelative && Number.isFinite(series.summary.totalPnlAllTimeCad)) {
+    console.log('  Total P&L (all-time) CAD :', formatNumber(series.summary.totalPnlAllTimeCad));
+  }
 
   const baselineEquity =
     Number.isFinite(series.summary.totalEquityCad) &&
@@ -434,8 +469,13 @@ async function main() {
     console.log('Missing price symbols:', series.missingPriceSymbols.join(', '));
   }
 
-  const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : series.points.length;
-  printSeriesPreview(series.points, previewCount);
+  const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : displaySeries.length;
+  if (useDisplayStartRelative) {
+    console.log();
+    console.log('Δ values represent changes since the first displayed date.');
+  }
+
+  printSeriesPreview(displaySeries, previewCount, { useDisplayStartRelative });
 }
 
 main().catch((error) => {

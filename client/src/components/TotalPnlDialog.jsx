@@ -1,111 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
+import {
+  TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
+  buildTotalPnlDisplaySeries,
+} from '../../../shared/totalPnlDisplay.js';
 
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
 const AXIS_TARGET_INTERVALS = 4;
-
-const TIMEFRAME_OPTIONS = [
-  { value: '1M', label: '1 month' },
-  { value: '3M', label: '3 months' },
-  { value: '6M', label: '6 months' },
-  { value: '1Y', label: '1 year' },
-  { value: '3Y', label: '3 years' },
-  { value: '5Y', label: '5 years' },
-  { value: 'ALL', label: 'All' },
-];
-
-function parseDateOnly(value) {
-  if (!value) {
-    return null;
-  }
-  const raw = String(value).trim();
-  if (!raw) {
-    return null;
-  }
-  const parsed = new Date(`${raw}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-  return parsed;
-}
-
-function subtractInterval(date, option) {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-    return null;
-  }
-  const result = new Date(date.getTime());
-  switch (option) {
-    case '1M':
-      result.setMonth(result.getMonth() - 1);
-      break;
-    case '3M':
-      result.setMonth(result.getMonth() - 3);
-      break;
-    case '6M':
-      result.setMonth(result.getMonth() - 6);
-      break;
-    case '1Y':
-      result.setFullYear(result.getFullYear() - 1);
-      break;
-    case '3Y':
-      result.setFullYear(result.getFullYear() - 3);
-      break;
-    case '5Y':
-      result.setFullYear(result.getFullYear() - 5);
-      break;
-    default:
-      return null;
-  }
-  return result;
-}
-
-function filterSeries(points, timeframe) {
-  if (!Array.isArray(points)) {
-    return [];
-  }
-  const sanitized = points
-    .map((entry) => ({
-      date: entry?.date || null,
-      totalPnl: Number(entry?.totalPnlCad),
-      totalPnlDelta: Number(entry?.totalPnlSinceDisplayStartCad),
-      equity: Number(entry?.equityCad),
-      equityDelta: Number(entry?.equitySinceDisplayStartCad),
-      netDeposits: Number(entry?.cumulativeNetDepositsCad),
-      netDepositsDelta: Number(entry?.cumulativeNetDepositsSinceDisplayStartCad),
-    }))
-    .filter((entry) => entry.date && Number.isFinite(entry.totalPnl));
-  if (!sanitized.length) {
-    return [];
-  }
-  sanitized.sort((a, b) => {
-    const aDate = parseDateOnly(a.date)?.getTime() ?? 0;
-    const bDate = parseDateOnly(b.date)?.getTime() ?? 0;
-    return aDate - bDate;
-  });
-  if (timeframe === 'ALL') {
-    return sanitized;
-  }
-  const lastEntry = sanitized[sanitized.length - 1];
-  const lastDate = parseDateOnly(lastEntry.date);
-  const cutoff = subtractInterval(lastDate, timeframe);
-  if (!cutoff) {
-    return sanitized;
-  }
-  const filtered = sanitized.filter((entry) => {
-    const entryDate = parseDateOnly(entry.date);
-    if (!entryDate) {
-      return false;
-    }
-    return entryDate >= cutoff;
-  });
-  if (filtered.length === 0) {
-    return sanitized.slice(-1);
-  }
-  return filtered;
-}
 
 function niceNumber(value, round) {
   if (!Number.isFinite(value) || value === 0) {
@@ -163,13 +67,28 @@ function buildAxisScale(minDomain, maxDomain) {
   };
 }
 
-function buildChartMetrics(series) {
+function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
   if (!Array.isArray(series) || series.length === 0) {
     return null;
   }
-  const values = series.map((entry) => entry.totalPnl);
-  const minValue = Math.min(...values, 0);
-  const maxValue = Math.max(...values, 0);
+  const resolveValue = (entry) => {
+    if (!entry) {
+      return null;
+    }
+    if (useDisplayStartDelta && Number.isFinite(entry.totalPnlDelta)) {
+      return entry.totalPnlDelta;
+    }
+    return entry.totalPnl;
+  };
+
+  const rawValues = series.map((entry) => resolveValue(entry));
+  const finiteValues = rawValues.filter((value) => Number.isFinite(value));
+  if (!finiteValues.length) {
+    return null;
+  }
+
+  const minValue = Math.min(...finiteValues, 0);
+  const maxValue = Math.max(...finiteValues, 0);
   const range = maxValue - minValue;
   const padding = range === 0 ? Math.max(10, Math.abs(maxValue) * 0.1 || 10) : Math.max(10, range * 0.1);
   const rawMinDomain = minValue - padding;
@@ -180,14 +99,17 @@ function buildChartMetrics(series) {
   const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
 
   const points = series.map((entry, index) => {
+    const totalValue = resolveValue(entry);
+    const safeValue = Number.isFinite(totalValue) ? totalValue : 0;
     const ratio = series.length === 1 ? 0 : index / (series.length - 1);
     const x = PADDING.left + innerWidth * ratio;
-    const normalized = (entry.totalPnl - minDomain) / domainRange;
+    const normalized = (safeValue - minDomain) / domainRange;
     const clamped = Math.max(0, Math.min(1, normalized));
     const y = PADDING.top + innerHeight * (1 - clamped);
-    const previous = index > 0 ? series[index - 1].totalPnl : entry.totalPnl;
-    const trend = entry.totalPnl - previous;
-    return { ...entry, x, y, trend };
+    const previousValue = index > 0 ? resolveValue(series[index - 1]) : totalValue;
+    const safePrevious = Number.isFinite(previousValue) ? previousValue : safeValue;
+    const trend = safeValue - safePrevious;
+    return { ...entry, x, y, trend, chartValue: safeValue };
   });
 
   const yFor = (value) => {
@@ -296,8 +218,24 @@ export default function TotalPnlDialog({
     }
   };
 
-  const filteredSeries = useMemo(() => filterSeries(data?.points, timeframe), [data?.points, timeframe]);
-  const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
+  const filteredSeries = useMemo(
+    () =>
+      buildTotalPnlDisplaySeries(data?.points, timeframe, {
+        displayStartDate: data?.displayStartDate,
+        displayStartTotals: data?.summary?.displayStartTotals,
+      }),
+    [data?.points, timeframe, data?.displayStartDate, data?.summary?.displayStartTotals]
+  );
+  const seriesHasDisplayDelta = useMemo(
+    () => filteredSeries.some((entry) => Number.isFinite(entry?.totalPnlDelta)),
+    [filteredSeries]
+  );
+  const summaryHasDisplayDelta = Number.isFinite(data?.summary?.totalPnlSinceDisplayStartCad);
+  const useDisplayStartDelta = summaryHasDisplayDelta || seriesHasDisplayDelta;
+  const chartMetrics = useMemo(
+    () => buildChartMetrics(filteredSeries, { useDisplayStartDelta }),
+    [filteredSeries, useDisplayStartDelta]
+  );
   const hasChart = Boolean(chartMetrics && chartMetrics.points.length);
   const pathD = useMemo(() => {
     if (!hasChart) {
@@ -357,9 +295,12 @@ export default function TotalPnlDialog({
       }
       return undefined;
     };
+    const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
+    const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
     return {
       date: t < 0.5 ? lower.date : upper.date,
-      totalPnl: lower.totalPnl + (upper.totalPnl - lower.totalPnl) * t,
+      totalPnl: interpolatedTotalPnl,
+      chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
       equity: lower.equity + (upper.equity - lower.equity) * t,
       netDeposits: lower.netDeposits + (upper.netDeposits - lower.netDeposits) * t,
       totalPnlDelta: interpolate(lower.totalPnlDelta, upper.totalPnlDelta),
@@ -367,12 +308,19 @@ export default function TotalPnlDialog({
       netDepositsDelta: interpolate(lower.netDepositsDelta, upper.netDepositsDelta),
       x: clampedInterpX,
       y: lower.y + (upper.y - lower.y) * t,
-      trend: upper.totalPnl - lower.totalPnl,
+      trend:
+        Number.isFinite(upper.chartValue) && Number.isFinite(lower.chartValue)
+          ? upper.chartValue - lower.chartValue
+          : interpolate(lower.trend, upper.trend),
     };
   }, [hover, chartMetrics, hasChart]);
 
   const marker = hasChart ? chartMetrics.points[chartMetrics.points.length - 1] : null;
-  const markerLabel = marker ? formatMoney(marker.totalPnl) : null;
+  const markerValue =
+    marker && Number.isFinite(marker.chartValue) ? marker.chartValue : marker && Number.isFinite(marker.totalPnl)
+      ? marker.totalPnl
+      : null;
+  const markerLabel = Number.isFinite(markerValue) ? formatMoney(markerValue) : null;
   const labelPosition = useMemo(() => {
     const point = hoverPoint || marker;
     if (!point) {
@@ -390,14 +338,27 @@ export default function TotalPnlDialog({
 
   const hoverLabel = hoverPoint
     ? {
-        amount: formatMoney(hoverPoint.totalPnl),
-        delta:
-          Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
-            ? formatSignedMoney(hoverPoint.totalPnlDelta)
+        amount: formatMoney(
+          useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
+        ),
+        secondary: useDisplayStartDelta
+          ? Number.isFinite(hoverPoint.totalPnl)
+            ? `All-time: ${formatMoney(hoverPoint.totalPnl)}`
+            : null
+          : Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
+            ? `${formatSignedMoney(hoverPoint.totalPnlDelta)} since start`
             : null,
         date: formatDate(hoverPoint.date),
       }
     : null;
+
+  const markerSecondary = useDisplayStartDelta
+    ? marker && Number.isFinite(marker.totalPnl)
+      ? `All-time: ${formatMoney(marker.totalPnl)}`
+      : null
+    : marker && Number.isFinite(marker.totalPnlDelta) && Math.abs(marker.totalPnlDelta) > 0.005
+      ? `${formatSignedMoney(marker.totalPnlDelta)} since start`
+      : null;
 
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
@@ -426,9 +387,28 @@ export default function TotalPnlDialog({
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
 
   const summary = data?.summary || {};
-  const netDeposits = Number(summary.netDepositsCad);
-  const totalEquity = Number(summary.totalEquityCad);
-  const totalPnl = Number(summary.totalPnlCad);
+  const totalPnlAllTime = Number.isFinite(summary.totalPnlCad) ? summary.totalPnlCad : null;
+  const totalPnlDelta = Number.isFinite(summary.totalPnlSinceDisplayStartCad)
+    ? summary.totalPnlSinceDisplayStartCad
+    : null;
+  const showSummaryDisplayDelta = useDisplayStartDelta && totalPnlDelta !== null;
+  const totalPnl = showSummaryDisplayDelta ? totalPnlDelta : totalPnlAllTime;
+
+  const displayStartTotals =
+    summary.displayStartTotals && typeof summary.displayStartTotals === 'object'
+      ? summary.displayStartTotals
+      : null;
+  const baselineNetDeposits =
+    displayStartTotals && Number.isFinite(displayStartTotals.cumulativeNetDepositsCad)
+      ? displayStartTotals.cumulativeNetDepositsCad
+      : null;
+  const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
+  const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
+    ? summary.netDepositsAllTimeCad
+    : netDepositsCombined;
+  const netDeposits = netDepositsAllTime ?? netDepositsCombined;
+
+  const totalEquity = Number.isFinite(summary.totalEquityCad) ? summary.totalEquityCad : null;
 
   const normalizedIssues = useMemo(() => formatIssues(data?.issues), [data?.issues]);
 
@@ -614,11 +594,13 @@ export default function TotalPnlDialog({
                         </>
                       )}
                     </svg>
-                    {(hoverLabel || (marker && markerLabel)) && (
+                    {(hoverLabel || markerLabel) && (
                       <div className="qqq-section__chart-label" style={labelPosition}>
                         <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
-                        {hoverLabel?.delta && (
-                          <span className="pnl-dialog__label-delta">{hoverLabel.delta} since start</span>
+                        {(hoverLabel?.secondary || markerSecondary) && (
+                          <span className="pnl-dialog__label-delta">
+                            {hoverLabel ? hoverLabel.secondary : markerSecondary}
+                          </span>
                         )}
                         <span className="pnl-dialog__label-date">
                           {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
@@ -661,6 +643,7 @@ TotalPnlDialog.propTypes = {
     accountId: PropTypes.string,
     periodStartDate: PropTypes.string,
     periodEndDate: PropTypes.string,
+    displayStartDate: PropTypes.string,
     points: PropTypes.arrayOf(
       PropTypes.shape({
         date: PropTypes.string,
@@ -671,8 +654,17 @@ TotalPnlDialog.propTypes = {
     ),
     summary: PropTypes.shape({
       netDepositsCad: PropTypes.number,
+      netDepositsAllTimeCad: PropTypes.number,
       totalEquityCad: PropTypes.number,
+      totalEquitySinceDisplayStartCad: PropTypes.number,
       totalPnlCad: PropTypes.number,
+      totalPnlAllTimeCad: PropTypes.number,
+      totalPnlSinceDisplayStartCad: PropTypes.number,
+      displayStartTotals: PropTypes.shape({
+        cumulativeNetDepositsCad: PropTypes.number,
+        equityCad: PropTypes.number,
+        totalPnlCad: PropTypes.number,
+      }),
     }),
     issues: PropTypes.arrayOf(PropTypes.string),
   }),
