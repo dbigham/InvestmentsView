@@ -840,6 +840,24 @@ textarea {
   width: 100%;
 }
 
+.pnl-dialog__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 80px 0;
+}
+
+.pnl-dialog__spinner {
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  border: 5px solid rgba(56, 155, 60, 0.18);
+  border-top-color: var(--color-accent);
+  animation: initial-loading-spin 0.9s linear infinite;
+}
+
 .pnl-dialog__control-label {
   font-size: 0.85rem;
   color: var(--color-text-muted);

@@ -451,195 +451,202 @@ export default function TotalPnlDialog({
               {accountLabel && <span className="pnl-dialog__account">{accountLabel}</span>}
             </div>
 
-            <div className="pnl-dialog__summary">
-              <div className="pnl-dialog__summary-item">
-                <span className="pnl-dialog__summary-label">Total P&amp;L</span>
-                <span className="pnl-dialog__summary-value pnl-dialog__summary-value--accent">
-                  {Number.isFinite(totalPnl) ? formatMoney(totalPnl) : '—'}
-                </span>
+            {loading ? (
+              <div className="pnl-dialog__loading" role="status" aria-live="polite">
+                <span className="pnl-dialog__spinner" aria-hidden="true" />
+                <span className="visually-hidden">Loading Total P&amp;L…</span>
               </div>
-              <div className="pnl-dialog__summary-item">
-                <span className="pnl-dialog__summary-label">Net deposits</span>
-                <span className="pnl-dialog__summary-value">
-                  {Number.isFinite(netDeposits) ? formatMoney(netDeposits) : '—'}
-                </span>
-              </div>
-              <div className="pnl-dialog__summary-item">
-                <span className="pnl-dialog__summary-label">Total equity</span>
-                <span className="pnl-dialog__summary-value">
-                  {Number.isFinite(totalEquity) ? formatMoney(totalEquity) : '—'}
-                </span>
-              </div>
-            </div>
-
-            <div className="pnl-dialog__controls">
-              <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
-                Show
-              </label>
-              <div className="select-control" ref={selectRef}>
-                <button
-                  id="total-pnl-timeframe"
-                  type="button"
-                  className="select-control__button"
-                  onClick={(event) => {
-                    const menu = event.currentTarget.nextSibling;
-                    if (menu) {
-                      menu.classList.toggle('select-control__list--open');
-                    }
-                  }}
-                  disabled={!data || loading}
-                >
-                  {TIMEFRAME_OPTIONS.find((option) => option.value === timeframe)?.label || 'Select'}
-                  <span aria-hidden="true" className="select-control__chevron" />
-                </button>
-                <ul className="select-control__list" role="listbox">
-                  {TIMEFRAME_OPTIONS.map((option) => (
-                    <li key={option.value}>
-                      <button
-                        type="button"
-                        className={option.value === timeframe ? 'select-control__option select-control__option--selected' : 'select-control__option'}
-                        onClick={() => {
-                          setTimeframe(option.value);
-                          const container = document.getElementById('total-pnl-timeframe')?.nextSibling;
-                          if (container) {
-                            container.classList.remove('select-control__list--open');
-                          }
-                        }}
-                        role="option"
-                        aria-selected={option.value === timeframe}
-                      >
-                        {option.label}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            {showRangeToggle ? (
-              <div className="pnl-dialog__range-toggle-row">
-                <label className="pnl-dialog__range-toggle">
-                  <input
-                    type="checkbox"
-                    checked={isCagrMode}
-                    onChange={handleRangeToggle}
-                    disabled={loading}
-                  />
-                  <span>{cagrToggleLabel}</span>
-                </label>
-              </div>
-            ) : null}
-
-            {loading && (
-              <div className="qqq-section__status" role="status">
-                Loading Total P&amp;L…
-              </div>
-            )}
-
-            {!loading && error && (
-              <div className="qqq-section__status qqq-section__status--error" role="alert">
-                <span>{error.message || 'Failed to load Total P&L series.'}</span>
-                {onRetry && (
-                  <button type="button" className="qqq-section__retry" onClick={onRetry}>
-                    Retry
-                  </button>
-                )}
-              </div>
-            )}
-
-            {!loading && !error && hasChart && (
-              <div className="qqq-section__chart-container">
-                <svg
-                  className="qqq-section__chart pnl-dialog__chart"
-                  viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
-                  role="img"
-                  aria-hidden="true"
-                  onMouseMove={handleMouseMove}
-                  onMouseLeave={handleMouseLeave}
-                >
-                  <rect className="qqq-section__chart-surface" x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} rx="16" />
-                  {Number.isFinite(zeroLine) && (
-                    <line
-                      className="qqq-section__line qqq-section__line--base"
-                      x1={PADDING.left}
-                      x2={CHART_WIDTH - PADDING.right}
-                      y1={zeroLine}
-                      y2={zeroLine}
-                    />
-                  )}
-                  {formattedAxis.map((tick) => (
-                    <g key={tick.value}>
-                      <line
-                        className="qqq-section__line qqq-section__line--guide"
-                        x1={CHART_WIDTH - PADDING.right}
-                        x2={CHART_WIDTH - PADDING.right + 6}
-                        y1={tick.y}
-                        y2={tick.y}
-                      />
-                      <text
-                        x={CHART_WIDTH - PADDING.right + 8}
-                        y={tick.y + 3}
-                        className="pnl-dialog__axis-label"
-                        textAnchor="start"
-                      >
-                        {formatMoney(tick.value)}
-                      </text>
-                      <line
-                        className="qqq-section__line qqq-section__line--guide"
-                        x1={PADDING.left}
-                        x2={CHART_WIDTH - PADDING.right}
-                        y1={tick.y}
-                        y2={tick.y}
-                        strokeDasharray="2 4"
-                      />
-                    </g>
-                  ))}
-                  {pathD && <path className="qqq-section__series-path" d={pathD} />}
-                  {marker && <circle className="qqq-section__marker" cx={marker.x} cy={marker.y} r="5" />}
-                  {hoverPoint && (
-                    <>
-                      <line
-                        className="pnl-dialog__hover-line"
-                        x1={hoverPoint.x}
-                        x2={hoverPoint.x}
-                        y1={hoverPoint.y}
-                        y2={CHART_HEIGHT - PADDING.bottom}
-                      />
-                      <circle className="pnl-dialog__hover-marker" cx={hoverPoint.x} cy={hoverPoint.y} r="6" />
-                    </>
-                  )}
-                </svg>
-                {(hoverLabel || (marker && markerLabel)) && (
-                  <div className="qqq-section__chart-label" style={labelPosition}>
-                    <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
-                    {hoverLabel?.delta && (
-                      <span className="pnl-dialog__label-delta">{hoverLabel.delta} since start</span>
-                    )}
-                    <span className="pnl-dialog__label-date">
-                      {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
+            ) : (
+              <>
+                <div className="pnl-dialog__summary">
+                  <div className="pnl-dialog__summary-item">
+                    <span className="pnl-dialog__summary-label">Total P&amp;L</span>
+                    <span className="pnl-dialog__summary-value pnl-dialog__summary-value--accent">
+                      {Number.isFinite(totalPnl) ? formatMoney(totalPnl) : '—'}
                     </span>
                   </div>
-                )}
-                <div className="qqq-section__chart-footer">
-                  <span>{formatDate(displayRangeStart)}</span>
-                  <span>{formatDate(displayRangeEnd)}</span>
+                  <div className="pnl-dialog__summary-item">
+                    <span className="pnl-dialog__summary-label">Net deposits</span>
+                    <span className="pnl-dialog__summary-value">
+                      {Number.isFinite(netDeposits) ? formatMoney(netDeposits) : '—'}
+                    </span>
+                  </div>
+                  <div className="pnl-dialog__summary-item">
+                    <span className="pnl-dialog__summary-label">Total equity</span>
+                    <span className="pnl-dialog__summary-value">
+                      {Number.isFinite(totalEquity) ? formatMoney(totalEquity) : '—'}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            )}
 
-            {!loading && !error && !hasChart && (
-              <div className="qqq-section__status">No Total P&amp;L data available.</div>
-            )}
+                <div className="pnl-dialog__controls">
+                  <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
+                    Show
+                  </label>
+                  <div className="select-control" ref={selectRef}>
+                    <button
+                      id="total-pnl-timeframe"
+                      type="button"
+                      className="select-control__button"
+                      onClick={(event) => {
+                        const menu = event.currentTarget.nextSibling;
+                        if (menu) {
+                          menu.classList.toggle('select-control__list--open');
+                        }
+                      }}
+                      disabled={!data || loading}
+                    >
+                      {TIMEFRAME_OPTIONS.find((option) => option.value === timeframe)?.label || 'Select'}
+                      <span aria-hidden="true" className="select-control__chevron" />
+                    </button>
+                    <ul className="select-control__list" role="listbox">
+                      {TIMEFRAME_OPTIONS.map((option) => (
+                        <li key={option.value}>
+                          <button
+                            type="button"
+                            className={
+                              option.value === timeframe
+                                ? 'select-control__option select-control__option--selected'
+                                : 'select-control__option'
+                            }
+                            onClick={() => {
+                              setTimeframe(option.value);
+                              const container = document.getElementById('total-pnl-timeframe')?.nextSibling;
+                              if (container) {
+                                container.classList.remove('select-control__list--open');
+                              }
+                            }}
+                            role="option"
+                            aria-selected={option.value === timeframe}
+                          >
+                            {option.label}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
 
-            {!loading && !error && normalizedIssues.length > 0 && (
-              <div className="pnl-dialog__issues" role="note">
-                <h3>Notes</h3>
-                <ul>
-                  {normalizedIssues.map((issue) => (
-                    <li key={issue}>{issue}</li>
-                  ))}
-                </ul>
-              </div>
+                {showRangeToggle ? (
+                  <div className="pnl-dialog__range-toggle-row">
+                    <label className="pnl-dialog__range-toggle">
+                      <input
+                        type="checkbox"
+                        checked={isCagrMode}
+                        onChange={handleRangeToggle}
+                        disabled={loading}
+                      />
+                      <span>{cagrToggleLabel}</span>
+                    </label>
+                  </div>
+                ) : null}
+
+                {error && (
+                  <div className="qqq-section__status qqq-section__status--error" role="alert">
+                    <span>{error.message || 'Failed to load Total P&L series.'}</span>
+                    {onRetry && (
+                      <button type="button" className="qqq-section__retry" onClick={onRetry}>
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {!error && hasChart && (
+                  <div className="qqq-section__chart-container">
+                    <svg
+                      className="qqq-section__chart pnl-dialog__chart"
+                      viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+                      role="img"
+                      aria-hidden="true"
+                      onMouseMove={handleMouseMove}
+                      onMouseLeave={handleMouseLeave}
+                    >
+                      <rect className="qqq-section__chart-surface" x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} rx="16" />
+                      {Number.isFinite(zeroLine) && (
+                        <line
+                          className="qqq-section__line qqq-section__line--base"
+                          x1={PADDING.left}
+                          x2={CHART_WIDTH - PADDING.right}
+                          y1={zeroLine}
+                          y2={zeroLine}
+                        />
+                      )}
+                      {formattedAxis.map((tick) => (
+                        <g key={tick.value}>
+                          <line
+                            className="qqq-section__line qqq-section__line--guide"
+                            x1={CHART_WIDTH - PADDING.right}
+                            x2={CHART_WIDTH - PADDING.right + 6}
+                            y1={tick.y}
+                            y2={tick.y}
+                          />
+                          <text
+                            x={CHART_WIDTH - PADDING.right + 8}
+                            y={tick.y + 3}
+                            className="pnl-dialog__axis-label"
+                            textAnchor="start"
+                          >
+                            {formatMoney(tick.value, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                          </text>
+                          <line
+                            className="qqq-section__line qqq-section__line--guide"
+                            x1={PADDING.left}
+                            x2={CHART_WIDTH - PADDING.right}
+                            y1={tick.y}
+                            y2={tick.y}
+                            strokeDasharray="2 4"
+                          />
+                        </g>
+                      ))}
+                      {pathD && <path className="qqq-section__series-path" d={pathD} />}
+                      {marker && <circle className="qqq-section__marker" cx={marker.x} cy={marker.y} r="5" />}
+                      {hoverPoint && (
+                        <>
+                          <line
+                            className="pnl-dialog__hover-line"
+                            x1={hoverPoint.x}
+                            x2={hoverPoint.x}
+                            y1={hoverPoint.y}
+                            y2={CHART_HEIGHT - PADDING.bottom}
+                          />
+                          <circle className="pnl-dialog__hover-marker" cx={hoverPoint.x} cy={hoverPoint.y} r="6" />
+                        </>
+                      )}
+                    </svg>
+                    {(hoverLabel || (marker && markerLabel)) && (
+                      <div className="qqq-section__chart-label" style={labelPosition}>
+                        <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
+                        {hoverLabel?.delta && (
+                          <span className="pnl-dialog__label-delta">{hoverLabel.delta} since start</span>
+                        )}
+                        <span className="pnl-dialog__label-date">
+                          {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
+                        </span>
+                      </div>
+                    )}
+                    <div className="qqq-section__chart-footer">
+                      <span>{formatDate(displayRangeStart)}</span>
+                      <span>{formatDate(displayRangeEnd)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {!error && !hasChart && (
+                  <div className="qqq-section__status">No Total P&amp;L data available.</div>
+                )}
+
+                {!error && normalizedIssues.length > 0 && (
+                  <div className="pnl-dialog__issues" role="note">
+                    <h3>Notes</h3>
+                    <ul>
+                      {normalizedIssues.map((issue) => (
+                        <li key={issue}>{issue}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
             )}
           </section>
         </div>
