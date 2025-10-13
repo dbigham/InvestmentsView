@@ -5435,7 +5435,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       };
 
   const applyCagrStart = options.applyAccountCagrStartDate !== false;
-  const targetStartPnl = 0;
+  const targetStartPnl = Number.isFinite(rawFirstPnl) ? rawFirstPnl : 0;
   const targetEndPnlCandidate =
     netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
       ? netDepositsSummary.totalPnl.allTimeCad
@@ -5468,13 +5468,21 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
-  let summaryTotalPnl = netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
-    ? netDepositsSummary.totalPnl.combinedCad
-    : null;
+  const summaryTotalPnlCombined =
+    netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+      ? netDepositsSummary.totalPnl.combinedCad
+      : null;
   let summaryTotalPnlAllTime =
     netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
       ? netDepositsSummary.totalPnl.allTimeCad
-      : summaryTotalPnl;
+      : null;
+  let summaryTotalPnl = summaryTotalPnlCombined;
+  if (summaryTotalPnl === null && Number.isFinite(summaryTotalPnlAllTime)) {
+    summaryTotalPnl = summaryTotalPnlAllTime;
+  }
+  if (summaryTotalPnlAllTime === null && Number.isFinite(summaryTotalPnl)) {
+    summaryTotalPnlAllTime = summaryTotalPnl;
+  }
   const summaryNetDeposits =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
       ? netDepositsSummary.netDeposits.combinedCad
@@ -5613,8 +5621,6 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     const deltaEquity = summaryEquity - baselineEquityForSummary;
     summaryEquitySinceDisplayStart = Math.abs(deltaEquity) < CASH_FLOW_EPSILON ? 0 : deltaEquity;
   }
-
-  summaryTotalPnl = Number.isFinite(summaryTotalPnlAllTime) ? summaryTotalPnlAllTime : summaryTotalPnl;
 
   const effectivePeriodStart = normalizedPoints.length ? normalizedPoints[0].date : dateKeys[0];
   const effectivePeriodEnd = normalizedPoints.length
