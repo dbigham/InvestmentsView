@@ -3253,6 +3253,14 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
     options && options.applyAccountCagrStartDate && typeof account.cagrStartDate === 'string'
       ? 'cagrDate:' + account.cagrStartDate.trim()
       : 'cagrDate:none';
+  const startDateKey =
+    options && typeof options.startDate === 'string' && options.startDate.trim()
+      ? 'start:' + options.startDate.trim()
+      : 'start:none';
+  const endDateKey =
+    options && typeof options.endDate === 'string' && options.endDate.trim()
+      ? 'end:' + options.endDate.trim()
+      : 'end:none';
   const adjustment = Number(account.netDepositAdjustment);
   const adjustmentKey = Number.isFinite(adjustment) ? 'adj:' + adjustment.toFixed(2) : 'adj:none';
   return [
@@ -3263,6 +3271,8 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
     balanceFingerprint,
     cagrKey,
     cagrDateKey,
+    startDateKey,
+    endDateKey,
     adjustmentKey,
   ].join('|');
 }
@@ -3420,6 +3430,33 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     return null;
   }
   const accountKey = account.id;
+
+  const normalizedStartOverride =
+    typeof options.startDate === 'string' && options.startDate.trim()
+      ? options.startDate.trim()
+      : null;
+  const normalizedEndOverride =
+    typeof options.endDate === 'string' && options.endDate.trim()
+      ? options.endDate.trim()
+      : null;
+
+  let requestedPeriodStartDate = null;
+  if (normalizedStartOverride) {
+    requestedPeriodStartDate = parseDateOnlyString(normalizedStartOverride);
+    if (!requestedPeriodStartDate) {
+      const fallbackStart = new Date(normalizedStartOverride);
+      requestedPeriodStartDate = Number.isNaN(fallbackStart.getTime()) ? null : fallbackStart;
+    }
+  }
+
+  let requestedPeriodEndDate = null;
+  if (normalizedEndOverride) {
+    requestedPeriodEndDate = parseDateOnlyString(normalizedEndOverride);
+    if (!requestedPeriodEndDate) {
+      const fallbackEnd = new Date(normalizedEndOverride);
+      requestedPeriodEndDate = Number.isNaN(fallbackEnd.getTime()) ? null : fallbackEnd;
+    }
+  }
 
   const earliestFunding = activityContext.earliestFunding || null;
   const now =
@@ -3581,6 +3618,8 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   let effectiveCashFlows = cashFlowEntries;
   let appliedCagrStartDate = null;
   let preCagrNetDepositsCad = null;
+  let appliedPeriodStartDate = null;
+  let prePeriodNetDepositsCad = null;
 
   if (options.applyAccountCagrStartDate && typeof account.cagrStartDate === 'string') {
     const parsedStartDate = parseDateOnlyString(account.cagrStartDate);
@@ -3639,6 +3678,46 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     }
   }
 
+  if (requestedPeriodStartDate instanceof Date && !Number.isNaN(requestedPeriodStartDate.getTime())) {
+    appliedPeriodStartDate = requestedPeriodStartDate;
+    let aggregatedAmount = 0;
+    let rolledEntryCount = 0;
+    const filtered = [];
+    for (const entry of effectiveCashFlows) {
+      if (!entry || typeof entry !== 'object') {
+        filtered.push(entry);
+        continue;
+      }
+      const amount = Number(entry.amount);
+      if (!Number.isFinite(amount)) {
+        filtered.push(entry);
+        continue;
+      }
+      const entryDate = parseCashFlowEntryDate(entry);
+      if (entryDate && entryDate < requestedPeriodStartDate) {
+        aggregatedAmount += amount;
+        rolledEntryCount += 1;
+        continue;
+      }
+      filtered.push(entry);
+    }
+    if (rolledEntryCount > 0) {
+      if (Number.isFinite(aggregatedAmount)) {
+        const normalizedRolled = -aggregatedAmount;
+        prePeriodNetDepositsCad =
+          Math.abs(normalizedRolled) < CASH_FLOW_EPSILON ? 0 : normalizedRolled;
+      } else {
+        prePeriodNetDepositsCad = null;
+      }
+      if (aggregatedAmount !== 0) {
+        filtered.unshift({ amount: aggregatedAmount, date: requestedPeriodStartDate.toISOString() });
+      }
+    } else if (prePeriodNetDepositsCad === null) {
+      prePeriodNetDepositsCad = 0;
+    }
+    effectiveCashFlows = filtered;
+  }
+
   const annualizedReturnRateAllTime = !conversionIncomplete
     ? computeAccountAnnualizedReturn(allTimeCashFlows, accountKey)
     : null;
@@ -3663,21 +3742,40 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   let netDepositsEffectiveCad = netDepositsAllTimeCad;
   let totalPnlEffectiveCad = totalPnlAllTimeCad;
 
+  const priorNetDepositAdjustments = [];
+
   if (hasCagrOverride) {
-    const priorNetDeposits = Number.isFinite(preCagrNetDepositsCad) ? preCagrNetDepositsCad : null;
-    if (priorNetDeposits !== null && netDepositsAllTimeCad !== null) {
-      const derivedNetDeposits = netDepositsAllTimeCad - priorNetDeposits;
-      if (Number.isFinite(derivedNetDeposits)) {
-        netDepositsEffectiveCad =
-          Math.abs(derivedNetDeposits) < CASH_FLOW_EPSILON ? 0 : derivedNetDeposits;
-      } else {
-        netDepositsEffectiveCad = null;
-      }
+    if (Number.isFinite(preCagrNetDepositsCad)) {
+      priorNetDepositAdjustments.push(preCagrNetDepositsCad);
+    } else if (preCagrNetDepositsCad !== null) {
+      netDepositsEffectiveCad = null;
     }
-    if (totalEquityCad !== null && netDepositsEffectiveCad !== null) {
-      const derivedPnl = totalEquityCad - netDepositsEffectiveCad;
-      totalPnlEffectiveCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+  }
+
+  if (prePeriodNetDepositsCad !== null) {
+    if (Number.isFinite(prePeriodNetDepositsCad)) {
+      priorNetDepositAdjustments.push(prePeriodNetDepositsCad);
+    } else {
+      netDepositsEffectiveCad = null;
     }
+  }
+
+  if (netDepositsEffectiveCad !== null && priorNetDepositAdjustments.length > 0) {
+    const totalPriorNetDeposits = priorNetDepositAdjustments.reduce((sum, value) => sum + value, 0);
+    const derivedNetDeposits = netDepositsAllTimeCad - totalPriorNetDeposits;
+    if (Number.isFinite(derivedNetDeposits)) {
+      netDepositsEffectiveCad =
+        Math.abs(derivedNetDeposits) < CASH_FLOW_EPSILON ? 0 : derivedNetDeposits;
+    } else {
+      netDepositsEffectiveCad = null;
+    }
+  }
+
+  if (totalEquityCad !== null && netDepositsEffectiveCad !== null) {
+    const derivedPnl = totalEquityCad - netDepositsEffectiveCad;
+    totalPnlEffectiveCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+  } else if (netDepositsEffectiveCad === null) {
+    totalPnlEffectiveCad = null;
   }
 
   if (!Number.isFinite(netDepositsEffectiveCad)) {
@@ -3729,6 +3827,10 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     annualizedReturn.startDate = appliedCagrStartDate.toISOString().slice(0, 10);
   }
 
+  if (annualizedReturn && appliedPeriodStartDate) {
+    annualizedReturn.startDate = appliedPeriodStartDate.toISOString().slice(0, 10);
+  }
+
   if (Number.isFinite(annualizedReturnRateAllTime)) {
     annualizedReturnAllTime = {
       rate: annualizedReturnRateAllTime,
@@ -3767,6 +3869,14 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
 
   if (!normalizedPeriodStart && earliestFunding instanceof Date && !Number.isNaN(earliestFunding.getTime())) {
     normalizedPeriodStart = formatDateOnly(earliestFunding);
+  }
+
+  if (requestedPeriodStartDate instanceof Date && !Number.isNaN(requestedPeriodStartDate.getTime())) {
+    normalizedPeriodStart = formatDateOnly(requestedPeriodStartDate);
+  }
+
+  if (requestedPeriodEndDate instanceof Date && !Number.isNaN(requestedPeriodEndDate.getTime())) {
+    normalizedPeriodEnd = formatDateOnly(requestedPeriodEndDate);
   }
 
   if (normalizedPeriodStart && normalizedPeriodEnd) {

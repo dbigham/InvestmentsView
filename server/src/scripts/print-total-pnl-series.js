@@ -328,9 +328,16 @@ async function main() {
 
   let fundingSummary = null;
   try {
-    fundingSummary = await computeNetDeposits(login, account, perAccountCombinedBalances, {
+    const fundingOptions = {
       applyAccountCagrStartDate: keepCagrStart,
-    });
+    };
+    if (startDate) {
+      fundingOptions.startDate = startDate;
+    }
+    if (endDate) {
+      fundingOptions.endDate = endDate;
+    }
+    fundingSummary = await computeNetDeposits(login, account, perAccountCombinedBalances, fundingOptions);
   } catch (summaryError) {
     const message = summaryError && summaryError.message ? summaryError.message : String(summaryError);
     console.warn('Failed to compute funding summary for account', identifier + ':', message);
