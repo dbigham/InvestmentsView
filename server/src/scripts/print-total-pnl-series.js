@@ -76,6 +76,14 @@ function formatSignedPercent(value) {
   return `${prefix}${percent.toFixed(2)}%`;
 }
 
+function formatSignedCurrency(value) {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toFixed(2)}`;
+}
+
 function parseDate(value) {
   if (!value || typeof value !== 'string') {
     return null;
@@ -250,6 +258,7 @@ async function main() {
   const startDate = normalizeIdentifier(options.start || options.from || null);
   const endDate = normalizeIdentifier(options.end || options.to || null);
   const keepCagrStart = options['no-cagr-start'] ? false : true;
+  const debugFunding = options['debug-funding'] ? true : false;
 
   const context = await resolveAccountContext(identifier);
   const { login, account: baseAccount } = context;
@@ -320,6 +329,31 @@ async function main() {
   console.log('  Net deposits CAD:', formatNumber(series.summary.netDepositsCad));
   console.log('  Total equity CAD :', formatNumber(series.summary.totalEquityCad));
   console.log('  Total P&L CAD    :', formatNumber(series.summary.totalPnlCad));
+
+  const baselineEquity =
+    Number.isFinite(series.summary.totalEquityCad) &&
+    Number.isFinite(series.summary.netDepositsCad) &&
+    Number.isFinite(series.summary.totalPnlCad)
+      ? series.summary.totalEquityCad - (series.summary.netDepositsCad + series.summary.totalPnlCad)
+      : null;
+  if (baselineEquity !== null) {
+    console.log('  Start equity CAD :', formatNumber(baselineEquity));
+  }
+
+  if (fundingSummary) {
+    const allTimeNetDeposits =
+      fundingSummary.netDeposits && Number.isFinite(fundingSummary.netDeposits.allTimeCad)
+        ? fundingSummary.netDeposits.allTimeCad
+        : null;
+    const allTimePnl =
+      fundingSummary.totalPnl && Number.isFinite(fundingSummary.totalPnl.allTimeCad)
+        ? fundingSummary.totalPnl.allTimeCad
+        : null;
+    if (allTimeNetDeposits !== null || allTimePnl !== null) {
+      console.log('  All-time deposits:', formatNumber(allTimeNetDeposits));
+      console.log('  All-time P&L     :', formatNumber(allTimePnl));
+    }
+  }
   if (lastPoint) {
     const diff = Math.abs(lastPoint.totalPnlCad - series.summary.totalPnlCad);
     console.log('  Last point P&L   :', formatNumber(lastPoint.totalPnlCad), diff < 0.05 ? '(matches summary)' : '(diff ' + formatNumber(diff) + ')');
@@ -342,6 +376,26 @@ async function main() {
   } else {
     console.log('  Annualized XIRR  : n/a');
     console.log('  De-annualized    : n/a');
+  }
+
+  if (debugFunding && fundingSummary) {
+    console.log('Funding cash flows (CAD):');
+    if (Array.isArray(fundingSummary.cashFlowsCad) && fundingSummary.cashFlowsCad.length) {
+      fundingSummary.cashFlowsCad
+        .slice()
+        .sort((a, b) => {
+          const aTime = new Date(a.date).getTime();
+          const bTime = new Date(b.date).getTime();
+          return aTime - bTime;
+        })
+        .forEach((entry) => {
+          const amount = Number(entry.amount);
+          const label = `${entry.date || 'n/a'}`;
+          console.log('   ', label, formatSignedCurrency(amount));
+        });
+    } else {
+      console.log('   <none>');
+    }
   }
 
   if (series.issues && series.issues.length) {
