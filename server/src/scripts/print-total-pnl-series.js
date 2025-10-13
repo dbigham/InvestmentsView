@@ -6,6 +6,7 @@ const path = require('path');
 
 const {
   computeTotalPnlSeries,
+  computeNetDeposits,
   getAllLogins,
   getLoginById,
   fetchAccounts,
@@ -64,6 +65,76 @@ function formatNumber(value) {
     return 'n/a';
   }
   return value.toFixed(2);
+}
+
+function formatSignedPercent(value) {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const percent = value * 100;
+  const prefix = percent > 0 ? '+' : '';
+  return `${prefix}${percent.toFixed(2)}%`;
+}
+
+function formatSignedCurrency(value) {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toFixed(2)}`;
+}
+
+function parseDate(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? `${trimmed}T00:00:00Z` : trimmed;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function computeElapsedYears(startDate, endDate) {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    return null;
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
+    return null;
+  }
+  const diffMs = endDate.getTime() - startDate.getTime();
+  if (!Number.isFinite(diffMs) || diffMs <= 0) {
+    return null;
+  }
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const DAYS_PER_YEAR = 365.25;
+  return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
+}
+
+function computeDeAnnualizedReturn(rate, startDateRaw, endDateRaw) {
+  if (!Number.isFinite(rate)) {
+    return null;
+  }
+  const startDate = startDateRaw instanceof Date ? startDateRaw : parseDate(startDateRaw);
+  const endDate = endDateRaw instanceof Date ? endDateRaw : parseDate(endDateRaw);
+  const elapsedYears = computeElapsedYears(startDate, endDate);
+  if (!Number.isFinite(elapsedYears) || elapsedYears <= 0) {
+    return null;
+  }
+  const growthBase = 1 + rate;
+  if (growthBase <= 0) {
+    return rate <= -1 ? -1 : null;
+  }
+  const growthFactor = Math.pow(growthBase, elapsedYears);
+  if (!Number.isFinite(growthFactor)) {
+    return null;
+  }
+  return growthFactor - 1;
 }
 
 async function resolveAccountContext(identifier) {
@@ -187,6 +258,7 @@ async function main() {
   const startDate = normalizeIdentifier(options.start || options.from || null);
   const endDate = normalizeIdentifier(options.end || options.to || null);
   const keepCagrStart = options['no-cagr-start'] ? false : true;
+  const debugFunding = options['debug-funding'] ? true : false;
 
   const context = await resolveAccountContext(identifier);
   const { login, account: baseAccount } = context;
@@ -238,6 +310,39 @@ async function main() {
     return;
   }
 
+  let baselinePoint = null;
+  if (keepCagrStart && series.displayStartDate) {
+    try {
+      const baselineOptions = Object.assign({}, seriesOptions, {
+        applyAccountCagrStartDate: false,
+      });
+      const baselineSeries = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, baselineOptions);
+      if (baselineSeries && Array.isArray(baselineSeries.points)) {
+        baselinePoint = baselineSeries.points.find((point) => point && point.date === series.displayStartDate);
+      }
+    } catch (baselineError) {
+      const message = baselineError && baselineError.message ? baselineError.message : String(baselineError);
+      console.warn('Unable to compute baseline (no-CAGR) series for comparison:', message);
+    }
+  }
+
+  let fundingSummary = null;
+  try {
+    const fundingOptions = {
+      applyAccountCagrStartDate: keepCagrStart,
+    };
+    if (startDate) {
+      fundingOptions.startDate = startDate;
+    }
+    if (endDate) {
+      fundingOptions.endDate = endDate;
+    }
+    fundingSummary = await computeNetDeposits(login, account, perAccountCombinedBalances, fundingOptions);
+  } catch (summaryError) {
+    const message = summaryError && summaryError.message ? summaryError.message : String(summaryError);
+    console.warn('Failed to compute funding summary for account', identifier + ':', message);
+  }
+
   const lastPoint = series.points && series.points.length ? series.points[series.points.length - 1] : null;
 
   console.log('Account:', account.number || account.id, '-', account.name || account.type || '');
@@ -247,9 +352,79 @@ async function main() {
   console.log('  Net deposits CAD:', formatNumber(series.summary.netDepositsCad));
   console.log('  Total equity CAD :', formatNumber(series.summary.totalEquityCad));
   console.log('  Total P&L CAD    :', formatNumber(series.summary.totalPnlCad));
+
+  const baselineEquity =
+    Number.isFinite(series.summary.totalEquityCad) &&
+    Number.isFinite(series.summary.netDepositsCad) &&
+    Number.isFinite(series.summary.totalPnlCad)
+      ? series.summary.totalEquityCad - (series.summary.netDepositsCad + series.summary.totalPnlCad)
+      : null;
+  if (baselineEquity !== null) {
+    console.log('  Start equity CAD :', formatNumber(baselineEquity));
+  }
+
+  if (baselinePoint) {
+    console.log('  Pre-period (rolled) net deposits:', formatNumber(baselinePoint.cumulativeNetDepositsCad));
+    console.log('  Pre-period (rolled) equity CAD  :', formatNumber(baselinePoint.equityCad));
+    console.log('  Pre-period (rolled) total P&L   :', formatNumber(baselinePoint.totalPnlCad));
+  }
+
+  if (fundingSummary) {
+    const allTimeNetDeposits =
+      fundingSummary.netDeposits && Number.isFinite(fundingSummary.netDeposits.allTimeCad)
+        ? fundingSummary.netDeposits.allTimeCad
+        : null;
+    const allTimePnl =
+      fundingSummary.totalPnl && Number.isFinite(fundingSummary.totalPnl.allTimeCad)
+        ? fundingSummary.totalPnl.allTimeCad
+        : null;
+    if (allTimeNetDeposits !== null || allTimePnl !== null) {
+      console.log('  All-time deposits:', formatNumber(allTimeNetDeposits));
+      console.log('  All-time P&L     :', formatNumber(allTimePnl));
+    }
+  }
   if (lastPoint) {
     const diff = Math.abs(lastPoint.totalPnlCad - series.summary.totalPnlCad);
     console.log('  Last point P&L   :', formatNumber(lastPoint.totalPnlCad), diff < 0.05 ? '(matches summary)' : '(diff ' + formatNumber(diff) + ')');
+  }
+
+  if (fundingSummary && fundingSummary.annualizedReturn) {
+    const rate = Number.isFinite(fundingSummary.annualizedReturn.rate)
+      ? fundingSummary.annualizedReturn.rate
+      : null;
+    const asOf = fundingSummary.annualizedReturn.asOf || fundingSummary.periodEndDate;
+    const startDate =
+      fundingSummary.annualizedReturn.startDate ||
+      fundingSummary.periodStartDate ||
+      series.displayStartDate ||
+      series.periodStartDate;
+    const deAnnualized = computeDeAnnualizedReturn(rate, startDate, asOf);
+    const suffix = fundingSummary.annualizedReturn.incomplete ? ' (incomplete)' : '';
+    console.log('  Annualized XIRR  :', rate !== null ? formatSignedPercent(rate) : 'n/a', suffix);
+    console.log('  De-annualized    :', deAnnualized !== null ? formatSignedPercent(deAnnualized) : 'n/a');
+  } else {
+    console.log('  Annualized XIRR  : n/a');
+    console.log('  De-annualized    : n/a');
+  }
+
+  if (debugFunding && fundingSummary) {
+    console.log('Funding cash flows (CAD):');
+    if (Array.isArray(fundingSummary.cashFlowsCad) && fundingSummary.cashFlowsCad.length) {
+      fundingSummary.cashFlowsCad
+        .slice()
+        .sort((a, b) => {
+          const aTime = new Date(a.date).getTime();
+          const bTime = new Date(b.date).getTime();
+          return aTime - bTime;
+        })
+        .forEach((entry) => {
+          const amount = Number(entry.amount);
+          const label = `${entry.date || 'n/a'}`;
+          console.log('   ', label, formatSignedCurrency(amount));
+        });
+    } else {
+      console.log('   <none>');
+    }
   }
 
   if (series.issues && series.issues.length) {
