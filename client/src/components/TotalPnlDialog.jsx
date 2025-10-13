@@ -163,13 +163,28 @@ function buildAxisScale(minDomain, maxDomain) {
   };
 }
 
-function buildChartMetrics(series) {
+function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
   if (!Array.isArray(series) || series.length === 0) {
     return null;
   }
-  const values = series.map((entry) => entry.totalPnl);
-  const minValue = Math.min(...values, 0);
-  const maxValue = Math.max(...values, 0);
+  const resolveValue = (entry) => {
+    if (!entry) {
+      return null;
+    }
+    if (useDisplayStartDelta && Number.isFinite(entry.totalPnlDelta)) {
+      return entry.totalPnlDelta;
+    }
+    return entry.totalPnl;
+  };
+
+  const rawValues = series.map((entry) => resolveValue(entry));
+  const finiteValues = rawValues.filter((value) => Number.isFinite(value));
+  if (!finiteValues.length) {
+    return null;
+  }
+
+  const minValue = Math.min(...finiteValues, 0);
+  const maxValue = Math.max(...finiteValues, 0);
   const range = maxValue - minValue;
   const padding = range === 0 ? Math.max(10, Math.abs(maxValue) * 0.1 || 10) : Math.max(10, range * 0.1);
   const rawMinDomain = minValue - padding;
@@ -180,14 +195,17 @@ function buildChartMetrics(series) {
   const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
 
   const points = series.map((entry, index) => {
+    const totalValue = resolveValue(entry);
+    const safeValue = Number.isFinite(totalValue) ? totalValue : 0;
     const ratio = series.length === 1 ? 0 : index / (series.length - 1);
     const x = PADDING.left + innerWidth * ratio;
-    const normalized = (entry.totalPnl - minDomain) / domainRange;
+    const normalized = (safeValue - minDomain) / domainRange;
     const clamped = Math.max(0, Math.min(1, normalized));
     const y = PADDING.top + innerHeight * (1 - clamped);
-    const previous = index > 0 ? series[index - 1].totalPnl : entry.totalPnl;
-    const trend = entry.totalPnl - previous;
-    return { ...entry, x, y, trend };
+    const previousValue = index > 0 ? resolveValue(series[index - 1]) : totalValue;
+    const safePrevious = Number.isFinite(previousValue) ? previousValue : safeValue;
+    const trend = safeValue - safePrevious;
+    return { ...entry, x, y, trend, chartValue: safeValue };
   });
 
   const yFor = (value) => {
@@ -297,7 +315,16 @@ export default function TotalPnlDialog({
   };
 
   const filteredSeries = useMemo(() => filterSeries(data?.points, timeframe), [data?.points, timeframe]);
-  const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
+  const seriesHasDisplayDelta = useMemo(
+    () => filteredSeries.some((entry) => Number.isFinite(entry?.totalPnlDelta)),
+    [filteredSeries]
+  );
+  const summaryHasDisplayDelta = Number.isFinite(data?.summary?.totalPnlSinceDisplayStartCad);
+  const useDisplayStartDelta = mode !== 'all' && (summaryHasDisplayDelta || seriesHasDisplayDelta);
+  const chartMetrics = useMemo(
+    () => buildChartMetrics(filteredSeries, { useDisplayStartDelta }),
+    [filteredSeries, useDisplayStartDelta]
+  );
   const hasChart = Boolean(chartMetrics && chartMetrics.points.length);
   const pathD = useMemo(() => {
     if (!hasChart) {
@@ -357,9 +384,12 @@ export default function TotalPnlDialog({
       }
       return undefined;
     };
+    const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
+    const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
     return {
       date: t < 0.5 ? lower.date : upper.date,
-      totalPnl: lower.totalPnl + (upper.totalPnl - lower.totalPnl) * t,
+      totalPnl: interpolatedTotalPnl,
+      chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
       equity: lower.equity + (upper.equity - lower.equity) * t,
       netDeposits: lower.netDeposits + (upper.netDeposits - lower.netDeposits) * t,
       totalPnlDelta: interpolate(lower.totalPnlDelta, upper.totalPnlDelta),
@@ -367,12 +397,19 @@ export default function TotalPnlDialog({
       netDepositsDelta: interpolate(lower.netDepositsDelta, upper.netDepositsDelta),
       x: clampedInterpX,
       y: lower.y + (upper.y - lower.y) * t,
-      trend: upper.totalPnl - lower.totalPnl,
+      trend:
+        Number.isFinite(upper.chartValue) && Number.isFinite(lower.chartValue)
+          ? upper.chartValue - lower.chartValue
+          : interpolate(lower.trend, upper.trend),
     };
   }, [hover, chartMetrics, hasChart]);
 
   const marker = hasChart ? chartMetrics.points[chartMetrics.points.length - 1] : null;
-  const markerLabel = marker ? formatMoney(marker.totalPnl) : null;
+  const markerValue =
+    marker && Number.isFinite(marker.chartValue) ? marker.chartValue : marker && Number.isFinite(marker.totalPnl)
+      ? marker.totalPnl
+      : null;
+  const markerLabel = Number.isFinite(markerValue) ? formatMoney(markerValue) : null;
   const labelPosition = useMemo(() => {
     const point = hoverPoint || marker;
     if (!point) {
@@ -390,14 +427,27 @@ export default function TotalPnlDialog({
 
   const hoverLabel = hoverPoint
     ? {
-        amount: formatMoney(hoverPoint.totalPnl),
-        delta:
-          Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
-            ? formatSignedMoney(hoverPoint.totalPnlDelta)
+        amount: formatMoney(
+          useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
+        ),
+        secondary: useDisplayStartDelta
+          ? Number.isFinite(hoverPoint.totalPnl)
+            ? `All-time: ${formatMoney(hoverPoint.totalPnl)}`
+            : null
+          : Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
+            ? `${formatSignedMoney(hoverPoint.totalPnlDelta)} since start`
             : null,
         date: formatDate(hoverPoint.date),
       }
     : null;
+
+  const markerSecondary = useDisplayStartDelta
+    ? marker && Number.isFinite(marker.totalPnl)
+      ? `All-time: ${formatMoney(marker.totalPnl)}`
+      : null
+    : marker && Number.isFinite(marker.totalPnlDelta) && Math.abs(marker.totalPnlDelta) > 0.005
+      ? `${formatSignedMoney(marker.totalPnlDelta)} since start`
+      : null;
 
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
@@ -426,9 +476,48 @@ export default function TotalPnlDialog({
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
 
   const summary = data?.summary || {};
-  const netDeposits = Number(summary.netDepositsCad);
-  const totalEquity = Number(summary.totalEquityCad);
-  const totalPnl = Number(summary.totalPnlCad);
+  const totalPnlAllTime = Number.isFinite(summary.totalPnlCad) ? summary.totalPnlCad : null;
+  const totalPnlDelta = Number.isFinite(summary.totalPnlSinceDisplayStartCad)
+    ? summary.totalPnlSinceDisplayStartCad
+    : null;
+  const showSummaryDisplayDelta = useDisplayStartDelta && totalPnlDelta !== null;
+  const totalPnl = showSummaryDisplayDelta ? totalPnlDelta : totalPnlAllTime;
+
+  const displayStartTotals =
+    summary.displayStartTotals && typeof summary.displayStartTotals === 'object'
+      ? summary.displayStartTotals
+      : null;
+  const baselineNetDeposits =
+    displayStartTotals && Number.isFinite(displayStartTotals.cumulativeNetDepositsCad)
+      ? displayStartTotals.cumulativeNetDepositsCad
+      : null;
+  const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
+  const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
+    ? summary.netDepositsAllTimeCad
+    : netDepositsCombined;
+  const netDepositsDelta =
+    useDisplayStartDelta && netDepositsCombined !== null && baselineNetDeposits !== null
+      ? netDepositsCombined - baselineNetDeposits
+      : null;
+  const netDeposits = netDepositsAllTime ?? netDepositsCombined;
+
+  const totalEquity = Number.isFinite(summary.totalEquityCad) ? summary.totalEquityCad : null;
+  const totalEquityDelta =
+    useDisplayStartDelta && Number.isFinite(summary.totalEquitySinceDisplayStartCad)
+      ? summary.totalEquitySinceDisplayStartCad
+      : null;
+
+  const totalPnlSubvalue =
+    showSummaryDisplayDelta && totalPnlAllTime !== null ? `All-time: ${formatMoney(totalPnlAllTime)}` : null;
+  const hasMeaningfulNetDepositsDelta =
+    Number.isFinite(netDepositsDelta) && Math.abs(netDepositsDelta) > 0.005;
+  const netDepositsSubvalue = hasMeaningfulNetDepositsDelta
+    ? `Δ since start: ${formatSignedMoney(netDepositsDelta)}`
+    : null;
+  const hasMeaningfulEquityDelta = Number.isFinite(totalEquityDelta) && Math.abs(totalEquityDelta) > 0.005;
+  const totalEquitySubvalue = hasMeaningfulEquityDelta
+    ? `Δ since start: ${formatSignedMoney(totalEquityDelta)}`
+    : null;
 
   const normalizedIssues = useMemo(() => formatIssues(data?.issues), [data?.issues]);
 
@@ -463,18 +552,27 @@ export default function TotalPnlDialog({
                     <span className="pnl-dialog__summary-label">Total P&amp;L</span>
                     <span className="pnl-dialog__summary-value pnl-dialog__summary-value--accent">
                       {Number.isFinite(totalPnl) ? formatMoney(totalPnl) : '—'}
+                      {totalPnlSubvalue && (
+                        <span className="pnl-dialog__summary-subvalue">{totalPnlSubvalue}</span>
+                      )}
                     </span>
                   </div>
                   <div className="pnl-dialog__summary-item">
                     <span className="pnl-dialog__summary-label">Net deposits</span>
                     <span className="pnl-dialog__summary-value">
                       {Number.isFinite(netDeposits) ? formatMoney(netDeposits) : '—'}
+                      {netDepositsSubvalue && (
+                        <span className="pnl-dialog__summary-subvalue">{netDepositsSubvalue}</span>
+                      )}
                     </span>
                   </div>
                   <div className="pnl-dialog__summary-item">
                     <span className="pnl-dialog__summary-label">Total equity</span>
                     <span className="pnl-dialog__summary-value">
                       {Number.isFinite(totalEquity) ? formatMoney(totalEquity) : '—'}
+                      {totalEquitySubvalue && (
+                        <span className="pnl-dialog__summary-subvalue">{totalEquitySubvalue}</span>
+                      )}
                     </span>
                   </div>
                 </div>
@@ -614,11 +712,13 @@ export default function TotalPnlDialog({
                         </>
                       )}
                     </svg>
-                    {(hoverLabel || (marker && markerLabel)) && (
+                    {(hoverLabel || markerLabel) && (
                       <div className="qqq-section__chart-label" style={labelPosition}>
                         <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
-                        {hoverLabel?.delta && (
-                          <span className="pnl-dialog__label-delta">{hoverLabel.delta} since start</span>
+                        {(hoverLabel?.secondary || markerSecondary) && (
+                          <span className="pnl-dialog__label-delta">
+                            {hoverLabel ? hoverLabel.secondary : markerSecondary}
+                          </span>
                         )}
                         <span className="pnl-dialog__label-date">
                           {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
@@ -671,8 +771,17 @@ TotalPnlDialog.propTypes = {
     ),
     summary: PropTypes.shape({
       netDepositsCad: PropTypes.number,
+      netDepositsAllTimeCad: PropTypes.number,
       totalEquityCad: PropTypes.number,
+      totalEquitySinceDisplayStartCad: PropTypes.number,
       totalPnlCad: PropTypes.number,
+      totalPnlAllTimeCad: PropTypes.number,
+      totalPnlSinceDisplayStartCad: PropTypes.number,
+      displayStartTotals: PropTypes.shape({
+        cumulativeNetDepositsCad: PropTypes.number,
+        equityCad: PropTypes.number,
+        totalPnlCad: PropTypes.number,
+      }),
     }),
     issues: PropTypes.arrayOf(PropTypes.string),
   }),
