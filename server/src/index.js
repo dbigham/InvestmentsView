@@ -2533,6 +2533,23 @@ function isDividendActivity(activity) {
 const EMBEDDED_NUMBER_PATTERN = '\\d+(?:,\\d{3})*(?:\\.\\d+)?';
 const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
 
+const USD_DESCRIPTION_HINTS = [
+  'USD',
+  'US DOLLAR',
+  'US DOLLARS',
+  'US FUNDS',
+  'US$',
+  'U$',
+];
+
+function hasUsdHintInDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return false;
+  }
+  const normalized = description.toUpperCase();
+  return USD_DESCRIPTION_HINTS.some((hint) => normalized.includes(hint));
+}
+
 function parseNumericString(value) {
   if (typeof value !== 'string' || !value) {
     return null;
@@ -3406,6 +3423,8 @@ function resolveActivityAmountDetails(activity) {
   const netAmount = Number(activity.netAmount);
   const grossAmount = Number(activity.grossAmount);
   const usesDescriptionAmount = amountInfo.source === 'description' && amountInfo.description;
+  const descriptionText = typeof activity.description === 'string' ? activity.description : '';
+  const usdHintInDescription = hasUsdHintInDescription(descriptionText);
   if (usesDescriptionAmount) {
     const descriptionSource = amountInfo.description.source;
     if (
@@ -3414,7 +3433,7 @@ function resolveActivityAmountDetails(activity) {
       (!Number.isFinite(grossAmount) || Math.abs(grossAmount) < 1e-8)
     ) {
       const inferredCurrency = inferSymbolCurrency(activity.symbol);
-      if (inferredCurrency && inferredCurrency !== currency && currency === 'CAD') {
+      if (usdHintInDescription && inferredCurrency && inferredCurrency !== currency && currency === 'CAD') {
         currency = inferredCurrency;
       }
     }
