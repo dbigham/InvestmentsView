@@ -5159,7 +5159,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
-  const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(activityContext, account, accountKey);
+  const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(
+    activityContext,
+    account,
+    accountKey
+  );
 
   const holdings = new Map();
   const cashByCurrency = new Map();
@@ -5167,6 +5171,36 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const points = [];
   const issues = new Set();
   let cumulativeNetDeposits = 0;
+  const effectiveNetDepositsCad =
+    netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
+      ? netDepositsSummary.netDeposits.combinedCad
+      : null;
+  const allTimeNetDepositsCad =
+    netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.allTimeCad)
+      ? netDepositsSummary.netDeposits.allTimeCad
+      : null;
+  if (allTimeNetDepositsCad !== null && effectiveNetDepositsCad !== null) {
+    let baselineNetDeposits = allTimeNetDepositsCad - effectiveNetDepositsCad;
+    if (Math.abs(baselineNetDeposits) < CASH_FLOW_EPSILON / 10) {
+      baselineNetDeposits = 0;
+    }
+    cumulativeNetDeposits = baselineNetDeposits;
+  } else if (dailyNetDepositsMap.size && dateKeys.length) {
+    const firstDateKey = dateKeys[0];
+    let rolledNetDeposits = 0;
+    for (const [dateKey, value] of dailyNetDepositsMap.entries()) {
+      if (typeof dateKey !== 'string' || !Number.isFinite(value)) {
+        continue;
+      }
+      if (dateKey < firstDateKey && Math.abs(value) >= CASH_FLOW_EPSILON / 10) {
+        rolledNetDeposits += value;
+      }
+    }
+    if (Math.abs(rolledNetDeposits) < CASH_FLOW_EPSILON / 10) {
+      rolledNetDeposits = 0;
+    }
+    cumulativeNetDeposits = rolledNetDeposits;
+  }
   let activityIndex = 0;
 
   for (const dateKey of dateKeys) {
@@ -5270,18 +5304,22 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     }
     const last = points[points.length - 1];
     if (last) {
-      if (summaryEquity !== null) {
+      const effectiveSummaryPnl = Number.isFinite(summaryTotalPnlAllTime)
+        ? summaryTotalPnlAllTime
+        : Number.isFinite(summaryTotalPnl)
+          ? summaryTotalPnl
+          : null;
+      if (Number.isFinite(summaryEquity)) {
         last.equityCad = summaryEquity;
         if (Number.isFinite(last.cumulativeNetDepositsCad)) {
           last.totalPnlCad = summaryEquity - last.cumulativeNetDepositsCad;
+        } else if (effectiveSummaryPnl !== null) {
+          last.totalPnlCad = effectiveSummaryPnl;
         }
-      }
-      if (summaryTotalPnl !== null) {
-        if (!Number.isFinite(last.totalPnlCad) || Math.abs(last.totalPnlCad - summaryTotalPnl) > 0.05) {
-          last.totalPnlCad = summaryTotalPnl;
-          if (Number.isFinite(last.cumulativeNetDepositsCad)) {
-            last.equityCad = summaryTotalPnl + last.cumulativeNetDepositsCad;
-          }
+      } else if (effectiveSummaryPnl !== null) {
+        last.totalPnlCad = effectiveSummaryPnl;
+        if (Number.isFinite(last.cumulativeNetDepositsCad)) {
+          last.equityCad = effectiveSummaryPnl + last.cumulativeNetDepositsCad;
         }
       }
     }
@@ -5301,54 +5339,98 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       })
     : points;
 
-  const rebasedPoints = filteredPoints.map((point) => ({ ...point }));
-  let cagrBaselineTotalPnl = null;
-  // Preserve the unadjusted all-time total P&L so summary consumers (UI/CLI)
-  // can continue to report the true lifetime value even when we rebase the
-  // series for CAGR comparisons.
-  const rawSummaryTotalPnlAllTime = summaryTotalPnlAllTime;
-  if (cagrStartDate && displayStartDate && rebasedPoints.length) {
-    const baselinePoint = rebasedPoints[0];
-    if (baselinePoint && Number.isFinite(baselinePoint.totalPnlCad)) {
-      cagrBaselineTotalPnl = baselinePoint.totalPnlCad;
-      rebasedPoints.forEach((entry, index) => {
-        if (Number.isFinite(entry.totalPnlCad)) {
-          const adjustedPnl = entry.totalPnlCad - cagrBaselineTotalPnl;
-          entry.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
+  const normalizedPoints = filteredPoints.map((point) => ({ ...point }));
+
+  let baselineTotals = null;
+  if (normalizedPoints.length) {
+    const baselinePoint = normalizedPoints[0];
+    baselineTotals = {
+      equityCad:
+        baselinePoint && Number.isFinite(baselinePoint.equityCad) ? baselinePoint.equityCad : null,
+      cumulativeNetDepositsCad:
+        baselinePoint && Number.isFinite(baselinePoint.cumulativeNetDepositsCad)
+          ? baselinePoint.cumulativeNetDepositsCad
+          : null,
+      totalPnlCad:
+        baselinePoint && Number.isFinite(baselinePoint.totalPnlCad) ? baselinePoint.totalPnlCad : null,
+    };
+
+    normalizedPoints.forEach((entry, index) => {
+      if (baselineTotals.totalPnlCad !== null && Number.isFinite(entry.totalPnlCad)) {
+        const relativePnl = entry.totalPnlCad - baselineTotals.totalPnlCad;
+        entry.totalPnlSinceDisplayStartCad =
+          Math.abs(relativePnl) < CASH_FLOW_EPSILON ? 0 : relativePnl;
+      }
+      if (baselineTotals.equityCad !== null && Number.isFinite(entry.equityCad)) {
+        const relativeEquity = entry.equityCad - baselineTotals.equityCad;
+        entry.equitySinceDisplayStartCad =
+          Math.abs(relativeEquity) < CASH_FLOW_EPSILON ? 0 : relativeEquity;
+      }
+      if (
+        baselineTotals.cumulativeNetDepositsCad !== null &&
+        Number.isFinite(entry.cumulativeNetDepositsCad)
+      ) {
+        const relativeDeposits = entry.cumulativeNetDepositsCad - baselineTotals.cumulativeNetDepositsCad;
+        entry.cumulativeNetDepositsSinceDisplayStartCad =
+          Math.abs(relativeDeposits) < CASH_FLOW_EPSILON ? 0 : relativeDeposits;
+      }
+      if (index === 0) {
+        if (Number.isFinite(entry.totalPnlSinceDisplayStartCad)) {
+          entry.totalPnlSinceDisplayStartCad = 0;
         }
-        if (index === 0 && Number.isFinite(entry.totalPnlCad)) {
-          entry.totalPnlCad = 0;
+        if (Number.isFinite(entry.equitySinceDisplayStartCad)) {
+          entry.equitySinceDisplayStartCad = 0;
         }
-      });
-    }
+        if (Number.isFinite(entry.cumulativeNetDepositsSinceDisplayStartCad)) {
+          entry.cumulativeNetDepositsSinceDisplayStartCad = 0;
+        }
+      }
+    });
   }
 
-  if (cagrBaselineTotalPnl !== null) {
-    if (Number.isFinite(summaryTotalPnl)) {
-      const adjustedSummary = summaryTotalPnl - cagrBaselineTotalPnl;
-      summaryTotalPnl = Math.abs(adjustedSummary) < CASH_FLOW_EPSILON ? 0 : adjustedSummary;
-    }
+  let summaryTotalPnlSinceDisplayStart = null;
+  if (Number.isFinite(summaryTotalPnlAllTime) && baselineTotals && baselineTotals.totalPnlCad !== null) {
+    const delta = summaryTotalPnlAllTime - baselineTotals.totalPnlCad;
+    summaryTotalPnlSinceDisplayStart = Math.abs(delta) < CASH_FLOW_EPSILON ? 0 : delta;
+  } else if (
+    netDepositsSummary.totalPnl &&
+    Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+  ) {
+    summaryTotalPnlSinceDisplayStart = netDepositsSummary.totalPnl.combinedCad;
   }
 
-  // Restore the all-time total P&L so it remains comparable with "From start"
-  // calculations that bypass the CAGR baseline adjustment.
-  summaryTotalPnlAllTime = rawSummaryTotalPnlAllTime;
+  let summaryEquitySinceDisplayStart = null;
+  if (Number.isFinite(summaryEquity) && baselineTotals && baselineTotals.equityCad !== null) {
+    const deltaEquity = summaryEquity - baselineTotals.equityCad;
+    summaryEquitySinceDisplayStart = Math.abs(deltaEquity) < CASH_FLOW_EPSILON ? 0 : deltaEquity;
+  }
 
-  const effectivePeriodStart = rebasedPoints.length ? rebasedPoints[0].date : dateKeys[0];
-  const effectivePeriodEnd = rebasedPoints.length ? rebasedPoints[rebasedPoints.length - 1].date : dateKeys[dateKeys.length - 1];
+  summaryTotalPnl = Number.isFinite(summaryTotalPnlAllTime) ? summaryTotalPnlAllTime : summaryTotalPnl;
+
+  const effectivePeriodStart = normalizedPoints.length ? normalizedPoints[0].date : dateKeys[0];
+  const effectivePeriodEnd = normalizedPoints.length
+    ? normalizedPoints[normalizedPoints.length - 1].date
+    : dateKeys[dateKeys.length - 1];
 
   return {
     accountId: accountKey,
     periodStartDate: effectivePeriodStart,
     displayStartDate: displayStartDate ? formatDateOnly(displayStartDate) : undefined,
     periodEndDate: effectivePeriodEnd,
-    points: rebasedPoints,
+    points: normalizedPoints,
     summary: {
       totalPnlCad: summaryTotalPnl,
       totalPnlAllTimeCad: summaryTotalPnlAllTime,
+      totalPnlSinceDisplayStartCad: Number.isFinite(summaryTotalPnlSinceDisplayStart)
+        ? summaryTotalPnlSinceDisplayStart
+        : undefined,
       totalEquityCad: summaryEquity,
+      totalEquitySinceDisplayStartCad: Number.isFinite(summaryEquitySinceDisplayStart)
+        ? summaryEquitySinceDisplayStart
+        : undefined,
       netDepositsCad: summaryNetDeposits,
       netDepositsAllTimeCad: summaryNetDepositsAllTime,
+      displayStartTotals: baselineTotals || undefined,
     },
     issues: issues.size ? Array.from(issues) : undefined,
     missingPriceSymbols: missingPriceSymbols.size ? Array.from(missingPriceSymbols) : undefined,
@@ -6603,6 +6685,9 @@ app.get('/api/summary', async function (req, res) {
             if (Number.isFinite(summary.totalPnlAllTimeCad)) {
               fundingSummary.totalPnl.allTimeCad = summary.totalPnlAllTimeCad;
             }
+            if (Number.isFinite(summary.totalPnlSinceDisplayStartCad)) {
+              fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlSinceDisplayStartCad;
+            }
             if (Number.isFinite(summary.netDepositsCad)) {
               fundingSummary.netDeposits = fundingSummary.netDeposits || {};
               if (!Number.isFinite(fundingSummary.netDeposits.combinedCad)) {
@@ -6617,6 +6702,12 @@ app.get('/api/summary', async function (req, res) {
             }
             if (Number.isFinite(summary.totalEquityCad) && !Number.isFinite(fundingSummary.totalEquityCad)) {
               fundingSummary.totalEquityCad = summary.totalEquityCad;
+            }
+            if (Number.isFinite(summary.totalEquitySinceDisplayStartCad)) {
+              fundingSummary.totalEquitySinceDisplayStartCad = summary.totalEquitySinceDisplayStartCad;
+            }
+            if (summary.displayStartTotals) {
+              fundingSummary.displayStartTotals = summary.displayStartTotals;
             }
           }
         }

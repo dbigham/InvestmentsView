@@ -3462,6 +3462,16 @@ export default function App() {
     const effectiveTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
       ? selectedAccountFunding.totalPnl.combinedCad
       : null;
+    const effectiveTotalPnlDelta = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
+      ? selectedAccountFunding.totalPnlSinceDisplayStartCad
+      : null;
+    const effectiveTotalEquityDelta = isFiniteNumber(selectedAccountFunding?.totalEquitySinceDisplayStartCad)
+      ? selectedAccountFunding.totalEquitySinceDisplayStartCad
+      : null;
+    const displayStartTotals =
+      selectedAccountFunding?.displayStartTotals && typeof selectedAccountFunding.displayStartTotals === 'object'
+        ? selectedAccountFunding.displayStartTotals
+        : null;
     const effectivePeriodStart = normalizeDate(selectedAccountFunding?.periodStartDate);
 
     const normalizedOriginalPeriodStart =
@@ -3486,6 +3496,9 @@ export default function App() {
       ...baseSummary,
       netDepositsCad: effectiveNetDeposits,
       totalPnlCad: effectiveTotalPnl,
+      totalPnlDeltaCad: effectiveTotalPnlDelta,
+      totalEquityDeltaCad: effectiveTotalEquityDelta,
+      displayStartTotals,
       periodStartDate: effectivePeriodStart,
       annualizedReturnRate: effectiveAnnualized.rate,
       annualizedReturnAsOf: effectiveAnnualized.asOf,
@@ -3521,6 +3534,9 @@ export default function App() {
       ...baseSummary,
       netDepositsCad: allTimeNetDeposits,
       totalPnlCad: allTimeTotalPnl,
+      totalPnlDeltaCad: effectiveTotalPnlDelta,
+      totalEquityDeltaCad: effectiveTotalEquityDelta,
+      displayStartTotals,
       periodStartDate: allTimePeriodStart,
       annualizedReturnRate: allTimeAnnualized.rate,
       annualizedReturnAsOf: allTimeAnnualized.asOf,

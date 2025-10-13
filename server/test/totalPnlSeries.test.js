@@ -86,20 +86,25 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
   assert.equal(firstPoint.date, '2025-01-02');
   assert.ok(Math.abs(firstPoint.cumulativeNetDepositsCad - 1000) < 1e-6);
   assert.ok(Math.abs(firstPoint.totalPnlCad - 0) < 1e-6);
+  assert.ok(Math.abs(firstPoint.totalPnlSinceDisplayStartCad || 0) < 1e-6);
 
   const lastPoint = result.points[result.points.length - 1];
   assert.equal(lastPoint.date, '2025-01-16');
   assert.ok(Math.abs(lastPoint.cumulativeNetDepositsCad - 975) < 1e-6);
   assert.ok(Math.abs(lastPoint.totalPnlCad - 75) < 1e-6);
   assert.ok(Math.abs(lastPoint.equityCad - 1050) < 1e-6);
+  assert.ok(Math.abs(lastPoint.totalPnlSinceDisplayStartCad - 75) < 1e-6);
 
   const profitPoint = result.points.find((point) => point.date === '2025-01-10');
   assert.ok(profitPoint, 'Expected profit date entry');
   assert.ok(Math.abs(profitPoint.totalPnlCad - 75) < 1e-6);
 
   assert.ok(Math.abs(result.summary.totalPnlCad - 75) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlSinceDisplayStartCad - 75) < 1e-6);
   assert.ok(Math.abs(result.summary.totalEquityCad - 1050) < 1e-6);
   assert.ok(Math.abs(result.summary.netDepositsCad - 975) < 1e-6);
+  assert.ok(result.summary.displayStartTotals);
+  assert.ok(Math.abs(result.summary.displayStartTotals.totalPnlCad || 0) < 1e-6);
 
   assert.ok(!result.issues, 'Expected no issues for cash-only scenario');
 });

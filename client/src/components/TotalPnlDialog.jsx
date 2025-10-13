@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { formatDate, formatMoney } from '../utils/formatters';
+import { formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
 
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
@@ -70,8 +70,11 @@ function filterSeries(points, timeframe) {
     .map((entry) => ({
       date: entry?.date || null,
       totalPnl: Number(entry?.totalPnlCad),
+      totalPnlDelta: Number(entry?.totalPnlSinceDisplayStartCad),
       equity: Number(entry?.equityCad),
+      equityDelta: Number(entry?.equitySinceDisplayStartCad),
       netDeposits: Number(entry?.cumulativeNetDepositsCad),
+      netDepositsDelta: Number(entry?.cumulativeNetDepositsSinceDisplayStartCad),
     }))
     .filter((entry) => entry.date && Number.isFinite(entry.totalPnl));
   if (!sanitized.length) {
@@ -340,11 +343,28 @@ export default function TotalPnlDialog({
     }
     const interpX = lower.x + (upper.x - lower.x) * t;
     const clampedInterpX = Math.max(PADDING.left, Math.min(CHART_WIDTH - PADDING.right, interpX));
+    const interpolate = (lowerValue, upperValue) => {
+      const lowerFinite = Number.isFinite(lowerValue);
+      const upperFinite = Number.isFinite(upperValue);
+      if (lowerFinite && upperFinite) {
+        return lowerValue + (upperValue - lowerValue) * t;
+      }
+      if (lowerFinite) {
+        return lowerValue;
+      }
+      if (upperFinite) {
+        return upperValue;
+      }
+      return undefined;
+    };
     return {
       date: t < 0.5 ? lower.date : upper.date,
       totalPnl: lower.totalPnl + (upper.totalPnl - lower.totalPnl) * t,
       equity: lower.equity + (upper.equity - lower.equity) * t,
       netDeposits: lower.netDeposits + (upper.netDeposits - lower.netDeposits) * t,
+      totalPnlDelta: interpolate(lower.totalPnlDelta, upper.totalPnlDelta),
+      equityDelta: interpolate(lower.equityDelta, upper.equityDelta),
+      netDepositsDelta: interpolate(lower.netDepositsDelta, upper.netDepositsDelta),
       x: clampedInterpX,
       y: lower.y + (upper.y - lower.y) * t,
       trend: upper.totalPnl - lower.totalPnl,
@@ -371,6 +391,10 @@ export default function TotalPnlDialog({
   const hoverLabel = hoverPoint
     ? {
         amount: formatMoney(hoverPoint.totalPnl),
+        delta:
+          Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
+            ? formatSignedMoney(hoverPoint.totalPnlDelta)
+            : null,
         date: formatDate(hoverPoint.date),
       }
     : null;
@@ -588,6 +612,9 @@ export default function TotalPnlDialog({
                 {(hoverLabel || (marker && markerLabel)) && (
                   <div className="qqq-section__chart-label" style={labelPosition}>
                     <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
+                    {hoverLabel?.delta && (
+                      <span className="pnl-dialog__label-delta">{hoverLabel.delta} since start</span>
+                    )}
                     <span className="pnl-dialog__label-date">
                       {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
                     </span>
