@@ -14,6 +14,7 @@ const {
   summarizeAccountBalances,
   applyAccountSettingsOverrides,
 } = require('../index.js');
+const { buildTotalPnlDisplaySeries } = require(path.join(__dirname, '../../../shared/totalPnlDisplay.js'));
 
 function maskTokenForLog(token) {
   if (!token || typeof token !== 'string') {
@@ -322,6 +323,11 @@ async function main() {
     return;
   }
 
+  const displaySeries = buildTotalPnlDisplaySeries(series.points, 'ALL', {
+    displayStartDate: series.displayStartDate,
+    displayStartTotals: series.summary?.displayStartTotals,
+  });
+
   let baselinePoint = null;
   if (keepCagrStart && series.displayStartDate) {
     try {
@@ -355,13 +361,13 @@ async function main() {
     console.warn('Failed to compute funding summary for account', identifier + ':', message);
   }
 
-  const lastPoint = series.points && series.points.length ? series.points[series.points.length - 1] : null;
+  const lastPoint = displaySeries && displaySeries.length ? displaySeries[displaySeries.length - 1] : null;
 
   console.log('Account:', account.number || account.id, '-', account.name || account.type || '');
   console.log('Period :', series.periodStartDate, '→', series.periodEndDate);
-  console.log('Points :', Array.isArray(series.points) ? series.points.length : 0);
-  const hasRelativeSeries = Array.isArray(series.points)
-    && series.points.some((point) => Number.isFinite(point && point.totalPnlSinceDisplayStartCad));
+  console.log('Points :', Array.isArray(displaySeries) ? displaySeries.length : 0);
+  const hasRelativeSeries = Array.isArray(displaySeries)
+    && displaySeries.some((point) => Number.isFinite(point && point.totalPnlSinceDisplayStartCad));
   const useDisplayStartRelative = !keepCagrStart && hasRelativeSeries;
 
   console.log('Summary:');
@@ -458,13 +464,13 @@ async function main() {
     console.log('Missing price symbols:', series.missingPriceSymbols.join(', '));
   }
 
-  const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : series.points.length;
+  const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : displaySeries.length;
   if (useDisplayStartRelative) {
     console.log();
     console.log('Δ values represent changes since the first displayed date.');
   }
 
-  printSeriesPreview(series.points, previewCount, { useDisplayStartRelative });
+  printSeriesPreview(displaySeries, previewCount, { useDisplayStartRelative });
 }
 
 main().catch((error) => {

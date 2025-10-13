@@ -1,175 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
+import {
+  TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
+  buildTotalPnlDisplaySeries,
+} from '../../../shared/totalPnlDisplay';
 
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
 const AXIS_TARGET_INTERVALS = 4;
-const DELTA_EPSILON = 1e-6;
-
-const TIMEFRAME_OPTIONS = [
-  { value: '1M', label: '1 month' },
-  { value: '3M', label: '3 months' },
-  { value: '6M', label: '6 months' },
-  { value: '1Y', label: '1 year' },
-  { value: '3Y', label: '3 years' },
-  { value: '5Y', label: '5 years' },
-  { value: 'ALL', label: 'All' },
-];
-
-function parseDateOnly(value) {
-  if (!value) {
-    return null;
-  }
-  const raw = String(value).trim();
-  if (!raw) {
-    return null;
-  }
-  const parsed = new Date(`${raw}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-  return parsed;
-}
-
-function subtractInterval(date, option) {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-    return null;
-  }
-  const result = new Date(date.getTime());
-  switch (option) {
-    case '1M':
-      result.setMonth(result.getMonth() - 1);
-      break;
-    case '3M':
-      result.setMonth(result.getMonth() - 3);
-      break;
-    case '6M':
-      result.setMonth(result.getMonth() - 6);
-      break;
-    case '1Y':
-      result.setFullYear(result.getFullYear() - 1);
-      break;
-    case '3Y':
-      result.setFullYear(result.getFullYear() - 3);
-      break;
-    case '5Y':
-      result.setFullYear(result.getFullYear() - 5);
-      break;
-    default:
-      return null;
-  }
-  return result;
-}
-
-function filterSeries(points, timeframe, options = {}) {
-  if (!Array.isArray(points)) {
-    return [];
-  }
-  const displayStartDate = options?.displayStartDate ? parseDateOnly(options.displayStartDate) : null;
-  const displayStartTotals =
-    options && typeof options.displayStartTotals === 'object' ? options.displayStartTotals : null;
-  const sanitized = points
-    .map((entry) => ({
-      date: entry?.date || null,
-      totalPnl: Number(entry?.totalPnlCad),
-      totalPnlDelta: Number(entry?.totalPnlSinceDisplayStartCad),
-      equity: Number(entry?.equityCad),
-      equityDelta: Number(entry?.equitySinceDisplayStartCad),
-      netDeposits: Number(entry?.cumulativeNetDepositsCad),
-      netDepositsDelta: Number(entry?.cumulativeNetDepositsSinceDisplayStartCad),
-    }))
-    .filter((entry) => entry.date && Number.isFinite(entry.totalPnl));
-  if (!sanitized.length) {
-    return [];
-  }
-  sanitized.sort((a, b) => {
-    const aDate = parseDateOnly(a.date)?.getTime() ?? 0;
-    const bDate = parseDateOnly(b.date)?.getTime() ?? 0;
-    return aDate - bDate;
-  });
-  const afterDisplayStart = displayStartDate
-    ? sanitized.filter((entry) => {
-        const entryDate = parseDateOnly(entry.date);
-        if (!entryDate) {
-          return false;
-        }
-        return entryDate >= displayStartDate;
-      })
-    : sanitized;
-  if (!afterDisplayStart.length) {
-    return [];
-  }
-
-  let working = afterDisplayStart;
-  if (timeframe !== 'ALL') {
-    const lastEntry = afterDisplayStart[afterDisplayStart.length - 1];
-    const lastDate = parseDateOnly(lastEntry.date);
-    const cutoff = subtractInterval(lastDate, timeframe);
-    if (cutoff) {
-      const timeframeFiltered = afterDisplayStart.filter((entry) => {
-        const entryDate = parseDateOnly(entry.date);
-        if (!entryDate) {
-          return false;
-        }
-        return entryDate >= cutoff;
-      });
-      if (timeframeFiltered.length) {
-        working = timeframeFiltered;
-      }
-    }
-  }
-
-  const baselineTotalPnl = Number.isFinite(displayStartTotals?.totalPnlCad)
-    ? displayStartTotals.totalPnlCad
-    : Number.isFinite(afterDisplayStart[0]?.totalPnl)
-      ? afterDisplayStart[0].totalPnl
-      : null;
-  const baselineEquity = Number.isFinite(displayStartTotals?.equityCad)
-    ? displayStartTotals.equityCad
-    : Number.isFinite(afterDisplayStart[0]?.equity)
-      ? afterDisplayStart[0].equity
-      : null;
-  const baselineDeposits = Number.isFinite(displayStartTotals?.cumulativeNetDepositsCad)
-    ? displayStartTotals.cumulativeNetDepositsCad
-    : Number.isFinite(afterDisplayStart[0]?.netDeposits)
-      ? afterDisplayStart[0].netDeposits
-      : null;
-
-  return working.map((entry, index) => {
-    const normalized = { ...entry };
-    if (!Number.isFinite(normalized.totalPnlDelta) && Number.isFinite(normalized.totalPnl)) {
-      if (Number.isFinite(baselineTotalPnl)) {
-        const delta = normalized.totalPnl - baselineTotalPnl;
-        normalized.totalPnlDelta = Math.abs(delta) < DELTA_EPSILON ? 0 : delta;
-      }
-    } else if (index === 0 && Number.isFinite(normalized.totalPnlDelta)) {
-      normalized.totalPnlDelta = Math.abs(normalized.totalPnlDelta) < DELTA_EPSILON ? 0 : normalized.totalPnlDelta;
-    }
-
-    if (!Number.isFinite(normalized.equityDelta) && Number.isFinite(normalized.equity)) {
-      if (Number.isFinite(baselineEquity)) {
-        const delta = normalized.equity - baselineEquity;
-        normalized.equityDelta = Math.abs(delta) < DELTA_EPSILON ? 0 : delta;
-      }
-    } else if (index === 0 && Number.isFinite(normalized.equityDelta)) {
-      normalized.equityDelta = Math.abs(normalized.equityDelta) < DELTA_EPSILON ? 0 : normalized.equityDelta;
-    }
-
-    if (!Number.isFinite(normalized.netDepositsDelta) && Number.isFinite(normalized.netDeposits)) {
-      if (Number.isFinite(baselineDeposits)) {
-        const delta = normalized.netDeposits - baselineDeposits;
-        normalized.netDepositsDelta = Math.abs(delta) < DELTA_EPSILON ? 0 : delta;
-      }
-    } else if (index === 0 && Number.isFinite(normalized.netDepositsDelta)) {
-      normalized.netDepositsDelta =
-        Math.abs(normalized.netDepositsDelta) < DELTA_EPSILON ? 0 : normalized.netDepositsDelta;
-    }
-
-    return normalized;
-  });
-}
 
 function niceNumber(value, round) {
   if (!Number.isFinite(value) || value === 0) {
@@ -380,7 +220,7 @@ export default function TotalPnlDialog({
 
   const filteredSeries = useMemo(
     () =>
-      filterSeries(data?.points, timeframe, {
+      buildTotalPnlDisplaySeries(data?.points, timeframe, {
         displayStartDate: data?.displayStartDate,
         displayStartTotals: data?.summary?.displayStartTotals,
       }),
