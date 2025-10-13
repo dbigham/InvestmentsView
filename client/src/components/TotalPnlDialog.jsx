@@ -231,7 +231,7 @@ export default function TotalPnlDialog({
     [filteredSeries]
   );
   const summaryHasDisplayDelta = Number.isFinite(data?.summary?.totalPnlSinceDisplayStartCad);
-  const useDisplayStartDelta = mode !== 'all' && (summaryHasDisplayDelta || seriesHasDisplayDelta);
+  const useDisplayStartDelta = summaryHasDisplayDelta || seriesHasDisplayDelta;
   const chartMetrics = useMemo(
     () => buildChartMetrics(filteredSeries, { useDisplayStartDelta }),
     [filteredSeries, useDisplayStartDelta]
@@ -487,6 +487,11 @@ export default function TotalPnlDialog({
                     </span>
                   </div>
                 </div>
+                {useDisplayStartDelta && (
+                  <p className="pnl-dialog__delta-note" role="note">
+                    Δ values represent changes since the first displayed date.
+                  </p>
+                )}
 
                 <div className="pnl-dialog__controls">
                   <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
