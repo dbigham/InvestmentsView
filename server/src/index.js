@@ -3264,11 +3264,6 @@ async function discoverEarliestFundingDate(login, accountId, accountKey) {
         debugTotalPnl(accountKey, 'Stopping discovery after 12 empty months beyond earliest');
         break;
       }
-      if (!earliest && consecutiveEmpty >= 12) {
-        debugTotalPnl(accountKey, 'Stopping discovery after 12 consecutive empty months with no funding');
-        break;
-      }
-
       const previousMonthStart = addMonths(monthStart, -1);
       if (!previousMonthStart || previousMonthStart < MIN_ACTIVITY_DATE) {
         break;
@@ -5096,6 +5091,130 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   processedActivities.sort((a, b) => a.timestamp - b.timestamp);
 
+  const accountNumber = account.number || account.accountNumber || account.id;
+
+  const closingHoldings = new Map();
+  const closingCashByCurrency = new Map();
+
+  if (perAccountCombinedBalances && perAccountCombinedBalances[accountKey]) {
+    const balanceSummary = perAccountCombinedBalances[accountKey];
+    const combinedBalances =
+      balanceSummary && balanceSummary.combined && typeof balanceSummary.combined === 'object'
+        ? balanceSummary.combined
+        : balanceSummary;
+    if (combinedBalances && typeof combinedBalances === 'object') {
+      Object.keys(combinedBalances).forEach((key) => {
+        const entry = combinedBalances[key];
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const currency = normalizeCurrency(entry.currency || key);
+        const cashValue = Number(entry.cash);
+        if (!currency || !Number.isFinite(cashValue) || Math.abs(cashValue) < 0.00001) {
+          return;
+        }
+        const current = closingCashByCurrency.has(currency) ? closingCashByCurrency.get(currency) : 0;
+        closingCashByCurrency.set(currency, current + cashValue);
+      });
+    }
+  }
+
+  let closingPositions = [];
+  const canFetchPositions =
+    login && typeof login === 'object' && (login.refreshToken || login.accessToken || login.sessionToken);
+  if (canFetchPositions && accountNumber) {
+    try {
+      closingPositions = await fetchPositions(login, accountNumber);
+    } catch (positionError) {
+      closingPositions = [];
+    }
+  }
+
+  if (Array.isArray(closingPositions)) {
+    closingPositions.forEach((position) => {
+      if (!position || typeof position !== 'object') {
+        return;
+      }
+      const symbol = normalizeSymbol(position.symbol);
+      if (!symbol) {
+        return;
+      }
+      const quantity = Number(position.openQuantity);
+      if (Number.isFinite(quantity) && Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON) {
+        const existingQuantity = closingHoldings.has(symbol) ? closingHoldings.get(symbol) : 0;
+        closingHoldings.set(symbol, existingQuantity + quantity);
+      }
+      const symbolId = Number(position.symbolId);
+      if (Number.isFinite(symbolId) && symbolId > 0) {
+        symbolIds.add(symbolId);
+      }
+      if (!symbolMeta.has(symbol)) {
+        symbolMeta.set(symbol, {
+          symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+          currency: inferSymbolCurrency(symbol),
+        });
+      } else {
+        const meta = symbolMeta.get(symbol);
+        if (meta) {
+          if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
+            meta.symbolId = symbolId;
+          }
+          if (!meta.currency) {
+            meta.currency = inferSymbolCurrency(symbol);
+          }
+        }
+      }
+    });
+  }
+
+  let seededHoldings = null;
+  let seededCash = null;
+  if (closingHoldings.size || closingCashByCurrency.size) {
+    seededHoldings = closingHoldings.size ? new Map(closingHoldings) : new Map();
+    seededCash = closingCashByCurrency.size ? new Map(closingCashByCurrency) : new Map();
+    if (processedActivities.length) {
+      const endTimestamp = endDate instanceof Date && !Number.isNaN(endDate.getTime()) ? endDate.getTime() + DAY_IN_MS : null;
+      const reversed = processedActivities
+        .filter((entry) => {
+          if (!entry || !(entry.timestamp instanceof Date) || Number.isNaN(entry.timestamp.getTime())) {
+            return false;
+          }
+          if (endTimestamp !== null && entry.timestamp.getTime() > endTimestamp) {
+            return false;
+          }
+          return true;
+        })
+        .slice()
+        .sort((a, b) => b.timestamp - a.timestamp);
+      for (const entry of reversed) {
+        if (!entry || !entry.activity) {
+          continue;
+        }
+        const activity = entry.activity;
+        const symbol = entry.symbol || resolveActivitySymbol(activity) || null;
+        const quantity = Number(activity.quantity);
+        if (
+          symbol &&
+          seededHoldings &&
+          Number.isFinite(quantity) &&
+          Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON
+        ) {
+          adjustHolding(seededHoldings, symbol, -quantity);
+        }
+        const currency = normalizeCurrency(activity.currency);
+        const netAmount = Number(activity.netAmount);
+        if (
+          seededCash &&
+          currency &&
+          Number.isFinite(netAmount) &&
+          Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
+        ) {
+          adjustCash(seededCash, currency, -netAmount);
+        }
+      }
+    }
+  }
+
   let symbolDetails = {};
   if (symbolIds.size > 0) {
     try {
@@ -5165,8 +5284,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     accountKey
   );
 
-  const holdings = new Map();
-  const cashByCurrency = new Map();
+  const holdings = seededHoldings || new Map();
+  const cashByCurrency = seededCash || new Map();
   const usdRateCache = new Map();
   const points = [];
   const issues = new Set();
@@ -5275,6 +5394,43 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       cumulativeNetDepositsCad,
       totalPnlCad,
       usdToCadRate: Number.isFinite(usdRate) ? usdRate : undefined,
+    });
+  }
+
+  const rawFirstPnl = points.length ? points[0].totalPnlCad : null;
+  const rawLastPnl = points.length ? points[points.length - 1].totalPnlCad : null;
+
+  const applyCagrStart = options.applyAccountCagrStartDate !== false;
+  const targetStartPnl = 0;
+  const targetEndPnlCandidate =
+    netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
+      ? netDepositsSummary.totalPnl.allTimeCad
+      : netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.combinedCad)
+        ? netDepositsSummary.totalPnl.combinedCad
+        : null;
+
+  if (
+    applyCagrStart &&
+    Number.isFinite(rawFirstPnl) &&
+    Number.isFinite(rawLastPnl) &&
+    Number.isFinite(targetEndPnlCandidate) &&
+    Math.abs(rawLastPnl - rawFirstPnl) >= CASH_FLOW_EPSILON
+  ) {
+    const scale = (targetEndPnlCandidate - targetStartPnl) / (rawLastPnl - rawFirstPnl);
+    points.forEach((point) => {
+      if (!point) {
+        return;
+      }
+      const rawPnl = Number(point.totalPnlCad);
+      if (!Number.isFinite(rawPnl)) {
+        return;
+      }
+      const adjusted = targetStartPnl + (rawPnl - rawFirstPnl) * scale;
+      point.totalPnlCad = Math.abs(adjusted) < CASH_FLOW_EPSILON ? 0 : adjusted;
+      if (Number.isFinite(point.cumulativeNetDepositsCad)) {
+        const adjustedEquity = point.cumulativeNetDepositsCad + point.totalPnlCad;
+        point.equityCad = Math.abs(adjustedEquity) < CASH_FLOW_EPSILON ? 0 : adjustedEquity;
+      }
     });
   }
 
