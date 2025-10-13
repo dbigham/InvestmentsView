@@ -6448,6 +6448,283 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     return res.status(400).json({ message: 'Account identifier is required' });
   }
 
+  const normalizedKey = rawAccountKey.toLowerCase();
+  if (normalizedKey === 'all') {
+    try {
+      const aggregateOptions = {};
+      if (typeof req.query.startDate === 'string' && req.query.startDate.trim()) {
+        aggregateOptions.startDate = req.query.startDate.trim();
+      }
+      if (typeof req.query.endDate === 'string' && req.query.endDate.trim()) {
+        aggregateOptions.endDate = req.query.endDate.trim();
+      }
+      aggregateOptions.applyAccountCagrStartDate = false;
+
+      const contexts = [];
+      let hadAccountFetchFailure = false;
+      for (const login of allLogins) {
+        let fetchedAccounts = [];
+        try {
+          fetchedAccounts = await fetchAccounts(login);
+        } catch (error) {
+          const message = error && error.message ? error.message : String(error);
+          console.warn('Failed to fetch accounts for aggregate Total P&L:', message);
+          hadAccountFetchFailure = true;
+          continue;
+        }
+        fetchedAccounts.forEach((account, index) => {
+          if (!account) {
+            return;
+          }
+          const rawNumber =
+            account.number != null
+              ? account.number
+              : account.accountNumber != null
+                ? account.accountNumber
+                : account.id != null
+                  ? account.id
+                  : index;
+          const normalizedNumber = rawNumber != null ? String(rawNumber).trim() : String(index);
+          const number = normalizedNumber || String(index);
+          const compositeId = `${login.id}:${number}`;
+          const normalizedAccount = Object.assign({}, account, {
+            id: compositeId,
+            number,
+            accountNumber: number,
+            loginId: login.id,
+          });
+          const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
+          const effectiveAccount = Object.assign({}, accountWithOverrides, {
+            id: compositeId,
+            number: accountWithOverrides.number || number,
+          });
+          contexts.push({ login, account: effectiveAccount });
+        });
+      }
+
+      if (!contexts.length) {
+        return res.status(404).json({ message: 'No accounts available for aggregation' });
+      }
+
+      const balancesResults = await Promise.all(
+        contexts.map((context) => fetchBalances(context.login, context.account.number))
+      );
+      const perAccountCombinedBalances = {};
+      balancesResults.forEach((balancesRaw, index) => {
+        const context = contexts[index];
+        if (!context) {
+          return;
+        }
+        const summary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+        if (summary) {
+          perAccountCombinedBalances[context.account.id] = summary;
+        }
+      });
+
+      const seriesResults = await mapWithConcurrency(
+        contexts,
+        MAX_AGGREGATE_FUNDING_CONCURRENCY,
+        async function (context) {
+          try {
+            const series = await computeTotalPnlSeries(
+              context.login,
+              context.account,
+              perAccountCombinedBalances,
+              aggregateOptions
+            );
+            return { context, series };
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error);
+            console.warn(
+              'Failed to compute total P&L series for account ' + context.account.id + ' in aggregate view:',
+              message
+            );
+            return { context, error };
+          }
+        }
+      );
+
+      const successfulSeries = seriesResults.filter((result) => result && result.series);
+      if (!successfulSeries.length) {
+        return res.status(503).json({ message: 'Total P&L series unavailable' });
+      }
+
+      const totalsByDate = new Map();
+      const aggregatedIssues = new Set();
+      const aggregatedMissingSymbols = new Set();
+      const summaryTotals = {
+        totalPnlCad: 0,
+        totalPnlAllTimeCad: 0,
+        netDepositsCad: 0,
+        netDepositsAllTimeCad: 0,
+        totalEquityCad: 0,
+      };
+      const summaryCounts = {
+        totalPnlCad: 0,
+        totalPnlAllTimeCad: 0,
+        netDepositsCad: 0,
+        netDepositsAllTimeCad: 0,
+        totalEquityCad: 0,
+      };
+      let aggregatedStart = null;
+      let aggregatedEnd = null;
+
+      successfulSeries.forEach(({ series }) => {
+        if (!series) {
+          return;
+        }
+        if (typeof series.periodStartDate === 'string' && series.periodStartDate) {
+          if (!aggregatedStart || series.periodStartDate < aggregatedStart) {
+            aggregatedStart = series.periodStartDate;
+          }
+        }
+        if (typeof series.periodEndDate === 'string' && series.periodEndDate) {
+          if (!aggregatedEnd || series.periodEndDate > aggregatedEnd) {
+            aggregatedEnd = series.periodEndDate;
+          }
+        }
+
+        if (Array.isArray(series.issues)) {
+          series.issues.forEach((issue) => {
+            if (typeof issue === 'string' && issue.trim()) {
+              aggregatedIssues.add(issue.trim());
+            }
+          });
+        }
+        if (Array.isArray(series.missingPriceSymbols)) {
+          series.missingPriceSymbols.forEach((symbol) => {
+            if (typeof symbol === 'string' && symbol.trim()) {
+              aggregatedMissingSymbols.add(symbol.trim());
+            }
+          });
+        }
+
+        if (Array.isArray(series.points)) {
+          series.points.forEach((point) => {
+            const dateKey = point && typeof point.date === 'string' ? point.date : null;
+            if (!dateKey) {
+              return;
+            }
+            let bucket = totalsByDate.get(dateKey);
+            if (!bucket) {
+              bucket = {
+                date: dateKey,
+                equity: 0,
+                equityCount: 0,
+                deposits: 0,
+                depositsCount: 0,
+                pnl: 0,
+                pnlCount: 0,
+              };
+              totalsByDate.set(dateKey, bucket);
+            }
+            const equity = Number(point.equityCad);
+            if (Number.isFinite(equity)) {
+              bucket.equity += equity;
+              bucket.equityCount += 1;
+            }
+            const deposits = Number(point.cumulativeNetDepositsCad);
+            if (Number.isFinite(deposits)) {
+              bucket.deposits += deposits;
+              bucket.depositsCount += 1;
+            }
+            const pnl = Number(point.totalPnlCad);
+            if (Number.isFinite(pnl)) {
+              bucket.pnl += pnl;
+              bucket.pnlCount += 1;
+            }
+          });
+        }
+
+        const { summary } = series;
+        if (summary && typeof summary === 'object') {
+          if (Number.isFinite(summary.totalPnlCad)) {
+            summaryTotals.totalPnlCad += summary.totalPnlCad;
+            summaryCounts.totalPnlCad += 1;
+          }
+          if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+            summaryTotals.totalPnlAllTimeCad += summary.totalPnlAllTimeCad;
+            summaryCounts.totalPnlAllTimeCad += 1;
+          }
+          if (Number.isFinite(summary.netDepositsCad)) {
+            summaryTotals.netDepositsCad += summary.netDepositsCad;
+            summaryCounts.netDepositsCad += 1;
+          }
+          if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+            summaryTotals.netDepositsAllTimeCad += summary.netDepositsAllTimeCad;
+            summaryCounts.netDepositsAllTimeCad += 1;
+          }
+          if (Number.isFinite(summary.totalEquityCad)) {
+            summaryTotals.totalEquityCad += summary.totalEquityCad;
+            summaryCounts.totalEquityCad += 1;
+          }
+        }
+      });
+
+      if (successfulSeries.length !== contexts.length || hadAccountFetchFailure) {
+        aggregatedIssues.add('aggregate-partial-data');
+      }
+
+      const sortedDates = Array.from(totalsByDate.keys()).sort();
+      const combinedPoints = sortedDates
+        .map((dateKey) => {
+          const bucket = totalsByDate.get(dateKey);
+          return {
+            date: dateKey,
+            equityCad: bucket && bucket.equityCount > 0 ? bucket.equity : undefined,
+            cumulativeNetDepositsCad: bucket && bucket.depositsCount > 0 ? bucket.deposits : undefined,
+            totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
+          };
+        })
+        .filter((point) => point && Number.isFinite(point.totalPnlCad));
+
+      if (!combinedPoints.length) {
+        return res.status(503).json({ message: 'Total P&L series unavailable' });
+      }
+
+      const summaryPayload = {
+        totalPnlCad: summaryCounts.totalPnlCad > 0 ? summaryTotals.totalPnlCad : null,
+        totalPnlAllTimeCad:
+          summaryCounts.totalPnlAllTimeCad > 0
+            ? summaryTotals.totalPnlAllTimeCad
+            : summaryCounts.totalPnlCad > 0
+              ? summaryTotals.totalPnlCad
+              : null,
+        netDepositsCad: summaryCounts.netDepositsCad > 0 ? summaryTotals.netDepositsCad : null,
+        netDepositsAllTimeCad:
+          summaryCounts.netDepositsAllTimeCad > 0
+            ? summaryTotals.netDepositsAllTimeCad
+            : summaryCounts.netDepositsCad > 0
+              ? summaryTotals.netDepositsCad
+              : null,
+        totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
+      };
+
+      const payload = {
+        accountId: 'all',
+        periodStartDate: aggregatedStart || combinedPoints[0].date,
+        periodEndDate: aggregatedEnd || combinedPoints[combinedPoints.length - 1].date,
+        points: combinedPoints,
+        summary: summaryPayload,
+      };
+
+      if (aggregatedIssues.size) {
+        payload.issues = Array.from(aggregatedIssues);
+      }
+      if (aggregatedMissingSymbols.size) {
+        payload.missingPriceSymbols = Array.from(aggregatedMissingSymbols);
+      }
+
+      return res.json(payload);
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.error('Failed to compute aggregate total P&L series:', message);
+      return res
+        .status(500)
+        .json({ message: 'Failed to compute total P&L series', details: message });
+    }
+  }
+
   try {
     const resolved = await resolveAccountContextByKey(rawAccountKey);
     if (!resolved) {

@@ -227,6 +227,9 @@ function formatIssues(issues) {
     if (issue.startsWith('unsupported-currency')) {
       return 'Unsupported currency detected while computing equity.';
     }
+    if (issue === 'aggregate-partial-data') {
+      return 'Some accounts could not be included because their Total P&L data was unavailable.';
+    }
     return issue;
   }).filter(Boolean);
 }
