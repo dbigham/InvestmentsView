@@ -142,6 +142,48 @@ function getDispatcherForUrl(targetUrl, { reuse = false } = {}) {
   return { dispatcher: dispatcherCache.get(cacheKey), proxyUri, shouldClose: false };
 }
 
+const YAHOO_CHART_BASE_URL = 'https://query1.finance.yahoo.com';
+const YAHOO_QUOTE_BASE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote';
+
+function resolveYahooSymbol(symbol) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const trimmed = symbol.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let normalized = trimmed;
+  if (/\.U\./i.test(normalized)) {
+    normalized = normalized.replace(/\.U\./gi, '-U.');
+  }
+  return normalized;
+}
+
+async function fetchYahooHistorical(symbol, queryOptions) {
+  const finance = ensureYahooFinanceClient();
+  const yahooSymbol = resolveYahooSymbol(symbol);
+  if (!yahooSymbol) {
+    return null;
+  }
+  const { dispatcher } = getDispatcherForUrl(YAHOO_CHART_BASE_URL, { reuse: true });
+  return finance.historical(yahooSymbol, queryOptions, {
+    fetchOptions: { dispatcher },
+  });
+}
+
+async function fetchYahooQuote(symbol) {
+  const finance = ensureYahooFinanceClient();
+  const yahooSymbol = resolveYahooSymbol(symbol);
+  if (!yahooSymbol) {
+    return null;
+  }
+  const { dispatcher } = getDispatcherForUrl(YAHOO_QUOTE_BASE_URL, { reuse: true });
+  return finance.quote(yahooSymbol, undefined, {
+    fetchOptions: { dispatcher },
+  });
+}
+
 let yahooFinance = null;
 let yahooFinanceLoadError = null;
 
@@ -437,8 +479,6 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
     }
   }
 
-  const finance = ensureYahooFinanceClient();
-
   const start = new Date(`${startDate}T00:00:00Z`);
   const end = new Date(`${endDate}T00:00:00Z`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -447,11 +487,16 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
 
   const exclusiveEnd = addDays(end, 1) || end;
 
-  const history = await finance.historical(symbol, {
-    period1: start,
-    period2: exclusiveEnd,
-    interval: '1d',
-  });
+  let history = null;
+  try {
+    history = await fetchYahooHistorical(symbol, {
+      period1: start,
+      period2: exclusiveEnd,
+      interval: '1d',
+    });
+  } catch (error) {
+    history = null;
+  }
 
   const normalized = Array.isArray(history)
     ? history
@@ -532,8 +577,6 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
     }
   }
 
-  const finance = ensureYahooFinanceClient();
-
   const start = new Date(`${startDate}T00:00:00Z`);
   const end = new Date(`${endDate}T00:00:00Z`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -542,11 +585,16 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
 
   const exclusiveEnd = addDays(end, 1) || end;
 
-  const history = await finance.historical(symbol, {
-    period1: start,
-    period2: exclusiveEnd,
-    interval: '1d',
-  });
+  let history = null;
+  try {
+    history = await fetchYahooHistorical(symbol, {
+      period1: start,
+      period2: exclusiveEnd,
+      interval: '1d',
+    });
+  } catch (error) {
+    history = null;
+  }
 
   const normalized = Array.isArray(history)
     ? history
@@ -4573,31 +4621,12 @@ function enumerateDateKeys(startDate, endDate) {
   return keys;
 }
 
-async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey) {
-  if (!symbol || !startDateKey || !endDateKey) {
-    return null;
-  }
-
-  const startDate = new Date(`${startDateKey}T00:00:00Z`);
-  const endDate = new Date(`${endDateKey}T00:00:00Z`);
-  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
-    return null;
-  }
-
-  const exclusiveEnd = addDays(endDate, 1) || new Date(endDate.getTime() + DAY_IN_MS);
-
-  const finance = ensureYahooFinanceClient();
-  const history = await finance.historical(symbol, {
-    period1: startDate,
-    period2: exclusiveEnd,
-    interval: '1d',
-  });
-
-  if (!Array.isArray(history) || history.length === 0) {
+function normalizeYahooHistoricalEntries(history) {
+  if (!Array.isArray(history)) {
     return [];
   }
 
-  const normalized = history
+  return history
     .map((entry) => {
       if (!entry || typeof entry !== 'object') {
         return null;
@@ -4625,6 +4654,122 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey) {
     })
     .filter(Boolean)
     .sort((a, b) => a.date - b.date);
+}
+
+function normalizeQuestradeCandles(candles) {
+  if (!Array.isArray(candles) || candles.length === 0) {
+    return [];
+  }
+
+  const byDate = new Map();
+
+  for (const candle of candles) {
+    if (!candle || typeof candle !== 'object') {
+      continue;
+    }
+    const start = candle.start || candle.time || candle.startTime || candle.end || null;
+    if (typeof start !== 'string') {
+      continue;
+    }
+    const parsed = new Date(start);
+    if (Number.isNaN(parsed.getTime())) {
+      continue;
+    }
+    const close = Number(candle.close);
+    if (!Number.isFinite(close) || close <= 0) {
+      continue;
+    }
+    const normalizedDate = new Date(
+      Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate())
+    );
+    const key = normalizedDate.getTime();
+    byDate.set(key, { date: normalizedDate, price: close });
+  }
+
+  return Array.from(byDate.values()).sort((a, b) => a.date - b.date);
+}
+
+async function fetchQuestradePriceHistorySeries(login, symbolId, startDate, exclusiveEnd, accountKey, symbol) {
+  if (!login || !Number.isFinite(symbolId) || symbolId <= 0) {
+    return [];
+  }
+
+  const params = {
+    startTime: startDate.toISOString(),
+    endTime: exclusiveEnd.toISOString(),
+    interval: 'OneDay',
+  };
+
+  let data;
+  try {
+    data = await questradeRequest(login, `/v1/markets/candles/${symbolId}`, { params });
+  } catch (error) {
+    if (DEBUG_TOTAL_PNL) {
+      debugTotalPnl(accountKey, 'Questrade candle lookup failed for symbol price history', {
+        symbol,
+        symbolId,
+        startDate: startDate.toISOString(),
+        endDate: exclusiveEnd.toISOString(),
+        message: error?.message || String(error),
+      });
+    }
+    return [];
+  }
+
+  const candles = data && Array.isArray(data.candles) ? data.candles : [];
+  return normalizeQuestradeCandles(candles);
+}
+
+async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options = {}) {
+  if (!symbol || !startDateKey || !endDateKey) {
+    return null;
+  }
+
+  const startDate = new Date(`${startDateKey}T00:00:00Z`);
+  const endDate = new Date(`${endDateKey}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
+    return null;
+  }
+
+  const exclusiveEnd = addDays(endDate, 1) || new Date(endDate.getTime() + DAY_IN_MS);
+
+  let history = null;
+  try {
+    history = await fetchYahooHistorical(symbol, {
+      period1: startDate,
+      period2: exclusiveEnd,
+      interval: '1d',
+    });
+  } catch (error) {
+    history = null;
+  }
+
+  let normalized = normalizeYahooHistoricalEntries(history);
+
+  if (!normalized.length && options && options.login) {
+    const rawSymbolId = Number.isFinite(options.symbolId)
+      ? options.symbolId
+      : Number(options.symbolId);
+    const symbolId = Number.isFinite(rawSymbolId) ? rawSymbolId : null;
+    if (symbolId && symbolId > 0) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(options.accountKey, 'Falling back to Questrade candles for price history', {
+          symbol,
+          symbolId,
+          startDateKey,
+          endDateKey,
+        });
+      }
+      normalized = await fetchQuestradePriceHistorySeries(
+        options.login,
+        symbolId,
+        startDate,
+        exclusiveEnd,
+        options.accountKey,
+        symbol
+      );
+    }
+  }
 
   return normalized;
 }
@@ -4989,11 +5134,19 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       }
       if (!history) {
         try {
-          history = await fetchSymbolPriceHistory(symbol, startKey, endKey);
+          const meta = symbolMeta.get(symbol) || {};
+          const rawSymbolId =
+            typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
+          const normalizedSymbolId = Number.isFinite(rawSymbolId) && rawSymbolId > 0 ? rawSymbolId : null;
+          history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+            login,
+            symbolId: normalizedSymbolId,
+            accountKey,
+          });
         } catch (priceError) {
           history = null;
         }
-        if (history && cacheKey) {
+        if (Array.isArray(history) && cacheKey) {
           setCachedPriceHistory(cacheKey, history);
         }
       }
@@ -5859,8 +6012,10 @@ app.get('/api/quote', async function (req, res) {
   }
 
   try {
-    const finance = ensureYahooFinanceClient();
-    const quote = await finance.quote(trimmedSymbol || normalizedSymbol);
+    const quote = await fetchYahooQuote(trimmedSymbol || normalizedSymbol);
+    if (!quote) {
+      return res.status(404).json({ message: `Quote unavailable for ${normalizedSymbol}` });
+    }
     const price = extractQuotePrice(quote);
     if (!Number.isFinite(price) || price <= 0) {
       return res.status(404).json({ message: `Price unavailable for ${normalizedSymbol}` });
