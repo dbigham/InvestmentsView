@@ -12,11 +12,6 @@ import {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_YEAR = 365.25;
-const periodLabelFormatter = new Intl.DateTimeFormat('en-CA', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-});
 
 function parseDateString(value, { assumeDateOnly = false } = {}) {
   if (typeof value !== 'string') {
@@ -536,13 +531,6 @@ export default function SummaryMetrics({
   const benchmarkStatus = benchmarkComparison?.status || 'idle';
   const benchmarkData = benchmarkComparison?.data || null;
 
-  const totalPnlDelta = Number.isFinite(fundingSummary?.totalPnlDeltaCad)
-    ? fundingSummary.totalPnlDeltaCad
-    : null;
-  const equityDelta = Number.isFinite(fundingSummary?.totalEquityDeltaCad)
-    ? fundingSummary.totalEquityDeltaCad
-    : null;
-
   const describePeriodLength = (startIso, endIso) => {
     if (!startIso) {
       return null;
@@ -637,30 +625,6 @@ export default function SummaryMetrics({
     const periodLabel = describePeriodLength(startDate, endDate);
     if (periodLabel) {
       detailLines.push(periodLabel);
-    }
-  }
-
-  if (fundingSummary?.mode === 'cagr') {
-    const startDateLabel = (() => {
-      const rawStart = fundingSummary?.periodStartDate;
-      const parsedStart = parseDateString(rawStart, { assumeDateOnly: true });
-      if (!parsedStart) {
-        return null;
-      }
-      return periodLabelFormatter.format(parsedStart);
-    })();
-    if (Number.isFinite(totalPnlDelta)) {
-      const prefix = startDateLabel ? `Change since ${startDateLabel}` : 'Change over period';
-      detailLines.push(`${prefix}: ${formatSignedMoney(totalPnlDelta)}`);
-    }
-    if (Number.isFinite(equityDelta)) {
-      const prefix = startDateLabel ? `Equity change since ${startDateLabel}` : 'Equity change';
-      detailLines.push(`${prefix}: ${formatSignedMoney(equityDelta)}`);
-    }
-    const baselineTotals = fundingSummary?.displayStartTotals || null;
-    if (baselineTotals && Number.isFinite(baselineTotals.totalPnlCad)) {
-      const label = startDateLabel ? `Starting P&L (${startDateLabel})` : 'Starting P&L';
-      detailLines.push(`${label}: ${formatSignedMoney(baselineTotals.totalPnlCad)}`);
     }
   }
 
