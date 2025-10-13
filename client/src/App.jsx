@@ -2900,6 +2900,9 @@ export default function App() {
   }, [accounts, selectedAccount]);
 
   const selectedAccountKey = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return 'all';
+    }
     if (!selectedAccountInfo) {
       return null;
     }
@@ -2916,6 +2919,9 @@ export default function App() {
   }, [selectedAccountInfo, selectedAccount]);
 
   const totalPnlDialogAccountLabel = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return 'All accounts';
+    }
     if (!selectedAccountInfo) {
       return null;
     }
@@ -2927,7 +2933,7 @@ export default function App() {
       return String(selectedAccountInfo.number);
     }
     return null;
-  }, [selectedAccountInfo]);
+  }, [selectedAccount, selectedAccountInfo]);
 
   useEffect(() => {
     if (!selectedRebalanceReminder) {
@@ -4304,7 +4310,12 @@ export default function App() {
     if (!accountKey) {
       return;
     }
-    const applyCagr = options && options.applyAccountCagrStartDate !== false;
+    let applyCagr = true;
+    if (accountKey === 'all') {
+      applyCagr = false;
+    } else if (options && options.applyAccountCagrStartDate === false) {
+      applyCagr = false;
+    }
     const mode = applyCagr ? 'cagr' : 'all';
     const normalizedOptions =
       options && typeof options === 'object'
@@ -4356,6 +4367,9 @@ export default function App() {
   const handleChangeTotalPnlSeriesMode = useCallback(
     (mode) => {
       if (!selectedAccountKey) {
+        return;
+      }
+      if (selectedAccountKey === 'all' && mode !== 'all') {
         return;
       }
       const normalizedMode = mode === 'all' ? 'all' : 'cagr';
@@ -5178,7 +5192,7 @@ export default function App() {
                 : null
             }
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
-            onShowTotalPnl={showingAllAccounts ? null : handleShowTotalPnlDialog}
+            onShowTotalPnl={handleShowTotalPnlDialog}
             onShowAnnualizedReturn={handleShowAnnualizedReturnDetails}
             isRefreshing={isRefreshing}
             isAutoRefreshing={autoRefreshEnabled}
@@ -5386,7 +5400,7 @@ export default function App() {
         error={totalPnlDialogError}
         onRetry={handleRetryTotalPnlSeries}
         accountLabel={totalPnlDialogAccountLabel}
-        supportsCagrToggle={Boolean(cagrStartDate)}
+        supportsCagrToggle={selectedAccountKey !== 'all' && Boolean(cagrStartDate)}
         mode={totalPnlSeriesState.mode}
         onModeChange={handleChangeTotalPnlSeriesMode}
         cagrStartDate={cagrStartDate}
