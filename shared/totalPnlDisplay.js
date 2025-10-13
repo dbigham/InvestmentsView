@@ -1,6 +1,6 @@
-const DELTA_EPSILON = 1e-6;
+export const DELTA_EPSILON = 1e-6;
 
-const TOTAL_PNL_TIMEFRAME_OPTIONS = Object.freeze([
+export const TOTAL_PNL_TIMEFRAME_OPTIONS = Object.freeze([
   { value: '1M', label: '1 month' },
   { value: '3M', label: '3 months' },
   { value: '6M', label: '6 months' },
@@ -10,7 +10,7 @@ const TOTAL_PNL_TIMEFRAME_OPTIONS = Object.freeze([
   { value: 'ALL', label: 'All' },
 ]);
 
-function parseDateOnly(value) {
+export function parseDateOnly(value) {
   if (!value) {
     return null;
   }
@@ -25,7 +25,7 @@ function parseDateOnly(value) {
   return parsed;
 }
 
-function subtractInterval(date, option) {
+export function subtractInterval(date, option) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return null;
   }
@@ -60,7 +60,7 @@ function coerceFinite(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = {}) {
+export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = {}) {
   if (!Array.isArray(points) || points.length === 0) {
     return [];
   }
@@ -189,8 +189,4 @@ const totalPnlDisplay = {
   subtractInterval,
 };
 
-exports.TOTAL_PNL_TIMEFRAME_OPTIONS = TOTAL_PNL_TIMEFRAME_OPTIONS;
-exports.buildTotalPnlDisplaySeries = buildTotalPnlDisplaySeries;
-exports.parseDateOnly = parseDateOnly;
-exports.subtractInterval = subtractInterval;
-exports.default = totalPnlDisplay;
+export default totalPnlDisplay;

@@ -3,6 +3,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const {
   computeTotalPnlSeries,
@@ -14,7 +15,10 @@ const {
   summarizeAccountBalances,
   applyAccountSettingsOverrides,
 } = require('../index.js');
-const { buildTotalPnlDisplaySeries } = require(path.join(__dirname, '../../../shared/totalPnlDisplay.js'));
+
+const sharedModulePromise = import(
+  pathToFileURL(path.join(__dirname, '../../../shared/totalPnlDisplay.js')).href
+);
 
 function maskTokenForLog(token) {
   if (!token || typeof token !== 'string') {
@@ -259,6 +263,7 @@ function printSeriesPreview(points, count, { useDisplayStartRelative } = {}) {
 }
 
 async function main() {
+  const { buildTotalPnlDisplaySeries } = await sharedModulePromise;
   const { options, positional } = parseArgs(process.argv.slice(2));
 
   const identifier = normalizeIdentifier(options.account || options.id || positional[0] || null);

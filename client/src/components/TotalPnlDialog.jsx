@@ -1,12 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
-import totalPnlDisplayModule from '../../../shared/totalPnlDisplay.js';
-
-const {
-  TOTAL_PNL_TIMEFRAME_OPTIONS: TIMEFRAME_OPTIONS,
+import {
+  TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
   buildTotalPnlDisplaySeries,
-} = totalPnlDisplayModule?.default || totalPnlDisplayModule;
+} from '../../../shared/totalPnlDisplay.js';
 
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
