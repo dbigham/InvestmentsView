@@ -2542,12 +2542,31 @@ const USD_DESCRIPTION_HINTS = [
   'U$',
 ];
 
+const CAD_DESCRIPTION_HINTS = [
+  'CAD',
+  'C$',
+  'C DOLLAR',
+  'C DOLLARS',
+  'CDN',
+  'CAD FUNDS',
+  'CANADIAN DOLLAR',
+  'CANADIAN DOLLARS',
+];
+
 function hasUsdHintInDescription(description) {
   if (typeof description !== 'string' || !description) {
     return false;
   }
   const normalized = description.toUpperCase();
   return USD_DESCRIPTION_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function hasCadHintInDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return false;
+  }
+  const normalized = description.toUpperCase();
+  return CAD_DESCRIPTION_HINTS.some((hint) => normalized.includes(hint));
 }
 
 function parseNumericString(value) {
@@ -3425,6 +3444,7 @@ function resolveActivityAmountDetails(activity) {
   const usesDescriptionAmount = amountInfo.source === 'description' && amountInfo.description;
   const descriptionText = typeof activity.description === 'string' ? activity.description : '';
   const usdHintInDescription = hasUsdHintInDescription(descriptionText);
+  const cadHintInDescription = hasCadHintInDescription(descriptionText);
   if (usesDescriptionAmount) {
     const descriptionSource = amountInfo.description.source;
     if (
@@ -3433,8 +3453,11 @@ function resolveActivityAmountDetails(activity) {
       (!Number.isFinite(grossAmount) || Math.abs(grossAmount) < 1e-8)
     ) {
       const inferredCurrency = inferSymbolCurrency(activity.symbol);
-      if (usdHintInDescription && inferredCurrency && inferredCurrency !== currency && currency === 'CAD') {
-        currency = inferredCurrency;
+      if (inferredCurrency && inferredCurrency !== currency) {
+        const descriptionPrefersCad = cadHintInDescription && !usdHintInDescription;
+        if (!(inferredCurrency === 'USD' && descriptionPrefersCad)) {
+          currency = inferredCurrency;
+        }
       }
     }
   }
