@@ -811,11 +811,6 @@ textarea {
   color: var(--color-accent);
 }
 
-.pnl-dialog__summary-subvalue {
-  font-size: 0.85rem;
-  color: var(--color-text-muted);
-}
-
 
 .pnl-dialog__controls {
   display: flex;

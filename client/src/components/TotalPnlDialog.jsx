@@ -341,22 +341,21 @@ export default function TotalPnlDialog({
         amount: formatMoney(
           useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
         ),
-        secondary: useDisplayStartDelta
-          ? Number.isFinite(hoverPoint.totalPnl)
-            ? `All-time: ${formatMoney(hoverPoint.totalPnl)}`
-            : null
-          : Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
+        secondary:
+          !useDisplayStartDelta &&
+          Number.isFinite(hoverPoint.totalPnlDelta) &&
+          Math.abs(hoverPoint.totalPnlDelta) > 0.005
             ? `${formatSignedMoney(hoverPoint.totalPnlDelta)} since start`
             : null,
         date: formatDate(hoverPoint.date),
       }
     : null;
 
-  const markerSecondary = useDisplayStartDelta
-    ? marker && Number.isFinite(marker.totalPnl)
-      ? `All-time: ${formatMoney(marker.totalPnl)}`
-      : null
-    : marker && Number.isFinite(marker.totalPnlDelta) && Math.abs(marker.totalPnlDelta) > 0.005
+  const markerSecondary =
+    !useDisplayStartDelta &&
+    marker &&
+    Number.isFinite(marker.totalPnlDelta) &&
+    Math.abs(marker.totalPnlDelta) > 0.005
       ? `${formatSignedMoney(marker.totalPnlDelta)} since start`
       : null;
 
@@ -390,20 +389,9 @@ export default function TotalPnlDialog({
       ? summary.totalPnlCad
       : null;
   const totalPnlCombined = Number.isFinite(summary.totalPnlCad) ? summary.totalPnlCad : null;
-  const totalPnlDeltaRaw = Number.isFinite(summary.totalPnlSinceDisplayStartCad)
-    ? summary.totalPnlSinceDisplayStartCad
-    : null;
-  const hasMeaningfulDelta = Number.isFinite(totalPnlDeltaRaw) && Math.abs(totalPnlDeltaRaw) > 0.005;
-  const showSummaryDisplayDelta = useDisplayStartDelta && hasMeaningfulDelta;
   const totalPnl = totalPnlAllTime ?? totalPnlCombined;
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
-  const rangeStartLabel = formatDate(displayRangeStart);
-  const totalPnlDelta = showSummaryDisplayDelta ? totalPnlDeltaRaw : null;
-  const summaryDeltaText =
-    totalPnlDelta !== null
-      ? `${formatSignedMoney(totalPnlDelta)} since ${rangeStartLabel !== '—' ? rangeStartLabel : 'range start'}`
-      : null;
 
   const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
   const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
@@ -447,9 +435,6 @@ export default function TotalPnlDialog({
                     <span className="pnl-dialog__summary-value pnl-dialog__summary-value--accent">
                       {Number.isFinite(totalPnl) ? formatMoney(totalPnl) : '—'}
                     </span>
-                    {summaryDeltaText ? (
-                      <span className="pnl-dialog__summary-subvalue">{summaryDeltaText}</span>
-                    ) : null}
                   </div>
                   <div className="pnl-dialog__summary-item">
                     <span className="pnl-dialog__summary-label">Net deposits</span>
