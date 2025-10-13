@@ -786,12 +786,6 @@ textarea {
   border-radius: var(--radius-card);
 }
 
-.pnl-dialog__delta-note {
-  margin: 6px 0 0;
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-}
-
 .pnl-dialog__summary-item {
   min-width: 160px;
   flex: 1 1 0;
@@ -817,12 +811,6 @@ textarea {
   color: var(--color-accent);
 }
 
-.pnl-dialog__summary-subvalue {
-  display: block;
-  font-size: 0.78rem;
-  font-weight: 500;
-  color: var(--color-text-muted);
-}
 
 .pnl-dialog__controls {
   display: flex;

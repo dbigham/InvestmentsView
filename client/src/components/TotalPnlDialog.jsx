@@ -406,29 +406,9 @@ export default function TotalPnlDialog({
   const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
     ? summary.netDepositsAllTimeCad
     : netDepositsCombined;
-  const netDepositsDelta =
-    useDisplayStartDelta && netDepositsCombined !== null && baselineNetDeposits !== null
-      ? netDepositsCombined - baselineNetDeposits
-      : null;
   const netDeposits = netDepositsAllTime ?? netDepositsCombined;
 
   const totalEquity = Number.isFinite(summary.totalEquityCad) ? summary.totalEquityCad : null;
-  const totalEquityDelta =
-    useDisplayStartDelta && Number.isFinite(summary.totalEquitySinceDisplayStartCad)
-      ? summary.totalEquitySinceDisplayStartCad
-      : null;
-
-  const totalPnlSubvalue =
-    showSummaryDisplayDelta && totalPnlAllTime !== null ? `All-time: ${formatMoney(totalPnlAllTime)}` : null;
-  const hasMeaningfulNetDepositsDelta =
-    Number.isFinite(netDepositsDelta) && Math.abs(netDepositsDelta) > 0.005;
-  const netDepositsSubvalue = hasMeaningfulNetDepositsDelta
-    ? `Δ since start: ${formatSignedMoney(netDepositsDelta)}`
-    : null;
-  const hasMeaningfulEquityDelta = Number.isFinite(totalEquityDelta) && Math.abs(totalEquityDelta) > 0.005;
-  const totalEquitySubvalue = hasMeaningfulEquityDelta
-    ? `Δ since start: ${formatSignedMoney(totalEquityDelta)}`
-    : null;
 
   const normalizedIssues = useMemo(() => formatIssues(data?.issues), [data?.issues]);
 
@@ -463,35 +443,21 @@ export default function TotalPnlDialog({
                     <span className="pnl-dialog__summary-label">Total P&amp;L</span>
                     <span className="pnl-dialog__summary-value pnl-dialog__summary-value--accent">
                       {Number.isFinite(totalPnl) ? formatMoney(totalPnl) : '—'}
-                      {totalPnlSubvalue && (
-                        <span className="pnl-dialog__summary-subvalue">{totalPnlSubvalue}</span>
-                      )}
                     </span>
                   </div>
                   <div className="pnl-dialog__summary-item">
                     <span className="pnl-dialog__summary-label">Net deposits</span>
                     <span className="pnl-dialog__summary-value">
                       {Number.isFinite(netDeposits) ? formatMoney(netDeposits) : '—'}
-                      {netDepositsSubvalue && (
-                        <span className="pnl-dialog__summary-subvalue">{netDepositsSubvalue}</span>
-                      )}
                     </span>
                   </div>
                   <div className="pnl-dialog__summary-item">
                     <span className="pnl-dialog__summary-label">Total equity</span>
                     <span className="pnl-dialog__summary-value">
                       {Number.isFinite(totalEquity) ? formatMoney(totalEquity) : '—'}
-                      {totalEquitySubvalue && (
-                        <span className="pnl-dialog__summary-subvalue">{totalEquitySubvalue}</span>
-                      )}
                     </span>
                   </div>
                 </div>
-                {useDisplayStartDelta && (
-                  <p className="pnl-dialog__delta-note" role="note">
-                    Δ values represent changes since the first displayed date.
-                  </p>
-                )}
 
                 <div className="pnl-dialog__controls">
                   <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
