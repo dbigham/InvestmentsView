@@ -3,7 +3,22 @@ const assert = require('node:assert/strict');
 
 const {
   computeTotalPnlSeries,
+  buildDailyPriceSeries,
 } = require('../src/index.js');
+
+test('buildDailyPriceSeries uses same-day closing prices for late timestamps', () => {
+  const history = [
+    { date: new Date('2025-10-09T00:00:00Z'), price: 100 },
+    { date: new Date('2025-10-10T04:00:00Z'), price: 91 },
+  ];
+  const dateKeys = ['2025-10-09', '2025-10-10', '2025-10-11'];
+  const series = buildDailyPriceSeries(history, dateKeys);
+
+  assert.ok(series instanceof Map, 'Expected map result');
+  assert.equal(series.get('2025-10-09'), 100);
+  assert.equal(series.get('2025-10-10'), 91);
+  assert.equal(series.get('2025-10-11'), 91);
+});
 
 test('computeTotalPnlSeries handles cash-only activities', async () => {
   const account = {

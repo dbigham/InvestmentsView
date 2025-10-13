@@ -4777,7 +4777,11 @@ function buildDailyPriceSeries(normalizedHistory, dateKeys) {
   let cursorIndex = 0;
   let lastPrice = null;
   for (const dateKey of dateKeys) {
-    const targetTime = Date.parse(`${dateKey}T00:00:00Z`);
+    const targetDate = parseDateOnlyString(dateKey);
+    const targetTime =
+      targetDate instanceof Date && !Number.isNaN(targetDate.getTime())
+        ? targetDate.getTime() + DAY_IN_MS - 1
+        : Number.NaN;
     if (!Number.isFinite(targetTime)) {
       continue;
     }
@@ -5063,7 +5067,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol || null });
 
     const symbolId = Number(activity.symbolId);
-    const currency = normalizeCurrency(activity.currency) || null;
+    const activityCurrency = normalizeCurrency(activity.currency) || null;
 
     if (Number.isFinite(symbolId) && symbolId > 0) {
       symbolIds.add(symbolId);
@@ -5076,15 +5080,21 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!symbolMeta.has(resolvedSymbol)) {
       symbolMeta.set(resolvedSymbol, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
-        currency,
+        currency: inferSymbolCurrency(resolvedSymbol) || null,
+        activityCurrency,
       });
     } else {
       const meta = symbolMeta.get(resolvedSymbol);
-      if (!meta.currency && currency) {
-        meta.currency = currency;
-      }
-      if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
-        meta.symbolId = symbolId;
+      if (meta) {
+        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
+          meta.symbolId = symbolId;
+        }
+        if (!meta.currency) {
+          meta.currency = inferSymbolCurrency(resolvedSymbol) || activityCurrency || null;
+        }
+        if (!meta.activityCurrency && activityCurrency) {
+          meta.activityCurrency = activityCurrency;
+        }
       }
     }
   });
@@ -5225,14 +5235,25 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
 
   for (const [symbol, meta] of symbolMeta.entries()) {
-    if (!meta.currency && meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]) {
-      const detailCurrency = normalizeCurrency(symbolDetails[meta.symbolId].currency);
-      if (detailCurrency) {
-        meta.currency = detailCurrency;
-      }
+    if (!meta || typeof meta !== 'object') {
+      continue;
+    }
+    const detailCurrency =
+      meta.symbolId && symbolDetails && symbolDetails[meta.symbolId]
+        ? normalizeCurrency(symbolDetails[meta.symbolId].currency)
+        : null;
+    if (detailCurrency) {
+      meta.currency = detailCurrency;
     }
     if (!meta.currency) {
-      meta.currency = 'CAD';
+      const inferredCurrency = inferSymbolCurrency(symbol);
+      if (inferredCurrency) {
+        meta.currency = inferredCurrency;
+      } else if (meta.activityCurrency) {
+        meta.currency = meta.activityCurrency;
+      } else {
+        meta.currency = 'CAD';
+      }
     }
   }
 
@@ -7594,6 +7615,7 @@ module.exports = {
   resolveActivityAmountDetails,
   convertAmountToCad,
   resolveUsdToCadRate,
+  buildDailyPriceSeries,
   __setBookValueTransferPriceFetcher: setBookValueTransferPriceFetcher,
   fetchAccounts,
   fetchBalances,
