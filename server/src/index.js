@@ -2654,6 +2654,33 @@ function normalizeCurrency(code) {
   return code.trim().toUpperCase();
 }
 
+const CAD_SYMBOL_SUFFIXES = new Set([
+  'TO',
+  'TSX',
+  'V',
+  'CN',
+  'NE',
+  'ME',
+  'M',
+  'CA',
+  'SV',
+]);
+
+function inferSymbolCurrency(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) {
+    return null;
+  }
+  const parts = normalized.split('.');
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (CAD_SYMBOL_SUFFIXES.has(last)) {
+      return 'CAD';
+    }
+  }
+  return 'USD';
+}
+
 const ACTIVITY_DESCRIPTION_SYMBOL_HINTS = [
   {
     symbol: 'SPY',
@@ -3375,7 +3402,23 @@ function resolveActivityAmountDetails(activity) {
     return null;
   }
   const signedAmount = direction >= 0 ? Math.abs(amountInfo.amount) : -Math.abs(amountInfo.amount);
-  const currency = normalizeCurrency(activity.currency) || 'CAD';
+  let currency = normalizeCurrency(activity.currency) || 'CAD';
+  const netAmount = Number(activity.netAmount);
+  const grossAmount = Number(activity.grossAmount);
+  const usesDescriptionAmount = amountInfo.source === 'description' && amountInfo.description;
+  if (usesDescriptionAmount) {
+    const descriptionSource = amountInfo.description.source;
+    if (
+      descriptionSource === 'bookValue' &&
+      (!Number.isFinite(netAmount) || Math.abs(netAmount) < 1e-8) &&
+      (!Number.isFinite(grossAmount) || Math.abs(grossAmount) < 1e-8)
+    ) {
+      const inferredCurrency = inferSymbolCurrency(activity.symbol);
+      if (inferredCurrency && inferredCurrency !== currency && currency === 'CAD') {
+        currency = inferredCurrency;
+      }
+    }
+  }
   const timestamp = resolveActivityTimestamp(activity);
   const descriptionResolution = amountInfo.description
     ? {
