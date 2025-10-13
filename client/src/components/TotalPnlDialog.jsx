@@ -341,22 +341,21 @@ export default function TotalPnlDialog({
         amount: formatMoney(
           useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
         ),
-        secondary: useDisplayStartDelta
-          ? Number.isFinite(hoverPoint.totalPnl)
-            ? `All-time: ${formatMoney(hoverPoint.totalPnl)}`
-            : null
-          : Number.isFinite(hoverPoint.totalPnlDelta) && Math.abs(hoverPoint.totalPnlDelta) > 0.005
+        secondary:
+          !useDisplayStartDelta &&
+          Number.isFinite(hoverPoint.totalPnlDelta) &&
+          Math.abs(hoverPoint.totalPnlDelta) > 0.005
             ? `${formatSignedMoney(hoverPoint.totalPnlDelta)} since start`
             : null,
         date: formatDate(hoverPoint.date),
       }
     : null;
 
-  const markerSecondary = useDisplayStartDelta
-    ? marker && Number.isFinite(marker.totalPnl)
-      ? `All-time: ${formatMoney(marker.totalPnl)}`
-      : null
-    : marker && Number.isFinite(marker.totalPnlDelta) && Math.abs(marker.totalPnlDelta) > 0.005
+  const markerSecondary =
+    !useDisplayStartDelta &&
+    marker &&
+    Number.isFinite(marker.totalPnlDelta) &&
+    Math.abs(marker.totalPnlDelta) > 0.005
       ? `${formatSignedMoney(marker.totalPnlDelta)} since start`
       : null;
 
@@ -383,25 +382,17 @@ export default function TotalPnlDialog({
     setHover(null);
   };
 
+  const summary = data?.summary || {};
+  const totalPnlAllTime = Number.isFinite(summary.totalPnlAllTimeCad)
+    ? summary.totalPnlAllTimeCad
+    : Number.isFinite(summary.totalPnlCad)
+      ? summary.totalPnlCad
+      : null;
+  const totalPnlCombined = Number.isFinite(summary.totalPnlCad) ? summary.totalPnlCad : null;
+  const totalPnl = totalPnlAllTime ?? totalPnlCombined;
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
 
-  const summary = data?.summary || {};
-  const totalPnlAllTime = Number.isFinite(summary.totalPnlCad) ? summary.totalPnlCad : null;
-  const totalPnlDelta = Number.isFinite(summary.totalPnlSinceDisplayStartCad)
-    ? summary.totalPnlSinceDisplayStartCad
-    : null;
-  const showSummaryDisplayDelta = useDisplayStartDelta && totalPnlDelta !== null;
-  const totalPnl = showSummaryDisplayDelta ? totalPnlDelta : totalPnlAllTime;
-
-  const displayStartTotals =
-    summary.displayStartTotals && typeof summary.displayStartTotals === 'object'
-      ? summary.displayStartTotals
-      : null;
-  const baselineNetDeposits =
-    displayStartTotals && Number.isFinite(displayStartTotals.cumulativeNetDepositsCad)
-      ? displayStartTotals.cumulativeNetDepositsCad
-      : null;
   const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
   const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
     ? summary.netDepositsAllTimeCad
