@@ -182,9 +182,12 @@ function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = {}) {
   });
 }
 
-module.exports = {
+const totalPnlDisplay = {
   TOTAL_PNL_TIMEFRAME_OPTIONS,
   buildTotalPnlDisplaySeries,
   parseDateOnly,
   subtractInterval,
 };
+
+module.exports = totalPnlDisplay;
+module.exports.default = totalPnlDisplay;
