@@ -2533,6 +2533,42 @@ function isDividendActivity(activity) {
 const EMBEDDED_NUMBER_PATTERN = '\\d+(?:,\\d{3})*(?:\\.\\d+)?';
 const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
 
+const USD_DESCRIPTION_HINTS = [
+  'USD',
+  'US DOLLAR',
+  'US DOLLARS',
+  'US FUNDS',
+  'US$',
+  'U$',
+];
+
+const CAD_DESCRIPTION_HINTS = [
+  'CAD',
+  'C$',
+  'C DOLLAR',
+  'C DOLLARS',
+  'CDN',
+  'CAD FUNDS',
+  'CANADIAN DOLLAR',
+  'CANADIAN DOLLARS',
+];
+
+function hasUsdHintInDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return false;
+  }
+  const normalized = description.toUpperCase();
+  return USD_DESCRIPTION_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function hasCadHintInDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return false;
+  }
+  const normalized = description.toUpperCase();
+  return CAD_DESCRIPTION_HINTS.some((hint) => normalized.includes(hint));
+}
+
 function parseNumericString(value) {
   if (typeof value !== 'string' || !value) {
     return null;
@@ -2652,6 +2688,33 @@ function normalizeCurrency(code) {
     return null;
   }
   return code.trim().toUpperCase();
+}
+
+const CAD_SYMBOL_SUFFIXES = new Set([
+  'TO',
+  'TSX',
+  'V',
+  'CN',
+  'NE',
+  'ME',
+  'M',
+  'CA',
+  'SV',
+]);
+
+function inferSymbolCurrency(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) {
+    return null;
+  }
+  const parts = normalized.split('.');
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (CAD_SYMBOL_SUFFIXES.has(last)) {
+      return 'CAD';
+    }
+  }
+  return 'USD';
 }
 
 const ACTIVITY_DESCRIPTION_SYMBOL_HINTS = [
@@ -3330,6 +3393,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
 
   const activitiesRaw = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
   const activities = dedupeActivities(activitiesRaw);
+  const fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(login, accountKey);
 
   return {
     accountId: accountKey,
@@ -3341,6 +3405,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
     now,
     nowIsoString,
     fingerprint: computeActivityFingerprint(activities),
+    fetchBookValueTransferPrice,
   };
 }
 
@@ -3375,7 +3440,29 @@ function resolveActivityAmountDetails(activity) {
     return null;
   }
   const signedAmount = direction >= 0 ? Math.abs(amountInfo.amount) : -Math.abs(amountInfo.amount);
-  const currency = normalizeCurrency(activity.currency) || 'CAD';
+  let currency = normalizeCurrency(activity.currency) || 'CAD';
+  const netAmount = Number(activity.netAmount);
+  const grossAmount = Number(activity.grossAmount);
+  const usesDescriptionAmount = amountInfo.source === 'description' && amountInfo.description;
+  const descriptionText = typeof activity.description === 'string' ? activity.description : '';
+  const usdHintInDescription = hasUsdHintInDescription(descriptionText);
+  const cadHintInDescription = hasCadHintInDescription(descriptionText);
+  if (usesDescriptionAmount) {
+    const descriptionSource = amountInfo.description.source;
+    if (
+      descriptionSource === 'bookValue' &&
+      (!Number.isFinite(netAmount) || Math.abs(netAmount) < 1e-8) &&
+      (!Number.isFinite(grossAmount) || Math.abs(grossAmount) < 1e-8)
+    ) {
+      const inferredCurrency = inferSymbolCurrency(activity.symbol);
+      if (inferredCurrency && inferredCurrency !== currency) {
+        const descriptionPrefersCad = cadHintInDescription && !usdHintInDescription;
+        if (!(inferredCurrency === 'USD' && descriptionPrefersCad)) {
+          currency = inferredCurrency;
+        }
+      }
+    }
+  }
   const timestamp = resolveActivityTimestamp(activity);
   const descriptionResolution = amountInfo.description
     ? {
@@ -3401,6 +3488,292 @@ function resolveActivityAmountDetails(activity) {
       description: descriptionResolution,
     },
   };
+}
+
+const bookValueTransferPriceCache = new Map();
+let customBookValueTransferPriceFetcher = null;
+
+function setBookValueTransferPriceFetcher(fetcher) {
+  if (fetcher !== null && typeof fetcher !== 'function') {
+    throw new Error('Book value transfer price fetcher must be a function or null');
+  }
+  customBookValueTransferPriceFetcher = fetcher;
+  bookValueTransferPriceCache.clear();
+}
+
+async function fetchBookValueTransferClosePrice(symbol, dateKey, accountKey) {
+  if (!symbol || !dateKey) {
+    return null;
+  }
+  const cacheKey = symbol + '|' + dateKey;
+  if (bookValueTransferPriceCache.has(cacheKey)) {
+    return bookValueTransferPriceCache.get(cacheKey);
+  }
+  let price = null;
+  try {
+    const history = await fetchSymbolPriceHistory(symbol, dateKey, dateKey);
+    if (Array.isArray(history) && history.length > 0) {
+      const latest = history[history.length - 1];
+      if (latest && Number.isFinite(latest.price) && latest.price > 0) {
+        price = latest.price;
+      }
+    }
+  } catch (error) {
+    if (DEBUG_TOTAL_PNL) {
+      debugTotalPnl(accountKey, 'Failed to fetch market price for book-value transfer', {
+        symbol,
+        dateKey,
+        message: error && error.message ? error.message : String(error),
+      });
+    }
+  }
+  bookValueTransferPriceCache.set(cacheKey, price);
+  return price;
+}
+
+const BOOK_VALUE_TRANSFER_QUANTITY_REGEX = /([\d,.]+)\s+(?:SHARE|SHARES|UNITS|TRANSFER)/i;
+
+function createAccountBookValueTransferPriceFetcher(login, accountKey) {
+  const cache = new Map();
+  return async function fetcher(activity, symbol, dateKey) {
+    if (!symbol || !dateKey) {
+      return null;
+    }
+    const cacheKey = symbol + '|' + dateKey;
+    if (cache.has(cacheKey)) {
+      return cache.get(cacheKey);
+    }
+    let price = null;
+    const symbolId = activity && Number.isFinite(Number(activity.symbolId)) ? Number(activity.symbolId) : NaN;
+    if (login && Number.isFinite(symbolId) && symbolId > 0) {
+      try {
+        price = await fetchQuestradeBookValueTransferClose(login, symbolId, dateKey, accountKey);
+      } catch (error) {
+        if (DEBUG_TOTAL_PNL) {
+          debugTotalPnl(accountKey, 'Failed to fetch Questrade market price for book-value transfer', {
+            symbol,
+            symbolId,
+            dateKey,
+            message: error && error.message ? error.message : String(error),
+          });
+        }
+        price = null;
+      }
+    }
+    cache.set(cacheKey, price);
+    return price;
+  };
+}
+
+async function fetchQuestradeBookValueTransferClose(login, symbolId, dateKey, accountKey) {
+  if (!login || !symbolId || !dateKey) {
+    return null;
+  }
+  const startDate = new Date(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime())) {
+    return null;
+  }
+  const endDate = addDays(startDate, 1) || new Date(startDate.getTime() + DAY_IN_MS);
+  const params = {
+    startTime: startDate.toISOString(),
+    endTime: endDate.toISOString(),
+    interval: 'OneDay',
+  };
+  let data;
+  try {
+    data = await questradeRequest(login, `/v1/markets/candles/${symbolId}`, { params });
+  } catch (error) {
+    if (DEBUG_TOTAL_PNL) {
+      debugTotalPnl(accountKey, 'Questrade candle lookup failed for book-value transfer', {
+        symbolId,
+        dateKey,
+        message: error && error.message ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+  const candles = data && Array.isArray(data.candles) ? data.candles : [];
+  for (const candle of candles) {
+    if (!candle || typeof candle !== 'object') {
+      continue;
+    }
+    const start = candle.start || candle.time || candle.startTime;
+    if (typeof start === 'string') {
+      const candleDate = new Date(start);
+      if (!Number.isNaN(candleDate.getTime())) {
+        const candleDateKey = formatDateOnly(candleDate);
+        if (candleDateKey && candleDateKey !== dateKey) {
+          continue;
+        }
+      }
+    }
+    const close = Number(candle.close);
+    if (Number.isFinite(close) && close > 0) {
+      return close;
+    }
+    const vwap = Number(candle.VWAP || candle.vwap);
+    if (Number.isFinite(vwap) && vwap > 0) {
+      return vwap;
+    }
+  }
+  return null;
+}
+
+function extractBookValueTransferQuantity(activity) {
+  const explicitQuantity = Number(activity && activity.quantity);
+  if (Number.isFinite(explicitQuantity) && Math.abs(explicitQuantity) > 1e-8) {
+    return Math.abs(explicitQuantity);
+  }
+  const description = typeof activity?.description === 'string' ? activity.description : '';
+  if (!description) {
+    return null;
+  }
+  const match = description.match(BOOK_VALUE_TRANSFER_QUANTITY_REGEX);
+  if (match && match[1]) {
+    const parsed = parseNumericString(match[1]);
+    if (Number.isFinite(parsed) && Math.abs(parsed) > 1e-8) {
+      return Math.abs(parsed);
+    }
+  }
+  return null;
+}
+
+function shouldApplyBookValueMarketOverride(activity, details) {
+  if (!activity || !details) {
+    return false;
+  }
+  const resolution = details.resolution;
+  if (!resolution || !resolution.description || resolution.description.source !== 'bookValue') {
+    return false;
+  }
+  const netAmount = Number(activity.netAmount);
+  if (Number.isFinite(netAmount) && Math.abs(netAmount) >= 1e-8) {
+    return false;
+  }
+  const grossAmount = Number(activity.grossAmount);
+  if (Number.isFinite(grossAmount) && Math.abs(grossAmount) >= 1e-8) {
+    return false;
+  }
+  const timestamp =
+    details.timestamp instanceof Date && !Number.isNaN(details.timestamp.getTime())
+      ? details.timestamp
+      : resolveActivityTimestamp(activity);
+  if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+    return false;
+  }
+  const symbol = normalizeSymbol(activity.symbol);
+  if (!symbol) {
+    return false;
+  }
+  const quantity = extractBookValueTransferQuantity(activity);
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return false;
+  }
+  return true;
+}
+
+async function resolveBookValueTransferMarketOverride(activity, details, accountKey, activityContext) {
+  if (!shouldApplyBookValueMarketOverride(activity, details)) {
+    return null;
+  }
+  const timestamp =
+    details.timestamp instanceof Date && !Number.isNaN(details.timestamp.getTime())
+      ? details.timestamp
+      : resolveActivityTimestamp(activity);
+  if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+    return null;
+  }
+  const dateKey = formatDateOnly(timestamp);
+  if (!dateKey) {
+    return null;
+  }
+  const symbol = normalizeSymbol(activity.symbol);
+  if (!symbol) {
+    return null;
+  }
+  const quantity = extractBookValueTransferQuantity(activity);
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return null;
+  }
+  const contextualFetcher =
+    activityContext && typeof activityContext.fetchBookValueTransferPrice === 'function'
+      ? activityContext.fetchBookValueTransferPrice
+      : null;
+  let price = null;
+  if (contextualFetcher) {
+    try {
+      price = await contextualFetcher(activity, symbol, dateKey, accountKey);
+    } catch (error) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Account book-value price fetcher failed', {
+          symbol,
+          dateKey,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+      price = null;
+    }
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    const priceFetcher = customBookValueTransferPriceFetcher || fetchBookValueTransferClosePrice;
+    try {
+      price = await priceFetcher(symbol, dateKey, accountKey);
+    } catch (error) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Custom book-value price fetcher failed', {
+          symbol,
+          dateKey,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+      return null;
+    }
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+  const inferredCurrency = inferSymbolCurrency(symbol) || normalizeCurrency(activity.currency) || details.currency || 'CAD';
+  const magnitude = quantity * price;
+  const sign = Number(details.amount) >= 0 ? 1 : -1;
+  const overrideAmount = magnitude * sign;
+  if (DEBUG_TOTAL_PNL) {
+    debugTotalPnl(accountKey, 'Applied market value override for book-value transfer', {
+      symbol,
+      dateKey,
+      price,
+      quantity,
+      inferredCurrency,
+      overrideAmount,
+      bookValueAmount: details.amount,
+      bookValueCurrency: details.currency,
+    });
+  }
+  return {
+    source: 'marketValue',
+    amount: overrideAmount,
+    currency: inferredCurrency,
+    price,
+    quantity,
+    bookValueAmount: details.amount,
+    bookValueCurrency: details.currency,
+    dateKey,
+  };
+}
+
+async function resolveFundingActivityAmountDetails(activity, accountKey, activityContext) {
+  const baseDetails = resolveActivityAmountDetails(activity);
+  if (!baseDetails) {
+    return null;
+  }
+  const override = await resolveBookValueTransferMarketOverride(activity, baseDetails, accountKey, activityContext);
+  if (!override) {
+    return baseDetails;
+  }
+  return Object.assign({}, baseDetails, {
+    amount: override.amount,
+    currency: override.currency,
+    override,
+  });
 }
 
 async function convertAmountToCad(amount, currency, timestamp, accountKey) {
@@ -3483,7 +3856,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   let missingCashFlowDates = false;
 
   for (const activity of fundingActivities) {
-    const details = resolveActivityAmountDetails(activity);
+    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
     if (!details) {
       debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
       continue;
@@ -3526,6 +3899,19 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
         resolution && resolution.description ? resolution.description.raw || null : null,
       descriptionExtractionStrategy:
         resolution && resolution.description ? resolution.description.source || null : null,
+      overrideSource: details.override ? details.override.source || null : null,
+      overridePrice:
+        details.override && Number.isFinite(details.override.price) ? details.override.price : null,
+      overrideQuantity:
+        details.override && Number.isFinite(details.override.quantity) ? details.override.quantity : null,
+      overrideCurrency: details.override ? details.override.currency || null : null,
+      overrideAmount:
+        details.override && Number.isFinite(details.override.amount) ? details.override.amount : null,
+      bookValueAmount:
+        details.override && Number.isFinite(details.override.bookValueAmount)
+          ? details.override.bookValueAmount
+          : null,
+      bookValueCurrency: details.override ? details.override.bookValueCurrency || null : null,
       timestamp: timestamp ? formatDateOnly(timestamp) : null,
       type: activity.type || null,
       action: activity.action || null,
@@ -4318,7 +4704,7 @@ async function computeDailyNetDeposits(activityContext, account, accountKey) {
   const perDay = new Map();
   let conversionIncomplete = false;
   for (const activity of fundingActivities) {
-    const details = resolveActivityAmountDetails(activity);
+    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
     if (!details) {
       continue;
     }
@@ -6806,6 +7192,7 @@ module.exports = {
   resolveActivityAmountDetails,
   convertAmountToCad,
   resolveUsdToCadRate,
+  __setBookValueTransferPriceFetcher: setBookValueTransferPriceFetcher,
   fetchAccounts,
   fetchBalances,
   fetchPositions,
