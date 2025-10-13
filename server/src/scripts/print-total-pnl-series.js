@@ -373,7 +373,8 @@ async function main() {
   console.log('Points :', Array.isArray(displaySeries) ? displaySeries.length : 0);
   const hasRelativeSeries = Array.isArray(displaySeries)
     && displaySeries.some((point) => Number.isFinite(point && point.totalPnlSinceDisplayStartCad));
-  const useDisplayStartRelative = !keepCagrStart && hasRelativeSeries;
+  const summaryHasDisplayDelta = Number.isFinite(series.summary?.totalPnlSinceDisplayStartCad);
+  const useDisplayStartRelative = summaryHasDisplayDelta || (!keepCagrStart && hasRelativeSeries);
 
   console.log('Summary:');
   console.log('  Net deposits CAD:', formatNumber(series.summary.netDepositsCad));
@@ -419,8 +420,21 @@ async function main() {
     }
   }
   if (lastPoint) {
-    const diff = Math.abs(lastPoint.totalPnlCad - series.summary.totalPnlCad);
-    console.log('  Last point P&L   :', formatNumber(lastPoint.totalPnlCad), diff < 0.05 ? '(matches summary)' : '(diff ' + formatNumber(diff) + ')');
+    const summaryPnlForComparison = useDisplayStartRelative && Number.isFinite(series.summary.totalPnlSinceDisplayStartCad)
+      ? series.summary.totalPnlSinceDisplayStartCad
+      : series.summary.totalPnlCad;
+    const lastPointPnlForComparison = useDisplayStartRelative && Number.isFinite(lastPoint.totalPnlSinceDisplayStartCad)
+      ? lastPoint.totalPnlSinceDisplayStartCad
+      : lastPoint.totalPnlCad;
+    const diff =
+      Number.isFinite(summaryPnlForComparison) && Number.isFinite(lastPointPnlForComparison)
+        ? Math.abs(lastPointPnlForComparison - summaryPnlForComparison)
+        : null;
+    const displayValue = Number.isFinite(lastPointPnlForComparison)
+      ? lastPointPnlForComparison
+      : lastPoint.totalPnlCad;
+    const suffix = diff === null ? '' : diff < 0.05 ? '(matches summary)' : `(diff ${formatNumber(diff)})`;
+    console.log('  Last point P&L   :', formatNumber(displayValue), suffix);
   }
 
   if (fundingSummary && fundingSummary.annualizedReturn) {

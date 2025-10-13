@@ -385,19 +385,24 @@ export default function TotalPnlDialog({
   const summary = data?.summary || {};
   const totalPnlAllTime = Number.isFinite(summary.totalPnlAllTimeCad)
     ? summary.totalPnlAllTimeCad
-    : Number.isFinite(summary.totalPnlCad)
-      ? summary.totalPnlCad
-      : null;
+    : null;
   const totalPnlCombined = Number.isFinite(summary.totalPnlCad) ? summary.totalPnlCad : null;
-  const totalPnl = totalPnlAllTime ?? totalPnlCombined;
+  const totalPnlSinceDisplayStart = Number.isFinite(summary.totalPnlSinceDisplayStartCad)
+    ? summary.totalPnlSinceDisplayStartCad
+    : null;
+  const totalPnl = isCagrMode
+    ? totalPnlSinceDisplayStart ?? totalPnlCombined ?? totalPnlAllTime
+    : totalPnlAllTime ?? totalPnlCombined ?? totalPnlSinceDisplayStart;
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
 
   const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
   const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
     ? summary.netDepositsAllTimeCad
-    : netDepositsCombined;
-  const netDeposits = netDepositsAllTime ?? netDepositsCombined;
+    : null;
+  const netDeposits = isCagrMode
+    ? netDepositsCombined ?? netDepositsAllTime
+    : netDepositsAllTime ?? netDepositsCombined;
 
   const totalEquity = Number.isFinite(summary.totalEquityCad) ? summary.totalEquityCad : null;
 
@@ -652,6 +657,11 @@ TotalPnlDialog.propTypes = {
       totalPnlAllTimeCad: PropTypes.number,
       totalPnlSinceDisplayStartCad: PropTypes.number,
       displayStartTotals: PropTypes.shape({
+        cumulativeNetDepositsCad: PropTypes.number,
+        equityCad: PropTypes.number,
+        totalPnlCad: PropTypes.number,
+      }),
+      seriesStartTotals: PropTypes.shape({
         cumulativeNetDepositsCad: PropTypes.number,
         equityCad: PropTypes.number,
         totalPnlCad: PropTypes.number,
