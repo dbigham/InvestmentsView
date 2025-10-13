@@ -18,6 +18,7 @@ function buildActivityContext(activity) {
     now,
     nowIsoString: now.toISOString(),
     fingerprint: 'test-fingerprint',
+    fetchBookValueTransferPrice: null,
   };
 }
 
@@ -104,4 +105,35 @@ test('book-value transfer quantity can be parsed from description when missing',
   assert.ok(result);
   assert.equal(result.netDeposits.allTimeCad, 9100);
   assert.equal(result.netDeposits.perCurrency.CAD, 9100);
+});
+
+test('book-value transfers prefer activity-context price fetcher', async (t) => {
+  t.after(() => __setBookValueTransferPriceFetcher(null));
+  __setBookValueTransferPriceFetcher(async () => {
+    throw new Error('fallback fetcher should not run');
+  });
+
+  const activity = {
+    tradeDate: '2025-06-17T00:00:00.000000-04:00',
+    transactionDate: '2025-06-17T00:00:00.000000-04:00',
+    settlementDate: '2025-06-17T00:00:00.000000-04:00',
+    type: 'Transfers',
+    action: 'TF6',
+    symbol: 'SHOP.TO',
+    description: 'SHOPIFY INC TRANSFER BOOK VALUE 25000.00',
+    currency: 'CAD',
+    quantity: 100,
+    price: 0,
+    netAmount: 0,
+    grossAmount: 0,
+  };
+
+  const context = buildActivityContext(activity);
+  context.fetchBookValueTransferPrice = async () => 280;
+
+  const result = await computeNetDepositsCore(buildAccount(), null, {}, context);
+
+  assert.ok(result);
+  assert.equal(result.netDeposits.allTimeCad, 28000);
+  assert.equal(result.netDeposits.perCurrency.CAD, 28000);
 });

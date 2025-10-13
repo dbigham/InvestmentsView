@@ -3393,6 +3393,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
 
   const activitiesRaw = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
   const activities = dedupeActivities(activitiesRaw);
+  const fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(login, accountKey);
 
   return {
     accountId: accountKey,
@@ -3404,6 +3405,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
     now,
     nowIsoString,
     fingerprint: computeActivityFingerprint(activities),
+    fetchBookValueTransferPrice,
   };
 }
 
@@ -3531,6 +3533,92 @@ async function fetchBookValueTransferClosePrice(symbol, dateKey, accountKey) {
 
 const BOOK_VALUE_TRANSFER_QUANTITY_REGEX = /([\d,.]+)\s+(?:SHARE|SHARES|UNITS|TRANSFER)/i;
 
+function createAccountBookValueTransferPriceFetcher(login, accountKey) {
+  const cache = new Map();
+  return async function fetcher(activity, symbol, dateKey) {
+    if (!symbol || !dateKey) {
+      return null;
+    }
+    const cacheKey = symbol + '|' + dateKey;
+    if (cache.has(cacheKey)) {
+      return cache.get(cacheKey);
+    }
+    let price = null;
+    const symbolId = activity && Number.isFinite(Number(activity.symbolId)) ? Number(activity.symbolId) : NaN;
+    if (login && Number.isFinite(symbolId) && symbolId > 0) {
+      try {
+        price = await fetchQuestradeBookValueTransferClose(login, symbolId, dateKey, accountKey);
+      } catch (error) {
+        if (DEBUG_TOTAL_PNL) {
+          debugTotalPnl(accountKey, 'Failed to fetch Questrade market price for book-value transfer', {
+            symbol,
+            symbolId,
+            dateKey,
+            message: error && error.message ? error.message : String(error),
+          });
+        }
+        price = null;
+      }
+    }
+    cache.set(cacheKey, price);
+    return price;
+  };
+}
+
+async function fetchQuestradeBookValueTransferClose(login, symbolId, dateKey, accountKey) {
+  if (!login || !symbolId || !dateKey) {
+    return null;
+  }
+  const startDate = new Date(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime())) {
+    return null;
+  }
+  const endDate = addDays(startDate, 1) || new Date(startDate.getTime() + DAY_IN_MS);
+  const params = {
+    startTime: startDate.toISOString(),
+    endTime: endDate.toISOString(),
+    interval: 'OneDay',
+  };
+  let data;
+  try {
+    data = await questradeRequest(login, `/v1/markets/candles/${symbolId}`, { params });
+  } catch (error) {
+    if (DEBUG_TOTAL_PNL) {
+      debugTotalPnl(accountKey, 'Questrade candle lookup failed for book-value transfer', {
+        symbolId,
+        dateKey,
+        message: error && error.message ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+  const candles = data && Array.isArray(data.candles) ? data.candles : [];
+  for (const candle of candles) {
+    if (!candle || typeof candle !== 'object') {
+      continue;
+    }
+    const start = candle.start || candle.time || candle.startTime;
+    if (typeof start === 'string') {
+      const candleDate = new Date(start);
+      if (!Number.isNaN(candleDate.getTime())) {
+        const candleDateKey = formatDateOnly(candleDate);
+        if (candleDateKey && candleDateKey !== dateKey) {
+          continue;
+        }
+      }
+    }
+    const close = Number(candle.close);
+    if (Number.isFinite(close) && close > 0) {
+      return close;
+    }
+    const vwap = Number(candle.VWAP || candle.vwap);
+    if (Number.isFinite(vwap) && vwap > 0) {
+      return vwap;
+    }
+  }
+  return null;
+}
+
 function extractBookValueTransferQuantity(activity) {
   const explicitQuantity = Number(activity && activity.quantity);
   if (Number.isFinite(explicitQuantity) && Math.abs(explicitQuantity) > 1e-8) {
@@ -3584,7 +3672,7 @@ function shouldApplyBookValueMarketOverride(activity, details) {
   return true;
 }
 
-async function resolveBookValueTransferMarketOverride(activity, details, accountKey) {
+async function resolveBookValueTransferMarketOverride(activity, details, accountKey, activityContext) {
   if (!shouldApplyBookValueMarketOverride(activity, details)) {
     return null;
   }
@@ -3607,19 +3695,39 @@ async function resolveBookValueTransferMarketOverride(activity, details, account
   if (!Number.isFinite(quantity) || quantity <= 0) {
     return null;
   }
-  const priceFetcher = customBookValueTransferPriceFetcher || fetchBookValueTransferClosePrice;
+  const contextualFetcher =
+    activityContext && typeof activityContext.fetchBookValueTransferPrice === 'function'
+      ? activityContext.fetchBookValueTransferPrice
+      : null;
   let price = null;
-  try {
-    price = await priceFetcher(symbol, dateKey, accountKey);
-  } catch (error) {
-    if (DEBUG_TOTAL_PNL) {
-      debugTotalPnl(accountKey, 'Custom book-value price fetcher failed', {
-        symbol,
-        dateKey,
-        message: error && error.message ? error.message : String(error),
-      });
+  if (contextualFetcher) {
+    try {
+      price = await contextualFetcher(activity, symbol, dateKey, accountKey);
+    } catch (error) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Account book-value price fetcher failed', {
+          symbol,
+          dateKey,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+      price = null;
     }
-    return null;
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    const priceFetcher = customBookValueTransferPriceFetcher || fetchBookValueTransferClosePrice;
+    try {
+      price = await priceFetcher(symbol, dateKey, accountKey);
+    } catch (error) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Custom book-value price fetcher failed', {
+          symbol,
+          dateKey,
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+      return null;
+    }
   }
   if (!Number.isFinite(price) || price <= 0) {
     return null;
@@ -3652,12 +3760,12 @@ async function resolveBookValueTransferMarketOverride(activity, details, account
   };
 }
 
-async function resolveFundingActivityAmountDetails(activity, accountKey) {
+async function resolveFundingActivityAmountDetails(activity, accountKey, activityContext) {
   const baseDetails = resolveActivityAmountDetails(activity);
   if (!baseDetails) {
     return null;
   }
-  const override = await resolveBookValueTransferMarketOverride(activity, baseDetails, accountKey);
+  const override = await resolveBookValueTransferMarketOverride(activity, baseDetails, accountKey, activityContext);
   if (!override) {
     return baseDetails;
   }
@@ -3748,7 +3856,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   let missingCashFlowDates = false;
 
   for (const activity of fundingActivities) {
-    const details = await resolveFundingActivityAmountDetails(activity, accountKey);
+    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
     if (!details) {
       debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
       continue;
@@ -4596,7 +4704,7 @@ async function computeDailyNetDeposits(activityContext, account, accountKey) {
   const perDay = new Map();
   let conversionIncomplete = false;
   for (const activity of fundingActivities) {
-    const details = await resolveFundingActivityAmountDetails(activity, accountKey);
+    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
     if (!details) {
       continue;
     }
