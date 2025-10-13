@@ -2820,6 +2820,12 @@ button.time-pill:hover .time-pill__icon {
   white-space: nowrap;
 }
 
+.pnl-dialog__label-delta {
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
 .pnl-dialog__label-date {
   color: var(--color-text-muted);
   font-size: 0.72rem;

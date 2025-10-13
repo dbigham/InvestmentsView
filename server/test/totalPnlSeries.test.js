@@ -3,7 +3,22 @@ const assert = require('node:assert/strict');
 
 const {
   computeTotalPnlSeries,
+  buildDailyPriceSeries,
 } = require('../src/index.js');
+
+test('buildDailyPriceSeries uses same-day closing prices for late timestamps', () => {
+  const history = [
+    { date: new Date('2025-10-09T00:00:00Z'), price: 100 },
+    { date: new Date('2025-10-10T04:00:00Z'), price: 91 },
+  ];
+  const dateKeys = ['2025-10-09', '2025-10-10', '2025-10-11'];
+  const series = buildDailyPriceSeries(history, dateKeys);
+
+  assert.ok(series instanceof Map, 'Expected map result');
+  assert.equal(series.get('2025-10-09'), 100);
+  assert.equal(series.get('2025-10-10'), 91);
+  assert.equal(series.get('2025-10-11'), 91);
+});
 
 test('computeTotalPnlSeries handles cash-only activities', async () => {
   const account = {
@@ -86,20 +101,25 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
   assert.equal(firstPoint.date, '2025-01-02');
   assert.ok(Math.abs(firstPoint.cumulativeNetDepositsCad - 1000) < 1e-6);
   assert.ok(Math.abs(firstPoint.totalPnlCad - 0) < 1e-6);
+  assert.ok(Math.abs(firstPoint.totalPnlSinceDisplayStartCad || 0) < 1e-6);
 
   const lastPoint = result.points[result.points.length - 1];
   assert.equal(lastPoint.date, '2025-01-16');
   assert.ok(Math.abs(lastPoint.cumulativeNetDepositsCad - 975) < 1e-6);
   assert.ok(Math.abs(lastPoint.totalPnlCad - 75) < 1e-6);
   assert.ok(Math.abs(lastPoint.equityCad - 1050) < 1e-6);
+  assert.ok(Math.abs(lastPoint.totalPnlSinceDisplayStartCad - 75) < 1e-6);
 
   const profitPoint = result.points.find((point) => point.date === '2025-01-10');
   assert.ok(profitPoint, 'Expected profit date entry');
   assert.ok(Math.abs(profitPoint.totalPnlCad - 75) < 1e-6);
 
   assert.ok(Math.abs(result.summary.totalPnlCad - 75) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlSinceDisplayStartCad - 75) < 1e-6);
   assert.ok(Math.abs(result.summary.totalEquityCad - 1050) < 1e-6);
   assert.ok(Math.abs(result.summary.netDepositsCad - 975) < 1e-6);
+  assert.ok(result.summary.displayStartTotals);
+  assert.ok(Math.abs(result.summary.displayStartTotals.totalPnlCad || 0) < 1e-6);
 
   assert.ok(!result.issues, 'Expected no issues for cash-only scenario');
 });
