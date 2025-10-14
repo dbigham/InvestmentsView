@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
+import { classifyPnL, formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
 import {
   TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
   buildTotalPnlDisplaySeries,
@@ -393,6 +393,15 @@ export default function TotalPnlDialog({
   const totalPnl = isCagrMode
     ? totalPnlSinceDisplayStart ?? totalPnlCombined ?? totalPnlAllTime
     : totalPnlAllTime ?? totalPnlCombined ?? totalPnlSinceDisplayStart;
+  const totalPnlTone = Number.isFinite(totalPnl) ? classifyPnL(totalPnl) : null;
+  const totalPnlClassNames = ['pnl-dialog__summary-value'];
+  if (totalPnlTone === 'positive') {
+    totalPnlClassNames.push('pnl-dialog__summary-value--positive');
+  } else if (totalPnlTone === 'negative') {
+    totalPnlClassNames.push('pnl-dialog__summary-value--negative');
+  } else if (totalPnlTone === 'neutral') {
+    totalPnlClassNames.push('pnl-dialog__summary-value--neutral');
+  }
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
 
@@ -437,8 +446,8 @@ export default function TotalPnlDialog({
                 <div className="pnl-dialog__summary">
                   <div className="pnl-dialog__summary-item">
                     <span className="pnl-dialog__summary-label">Total P&amp;L</span>
-                    <span className="pnl-dialog__summary-value pnl-dialog__summary-value--accent">
-                      {Number.isFinite(totalPnl) ? formatMoney(totalPnl) : '—'}
+                    <span className={totalPnlClassNames.join(' ')}>
+                      {Number.isFinite(totalPnl) ? formatSignedMoney(totalPnl) : '—'}
                     </span>
                   </div>
                   <div className="pnl-dialog__summary-item">
