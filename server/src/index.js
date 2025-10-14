@@ -3369,6 +3369,8 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
       : 'end:none';
   const adjustment = Number(account.netDepositAdjustment);
   const adjustmentKey = Number.isFinite(adjustment) ? 'adj:' + adjustment.toFixed(2) : 'adj:none';
+  const ignoreAdjustmentsKey =
+    options && options.ignoreAccountAdjustments ? 'ignoreAdj:1' : 'ignoreAdj:0';
   return [
     loginId,
     accountId,
@@ -3380,6 +3382,7 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
     startDateKey,
     endDateKey,
     adjustmentKey,
+    ignoreAdjustmentsKey,
   ].join('|');
 }
 
@@ -3847,6 +3850,11 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   }
   const accountKey = account.id;
 
+  const ignoreAccountAdjustments =
+    options && Object.prototype.hasOwnProperty.call(options, 'ignoreAccountAdjustments')
+      ? !!options.ignoreAccountAdjustments
+      : false;
+
   const normalizedStartOverride =
     typeof options.startDate === 'string' && options.startDate.trim()
       ? options.startDate.trim()
@@ -3963,7 +3971,10 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   }
 
   const accountAdjustment =
-    account && typeof account.netDepositAdjustment === 'number' && Number.isFinite(account.netDepositAdjustment)
+    !ignoreAccountAdjustments &&
+    account &&
+    typeof account.netDepositAdjustment === 'number' &&
+    Number.isFinite(account.netDepositAdjustment)
       ? account.netDepositAdjustment
       : 0;
 
@@ -4842,7 +4853,7 @@ function adjustNumericMap(map, key, delta, epsilon = 1e-8) {
   }
 }
 
-async function computeDailyNetDeposits(activityContext, account, accountKey) {
+async function computeDailyNetDeposits(activityContext, account, accountKey, options = {}) {
   const activities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   const fundingActivities = dedupeActivities(filterFundingActivities(activities));
   const perDay = new Map();
@@ -4872,8 +4883,15 @@ async function computeDailyNetDeposits(activityContext, account, accountKey) {
     adjustNumericMap(perDay, dateKey, cadAmount, CASH_FLOW_EPSILON);
   }
 
+  const ignoreAdjustments =
+    options && Object.prototype.hasOwnProperty.call(options, 'ignoreAccountAdjustments')
+      ? !!options.ignoreAccountAdjustments
+      : false;
   const accountAdjustment =
-    account && typeof account.netDepositAdjustment === 'number' && Number.isFinite(account.netDepositAdjustment)
+    !ignoreAdjustments &&
+    account &&
+    typeof account.netDepositAdjustment === 'number' &&
+    Number.isFinite(account.netDepositAdjustment)
       ? account.netDepositAdjustment
       : 0;
   if (accountAdjustment !== 0) {
@@ -5014,6 +5032,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       Object.prototype.hasOwnProperty.call(options, 'applyAccountCagrStartDate')
         ? !!options.applyAccountCagrStartDate
         : true,
+    ignoreAccountAdjustments:
+      options && Object.prototype.hasOwnProperty.call(options, 'ignoreAccountAdjustments')
+        ? !!options.ignoreAccountAdjustments
+        : false,
   };
 
   const netDepositsSummary = await computeNetDepositsCore(account, perAccountCombinedBalances, netDepositOptions, activityContext);
@@ -5302,7 +5324,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(
     activityContext,
     account,
-    accountKey
+    accountKey,
+    { ignoreAccountAdjustments: netDepositOptions.ignoreAccountAdjustments }
   );
 
   const holdings = seededHoldings || new Map();

@@ -112,8 +112,14 @@ async function main() {
   const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
   const perAccountCombinedBalances = { [account.id]: balanceSummary };
 
+  const keepCagrStart = options['no-cagr-start'] ? false : true;
+  const keepAdjustmentsFlag = options['keep-adjustments'] ? true : false;
+  const explicitIgnoreAdjustments = options['ignore-adjustments'] ? true : false;
+  const ignoreAccountAdjustments = explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag);
+
   const series = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, {
-    applyAccountCagrStartDate: options['no-cagr-start'] ? false : true,
+    applyAccountCagrStartDate: keepCagrStart,
+    ignoreAccountAdjustments,
   });
 
   if (!series || !Array.isArray(series.points) || !series.points.length) {
@@ -121,7 +127,8 @@ async function main() {
   }
 
   const netDepositsSummary = await computeNetDeposits(login, account, perAccountCombinedBalances, {
-    applyAccountCagrStartDate: options['no-cagr-start'] ? false : true,
+    applyAccountCagrStartDate: keepCagrStart,
+    ignoreAccountAdjustments,
   });
 
   const lastPoint = series.points[series.points.length - 1];

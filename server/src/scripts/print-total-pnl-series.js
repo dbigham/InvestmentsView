@@ -276,6 +276,8 @@ async function main() {
   const startDate = normalizeIdentifier(options.start || options.from || null);
   const endDate = normalizeIdentifier(options.end || options.to || null);
   const keepCagrStart = options['no-cagr-start'] ? false : true;
+  const keepAdjustmentsFlag = options['keep-adjustments'] ? true : false;
+  const explicitIgnoreAdjustments = options['ignore-adjustments'] ? true : false;
   const debugFunding = options['debug-funding'] ? true : false;
 
   const context = await resolveAccountContext(identifier);
@@ -308,11 +310,13 @@ async function main() {
     startDate,
     endDate,
     applyAccountCagrStartDate: keepCagrStart,
+    ignoreAccountAdjustments: explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag),
     balanceKeys: Object.keys(balanceSummary || {}),
   });
 
   const seriesOptions = {
     applyAccountCagrStartDate: keepCagrStart,
+    ignoreAccountAdjustments: explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag),
   };
   if (startDate) {
     seriesOptions.startDate = startDate;
@@ -353,6 +357,7 @@ async function main() {
   try {
     const fundingOptions = {
       applyAccountCagrStartDate: keepCagrStart,
+      ignoreAccountAdjustments: explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag),
     };
     if (startDate) {
       fundingOptions.startDate = startDate;
