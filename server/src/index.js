@@ -2758,6 +2758,13 @@ function inferSymbolCurrency(symbol) {
   const parts = normalized.split('.');
   if (parts.length > 1) {
     const last = parts[parts.length - 1];
+    const penultimate = parts.length > 1 ? parts[parts.length - 2] : null;
+    if (penultimate) {
+      const hint = penultimate.replace(/[^A-Z]/g, '');
+      if (hint === 'U' || hint === 'US' || hint === 'USD') {
+        return 'USD';
+      }
+    }
     if (CAD_SYMBOL_SUFFIXES.has(last)) {
       return 'CAD';
     }
@@ -3493,6 +3500,7 @@ function resolveActivityAmountDetails(activity) {
   const descriptionText = typeof activity.description === 'string' ? activity.description : '';
   const usdHintInDescription = hasUsdHintInDescription(descriptionText);
   const cadHintInDescription = hasCadHintInDescription(descriptionText);
+  const cadHintIsContextual = /\b(?:FROM|TO)\s+CAD\b/i.test(descriptionText || '');
   if (usesDescriptionAmount) {
     const descriptionSource = amountInfo.description.source;
     if (
@@ -3502,7 +3510,7 @@ function resolveActivityAmountDetails(activity) {
     ) {
       const inferredCurrency = inferSymbolCurrency(activity.symbol);
       if (inferredCurrency && inferredCurrency !== currency) {
-        const descriptionPrefersCad = cadHintInDescription && !usdHintInDescription;
+        const descriptionPrefersCad = cadHintInDescription && !usdHintInDescription && !cadHintIsContextual;
         if (!(inferredCurrency === 'USD' && descriptionPrefersCad)) {
           currency = inferredCurrency;
         }
