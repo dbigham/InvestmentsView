@@ -807,8 +807,16 @@ textarea {
   color: var(--color-text-primary);
 }
 
-.pnl-dialog__summary-value--accent {
+.pnl-dialog__summary-value--positive {
   color: var(--color-accent);
+}
+
+.pnl-dialog__summary-value--negative {
+  color: var(--color-negative);
+}
+
+.pnl-dialog__summary-value--neutral {
+  color: var(--color-text-primary);
 }
 
 
