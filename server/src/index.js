@@ -2423,7 +2423,7 @@ function resolveActivityTimestamp(activity) {
   if (!activity || typeof activity !== 'object') {
     return null;
   }
-  const fields = ['transactionDate', 'tradeDate', 'settlementDate', 'date'];
+  const fields = ['tradeDate', 'transactionDate', 'settlementDate', 'date'];
   for (const field of fields) {
     if (activity[field]) {
       const date = new Date(activity[field]);
@@ -7701,6 +7701,7 @@ module.exports = {
   resolveAccountActivityContext,
   filterFundingActivities,
   dedupeActivities,
+  resolveActivityTimestamp,
   resolveActivityAmountDetails,
   convertAmountToCad,
   resolveUsdToCadRate,
