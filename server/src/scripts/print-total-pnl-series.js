@@ -232,7 +232,7 @@ async function resolveAccountContext(identifier) {
   throw new Error('Unable to locate account with identifier: ' + (identifier || '<none provided>'));
 }
 
-function printSeriesPreview(points, count, { useDisplayStartRelative } = {}) {
+function printSeriesPreview(points, count, { useDisplayStartRelative, baselineTotals, displayStartDate } = {}) {
   if (!Array.isArray(points) || !points.length) {
     console.log('No data points available.');
     return;
@@ -260,6 +260,24 @@ function printSeriesPreview(points, count, { useDisplayStartRelative } = {}) {
     const pnl = formatNumber(pnlValue);
     console.log(`${date} | ${netDeposits.padStart(12)} | ${equity.padStart(10)} | ${pnl.padStart(9)}`);
   });
+
+  if (useDisplayStartRelative) {
+    const baselineParts = [];
+    if (baselineTotals && Number.isFinite(baselineTotals.cumulativeNetDepositsCad)) {
+      baselineParts.push('net deposits ' + formatNumber(baselineTotals.cumulativeNetDepositsCad));
+    }
+    if (baselineTotals && Number.isFinite(baselineTotals.equityCad)) {
+      baselineParts.push('equity ' + formatNumber(baselineTotals.equityCad));
+    }
+    if (baselineTotals && Number.isFinite(baselineTotals.totalPnlCad)) {
+      baselineParts.push('total P&L ' + formatNumber(baselineTotals.totalPnlCad));
+    }
+
+    const baselineLabel = baselineParts.length ? ` (${baselineParts.join(', ')})` : '';
+    const relativeAnchor = displayStartDate || 'the first displayed date';
+    console.log();
+    console.log(`Δ values represent changes since ${relativeAnchor}${baselineLabel}.`);
+  }
 }
 
 async function main() {
@@ -489,12 +507,13 @@ async function main() {
   }
 
   const previewCount = Number.isFinite(Number(options.preview)) ? Number(options.preview) : displaySeries.length;
-  if (useDisplayStartRelative) {
-    console.log();
-    console.log('Δ values represent changes since the first displayed date.');
-  }
+  const displayStartTotals = series.summary && series.summary.displayStartTotals;
 
-  printSeriesPreview(displaySeries, previewCount, { useDisplayStartRelative });
+  printSeriesPreview(displaySeries, previewCount, {
+    useDisplayStartRelative,
+    baselineTotals: displayStartTotals,
+    displayStartDate: series.displayStartDate || series.periodStartDate,
+  });
 }
 
 main().catch((error) => {

@@ -61,7 +61,7 @@ Arguments:
 
 The summary includes the computed net deposits, total equity, and total P&L. The script also reports any missing price symbols or issues returned by the underlying calculator and highlights whether the last point matches the summary within 5 cents.
 
-When you pass `--no-cagr-start`, the preview table displays delta values (`Δ`) that represent changes since the first date in the series, and the summary prints both the change and the all-time totals so you can see how the account has performed over the window you requested.
+When you pass `--no-cagr-start`, the preview table displays delta values (`Δ`) that represent changes since the first date in the series, and the summary prints both the change and the all-time totals so you can see how the account has performed over the window you requested. The CLI now also echoes the baseline net deposits, equity, and total P&L for that first date so it is easy to reconcile the deltas with the actual funding activity.
 
 ## Troubleshooting tips
 
