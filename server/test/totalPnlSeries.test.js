@@ -123,3 +123,83 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
 
   assert.ok(!result.issues, 'Expected no issues for cash-only scenario');
 });
+
+test('computeTotalPnlSeries can ignore manual net deposit adjustments', async () => {
+  const account = {
+    id: 'ADJUSTED-ACCOUNT',
+    netDepositAdjustment: 5000,
+  };
+
+  const now = new Date('2025-08-21T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2025-08-04T00:00:00Z'),
+    crawlStart: new Date('2025-08-04T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2025-08-04T00:00:00.000000-04:00',
+        transactionDate: '2025-08-04T00:00:00.000000-04:00',
+        settlementDate: '2025-08-04T00:00:00.000000-04:00',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: 10,
+        grossAmount: 10,
+      },
+    ],
+    fingerprint: 'adjusted-fingerprint',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 8,
+        },
+      },
+    },
+  };
+
+  const defaultSeries = await computeTotalPnlSeries(
+    { id: 'login-1' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false }
+  );
+
+  assert.ok(defaultSeries, 'Expected series with adjustments applied');
+  assert.ok(
+    Math.abs(defaultSeries.summary.netDepositsCad - 5010) < 1e-6,
+    'Expected adjustments to inflate net deposits when applied'
+  );
+  const defaultFirstPoint = defaultSeries.points[0];
+  assert.ok(defaultFirstPoint, 'Expected first point');
+  assert.ok(
+    Math.abs(defaultFirstPoint.cumulativeNetDepositsCad - 5010) < 1e-6,
+    'Expected first point to include manual adjustment when applied'
+  );
+
+  const ignoredSeries = await computeTotalPnlSeries(
+    { id: 'login-1' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false, ignoreAccountAdjustments: true }
+  );
+
+  assert.ok(ignoredSeries, 'Expected series when adjustments are ignored');
+  assert.ok(
+    Math.abs(ignoredSeries.summary.netDepositsCad - 10) < 1e-6,
+    'Expected manual adjustment to be excluded when ignoreAccountAdjustments is set'
+  );
+  const firstIgnoredPoint = ignoredSeries.points[0];
+  assert.ok(firstIgnoredPoint, 'Expected first point when ignoring adjustments');
+  assert.ok(
+    Math.abs(firstIgnoredPoint.cumulativeNetDepositsCad - 10) < 1e-6,
+    'Expected baseline deposits to reflect actual funding when adjustments are ignored'
+  );
+});
