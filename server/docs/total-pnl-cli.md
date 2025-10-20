@@ -45,17 +45,16 @@ If the diff exceeds the threshold the script prints the last five data points to
 
 ## `print-total-pnl-series`
 
-Use this helper to inspect the computed Total P&L series over any date range. It prints a high-level summary and a preview table so you can spot gaps in funding data or missing price history before running the validation step.
+Use this helper to inspect the computed Total P&L series. It prints a high-level summary and a preview table so you can spot gaps in funding data or missing price history before running the validation step.
 
 ```bash
 cd server
-npm run print-total-pnl -- --account <accountNumber|id> [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--no-cagr-start] [--preview count]
+npm run print-total-pnl -- --account <accountNumber|id> [--no-cagr-start] [--preview count]
 ```
 
 Arguments:
 
 - `--account` / positional `id` (required): Account identifier (same matching rules as the validator).
-- `--start` / `--end` (optional): Limit the series window to a specific date range.
 - `--no-cagr-start` (optional flag): Skip applying any account-level CAGR start date override.
 - `--preview` (optional): Number of trailing rows to print in the preview table (defaults to `10`).
 
