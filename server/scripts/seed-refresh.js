@@ -1,8 +1,17 @@
-﻿const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
+const { CookieJar } = require('tough-cookie');
+const { request, Agent, ProxyAgent } = require('undici');
+const { getProxyForUrl } = require('proxy-from-env');
 
 const tokenUrl = 'https://login.questrade.com/oauth2/token';
+const MAX_REDIRECTS = 5;
+const BASE_HEADERS = {
+  'User-Agent': 'python-requests/2.32.5',
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Encoding': 'gzip, compress, deflate, br',
+};
 
 function parseArgs(argv) {
   const options = {};
@@ -128,29 +137,173 @@ function writeTokenStore(filePath, store) {
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
 }
 
-const { options, positional } = parseArgs(process.argv.slice(2));
+function collectSetCookieValues(value) {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return [value];
+}
 
-const refreshTokenInput = positional[0] || process.env.QUESTRADE_REFRESH_TOKEN;
-const loginId =
-  options.id || options.login || process.env.QUESTRADE_LOGIN_ID || process.env.QUESTRADE_LOGIN || 'primary';
-const loginLabel = options.label || process.env.QUESTRADE_LOGIN_LABEL || null;
-const loginEmail = options.email || process.env.QUESTRADE_LOGIN_EMAIL || null;
+function decodeResponseBody(buffer, encoding) {
+  if (!buffer) {
+    return '';
+  }
+  const normalized = String(encoding || '').toLowerCase();
+  try {
+    if (!normalized || normalized === 'identity') {
+      return buffer.toString('utf8');
+    }
+    if (normalized.includes('br')) {
+      return zlib.brotliDecompressSync(buffer).toString('utf8');
+    }
+    if (normalized.includes('gzip')) {
+      return zlib.gunzipSync(buffer).toString('utf8');
+    }
+    if (normalized.includes('deflate')) {
+      return zlib.inflateSync(buffer).toString('utf8');
+    }
+  } catch (error) {
+    console.warn('[seed-refresh] Failed to decode response body', {
+      message: error.message,
+      encoding: normalized,
+    });
+  }
+  return buffer.toString('utf8');
+}
 
-if (!refreshTokenInput) {
-  console.error('Usage: npm run seed-token -- <refreshToken> [--id=<loginId>] [--label="Display Name"] [--email=<email>]');
-  process.exit(1);
+function createDispatcher(targetUrl) {
+  const proxyUri = getProxyForUrl(targetUrl);
+  const dispatcher = proxyUri ? new ProxyAgent({ uri: proxyUri }) : new Agent();
+  return {
+    dispatcher,
+    proxyUri,
+  };
+}
+
+async function exchangeRefreshToken(refreshTokenInput) {
+  const jar = new CookieJar();
+  let currentUrl = tokenUrl;
+  let includeParams = true;
+
+  const { dispatcher } = createDispatcher(tokenUrl);
+
+  try {
+    for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
+      const urlObj = new URL(currentUrl);
+      if (includeParams) {
+        urlObj.searchParams.set('grant_type', 'refresh_token');
+        urlObj.searchParams.set('refresh_token', refreshTokenInput);
+      }
+      const requestUrl = urlObj.toString();
+      const headers = { ...BASE_HEADERS };
+      const cookieHeader = await jar.getCookieString(requestUrl);
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
+
+      const response = await request(requestUrl, {
+        method: 'GET',
+        headers,
+        dispatcher,
+      });
+
+      const headersObject = {};
+      Object.entries(response.headers || {}).forEach(([key, value]) => {
+        headersObject[key.toLowerCase()] = value;
+      });
+
+      for (const cookie of collectSetCookieValues(headersObject['set-cookie'])) {
+        try {
+          await jar.setCookie(cookie, requestUrl);
+        } catch (error) {
+          console.warn('[seed-refresh] Failed to persist response cookie', { message: error.message });
+        }
+      }
+
+      if (
+        response.statusCode >= 300 &&
+        response.statusCode < 400 &&
+        headersObject.location
+      ) {
+        currentUrl = new URL(headersObject.location, requestUrl).toString();
+        includeParams = false;
+        continue;
+      }
+
+      const buffer = Buffer.from(await response.body.arrayBuffer());
+      const decoded = decodeResponseBody(buffer, headersObject['content-encoding']);
+      let data = decoded;
+      const contentType = headersObject['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        try {
+          data = JSON.parse(decoded || '{}');
+        } catch (error) {
+          console.warn('[seed-refresh] Failed to parse JSON response', { message: error.message });
+        }
+      }
+
+      return {
+        status: response.statusCode,
+        data,
+        headers: headersObject,
+      };
+    }
+  } finally {
+    if (dispatcher && typeof dispatcher.close === 'function') {
+      try {
+        await dispatcher.close();
+      } catch (error) {
+        console.warn('[seed-refresh] Failed to close dispatcher', { message: error.message });
+      }
+    }
+  }
+
+  throw new Error('Exceeded maximum redirects during refresh exchange');
+}
+
+function maskTokenForLog(token) {
+  if (!token || typeof token !== 'string') {
+    return '<missing>';
+  }
+  if (token.length <= 8) {
+    return token;
+  }
+  return `${token.slice(0, 4)}…${token.slice(-4)}`;
 }
 
 (async () => {
-  try {
-    const response = await axios.get(tokenUrl, {
-      params: {
-        grant_type: 'refresh_token',
-        refresh_token: refreshTokenInput,
-      },
-    });
+  const { options, positional } = parseArgs(process.argv.slice(2));
 
-    const data = response.data;
+  const refreshTokenInput = positional[0] || process.env.QUESTRADE_REFRESH_TOKEN;
+  const loginId =
+    options.id || options.login || process.env.QUESTRADE_LOGIN_ID || process.env.QUESTRADE_LOGIN || 'primary';
+  const loginLabel = options.label || process.env.QUESTRADE_LOGIN_LABEL || null;
+  const loginEmail = options.email || process.env.QUESTRADE_LOGIN_EMAIL || null;
+
+  if (!refreshTokenInput) {
+    console.error('Usage: npm run seed-token -- <refreshToken> [--id=<loginId>] [--label="Display Name"] [--email=<email>]');
+    process.exit(1);
+  }
+
+  console.log('[seed-refresh] Exchanging refresh token', maskTokenForLog(refreshTokenInput));
+
+  try {
+    const exchange = await exchangeRefreshToken(refreshTokenInput);
+    if (!exchange || exchange.status < 200 || exchange.status >= 300) {
+      const status = exchange ? exchange.status : null;
+      const payload = exchange ? exchange.data : null;
+      console.error('[seed-refresh] Failed to exchange token', { status, payload });
+      process.exit(1);
+    }
+
+    const data = exchange.data || {};
+    if (!data.refresh_token) {
+      console.error('[seed-refresh] Response did not include refresh_token:', data);
+      process.exit(1);
+    }
     console.log('Access token acquired. Questrade response:');
     console.log(JSON.stringify(data, null, 2));
 
@@ -189,10 +342,10 @@ if (!refreshTokenInput) {
 
     console.log('token-store.json updated successfully.');
   } catch (error) {
-    if (error.response) {
-      console.error('Questrade response:', error.response.status, error.response.data);
+    if (error && typeof error === 'object' && 'status' in error) {
+      console.error('[seed-refresh] Questrade response:', error.status, error.body);
     } else {
-      console.error(error.message);
+      console.error('[seed-refresh] Error:', error.message);
     }
     process.exit(1);
   }

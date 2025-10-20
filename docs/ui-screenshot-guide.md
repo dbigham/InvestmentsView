@@ -15,6 +15,62 @@ This guide walks through everything needed to stand up the InvestmentsView stack
 
 > **Do not commit** `server/.env`, `server/token-store.json`, or any other file containing credentials. They are already listed in `.gitignore` – keep it that way.
 
+## Quick start script
+
+For repeat runs you can automate most of the setup with
+`scripts/run-live-stack.sh`. The helper script installs dependencies (unless
+you opt out), writes `server/.env` when it is missing, seeds refresh tokens,
+and launches both the Express proxy and Vite dev server in the foreground. It
+also supports optional Playwright-based screenshots once the UI is ready.
+
+```bash
+# Example – provide secrets via environment variables to avoid shell history
+FRED_API_KEY=... \
+REFRESH_TOKEN=... \
+scripts/run-live-stack.sh --screenshot resp.png
+```
+
+Key flags:
+
+- `--fred-key`, `--client-origin`, and environment variables configure the
+  generated `server/.env` when it does not yet exist.
+- `--refresh-token` (or `REFRESH_TOKEN`) pipes the supplied value through
+  `npm run seed-token`, guaranteeing that the stored refresh token is always the
+  latest rotation from Questrade. **After each successful run copy the new
+  value from `server/token-store.json` and use it the next time you invoke the
+  helper.** Re-using the pre-rotation token will immediately trigger an
+  `HTTP 400` during the next seed attempt.
+- `--skip-install`, `--no-backend`, and `--no-frontend` let you reuse already
+  running services.
+- `--screenshot <path>` captures a full-page Playwright screenshot after both
+  servers respond. On the first run the helper installs the Playwright browser
+  binaries and any missing Ubuntu libraries, which can take a few minutes while
+  Chromium downloads. The script records the cache location and skips the heavy
+  install on later runs, retrying with a fresh install only if the initial
+  screenshot attempt fails.
+
+Typical runtime expectations once the caches are warm:
+
+- ~90 seconds for the backend to finish the historical sync against
+  Questrade. During this window the `/api/summary` requests log a large number
+  of "Using cached access token" lines—this is normal while the initial sync is
+  replayed.
+- ~15–20 seconds for Playwright to launch Chromium and take the full-page
+  screenshot when the browser binaries are already cached. First runs take
+  longer because the Chromium build must be downloaded.
+
+The script exits only after you press `Ctrl+C`, ensuring both dev servers shut
+down cleanly and any rotated refresh token is flushed to `server/token-store.json`.
+
+> The helper seeds refresh tokens using the same undici-based client as the
+> backend proxy. If the exchange fails with `HTTP 400` the supplied refresh token
+> is no longer valid—request a fresh token from Questrade before retrying.
+>
+> The helper also refuses to start when port `4000` or the configured frontend
+> port is already taken. Stop any stale `npm run dev` instances (or pass a custom
+> `--client-origin`) before rerunning so the screenshot automation does not point
+> at an old server.
+
 ## Configure credentials and metadata
 
 1. Create `server/.env` with the contents (substitute your real FRED API key for the placeholder):
