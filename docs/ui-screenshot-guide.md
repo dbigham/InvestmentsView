@@ -46,6 +46,10 @@ Key flags:
 The script exits only after you press `Ctrl+C`, ensuring both dev servers shut
 down cleanly and any rotated refresh token is flushed to `server/token-store.json`.
 
+> The helper seeds refresh tokens using the same undici-based client as the
+> backend proxy. If the exchange fails with `HTTP 400` the supplied refresh token
+> is no longer valid—request a fresh token from Questrade before retrying.
+
 ## Configure credentials and metadata
 
 1. Create `server/.env` with the contents (substitute your real FRED API key for the placeholder):

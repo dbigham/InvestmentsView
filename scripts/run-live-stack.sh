@@ -134,7 +134,7 @@ run_npm_install() {
   local dir="$1"
   if [[ "$RUN_INSTALL" == true ]]; then
     echo "Installing npm dependencies in $dir"
-    (cd "$dir" && npm install)
+    (cd "$dir" && npm_config_progress=false npm_config_audit=false npm install)
   else
     echo "Skipping npm install in $dir"
   fi
