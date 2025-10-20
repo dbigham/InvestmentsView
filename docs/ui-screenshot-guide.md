@@ -118,6 +118,7 @@ This guide walks through everything needed to stand up the InvestmentsView stack
 2. The UI will immediately fetch `/api/summary`. Confirm in the backend logs that the request succeeds (HTTP 200). If it fails with HTTP 400, re-run the seed script with the refresh token currently stored in `server/token-store.json`.
 3. Once the data loads, use the account selector in the top-left corner to choose the **RESP** account. The metrics, holdings table, and cash breakdown should now reflect only that account.
 4. Wait patiently for all metrics to populate. The holdings table shows a spinner while data is loading; the spinner disappears when the API response has been processed. Depending on API latency, this can take 30 seconds or longer, so avoid stopping the servers prematurely.
+5. The first `/api/summary` request performs a full historical sync (multiple years of monthly activity per account). It is normal for this call to run for several minutes and flood the proxy logs with Questrade requests. Do not interrupt it or assume it has hung—even a simple `curl` of the endpoint will block until the sync finishes.
 
 ## Capture the screenshot
 
