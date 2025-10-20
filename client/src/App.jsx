@@ -23,6 +23,8 @@ import TotalPnlDialog from './components/TotalPnlDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
+import { copyTextToClipboard } from './utils/clipboard';
+import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl } from './utils/questrade';
 import './App.css';
 
@@ -361,32 +363,6 @@ function buildClipboardSummary({ positions }) {
   return buildPositionsAllocationTable(positions);
 }
 
-async function copyTextToClipboard(text) {
-  if (!text) {
-    return;
-  }
-
-  if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  if (typeof document !== 'undefined') {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-    return;
-  }
-
-  throw new Error('Clipboard API is not available.');
-}
-
 function createEmptyDividendSummary() {
   return {
     entries: [],
@@ -694,8 +670,6 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds) {
     endDate: computedEnd ? computedEnd.toISOString().slice(0, 10) : null,
   };
 }
-
-const CHATGPT_ESTIMATE_URL = 'https://chatgpt.com/?model=gpt-5-thinking';
 
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
@@ -4888,9 +4862,7 @@ export default function App() {
   }, [getSummaryText]);
 
   const handleEstimateFutureCagr = useCallback(async () => {
-    if (typeof window !== 'undefined') {
-      window.open(CHATGPT_ESTIMATE_URL, '_blank', 'noopener');
-    }
+    openChatGpt();
 
     const summary = getSummaryText();
     if (!summary) {

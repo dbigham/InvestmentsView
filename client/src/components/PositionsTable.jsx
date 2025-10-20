@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { classifyPnL, formatMoney, formatNumber, formatSignedMoney, formatSignedPercent } from '../utils/formatters';
 import { buildQuoteUrl, openQuote } from '../utils/quotes';
+import { copyTextToClipboard } from '../utils/clipboard';
+import { openChatGpt } from '../utils/chat';
 
 const TABLE_HEADERS = [
   {
@@ -123,6 +125,149 @@ function truncateDescription(value) {
   return `${normalized.slice(0, 21).trimEnd()}...`;
 }
 
+function formatPromptValue(value, { fallback = 'Not available', currency } = {}) {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  let text = typeof value === 'string' ? value.trim() : String(value);
+  if (!text || text === '\u2014') {
+    return fallback;
+  }
+
+  const currencySuffix = currency && currency !== '\u2014' ? String(currency).trim().toUpperCase() : '';
+  if (currencySuffix && text !== fallback && !text.toUpperCase().endsWith(currencySuffix)) {
+    text = `${text} ${currencySuffix}`.trim();
+  }
+
+  return text;
+}
+
+function buildExplainMovementPrompt(position) {
+  if (!position) {
+    return '';
+  }
+
+  const today = new Date();
+  const isoDate = Number.isNaN(today.getTime()) ? '' : today.toISOString().slice(0, 10);
+  const symbol = typeof position.symbol === 'string' && position.symbol.trim() ? position.symbol.trim().toUpperCase() : 'Unknown symbol';
+  const description = typeof position.description === 'string' && position.description.trim()
+    ? position.description.trim()
+    : 'Unknown company';
+
+  let accountIdentifier = 'Not specified';
+  if (typeof position.accountNumber === 'string' && position.accountNumber.trim()) {
+    accountIdentifier = position.accountNumber.trim();
+  } else if (position.accountId !== null && position.accountId !== undefined) {
+    accountIdentifier = String(position.accountId);
+  }
+
+  const currency = typeof position.currency === 'string' && position.currency.trim()
+    ? position.currency.trim().toUpperCase()
+    : '';
+
+  const quantity = formatPromptValue(formatQuantity(position.openQuantity));
+  const averagePrice = formatPromptValue(
+    formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 }),
+    { currency }
+  );
+  const currentPrice = formatPromptValue(
+    formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    { currency }
+  );
+  const marketValue = formatPromptValue(
+    formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    { currency }
+  );
+  const costBasis = formatPromptValue(
+    formatMoney(resolveTotalCost(position), { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    { currency }
+  );
+  const openPnl = formatPromptValue(
+    formatSignedMoney(position.openPnl, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    { currency }
+  );
+  const openPnlPercent = formatPromptValue(
+    typeof position.openPnlPercent === 'number'
+      ? formatSignedPercent(position.openPnlPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : '\u2014',
+    { fallback: 'n/a' }
+  );
+  const dayPnl = formatPromptValue(
+    formatSignedMoney(position.dayPnl, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    { currency }
+  );
+  const dayPnlPercent = formatPromptValue(
+    typeof position.dayPnlPercent === 'number'
+      ? formatSignedPercent(position.dayPnlPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : '\u2014',
+    { fallback: 'n/a' }
+  );
+  const portfolioShare = formatPromptValue(formatShare(position.portfolioShare), { fallback: 'n/a' });
+
+  const movementClassification = classifyPnL(typeof position.dayPnl === 'number' ? position.dayPnl : 0);
+  const movementDescriptorMap = {
+    positive: `${symbol} traded higher today.`,
+    negative: `${symbol} declined today.`,
+    neutral: `${symbol} was roughly flat today.`,
+  };
+  const movementDescriptor = movementDescriptorMap[movementClassification] || `${symbol} had limited movement today.`;
+
+  const dayPnlSummary = dayPnl === 'Not available'
+    ? 'No intraday P&L data is available for today.'
+    : dayPnlPercent !== 'n/a'
+        ? `${dayPnl} (${dayPnlPercent})`
+        : dayPnl;
+
+  const positionSideLine =
+    quantity === 'Not available'
+      ? '- Position side: Long position (share count not available)'
+      : `- Position side: Long ${quantity}`;
+
+  const contextLines = [
+    `- Symbol: ${symbol}`,
+    `- Company name: ${description}`,
+    `- Account: ${accountIdentifier}`,
+    positionSideLine,
+    `- Trading currency: ${currency || 'Not specified'}`,
+    `- Average entry price: ${averagePrice}`,
+    `- Current price: ${currentPrice}`,
+    `- Position market value: ${marketValue}`,
+    `- Cost basis: ${costBasis}`,
+    `- Unrealized P&L: ${openPnl}${openPnlPercent !== 'n/a' ? ` (${openPnlPercent})` : ''}`,
+    `- Today's intraday P&L: ${dayPnlSummary}`,
+    `- Portfolio weight: ${portfolioShare}`,
+  ];
+
+  const sanitizedContext = contextLines.map((line) => line.replace(/\s+/g, ' ').trim());
+
+  const lines = [
+    'You are a sell-side equity analyst preparing a post-trade explanation.',
+    isoDate ? `Today is ${isoDate}. ${movementDescriptor}` : movementDescriptor,
+    `Research credible, real-world financial news and market data published today (extend back up to 72 hours if needed) about:`,
+    '1. The overall market (major North American indices, macroeconomic releases, rates, and cross-asset moves).',
+    `2. The sector or industry most relevant to ${symbol}.`,
+    `3. Company-specific developments for ${symbol} (${description}).`,
+    '',
+    'Use that research to narrate why the stock moved the way it did today.',
+    '',
+    'Holding context:',
+    ...sanitizedContext,
+    '',
+    'Please respond with clearly labeled sections:',
+    '1. Market context',
+    '2. Sector/industry context',
+    '3. Company-specific catalysts',
+    `4. Narrative linking the catalysts to why ${symbol} moved the way it did today (cover timing, magnitude, and investor reaction).`,
+    '5. Confidence assessment (High/Medium/Low) and key follow-ups to monitor next.',
+    '',
+    'If no direct news exists, identify plausible drivers such as sympathy moves, analyst commentary, fund flows, or technical factors, and make it clear that direct news was not found.',
+    'Cite publication timestamps when possible.',
+  ];
+
+  return lines.join('\n');
+}
+
 function compareRows(header, direction, accessorOverride) {
   const multiplier = direction === 'asc' ? 1 : -1;
   const accessor = typeof accessorOverride === 'function' ? accessorOverride : header.accessor;
@@ -215,6 +360,17 @@ function PositionsTable({
     valueMode: isPnlColumn(sortColumn) ? initialExternalMode : null,
   }));
   const [internalPnlMode, setInternalPnlMode] = useState('currency');
+  const menuRef = useRef(null);
+  const [contextMenuState, setContextMenuState] = useState({ open: false, x: 0, y: 0, position: null });
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenuState((state) => {
+      if (!state.open) {
+        return state;
+      }
+      return { open: false, x: 0, y: 0, position: null };
+    });
+  }, []);
 
   const pnlMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
     ? externalPnlMode
@@ -324,8 +480,51 @@ function PositionsTable({
     }
   }, [externalPnlMode, onPnlModeChange, pnlMode]);
 
+  const handleRowContextMenu = useCallback(
+    (event, position) => {
+      if (!position) {
+        return;
+      }
+      const element = event.target;
+      if (element && typeof element.closest === 'function' && element.closest('button, a')) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setContextMenuState({
+        open: true,
+        x: event.clientX,
+        y: event.clientY,
+        position,
+      });
+    },
+    []
+  );
+
+  const handleExplainMovement = useCallback(async () => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition) {
+      return;
+    }
+
+    openChatGpt();
+
+    const prompt = buildExplainMovementPrompt(targetPosition);
+    if (!prompt) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy explain movement prompt', error);
+    }
+  }, [closeContextMenu, contextMenuState.position]);
+
   const handleRowNavigation = useCallback(
     (event, symbol) => {
+      closeContextMenu();
       if (!symbol) {
         return;
       }
@@ -351,8 +550,87 @@ function PositionsTable({
       event.stopPropagation();
       openQuote(symbol, provider);
     },
-    []
+    [closeContextMenu]
   );
+
+  useEffect(() => {
+    if (!contextMenuState.open) {
+      return undefined;
+    }
+
+    const handlePointer = (event) => {
+      if (!menuRef.current) {
+        closeContextMenu();
+        return;
+      }
+      if (menuRef.current.contains(event.target)) {
+        return;
+      }
+      closeContextMenu();
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeContextMenu();
+      }
+    };
+
+    const handleViewportChange = () => {
+      closeContextMenu();
+    };
+
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [closeContextMenu, contextMenuState.open]);
+
+  useEffect(() => {
+    if (!contextMenuState.open || !menuRef.current) {
+      return;
+    }
+
+    const { innerWidth, innerHeight } = window;
+    const rect = menuRef.current.getBoundingClientRect();
+    const padding = 12;
+    let nextX = contextMenuState.x;
+    let nextY = contextMenuState.y;
+
+    if (nextX + rect.width > innerWidth - padding) {
+      nextX = Math.max(padding, innerWidth - rect.width - padding);
+    }
+    if (nextY + rect.height > innerHeight - padding) {
+      nextY = Math.max(padding, innerHeight - rect.height - padding);
+    }
+
+    if (nextX !== contextMenuState.x || nextY !== contextMenuState.y) {
+      setContextMenuState((state) => {
+        if (!state.open) {
+          return state;
+        }
+        return { ...state, x: nextX, y: nextY };
+      });
+    }
+  }, [contextMenuState.open, contextMenuState.x, contextMenuState.y]);
+
+  useEffect(() => {
+    if (!contextMenuState.open || !menuRef.current) {
+      return;
+    }
+    const firstButton = menuRef.current.querySelector('button');
+    if (firstButton && typeof firstButton.focus === 'function') {
+      firstButton.focus({ preventScroll: true });
+    }
+  }, [contextMenuState.open]);
 
   if (!positions.length) {
     if (embedded) {
@@ -423,6 +701,7 @@ function PositionsTable({
               className="positions-table__row positions-table__row--clickable"
               role="row"
               onClick={(event) => handleRowNavigation(event, position.symbol)}
+              onContextMenu={(event) => handleRowContextMenu(event, position)}
             >
               <div className="positions-table__cell positions-table__cell--symbol" role="cell">
                 <div className="positions-table__symbol-header">
@@ -487,22 +766,51 @@ function PositionsTable({
     </div>
   );
 
+  const contextMenuElement = contextMenuState.open ? (
+    <div
+      className="positions-table__context-menu"
+      ref={menuRef}
+      style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
+    >
+      <ul className="positions-table__context-menu-list" role="menu">
+        <li role="none">
+          <button
+            type="button"
+            className="positions-table__context-menu-item"
+            role="menuitem"
+            onClick={handleExplainMovement}
+          >
+            Explain movement
+          </button>
+        </li>
+      </ul>
+    </div>
+  ) : null;
+
   if (embedded) {
-    return renderTable();
+    return (
+      <>
+        {renderTable()}
+        {contextMenuElement}
+      </>
+    );
   }
 
   return (
-    <section className="positions-card">
-      <header className="positions-card__header">
-        <div className="positions-card__tabs" role="tablist" aria-label="Positions data views">
-          <button type="button" role="tab" aria-selected="true" className="active">
-            Positions
-          </button>
-        </div>
-      </header>
+    <>
+      <section className="positions-card">
+        <header className="positions-card__header">
+          <div className="positions-card__tabs" role="tablist" aria-label="Positions data views">
+            <button type="button" role="tab" aria-selected="true" className="active">
+              Positions
+            </button>
+          </div>
+        </header>
 
-      {renderTable()}
-    </section>
+        {renderTable()}
+      </section>
+      {contextMenuElement}
+    </>
   );
 }
 
