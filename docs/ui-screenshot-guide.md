@@ -15,6 +15,37 @@ This guide walks through everything needed to stand up the InvestmentsView stack
 
 > **Do not commit** `server/.env`, `server/token-store.json`, or any other file containing credentials. They are already listed in `.gitignore` – keep it that way.
 
+## Quick start script
+
+For repeat runs you can automate most of the setup with
+`scripts/run-live-stack.sh`. The helper script installs dependencies (unless
+you opt out), writes `server/.env` when it is missing, seeds refresh tokens,
+and launches both the Express proxy and Vite dev server in the foreground. It
+also supports optional Playwright-based screenshots once the UI is ready.
+
+```bash
+# Example – provide secrets via environment variables to avoid shell history
+FRED_API_KEY=... \
+REFRESH_TOKEN=... \
+scripts/run-live-stack.sh --screenshot resp.png
+```
+
+Key flags:
+
+- `--fred-key`, `--client-origin`, and environment variables configure the
+  generated `server/.env` when it does not yet exist.
+- `--refresh-token` (or `REFRESH_TOKEN`) pipes the supplied value through
+  `npm run seed-token`, guaranteeing that the stored refresh token is always the
+  latest rotation from Questrade.
+- `--skip-install`, `--no-backend`, and `--no-frontend` let you reuse already
+  running services.
+- `--screenshot <path>` captures a full-page Playwright screenshot after both
+  servers respond; the script automatically installs the required browser
+  binaries on first use.
+
+The script exits only after you press `Ctrl+C`, ensuring both dev servers shut
+down cleanly and any rotated refresh token is flushed to `server/token-store.json`.
+
 ## Configure credentials and metadata
 
 1. Create `server/.env` with the contents (substitute your real FRED API key for the placeholder):
