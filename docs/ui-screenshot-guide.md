@@ -41,7 +41,10 @@ Key flags:
   running services.
 - `--screenshot <path>` captures a full-page Playwright screenshot after both
   servers respond; the script automatically installs the required browser
-  binaries on first use.
+  binaries on first use. The initial installation may take a couple of minutes
+  because Playwright downloads Chromium and, when necessary, installs missing
+  Ubuntu system libraries. Subsequent runs reuse the cached browser binaries
+  and start the capture almost immediately.
 
 The script exits only after you press `Ctrl+C`, ensuring both dev servers shut
 down cleanly and any rotated refresh token is flushed to `server/token-store.json`.

@@ -248,7 +248,10 @@ capture_screenshot() {
   fi
   require_command npx
   echo "Ensuring Playwright browser binaries are installed"
-  npx --yes playwright install --with-deps >/dev/null
+  if ! npx --yes playwright install --with-deps >/dev/null 2>&1; then
+    echo "Playwright install with --with-deps failed, retrying without system deps"
+    npx --yes playwright install >/dev/null
+  fi
   echo "Capturing screenshot to $SCREENSHOT_PATH"
   npx --yes playwright screenshot --device="Desktop Chrome" --wait-for-timeout=5000 \
     --full-page "${CLIENT_ORIGIN%/}/" "$SCREENSHOT_PATH"
