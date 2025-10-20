@@ -118,6 +118,7 @@ function ActionMenu({
   onPlanInvestEvenly,
   onMarkRebalanced,
   onCheckTodos,
+  onSetPlanningContext,
   disabled,
   chatUrl,
 }) {
@@ -132,6 +133,7 @@ function ActionMenu({
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
   const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
   const hasTodoCheckAction = typeof onCheckTodos === 'function';
+  const hasPlanningContextAction = typeof onSetPlanningContext === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -181,6 +183,21 @@ function ActionMenu({
       await onCopySummary();
     } catch (error) {
       console.error('Failed to copy summary', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  const handleSetPlanningContext = async () => {
+    if (!onSetPlanningContext || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSetPlanningContext();
+    } catch (error) {
+      console.error('Failed to update planning context', error);
     } finally {
       setBusy(false);
       setOpen(false);
@@ -293,6 +310,19 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasPlanningContextAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleSetPlanningContext}
+                disabled={busy}
+              >
+                Set planning context
+              </button>
+            </li>
+          )}
           {hasCopyAction && (
             <li role="none">
               <button
@@ -357,6 +387,7 @@ ActionMenu.propTypes = {
   onPlanInvestEvenly: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onCheckTodos: PropTypes.func,
+  onSetPlanningContext: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -367,6 +398,7 @@ ActionMenu.defaultProps = {
   onPlanInvestEvenly: null,
   onMarkRebalanced: null,
   onCheckTodos: null,
+  onSetPlanningContext: null,
   disabled: false,
   chatUrl: null,
 };
@@ -395,6 +427,7 @@ export default function SummaryMetrics({
   onMarkRebalanced,
   onPlanInvestEvenly,
   onCheckTodos,
+  onSetPlanningContext,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -751,6 +784,7 @@ export default function SummaryMetrics({
             onPlanInvestEvenly ||
             onMarkRebalanced ||
             onCheckTodos ||
+            onSetPlanningContext ||
             chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
@@ -758,6 +792,7 @@ export default function SummaryMetrics({
               onPlanInvestEvenly={onPlanInvestEvenly}
               onMarkRebalanced={onMarkRebalanced}
               onCheckTodos={onCheckTodos}
+              onSetPlanningContext={onSetPlanningContext}
               chatUrl={chatUrl}
             />
           )}
@@ -906,6 +941,7 @@ SummaryMetrics.propTypes = {
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onCheckTodos: PropTypes.func,
+  onSetPlanningContext: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -984,6 +1020,7 @@ SummaryMetrics.defaultProps = {
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
   onCheckTodos: null,
+  onSetPlanningContext: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
