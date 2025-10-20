@@ -17,25 +17,42 @@ This guide walks through everything needed to stand up the InvestmentsView stack
 
 ## Configure credentials and metadata
 
-1. Create `server/.env` with the contents:
+1. Create `server/.env` with the contents (substitute your real FRED API key for the placeholder):
 
    ```ini
    CLIENT_ORIGIN=http://localhost:5173
    PORT=4000
-   FRED_API_KEY=<optional-if-needed>
+   FRED_API_KEY=<FRED_API_KEY>
    ```
 
-2. Seed the refresh token into `server/token-store.json`. The safest way is to use the helper script so the file keeps the correct JSON schema:
+2. Seed the refresh token into `server/token-store.json`. You can still use the helper script, but if you need to paste the file manually start with the exact structure below. **Replace `<REFRESH_TOKEN>` with the real refresh token that you obtain from Questrade** and keep it private.
+
+   ```json
+   {
+     "logins": [
+       {
+         "id": "daniel",
+         "label": "daniel.bigham@gmail.com",
+         "email": "daniel.bigham@gmail.com",
+         "refreshToken": "<REFRESH_TOKEN>",
+         "updatedAt": "2025-10-12T00:55:10.810Z"
+       }
+     ],
+     "updatedAt": "2025-10-12T00:55:10.810Z"
+   }
+   ```
+
+   To seed via script instead of manual editing:
 
    ```bash
    cd server
    npm install
-   npm run seed-token -- "<refreshTokenFromQuestrade>" --id=daniel --label="<display label>" --email="<login email>"
+   npm run seed-token -- "<refreshTokenFromQuestrade>" --id=daniel --label="daniel.bigham@gmail.com" --email="daniel.bigham@gmail.com"
    ```
 
-   The script exchanges the refresh token, persists the rotated token that Questrade returns, and preserves any other stored logins. If you prefer to edit manually, follow the structure from `server/token-store.example.json` exactly.
+   The script exchanges the refresh token, persists the rotated token that Questrade returns, and preserves any other stored logins.
 
-3. Populate `server/accounts.json` with an entry for the RESP account. A minimal example looks like:
+3. Populate `server/accounts.json` with an entry for the RESP account using the exact template below:
 
    ```json
    {
@@ -45,7 +62,8 @@ This guide walks through everything needed to stand up the InvestmentsView stack
          "name": "RESP",
          "portalAccountId": "95094100-0516-40b2-0cff-0a584b8c9f19",
          "cagrStartDate": "2025-09-22",
-         "ignoreSittingCash": 200
+         "ignoreSittingCash": 200,
+         "default": true
        }
      ]
    }
@@ -99,7 +117,7 @@ This guide walks through everything needed to stand up the InvestmentsView stack
 1. Open the frontend in a real browser (manual or automated) using the origin from the previous step.
 2. The UI will immediately fetch `/api/summary`. Confirm in the backend logs that the request succeeds (HTTP 200). If it fails with HTTP 400, re-run the seed script with the refresh token currently stored in `server/token-store.json`.
 3. Once the data loads, use the account selector in the top-left corner to choose the **RESP** account. The metrics, holdings table, and cash breakdown should now reflect only that account.
-4. Wait for all metrics to populate. The holdings table shows a spinner while data is loading; the spinner disappears when the API response has been processed.
+4. Wait patiently for all metrics to populate. The holdings table shows a spinner while data is loading; the spinner disappears when the API response has been processed. Depending on API latency, this can take 30 seconds or longer, so avoid stopping the servers prematurely.
 
 ## Capture the screenshot
 
