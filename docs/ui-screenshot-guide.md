@@ -36,7 +36,10 @@ Key flags:
   generated `server/.env` when it does not yet exist.
 - `--refresh-token` (or `REFRESH_TOKEN`) pipes the supplied value through
   `npm run seed-token`, guaranteeing that the stored refresh token is always the
-  latest rotation from Questrade.
+  latest rotation from Questrade. **After each successful run copy the new
+  value from `server/token-store.json` and use it the next time you invoke the
+  helper.** Re-using the pre-rotation token will immediately trigger an
+  `HTTP 400` during the next seed attempt.
 - `--skip-install`, `--no-backend`, and `--no-frontend` let you reuse already
   running services.
 - `--screenshot <path>` captures a full-page Playwright screenshot after both
@@ -45,6 +48,16 @@ Key flags:
   Chromium downloads. The script records the cache location and skips the heavy
   install on later runs, retrying with a fresh install only if the initial
   screenshot attempt fails.
+
+Typical runtime expectations once the caches are warm:
+
+- ~90 seconds for the backend to finish the historical sync against
+  Questrade. During this window the `/api/summary` requests log a large number
+  of "Using cached access token" lines—this is normal while the initial sync is
+  replayed.
+- ~15–20 seconds for Playwright to launch Chromium and take the full-page
+  screenshot when the browser binaries are already cached. First runs take
+  longer because the Chromium build must be downloaded.
 
 The script exits only after you press `Ctrl+C`, ensuring both dev servers shut
 down cleanly and any rotated refresh token is flushed to `server/token-store.json`.
