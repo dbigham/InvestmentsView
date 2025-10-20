@@ -3,6 +3,7 @@ import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import TodoSummary from './components/TodoSummary';
 import PositionsTable from './components/PositionsTable';
+import OrdersTable from './components/OrdersTable';
 import {
   getSummary,
   getQqqTemperature,
@@ -2898,7 +2899,6 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount]);
-
   const selectedAccountKey = useMemo(() => {
     if (selectedAccount === 'all') {
       return 'all';
@@ -3043,7 +3043,37 @@ export default function App() {
     return null;
   }, [selectedAccountInfo, selectedAccount, selectedRebalanceReminder]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
+  const rawOrders = useMemo(() => (Array.isArray(data?.orders) ? data.orders : []), [data?.orders]);
   const balances = data?.balances || null;
+  const ordersWindow = data?.ordersWindow || null;
+  const ordersForSelectedAccount = useMemo(() => {
+    if (!rawOrders.length) {
+      return [];
+    }
+
+    if (selectedAccount === 'all') {
+      if (!accountsInView.length) {
+        return [];
+      }
+      const allowedIds = new Set(accountsInView.map((id) => String(id)));
+      return rawOrders.filter((order) => {
+        const orderAccountId = order && order.accountId ? String(order.accountId) : null;
+        return orderAccountId && allowedIds.has(orderAccountId);
+      });
+    }
+
+    const targetAccountId =
+      (selectedAccountInfo && typeof selectedAccountInfo.id === 'string' && selectedAccountInfo.id) ||
+      (typeof selectedAccount === 'string' ? selectedAccount : null);
+    if (!targetAccountId) {
+      return [];
+    }
+    const normalizedTarget = String(targetAccountId);
+    return rawOrders.filter((order) => {
+      const orderAccountId = order && order.accountId ? String(order.accountId) : null;
+      return orderAccountId === normalizedTarget;
+    });
+  }, [rawOrders, selectedAccount, selectedAccountInfo, accountsInView]);
   const accountFundingSource = data?.accountFunding;
   const accountFunding = useMemo(
     () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
@@ -3143,11 +3173,14 @@ export default function App() {
   }, [selectedAccount, selectedAccountInfo, accountDividends, filteredAccountIds]);
   const hasDividendSummary = Boolean(selectedAccountDividends);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
+  const showOrdersPanel = portfolioViewTab === 'orders';
 
   const positionsTabId = 'portfolio-tab-positions';
+  const ordersTabId = 'portfolio-tab-orders';
   const dividendsTabId = 'portfolio-tab-dividends';
   const modelsTabId = 'portfolio-tab-models';
   const positionsPanelId = 'portfolio-panel-positions';
+  const ordersPanelId = 'portfolio-panel-orders';
   const dividendsPanelId = 'portfolio-panel-dividends';
   const modelsPanelId = 'portfolio-panel-models';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
@@ -4067,7 +4100,12 @@ export default function App() {
   }, [activeInvestmentModelDialog, investmentModelSections]);
 
   useEffect(() => {
-    if (portfolioViewTab !== 'positions' && portfolioViewTab !== 'dividends' && portfolioViewTab !== 'models') {
+    if (
+      portfolioViewTab !== 'positions' &&
+      portfolioViewTab !== 'orders' &&
+      portfolioViewTab !== 'dividends' &&
+      portfolioViewTab !== 'models'
+    ) {
       setPortfolioViewTab('positions');
       return;
     }
@@ -5258,6 +5296,17 @@ export default function App() {
                 >
                   Positions
                 </button>
+                <button
+                  type="button"
+                  id={ordersTabId}
+                  role="tab"
+                  aria-selected={portfolioViewTab === 'orders'}
+                  aria-controls={ordersPanelId}
+                  className={portfolioViewTab === 'orders' ? 'active' : ''}
+                  onClick={() => setPortfolioViewTab('orders')}
+                >
+                  Orders
+                </button>
                 {shouldShowInvestmentModels ? (
                   <button
                     type="button"
@@ -5317,6 +5366,20 @@ export default function App() {
                 embedded
                 investmentModelSymbolMap={investmentModelSymbolMap}
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
+              />
+            </div>
+
+            <div
+              id={ordersPanelId}
+              role="tabpanel"
+              aria-labelledby={ordersTabId}
+              hidden={!showOrdersPanel}
+            >
+              <OrdersTable
+                orders={ordersForSelectedAccount}
+                accountsById={accountsById}
+                showAccountColumn={selectedAccount === 'all'}
+                range={ordersWindow}
               />
             </div>
 
