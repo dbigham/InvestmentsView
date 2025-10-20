@@ -68,6 +68,8 @@ RUN_INSTALL=true
 START_BACKEND=true
 START_FRONTEND=true
 SCREENSHOT_PATH=""
+CLIENT_HOST=""
+CLIENT_PORT=""
 
 # Argument parsing
 while [[ $# -gt 0 ]]; do
@@ -100,6 +102,30 @@ while [[ $# -gt 0 ]]; do
       exit 1 ;;
   esac
 done
+
+parse_client_origin() {
+  local origin="$1"
+  local trimmed="${origin#*://}"
+  if [[ "$trimmed" == "$origin" ]]; then
+    trimmed="$origin"
+  fi
+  trimmed="${trimmed%%/*}"
+  if [[ -z "$trimmed" ]]; then
+    trimmed="localhost:5173"
+  fi
+  local host_part="${trimmed%%:*}"
+  local port_part="${trimmed##*:}"
+  if [[ -z "$host_part" ]]; then
+    host_part="localhost"
+  fi
+  if [[ "$port_part" == "$trimmed" ]]; then
+    port_part="5173"
+  fi
+  CLIENT_HOST="$host_part"
+  CLIENT_PORT="$port_part"
+}
+
+parse_client_origin "$CLIENT_ORIGIN"
 
 if [[ "$START_BACKEND" == false && "$START_FRONTEND" == false ]]; then
   echo "Nothing to do: both backend and frontend are disabled." >&2
@@ -167,7 +193,7 @@ function attempt() {
   socket.once('error', () => socket.destroy());
   socket.once('close', () => {
     if (Date.now() > deadline) {
-      console.error(`Timed out waiting for ${host}:${port}`);
+      console.error('Timed out waiting for ' + host + ':' + port);
       process.exit(1);
     }
     setTimeout(attempt, 500);
@@ -176,6 +202,43 @@ function attempt() {
 }
 
 attempt();
+NODE
+}
+
+ensure_port_free() {
+  local host_port="$1"
+  local label="$2"
+  HOST_PORT="$host_port" LABEL="$label" node <<'NODE'
+const net = require('net');
+const input = process.env.HOST_PORT || '';
+const label = process.env.LABEL || '';
+const [host, portStr] = input.split(':');
+const port = Number(portStr);
+const socket = net.createConnection({ host, port });
+let handled = false;
+socket.once('connect', () => {
+  if (handled) return;
+  handled = true;
+  socket.destroy();
+  console.error(label + ' port ' + port + ' on ' + host + ' is already in use. Stop the existing process or choose a different port.');
+  process.exit(1);
+});
+socket.once('error', (error) => {
+  if (handled) return;
+  handled = true;
+  if (error && (error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH')) {
+    process.exit(0);
+  }
+  console.error('Unable to check ' + label + ' port ' + port + ' on ' + host + ': ' + (error ? error.message : 'unknown error'));
+  process.exit(1);
+});
+socket.once('timeout', () => {
+  if (handled) return;
+  handled = true;
+  socket.destroy();
+  process.exit(0);
+});
+socket.setTimeout(1000);
 NODE
 }
 
@@ -188,7 +251,7 @@ capture_screenshot() {
   npx --yes playwright install --with-deps >/dev/null
   echo "Capturing screenshot to $SCREENSHOT_PATH"
   npx --yes playwright screenshot --device="Desktop Chrome" --wait-for-timeout=5000 \
-    --full-page --output="$SCREENSHOT_PATH" "${CLIENT_ORIGIN%/}/"
+    --full-page "${CLIENT_ORIGIN%/}/" "$SCREENSHOT_PATH"
   echo "Screenshot saved to $SCREENSHOT_PATH"
 }
 
@@ -226,6 +289,7 @@ main() {
   trap cleanup EXIT INT TERM
 
   if [[ "$START_BACKEND" == true ]]; then
+    ensure_port_free "127.0.0.1:4000" "backend proxy"
     echo "Starting backend proxy on http://localhost:4000"
     (cd "$SERVER_DIR" && npm run dev) &
     BACKEND_PID=$!
@@ -234,10 +298,11 @@ main() {
   fi
 
   if [[ "$START_FRONTEND" == true ]]; then
+    ensure_port_free "$CLIENT_HOST:$CLIENT_PORT" "frontend dev server"
     echo "Starting frontend on $CLIENT_ORIGIN"
     (cd "$CLIENT_DIR" && npm run dev -- --host) &
     FRONTEND_PID=$!
-    wait_for_tcp "127.0.0.1:5173" 90
+    wait_for_tcp "$CLIENT_HOST:$CLIENT_PORT" 90
     echo "Frontend dev server is ready"
   fi
 

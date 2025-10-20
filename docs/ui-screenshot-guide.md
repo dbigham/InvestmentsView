@@ -49,6 +49,11 @@ down cleanly and any rotated refresh token is flushed to `server/token-store.jso
 > The helper seeds refresh tokens using the same undici-based client as the
 > backend proxy. If the exchange fails with `HTTP 400` the supplied refresh token
 > is no longer valid—request a fresh token from Questrade before retrying.
+>
+> The helper also refuses to start when port `4000` or the configured frontend
+> port is already taken. Stop any stale `npm run dev` instances (or pass a custom
+> `--client-origin`) before rerunning so the screenshot automation does not point
+> at an old server.
 
 ## Configure credentials and metadata
 
