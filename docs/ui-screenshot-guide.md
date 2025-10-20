@@ -40,11 +40,11 @@ Key flags:
 - `--skip-install`, `--no-backend`, and `--no-frontend` let you reuse already
   running services.
 - `--screenshot <path>` captures a full-page Playwright screenshot after both
-  servers respond; the script automatically installs the required browser
-  binaries on first use. The initial installation may take a couple of minutes
-  because Playwright downloads Chromium and, when necessary, installs missing
-  Ubuntu system libraries. Subsequent runs reuse the cached browser binaries
-  and start the capture almost immediately.
+  servers respond. On the first run the helper installs the Playwright browser
+  binaries and any missing Ubuntu libraries, which can take a few minutes while
+  Chromium downloads. The script records the cache location and skips the heavy
+  install on later runs, retrying with a fresh install only if the initial
+  screenshot attempt fails.
 
 The script exits only after you press `Ctrl+C`, ensuring both dev servers shut
 down cleanly and any rotated refresh token is flushed to `server/token-store.json`.

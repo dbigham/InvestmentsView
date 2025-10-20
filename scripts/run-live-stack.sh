@@ -242,19 +242,41 @@ socket.setTimeout(1000);
 NODE
 }
 
+playwright_install_with_fallback() {
+  if ! npx --yes playwright install --with-deps >/dev/null 2>&1; then
+    echo "Playwright install with --with-deps failed, retrying without system deps"
+    npx --yes playwright install >/dev/null
+  fi
+}
+
+ensure_playwright_browsers() {
+  local cache_dir="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+  if [[ -d "$cache_dir" ]]; then
+    if compgen -G "$cache_dir/chromium-*" >/dev/null || \
+       compgen -G "$cache_dir/chromium_headless_shell-*" >/dev/null; then
+      echo "Playwright browser cache detected at $cache_dir; skipping install"
+      return
+    fi
+  fi
+  echo "Playwright browsers not found locally; installing..."
+  playwright_install_with_fallback
+}
+
 capture_screenshot() {
   if [[ -z "$SCREENSHOT_PATH" ]]; then
     return
   fi
   require_command npx
   echo "Ensuring Playwright browser binaries are installed"
-  if ! npx --yes playwright install --with-deps >/dev/null 2>&1; then
-    echo "Playwright install with --with-deps failed, retrying without system deps"
-    npx --yes playwright install >/dev/null
-  fi
+  ensure_playwright_browsers
   echo "Capturing screenshot to $SCREENSHOT_PATH"
-  npx --yes playwright screenshot --device="Desktop Chrome" --wait-for-timeout=5000 \
-    --full-page "${CLIENT_ORIGIN%/}/" "$SCREENSHOT_PATH"
+  if ! npx --yes playwright screenshot --device="Desktop Chrome" --wait-for-timeout=5000 \
+    --full-page "${CLIENT_ORIGIN%/}/" "$SCREENSHOT_PATH"; then
+    echo "Initial screenshot attempt failed. Refreshing Playwright browsers and retrying..."
+    playwright_install_with_fallback
+    npx --yes playwright screenshot --device="Desktop Chrome" --wait-for-timeout=5000 \
+      --full-page "${CLIENT_ORIGIN%/}/" "$SCREENSHOT_PATH"
+  fi
   echo "Screenshot saved to $SCREENSHOT_PATH"
 }
 
