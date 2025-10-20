@@ -357,8 +357,22 @@ function buildPositionsAllocationTable(positions) {
   return lines.join('\n');
 }
 
-function buildClipboardSummary({ positions }) {
-  return buildPositionsAllocationTable(positions);
+function buildClipboardSummary({ positions, planningContext }) {
+  const sections = [];
+
+  if (planningContext && typeof planningContext === 'string') {
+    const trimmedContext = planningContext.trim();
+    if (trimmedContext) {
+      sections.push(`Account context:\n${trimmedContext}`);
+    }
+  }
+
+  const allocation = buildPositionsAllocationTable(positions);
+  if (allocation) {
+    sections.push(allocation);
+  }
+
+  return sections.join('\n\n');
 }
 
 async function copyTextToClipboard(text) {
@@ -2603,6 +2617,10 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
+  const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
+    'accountPlanningContexts',
+    EMPTY_OBJECT
+  );
   const [showPeople, setShowPeople] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
@@ -2765,6 +2783,17 @@ export default function App() {
     }
     return selectedAccountState;
   }, [activeAccountId, filteredAccountIds, selectedAccountState]);
+
+  const activePlanningContext = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return '';
+    }
+    if (!accountPlanningContexts || typeof accountPlanningContexts !== 'object') {
+      return '';
+    }
+    const stored = accountPlanningContexts[selectedAccount];
+    return typeof stored === 'string' ? stored : '';
+  }, [accountPlanningContexts, selectedAccount]);
 
   useEffect(() => {
     if (activeAccountId !== 'default') {
@@ -4860,6 +4889,7 @@ export default function App() {
       positions: orderedPositions,
       asOf,
       currencyOption: activeCurrency,
+      planningContext: activePlanningContext,
     });
   }, [
     showContent,
@@ -4872,6 +4902,7 @@ export default function App() {
     orderedPositions,
     asOf,
     activeCurrency,
+    activePlanningContext,
   ]);
 
   const handleCopySummary = useCallback(async () => {
@@ -4886,6 +4917,50 @@ export default function App() {
       console.error('Failed to copy account summary', error);
     }
   }, [getSummaryText]);
+
+  const handleSetPlanningContext = useCallback(() => {
+    if (selectedAccount === 'all') {
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const defaultValue = typeof activePlanningContext === 'string' ? activePlanningContext : '';
+    const message =
+      'Describe how this account should be managed (use of funds, time horizon, risk appetite, etc.).\n\nLeave the field blank to clear the saved context.';
+    const nextValue = window.prompt(message, defaultValue);
+    if (nextValue === null) {
+      return;
+    }
+
+    const trimmed = nextValue.trim();
+
+    setAccountPlanningContexts((prev) => {
+      const previousStore = prev && typeof prev === 'object' ? prev : EMPTY_OBJECT;
+      const currentValue = typeof previousStore[selectedAccount] === 'string'
+        ? previousStore[selectedAccount]
+        : '';
+
+      if (!trimmed) {
+        if (!currentValue) {
+          return prev;
+        }
+        const { [selectedAccount]: _removed, ...rest } = previousStore;
+        return Object.keys(rest).length ? rest : EMPTY_OBJECT;
+      }
+
+      if (currentValue === trimmed) {
+        return prev;
+      }
+
+      return { ...previousStore, [selectedAccount]: trimmed };
+    });
+  }, [
+    selectedAccount,
+    activePlanningContext,
+    setAccountPlanningContexts,
+  ]);
 
   const handleEstimateFutureCagr = useCallback(async () => {
     if (typeof window !== 'undefined') {
@@ -5219,6 +5294,7 @@ export default function App() {
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onCheckTodos={handleCheckTodos}
+            onSetPlanningContext={selectedAccount === 'all' ? null : handleSetPlanningContext}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
