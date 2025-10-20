@@ -88,6 +88,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - Dividend summaries rely on `/v1/accounts/{id}/activities`; if the API omits history for an account or the server cannot backfill FX conversions the panel will show partial data.
 - Investment model evaluation requires Python and the optional helper repository; failures fall back to the standard QQQ view without blocking the rest of the dashboard.
 - When preparing a pull request with the OpenAI `make_pr` helper, avoid adding Git submodules. The helper snapshots files but does not understand gitlink entries, so the request fails silently after a few seconds instead of creating the PR. Vendor external code directly if it needs to ship with the app.
+- The proxy only authorizes the frontend origin defined in `CLIENT_ORIGIN`. When driving the UI through Playwright or another automated browser, open the app with that exact origin (for example `http://localhost:5173/` instead of `http://127.0.0.1:5173/`) to avoid CORS failures that surface as `Failed to fetch` errors in the UI. See [`docs/ui-screenshot-guide.md`](docs/ui-screenshot-guide.md) for an end-to-end walkthrough that covers standing up the stack and capturing account screenshots.
 
 ## Building for production
 
