@@ -24,6 +24,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 
      inside the `server` directory. Repeat for every login you want to mirror (for example, `--id=daniel` and `--id=meredith`). When omitted, `--id` defaults to `primary` and updates that entry.
    - Optionally adjust `CLIENT_ORIGIN` or `PORT` if you change the frontend host.
+   - Optional: set `DEBUG_QUESTRADE_API=true` to log every Questrade API response (defaults to disabled to keep the console quiet).
    - (Optional) Copy `server/account-beneficiaries.example.json` to `server/account-beneficiaries.json` and replace the placeholder account numbers with your own. The proxy reads this file to attach household beneficiary metadata (for example "Eli Bigham" or "Philanthropy") to each account.
    - (Optional) Copy `server/accounts.example.json` to `server/accounts.json` to define friendly account names, chat links, and Questrade portal UUIDs per account number. The proxy watches this file (or the path pointed to by `ACCOUNTS_FILE` / `ACCOUNT_NAMES_FILE`) for updates and forwards the resolved metadata to the UI so Ctrl/⌘-clicking the account selector can open the matching page in the Questrade portal. You can also:
      - Set `showQQQDetails` to surface the per-account QQQ temperature card.

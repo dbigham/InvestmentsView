@@ -41,6 +41,7 @@ const DEFAULT_TEMPERATURE_CHART_START_DATE = '1980-01-01';
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const DEBUG_QUESTRADE_API = process.env.DEBUG_QUESTRADE_API === 'true';
 const tokenCache = new NodeCache();
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
 const QUESTRADE_API_MAX_ATTEMPTS = 4;
@@ -1702,19 +1703,23 @@ async function performUndiciApiRequest(config) {
     const decodedBody = decodeResponseBody(bodyBuffer, headersObject['content-encoding']);
 
     const statusCode = rawResponse.statusCode;
-    console.log('[Questrade][api] Response', {
-      url: currentUrl,
-      status: statusCode,
-      location: headersObject.location || null,
-    });
+    if (DEBUG_QUESTRADE_API) {
+      console.log('[Questrade][api] Response', {
+        url: currentUrl,
+        status: statusCode,
+        location: headersObject.location || null,
+      });
+    }
     if (statusCode >= 300 && statusCode < 400 && headersObject.location) {
       redirectCount += 1;
-      console.warn('[Questrade][api] Received redirect', {
-        status: statusCode,
-        location: headersObject.location,
-        attempt: redirectCount,
-        url: currentUrl,
-      });
+      if (DEBUG_QUESTRADE_API) {
+        console.warn('[Questrade][api] Received redirect', {
+          status: statusCode,
+          location: headersObject.location,
+          attempt: redirectCount,
+          url: currentUrl,
+        });
+      }
       if (redirectCount > maxRedirects) {
         const redirectError = new Error('Maximum number of redirects exceeded for ' + config.url);
         redirectError.response = {
