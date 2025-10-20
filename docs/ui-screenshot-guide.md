@@ -92,6 +92,8 @@ This guide walks through everything needed to stand up the InvestmentsView stack
 
 3. Vite prints the development server URLs. Use the exact value in `CLIENT_ORIGIN` (for example `http://localhost:5173/`). Browsing with a different host such as `http://127.0.0.1:5173/` will fail CORS checks and the UI will display "Failed to fetch".
 
+4. **If you are driving the UI from another container (e.g., Playwright in `browser_container`) forward both ports 5173 and 4000.** The frontend talks to the Express proxy at `http://localhost:4000`. If that port is not exposed to the browser container the account list never loads, the UI shows empty tables, and Playwright eventually times out waiting for selectors.
+
 ## Load the RESP dashboard
 
 1. Open the frontend in a real browser (manual or automated) using the origin from the previous step.
@@ -109,6 +111,15 @@ This guide walks through everything needed to stand up the InvestmentsView stack
   ```
 
   Then crop as needed to focus on the account view.
+
+  When the test runner executes in a different sandbox (such as a dedicated browser container), make sure port forwarding is set up *before* invoking Playwright:
+
+  ```bash
+  # Example when using the eval harness
+  container.exec(port_forward=[5173, 4000])
+  ```
+
+  Forgetting to forward port 4000 causes the frontend API calls to hang forever because the browser cannot reach the proxy.
 
 - **Other automation**: Any headless driver is acceptable as long as it loads the same origin and waits for the React app to finish rendering before snapping the image.
 
