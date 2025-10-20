@@ -1876,6 +1876,43 @@ async function fetchBalances(login, accountId) {
   return data || {};
 }
 
+const RECENT_ORDERS_LOOKBACK_DAYS = 90;
+const MAX_ORDER_HISTORY_PAGES = 5;
+
+async function fetchOrders(login, accountId, options = {}) {
+  const now = new Date();
+  const startTime =
+    typeof options.startTime === 'string' && options.startTime
+      ? options.startTime
+      : new Date(now.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS).toISOString();
+  const endTime =
+    typeof options.endTime === 'string' && options.endTime ? options.endTime : now.toISOString();
+  const stateFilter = typeof options.stateFilter === 'string' && options.stateFilter ? options.stateFilter : 'All';
+
+  const params = { stateFilter, startTime, endTime };
+  let path = '/v1/accounts/' + accountId + '/orders';
+  let requestOptions = { params };
+  const orders = [];
+  let page = 0;
+
+  while (path && page < MAX_ORDER_HISTORY_PAGES) {
+    page += 1;
+    const data = await questradeRequest(login, path, requestOptions || {});
+    const batch = Array.isArray(data?.orders) ? data.orders : [];
+    if (batch.length) {
+      orders.push(...batch);
+    }
+    if (data?.next) {
+      path = data.next;
+      requestOptions = null;
+    } else {
+      break;
+    }
+  }
+
+  return orders;
+}
+
 const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL === 'true';
 const DEBUG_XIRR = process.env.DEBUG_XIRR === 'true';
 // Questrade's documentation cites a 31 day cap for the activities endpoint, but in
@@ -6181,6 +6218,65 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
   });
 }
 
+function decorateOrders(orders, symbolsMap, accountsMap) {
+  if (!Array.isArray(orders) || orders.length === 0) {
+    return [];
+  }
+
+  return orders.map(function (order) {
+    const symbolInfo = order && order.symbolId ? symbolsMap[order.symbolId] : null;
+    const accountInfo = order ? accountsMap[order.accountId] || accountsMap[order.accountNumber] || null : null;
+    const normalizeString = function (value) {
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed || null;
+      }
+      return null;
+    };
+
+    return {
+      id: order?.id ?? null,
+      orderId: order?.orderId ?? order?.id ?? null,
+      accountId: order?.accountId || (accountInfo ? accountInfo.id : null),
+      accountNumber: order?.accountNumber || (accountInfo ? accountInfo.number : null),
+      accountOwnerLabel:
+        accountInfo && normalizeString(accountInfo.ownerLabel)
+          ? normalizeString(accountInfo.ownerLabel)
+          : accountInfo && normalizeString(accountInfo.loginLabel)
+            ? normalizeString(accountInfo.loginLabel)
+            : null,
+      displayName:
+        accountInfo && normalizeString(accountInfo.displayName)
+          ? normalizeString(accountInfo.displayName)
+          : null,
+      loginId: order?.loginId || (accountInfo ? accountInfo.loginId : null),
+      symbol: normalizeString(order?.symbol) || normalizeString(symbolInfo?.symbol) || null,
+      symbolId: order?.symbolId ?? symbolInfo?.symbolId ?? null,
+      description: normalizeString(symbolInfo?.description),
+      currency: normalizeString(order?.currency) || normalizeString(symbolInfo?.currency) || null,
+      status: normalizeString(order?.state) || null,
+      action: normalizeString(order?.side) || null,
+      type: normalizeString(order?.type) || null,
+      timeInForce: normalizeString(order?.timeInForce) || null,
+      totalQuantity: toFiniteNumber(order?.totalQuantity),
+      openQuantity: toFiniteNumber(order?.openQuantity),
+      filledQuantity: toFiniteNumber(order?.filledQuantity),
+      limitPrice: toFiniteNumber(order?.limitPrice),
+      stopPrice: toFiniteNumber(order?.stopPrice),
+      avgExecPrice: toFiniteNumber(order?.avgExecPrice),
+      lastExecPrice: toFiniteNumber(order?.lastExecPrice),
+      commission: toFiniteNumber(order?.commission),
+      commissionCharged: toFiniteNumber(order?.commissionCharged),
+      venue: normalizeString(order?.venue),
+      notes: normalizeString(order?.notes),
+      source: normalizeString(order?.source),
+      creationTime: normalizeString(order?.creationTime) || normalizeString(order?.createdTime) || null,
+      updateTime: normalizeString(order?.updateTime) || normalizeString(order?.updatedTime) || null,
+      gtdDate: normalizeString(order?.gtdDate) || null,
+    };
+  });
+}
+
 function toFiniteNumber(value) {
   if (value === null || value === undefined) {
     return null;
@@ -6763,16 +6859,44 @@ app.get('/api/summary', async function (req, res) {
       return { login, account };
     });
 
-    const positionsResults = await Promise.all(
+    const positionsPromise = Promise.all(
       selectedContexts.map(function (context) {
         return fetchPositions(context.login, context.account.number);
       })
     );
-    const balancesResults = await Promise.all(
+    const balancesPromise = Promise.all(
       selectedContexts.map(function (context) {
         return fetchBalances(context.login, context.account.number);
       })
     );
+    const orderWindowEnd = new Date();
+    const orderWindowStart = new Date(orderWindowEnd.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS);
+    const orderWindowStartIso = orderWindowStart.toISOString();
+    const orderWindowEndIso = orderWindowEnd.toISOString();
+    const ordersPromise = Promise.all(
+      selectedContexts.map(async function (context) {
+        try {
+          return await fetchOrders(context.login, context.account.number, {
+            startTime: orderWindowStartIso,
+            endTime: orderWindowEndIso,
+            stateFilter: 'All',
+          });
+        } catch (ordersError) {
+          const message = ordersError && ordersError.message ? ordersError.message : String(ordersError);
+          console.warn(
+            'Failed to fetch orders for account ' + context.account.id + ':',
+            message
+          );
+          return [];
+        }
+      })
+    );
+
+    const [positionsResults, balancesResults, ordersResults] = await Promise.all([
+      positionsPromise,
+      balancesPromise,
+      ordersPromise,
+    ]);
     const perAccountCombinedBalances = {};
     selectedContexts.forEach(function (context, index) {
       const summary = summarizeAccountBalances(balancesResults[index]);
@@ -6792,6 +6916,21 @@ app.get('/api/summary', async function (req, res) {
         });
       })
       .flat();
+    const flattenedOrders = ordersResults
+      .map(function (orders, index) {
+        const context = selectedContexts[index];
+        if (!Array.isArray(orders)) {
+          return [];
+        }
+        return orders.map(function (order) {
+          return Object.assign({}, order, {
+            accountId: context.account.id,
+            accountNumber: context.account.number,
+            loginId: context.login.id,
+          });
+        });
+      })
+      .flat();
 
     const symbolIdsByLogin = new Map();
     flattenedPositions.forEach(function (position) {
@@ -6801,6 +6940,14 @@ app.get('/api/summary', async function (req, res) {
       const loginBucket = symbolIdsByLogin.get(position.loginId) || new Set();
       loginBucket.add(position.symbolId);
       symbolIdsByLogin.set(position.loginId, loginBucket);
+    });
+    flattenedOrders.forEach(function (order) {
+      if (!order || !order.symbolId) {
+        return;
+      }
+      const loginBucket = symbolIdsByLogin.get(order.loginId) || new Set();
+      loginBucket.add(order.symbolId);
+      symbolIdsByLogin.set(order.loginId, loginBucket);
     });
 
     const symbolsMap = {};
@@ -6820,6 +6967,7 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
+    const decoratedOrders = decorateOrders(flattenedOrders, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
@@ -7328,6 +7476,8 @@ app.get('/api/summary', async function (req, res) {
       resolvedAccountNumber,
       requestedAccountId: requestedAccountId || null,
       positions: decoratedPositions,
+      orders: decoratedOrders,
+      ordersWindow: { start: orderWindowStartIso, end: orderWindowEndIso },
       pnl: pnl,
       balances: balancesSummary,
       accountBalances: perAccountCombinedBalances,
@@ -7715,6 +7865,7 @@ module.exports = {
   fetchAccounts,
   fetchBalances,
   fetchPositions,
+  fetchOrders,
   summarizeAccountBalances,
   getAllLogins,
   getLoginById,
