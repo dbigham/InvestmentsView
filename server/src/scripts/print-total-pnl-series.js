@@ -286,13 +286,11 @@ async function main() {
 
   const identifier = normalizeIdentifier(options.account || options.id || positional[0] || null);
   if (!identifier) {
-    console.error('Usage: node src/scripts/print-total-pnl-series.js --account <accountIdOrNumber> [--start=YYYY-MM-DD] [--end=YYYY-MM-DD]');
+    console.error('Usage: node src/scripts/print-total-pnl-series.js --account <accountIdOrNumber>');
     process.exit(1);
     return;
   }
 
-  const startDate = normalizeIdentifier(options.start || options.from || null);
-  const endDate = normalizeIdentifier(options.end || options.to || null);
   const keepCagrStart = options['no-cagr-start'] ? false : true;
   const keepAdjustmentsFlag = options['keep-adjustments'] ? true : false;
   const explicitIgnoreAdjustments = options['ignore-adjustments'] ? true : false;
@@ -325,8 +323,6 @@ async function main() {
   const perAccountCombinedBalances = { [account.id]: balanceSummary };
 
   console.log('[print-total-pnl] Computing total P&L series', {
-    startDate,
-    endDate,
     applyAccountCagrStartDate: keepCagrStart,
     ignoreAccountAdjustments: explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag),
     balanceKeys: Object.keys(balanceSummary || {}),
@@ -336,12 +332,6 @@ async function main() {
     applyAccountCagrStartDate: keepCagrStart,
     ignoreAccountAdjustments: explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag),
   };
-  if (startDate) {
-    seriesOptions.startDate = startDate;
-  }
-  if (endDate) {
-    seriesOptions.endDate = endDate;
-  }
 
   const series = await computeTotalPnlSeries(login, account, perAccountCombinedBalances, seriesOptions);
   if (!series) {
@@ -377,12 +367,6 @@ async function main() {
       applyAccountCagrStartDate: keepCagrStart,
       ignoreAccountAdjustments: explicitIgnoreAdjustments || (!keepCagrStart && !keepAdjustmentsFlag),
     };
-    if (startDate) {
-      fundingOptions.startDate = startDate;
-    }
-    if (endDate) {
-      fundingOptions.endDate = endDate;
-    }
     fundingSummary = await computeNetDeposits(login, account, perAccountCombinedBalances, fundingOptions);
   } catch (summaryError) {
     const message = summaryError && summaryError.message ? summaryError.message : String(summaryError);
