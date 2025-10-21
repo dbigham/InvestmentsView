@@ -36,6 +36,13 @@ function formatWeight(weight) {
   return `${formatNumber(weight * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+function formatTargetPercentValue(value) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return `${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+}
+
 function formatShareDisplay(shares, precision) {
   if (!Number.isFinite(shares) || shares <= 0) {
     return '—';
@@ -247,6 +254,9 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
         ? formatCopyNumber(purchase.shares, purchase.sharePrecision ?? 0, { trimTrailingZeros: true })
         : null;
       const weightPercent = Number.isFinite(purchase.weight) ? purchase.weight : null;
+      const targetPercentLabel = Number.isFinite(purchase.targetPercent)
+        ? formatTargetPercentValue(purchase.targetPercent)
+        : '—';
       const displayDescription = truncateDescription(purchase.description);
       return {
         ...purchase,
@@ -255,9 +265,20 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
         weightPercent,
         rowKey,
         displayDescription,
+        targetPercentLabel,
       };
     });
   }, [plan?.purchases]);
+
+  const matchedTargetCount = useMemo(
+    () =>
+      purchaseRows.reduce((count, purchase) => {
+        return Number.isFinite(purchase?.targetPercent) && purchase.targetPercent > 0
+          ? count + 1
+          : count;
+      }, 0),
+    [purchaseRows]
+  );
 
   const conversionRows = useMemo(() => {
     if (!plan?.conversions?.length) {
@@ -340,6 +361,73 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
     : skipUsdPurchases
     ? 'USD purchases are hidden. CAD cash is allocated across CAD positions.'
     : null;
+
+  const targetProportionCount = useMemo(() => {
+    if (!plan?.targetProportions) {
+      return 0;
+    }
+    if (plan.targetProportions instanceof Map) {
+      return plan.targetProportions.size;
+    }
+    if (typeof plan.targetProportions === 'object') {
+      return Object.keys(plan.targetProportions).length;
+    }
+    return 0;
+  }, [plan?.targetProportions]);
+
+  const configuredTargetTotal = useMemo(() => {
+    const source = plan?.targetProportions;
+    if (!source) {
+      return null;
+    }
+    let total = 0;
+    if (source instanceof Map) {
+      source.forEach((value) => {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) {
+          total += numeric;
+        }
+      });
+    } else if (typeof source === 'object') {
+      Object.values(source).forEach((value) => {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) {
+          total += numeric;
+        }
+      });
+    }
+    return Number.isFinite(total) && total > 0 ? total : null;
+  }, [plan?.targetProportions]);
+
+  const useTargetProportions = Boolean(plan?.usingTargetProportions);
+  const hasTargetProportions = targetProportionCount > 0;
+  const canUseTargetProportions = hasTargetProportions && typeof onAdjustPlan === 'function';
+  const configuredTargetTotalLabel = Number.isFinite(configuredTargetTotal)
+    ? formatTargetPercentValue(configuredTargetTotal)
+    : null;
+  const targetTotalWarning = Number.isFinite(configuredTargetTotal)
+    ? Math.abs(configuredTargetTotal - 100) > 0.5
+    : false;
+
+  const targetProportionNote = useMemo(() => {
+    if (!hasTargetProportions) {
+      return null;
+    }
+    if (useTargetProportions) {
+      if (matchedTargetCount > 0) {
+        return 'Target proportions are applied to these allocations.';
+      }
+      return 'Target proportions were enabled, but none of the active positions have a configured target.';
+    }
+    return 'Target proportions are configured. Enable the checkbox to apply them to this plan.';
+  }, [hasTargetProportions, matchedTargetCount, useTargetProportions]);
+
+  const handleToggleTargetProportions = useCallback(() => {
+    if (!canUseTargetProportions) {
+      return;
+    }
+    onAdjustPlan({ useTargetProportions: !useTargetProportions });
+  }, [canUseTargetProportions, onAdjustPlan, useTargetProportions]);
 
   return (
     <div className="invest-plan-overlay" role="presentation" onClick={handleOverlayClick}>
@@ -541,6 +629,36 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
               )}
             </div>
             {activeToggleNote && <p className="invest-plan-toggle-note">{activeToggleNote}</p>}
+            {hasTargetProportions && (
+              <div className="invest-plan-target-controls">
+                <label className="invest-plan-target-toggle">
+                  <input
+                    type="checkbox"
+                    className="invest-plan-target-toggle__checkbox"
+                    checked={useTargetProportions}
+                    onChange={handleToggleTargetProportions}
+                    disabled={!canUseTargetProportions}
+                  />
+                  <span>Use target proportions when allocating cash</span>
+                </label>
+                {targetProportionNote && (
+                  <p className="invest-plan-target-note">
+                    {targetProportionNote}
+                    {configuredTargetTotalLabel && (
+                      <span
+                        className={
+                          targetTotalWarning
+                            ? 'invest-plan-target-note__total invest-plan-target-note__total--warning'
+                            : 'invest-plan-target-note__total'
+                        }
+                      >
+                        Configured target total: {configuredTargetTotalLabel}
+                      </span>
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
             {purchaseRows.length ? (
               <div className="invest-plan-purchases-wrapper">
                 <table className="invest-plan-purchases">
@@ -549,6 +667,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                       <th scope="col" className="invest-plan-purchases__checkbox-header">Done</th>
                       <th scope="col">Symbol</th>
                       <th scope="col">Allocation</th>
+                      <th scope="col">Target %</th>
                       <th scope="col">Amount</th>
                       <th scope="col">Shares</th>
                       <th scope="col">Price</th>
@@ -593,6 +712,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                             </div>
                           </th>
                           <td>{formatWeight(purchase.weightPercent)}</td>
+                          <td>{purchase.targetPercentLabel}</td>
                           <td>
                             {hasAmountCopy ? (
                               <button
@@ -675,6 +795,7 @@ const purchaseShape = PropTypes.shape({
   price: PropTypes.number,
   note: PropTypes.string,
   weight: PropTypes.number,
+  targetPercent: PropTypes.number,
 });
 
 const conversionShape = PropTypes.shape({
@@ -720,6 +841,9 @@ InvestEvenlyDialog.propTypes = {
     skipUsdPurchases: PropTypes.bool,
     supportsCadPurchaseToggle: PropTypes.bool,
     supportsUsdPurchaseToggle: PropTypes.bool,
+    targetProportions: PropTypes.oneOfType([PropTypes.instanceOf(Map), PropTypes.object]),
+    usingTargetProportions: PropTypes.bool,
+    targetWeightTotal: PropTypes.number,
   }).isRequired,
   onClose: PropTypes.func.isRequired,
   copyToClipboard: PropTypes.func,

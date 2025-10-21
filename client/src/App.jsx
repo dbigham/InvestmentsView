@@ -12,6 +12,7 @@ import {
   getBenchmarkReturns,
   markAccountRebalanced,
   getTotalPnlSeries,
+  setAccountTargetProportions,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -23,6 +24,7 @@ import QqqTemperatureDialog from './components/QqqTemperatureDialog';
 import TotalPnlDialog from './components/TotalPnlDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
+import TargetProportionsDialog from './components/TargetProportionsDialog';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -286,6 +288,19 @@ function buildPositionsAllocationTable(positions) {
       key: 'portfolioShare',
       label: '% of portfolio',
       getValue: (row) => formatPortfolioShare(row.portfolioShare),
+    },
+    {
+      key: 'targetProportion',
+      label: 'Target %',
+      getValue: (row) => {
+        if (!Number.isFinite(row.targetProportion)) {
+          return '—';
+        }
+        return `${formatNumber(row.targetProportion, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}%`;
+      },
     },
     {
       key: 'shares',
@@ -1594,6 +1609,8 @@ function buildInvestEvenlyPlan({
   cashOverrides = null,
   skipCadPurchases = false,
   skipUsdPurchases = false,
+  targetProportions = null,
+  useTargetProportions = false,
 }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
@@ -1697,6 +1714,50 @@ function buildInvestEvenlyPlan({
     return null;
   }
 
+  const targetWeightMap = new Map();
+  if (targetProportions instanceof Map) {
+    targetProportions.forEach((value, key) => {
+      const symbol = typeof key === 'string' ? key.trim().toUpperCase() : null;
+      const numeric = Number(value);
+      if (symbol && Number.isFinite(numeric) && numeric > 0) {
+        targetWeightMap.set(symbol, numeric);
+      }
+    });
+  } else if (targetProportions && typeof targetProportions === 'object') {
+    Object.entries(targetProportions).forEach(([key, value]) => {
+      const symbol = typeof key === 'string' ? key.trim().toUpperCase() : null;
+      const numeric = Number(value);
+      if (symbol && Number.isFinite(numeric) && numeric > 0) {
+        targetWeightMap.set(symbol, numeric);
+      }
+    });
+  }
+
+  let totalTargetWeight = 0;
+  if (targetWeightMap.size) {
+    activePositions.forEach((position) => {
+      const symbol =
+        typeof position.symbol === 'string' && position.symbol.trim()
+          ? position.symbol.trim().toUpperCase()
+          : null;
+      if (!symbol) {
+        return;
+      }
+      const candidate = targetWeightMap.get(symbol);
+      if (Number.isFinite(candidate) && candidate > 0) {
+        totalTargetWeight += candidate;
+      }
+    });
+  }
+
+  const usingTargetWeights = Boolean(useTargetProportions) && totalTargetWeight > 0;
+  const sanitizedTargetProportions = targetWeightMap.size
+    ? Array.from(targetWeightMap.entries()).reduce((acc, [symbol, percent]) => {
+        acc[symbol] = percent;
+        return acc;
+      }, {})
+    : null;
+
   const totalNormalizedValue = activePositions.reduce((sum, position) => {
     const value = Number(position.normalizedMarketValue);
     return Number.isFinite(value) && value > 0 ? sum + value : sum;
@@ -1724,6 +1785,8 @@ function buildInvestEvenlyPlan({
     },
     conversions: [],
     summaryText: '',
+    targetProportions: sanitizedTargetProportions,
+    usingTargetProportions: false,
   };
 
   let totalCadNeeded = 0;
@@ -1770,8 +1833,14 @@ function buildInvestEvenlyPlan({
     const currency = (position.currency || normalizedBase).toUpperCase();
     const price = Number(position.currentPrice);
     const normalizedValue = Number(position.normalizedMarketValue);
-    const weight = normalizedValue / totalNormalizedValue;
-    const targetCadAmount = investableBaseTotal * (Number.isFinite(weight) ? weight : 0);
+    const normalizedSymbol = symbol ? symbol.toUpperCase() : '';
+    const configuredTarget = normalizedSymbol ? Number(targetWeightMap.get(normalizedSymbol)) : null;
+    const allocationWeight = usingTargetWeights
+      ? Number.isFinite(configuredTarget) && configuredTarget > 0
+        ? configuredTarget / totalTargetWeight
+        : 0
+      : normalizedValue / totalNormalizedValue;
+    const targetCadAmount = investableBaseTotal * (Number.isFinite(allocationWeight) ? allocationWeight : 0);
 
     let targetCurrencyAmount = targetCadAmount;
     if (currency !== normalizedBase) {
@@ -1810,9 +1879,14 @@ function buildInvestEvenlyPlan({
       sharePrecision: currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
       price,
       note: note || null,
-      weight,
+      weight: Number.isFinite(allocationWeight) ? allocationWeight : 0,
+      targetPercent:
+        Number.isFinite(configuredTarget) && configuredTarget > 0 ? configuredTarget : null,
     });
   });
+
+  plan.usingTargetProportions = usingTargetWeights;
+  plan.targetWeightTotal = usingTargetWeights ? totalTargetWeight : null;
 
   const cadShortfall = totalCadNeeded > cadCash ? totalCadNeeded - cadCash : 0;
   const usdShortfall = totalUsdNeeded > usdCash ? totalUsdNeeded - usdCash : 0;
@@ -1990,6 +2064,15 @@ function buildInvestEvenlyPlan({
   summaryLines.push(`  USD: ${formatMoney(usdCash)} USD`);
   summaryLines.push(`Total available (CAD): ${formatMoney(totalCashInBase)} CAD`);
 
+  if (sanitizedTargetProportions) {
+    summaryLines.push('');
+    summaryLines.push(
+      usingTargetWeights
+        ? 'Target proportions applied to this allocation.'
+        : 'Target proportions are configured but current allocation weights were used.'
+    );
+  }
+
   if (skipCadMode) {
     summaryLines.push(`Investable USD funds (CAD): ${formatMoney(investableBaseTotal)} CAD`);
   } else if (skipUsdMode) {
@@ -2049,10 +2132,21 @@ function buildInvestEvenlyPlan({
     const formattedShares = formatNumber(purchase.shares, shareDigits);
     const formattedPrice =
       purchase.price > 0 ? `${formatMoney(purchase.price)} ${purchase.currency}` : '—';
+    const noteParts = [];
+    if (purchase.note) {
+      noteParts.push(purchase.note);
+    }
+    if (Number.isFinite(purchase.targetPercent) && purchase.targetPercent > 0) {
+      noteParts.push(
+        `target ${formatNumber(purchase.targetPercent, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}%`
+      );
+    }
+    const annotation = noteParts.length ? ` (${noteParts.join('; ')})` : '';
     summaryLines.push(
-      `  ${purchase.symbol} (${purchase.currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${
-        purchase.note ? ` (${purchase.note})` : ''
-      }`
+      `  ${purchase.symbol} (${purchase.currency}): buy ${formattedAmount} → ${formattedShares} shares @ ${formattedPrice}${annotation}`
     );
   });
 
@@ -2599,6 +2693,7 @@ export default function App() {
   const [showPeople, setShowPeople] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
+  const [targetProportionEditor, setTargetProportionEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
@@ -3264,12 +3359,16 @@ export default function App() {
       const share = totalMarketValue > 0 ? (normalizedValue / totalMarketValue) * 100 : 0;
       const normalizedDayPnl = resolveNormalizedPnl(position, 'dayPnl', currencyRates, baseCurrency);
       const normalizedOpenPnl = resolveNormalizedPnl(position, 'openPnl', currencyRates, baseCurrency);
+      const targetProportion = Number.isFinite(position.targetProportion)
+        ? position.targetProportion
+        : null;
       return {
         ...position,
         portfolioShare: share,
         normalizedMarketValue: normalizedValue,
         normalizedDayPnl,
         normalizedOpenPnl,
+        targetProportion,
       };
     });
   }, [positions, totalMarketValue, currencyRates, baseCurrency]);
@@ -4770,6 +4869,11 @@ export default function App() {
       baseCurrency,
       priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
       cashOverrides: null,
+      targetProportions:
+        selectedAccountInfo && selectedAccountInfo.targetProportions
+          ? selectedAccountInfo.targetProportions
+          : null,
+      useTargetProportions: false,
     };
 
     const plan = buildInvestEvenlyPlan(planInputs);
@@ -4791,7 +4895,79 @@ export default function App() {
     currencyRates,
     baseCurrency,
     enhancePlanWithAccountContext,
+    selectedAccountInfo,
   ]);
+
+  const handleEditTargetProportions = useCallback(() => {
+    if (!selectedAccountInfo) {
+      return;
+    }
+    const accountKeyRaw =
+      (selectedAccountInfo.number && String(selectedAccountInfo.number).trim()) ||
+      (selectedAccountInfo.id && String(selectedAccountInfo.id).trim()) ||
+      null;
+    if (!accountKeyRaw) {
+      return;
+    }
+    const normalizedAccountId =
+      selectedAccountInfo.id && String(selectedAccountInfo.id).trim() ? String(selectedAccountInfo.id).trim() : null;
+    const normalizedAccountNumber =
+      selectedAccountInfo.number && String(selectedAccountInfo.number).trim()
+        ? String(selectedAccountInfo.number).trim()
+        : null;
+    const accountLabel = getAccountLabel(selectedAccountInfo);
+    const relevantPositions = orderedPositions.filter((position) => {
+      if (!position) {
+        return false;
+      }
+      const positionAccountId =
+        position.accountId !== undefined && position.accountId !== null
+          ? String(position.accountId).trim()
+          : null;
+      const positionAccountNumber =
+        position.accountNumber !== undefined && position.accountNumber !== null
+          ? String(position.accountNumber).trim()
+          : null;
+      if (normalizedAccountId && positionAccountId === normalizedAccountId) {
+        return true;
+      }
+      if (normalizedAccountNumber && positionAccountNumber === normalizedAccountNumber) {
+        return true;
+      }
+      return !normalizedAccountId && !normalizedAccountNumber;
+    });
+
+    setTargetProportionEditor({
+      accountKey: accountKeyRaw,
+      accountLabel: accountLabel || accountKeyRaw,
+      positions: relevantPositions,
+      targetProportions: selectedAccountInfo.targetProportions || null,
+    });
+  }, [orderedPositions, selectedAccountInfo]);
+
+  const handleCloseTargetProportions = useCallback(() => {
+    setTargetProportionEditor(null);
+  }, []);
+
+  const handleSaveTargetProportions = useCallback(
+    async (nextProportions) => {
+      if (!targetProportionEditor || !targetProportionEditor.accountKey) {
+        return;
+      }
+      try {
+        await setAccountTargetProportions(targetProportionEditor.accountKey, nextProportions);
+        setTargetProportionEditor(null);
+        setRefreshKey((value) => value + 1);
+      } catch (error) {
+        console.error('Failed to update target proportions', error);
+        if (typeof window !== 'undefined') {
+          const message = error instanceof Error && error.message ? error.message : 'Failed to update target proportions';
+          window.alert(message);
+        }
+      }
+    },
+    [targetProportionEditor, setRefreshKey]
+  );
 
   useEffect(() => {
     if (!pendingTodoAction) {
@@ -5006,6 +5182,8 @@ export default function App() {
       const nextSkipUsdPurchases = options?.skipUsdPurchases ?? skipUsdToggle;
       const hasCashOverrideOption =
         options && Object.prototype.hasOwnProperty.call(options, 'cashOverrides');
+      const hasTargetOption =
+        options && Object.prototype.hasOwnProperty.call(options, 'useTargetProportions');
       const {
         priceOverrides,
         cashOverrides: storedCashOverrides,
@@ -5014,6 +5192,9 @@ export default function App() {
       const nextCashOverrides = hasCashOverrideOption
         ? options.cashOverrides
         : storedCashOverrides ?? null;
+      const nextUseTargetProportions = hasTargetOption
+        ? Boolean(options.useTargetProportions)
+        : Boolean(restInputs.useTargetProportions);
       const plan = buildInvestEvenlyPlan({
         ...restInputs,
         priceOverrides:
@@ -5021,6 +5202,7 @@ export default function App() {
         cashOverrides: nextCashOverrides,
         skipCadPurchases: nextSkipCadPurchases,
         skipUsdPurchases: nextSkipUsdPurchases,
+        useTargetProportions: nextUseTargetProportions,
       });
 
       if (!plan) {
@@ -5039,6 +5221,7 @@ export default function App() {
           ...prev,
           priceOverrides: nextPriceOverrides,
           cashOverrides: nextCashOverrides ?? null,
+          useTargetProportions: nextUseTargetProportions,
         };
       });
     },
@@ -5305,6 +5488,9 @@ export default function App() {
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onCheckTodos={handleCheckTodos}
             onSetPlanningContext={selectedAccount === 'all' ? null : handleSetPlanningContext}
+            onEditTargetProportions={
+              selectedAccount !== 'all' && selectedAccountInfo ? handleEditTargetProportions : null
+            }
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAllAccounts}
             qqqSummary={qqqSummary}
@@ -5541,6 +5727,15 @@ export default function App() {
           onClose={handleCloseInvestEvenlyDialog}
           copyToClipboard={copyTextToClipboard}
           onAdjustPlan={handleAdjustInvestEvenlyPlan}
+        />
+      )}
+      {targetProportionEditor && (
+        <TargetProportionsDialog
+          accountLabel={targetProportionEditor.accountLabel}
+          positions={targetProportionEditor.positions}
+          targetProportions={targetProportionEditor.targetProportions}
+          onClose={handleCloseTargetProportions}
+          onSave={handleSaveTargetProportions}
         />
       )}
       {pnlBreakdownMode && (

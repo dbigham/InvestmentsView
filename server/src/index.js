@@ -18,6 +18,7 @@ const {
   getAccountSettings,
   getDefaultAccountId,
   updateAccountLastRebalance,
+  updateAccountTargetProportions,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
@@ -1231,6 +1232,24 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     Number.isFinite(override.ignoreSittingCash)
   ) {
     target.ignoreSittingCash = override.ignoreSittingCash;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'targetProportions')) {
+    const source = override.targetProportions;
+    if (source && typeof source === 'object' && Object.keys(source).length) {
+      target.targetProportions = Object.entries(source).reduce((acc, [symbol, percent]) => {
+        const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
+        if (trimmedSymbol) {
+          const numeric = Number(percent);
+          if (Number.isFinite(numeric)) {
+            acc[trimmedSymbol] = numeric;
+          }
+        }
+        return acc;
+      }, {});
+    } else {
+      delete target.targetProportions;
+    }
   }
 }
 
@@ -6193,6 +6212,23 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
   return positions.map(function (position) {
     const symbolInfo = symbolsMap[position.symbolId];
     const accountInfo = accountsMap[position.accountId] || accountsMap[position.accountNumber] || null;
+    const symbolKey =
+      typeof position.symbol === 'string' && position.symbol.trim()
+        ? position.symbol.trim().toUpperCase()
+        : null;
+    let targetProportion = null;
+    if (
+      symbolKey &&
+      accountInfo &&
+      accountInfo.targetProportions &&
+      typeof accountInfo.targetProportions === 'object'
+    ) {
+      const candidate = accountInfo.targetProportions[symbolKey];
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) {
+        targetProportion = numeric;
+      }
+    }
     return {
       accountId: position.accountId,
       accountNumber: position.accountNumber || (accountInfo ? accountInfo.number : null),
@@ -6214,6 +6250,7 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
       openPnl: position.openPnl,
       totalCost: position.totalCost,
       isRealTime: position.isRealTime,
+      targetProportion,
     };
   });
 }
@@ -6673,6 +6710,48 @@ app.post('/api/accounts/:accountKey/mark-rebalanced', function (req, res) {
     }
     console.error('Failed to mark account as rebalanced:', error);
     return res.status(500).json({ message: 'Failed to update rebalance date' });
+  }
+});
+
+app.post('/api/accounts/:accountKey/target-proportions', function (req, res) {
+  const rawAccountKey = typeof req.params.accountKey === 'string' ? req.params.accountKey : '';
+  const accountKey = rawAccountKey.trim();
+  if (!accountKey) {
+    return res.status(400).json({ message: 'Account identifier is required' });
+  }
+
+  const rawProportions =
+    req.body && Object.prototype.hasOwnProperty.call(req.body, 'proportions')
+      ? req.body.proportions
+      : req.body;
+
+  try {
+    const result = updateAccountTargetProportions(accountKey, rawProportions);
+    return res.json({
+      targetProportions: result.targetProportions,
+      updated: result.updated,
+      updatedCount: result.updatedCount,
+    });
+  } catch (error) {
+    if (error && error.code === 'INVALID_ACCOUNT') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'INVALID_PROPORTIONS') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'NOT_FOUND') {
+      return res.status(404).json({ message: 'Account configuration not found' });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to update target proportions:', error);
+    return res.status(500).json({ message: 'Failed to update target proportions' });
   }
 });
 
@@ -7447,6 +7526,21 @@ app.get('/api/summary', async function (req, res) {
           typeof account.ignoreSittingCash === 'number' &&
           Number.isFinite(account.ignoreSittingCash)
             ? Math.max(0, account.ignoreSittingCash)
+            : null,
+        targetProportions:
+          account.targetProportions &&
+          typeof account.targetProportions === 'object' &&
+          Object.keys(account.targetProportions).length
+            ? Object.entries(account.targetProportions).reduce((acc, [symbol, percent]) => {
+                const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
+                if (trimmedSymbol) {
+                  const numeric = Number(percent);
+                  if (Number.isFinite(numeric)) {
+                    acc[trimmedSymbol] = numeric;
+                  }
+                }
+                return acc;
+              }, {})
             : null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };

@@ -1213,6 +1213,280 @@ textarea {
   color: var(--color-text-primary);
 }
 
+.target-proportions-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1100;
+}
+
+.target-proportions-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  width: min(720px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.target-proportions-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 0;
+}
+
+.target-proportions-dialog__heading h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.target-proportions-dialog__subtitle {
+  margin: 6px 0 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.target-proportions-dialog__hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.target-proportions-dialog__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.target-proportions-dialog__close:hover:not(:disabled),
+.target-proportions-dialog__close:focus-visible:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.target-proportions-dialog__close:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.target-proportions-dialog__form {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.target-proportions-dialog__body {
+  padding: 16px 24px 24px;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.target-proportions-dialog__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.target-proportions-dialog__total {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.target-proportions-dialog__total--warning {
+  color: var(--color-negative);
+}
+
+.target-proportions-dialog__total-note {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.target-proportions-dialog__table-wrapper {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  max-height: 52vh;
+  background: var(--color-surface);
+}
+
+.target-proportions-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+
+.target-proportions-table thead th {
+  background: var(--color-surface-alt);
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.target-proportions-table tbody th,
+.target-proportions-table tbody td {
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  vertical-align: top;
+}
+
+.target-proportions-table__symbol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.target-proportions-table__symbol-ticker {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.target-proportions-table__symbol-name {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.target-proportions-table__metric {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.target-proportions-table__input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.target-proportions-table__input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.target-proportions-table__input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+
+.target-proportions-table__input--error {
+  border-color: var(--color-negative);
+  box-shadow: 0 0 0 2px rgba(220, 53, 69, 0.12);
+}
+
+.target-proportions-table__error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-negative);
+}
+
+.target-proportions-table__hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.target-proportions-dialog__empty {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.target-proportions-dialog__footer {
+  padding: 16px 24px 24px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.target-proportions-dialog__button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.target-proportions-dialog__button:hover:not(:disabled),
+.target-proportions-dialog__button:focus-visible:not(:disabled) {
+  background: var(--color-surface-alt);
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.target-proportions-dialog__button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.target-proportions-dialog__button--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.target-proportions-dialog__button--primary:hover:not(:disabled),
+.target-proportions-dialog__button--primary:focus-visible:not(:disabled) {
+  filter: brightness(0.98);
+}
+
+.target-proportions-dialog__status {
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  font-size: 13px;
+}
+
+.target-proportions-dialog__status--error {
+  background: var(--color-negative-soft);
+  color: var(--color-negative);
+  border: 1px solid rgba(220, 53, 69, 0.2);
+}
+
 .invest-plan-overlay {
   position: fixed;
   inset: 0;
@@ -1408,6 +1682,50 @@ textarea {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.invest-plan-target-controls {
+  margin: 16px 0 0;
+  padding: 12px 16px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.invest-plan-target-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.invest-plan-target-toggle__checkbox {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+
+.invest-plan-target-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.invest-plan-target-note__total {
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.invest-plan-target-note__total--warning {
+  color: var(--color-negative);
 }
 
 .invest-plan-cash {

@@ -346,6 +346,111 @@ function applyIgnoreSittingCashSetting(target, key, value) {
   container.ignoreSittingCash = rounded;
 }
 
+function normalizeTargetSymbol(value) {
+  if (value == null) {
+    return null;
+  }
+  const normalized = String(value).trim().toUpperCase();
+  return normalized || null;
+}
+
+function normalizeTargetProportions(value, { strict = false } = {}) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const entries = new Map();
+
+  const recordEntry = (symbolCandidate, percentCandidate) => {
+    const symbol = normalizeTargetSymbol(symbolCandidate);
+    if (!symbol) {
+      return;
+    }
+    const numeric = normalizeNumberLike(percentCandidate);
+    if (numeric === null) {
+      return;
+    }
+    const percent = Number(numeric);
+    if (!Number.isFinite(percent) || percent <= 0) {
+      return;
+    }
+    const bounded = Math.min(Math.max(percent, 0), 1000);
+    const rounded = Math.round((bounded + Number.EPSILON) * 10000) / 10000;
+    entries.set(symbol, rounded);
+  };
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const symbolCandidate =
+        entry.symbol ?? entry.ticker ?? entry.code ?? entry.key ?? entry.name ?? entry.id;
+      const percentCandidate =
+        entry.percent ??
+        entry.percentage ??
+        entry.weight ??
+        entry.value ??
+        entry.target ??
+        entry.targetPercent ??
+        entry.targetPercentage;
+      recordEntry(symbolCandidate, percentCandidate);
+    });
+  } else if (typeof value === 'object') {
+    Object.entries(value).forEach(([key, entryValue]) => {
+      if (entryValue && typeof entryValue === 'object' && !Array.isArray(entryValue)) {
+        const percentCandidate =
+          entryValue.percent ??
+          entryValue.percentage ??
+          entryValue.weight ??
+          entryValue.value ??
+          entryValue.target ??
+          entryValue.targetPercent ??
+          entryValue.targetPercentage;
+        recordEntry(key, percentCandidate);
+        return;
+      }
+      recordEntry(key, entryValue);
+    });
+  } else {
+    if (strict) {
+      const error = new Error('Target proportions must be provided as an object or array.');
+      error.code = 'INVALID_PROPORTIONS';
+      throw error;
+    }
+    return null;
+  }
+
+  if (!entries.size) {
+    return null;
+  }
+
+  const sortedSymbols = Array.from(entries.keys()).sort((a, b) => a.localeCompare(b));
+  const normalized = {};
+  sortedSymbols.forEach((symbol) => {
+    normalized[symbol] = entries.get(symbol);
+  });
+  return normalized;
+}
+
+function applyTargetProportionsSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  let normalized = null;
+  try {
+    normalized = normalizeTargetProportions(value, { strict: false });
+  } catch (error) {
+    normalized = null;
+  }
+  if (!normalized) {
+    delete container.targetProportions;
+    return;
+  }
+  container.targetProportions = normalized;
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -603,6 +708,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'ignoreSittingCash')) {
       applyIgnoreSittingCashSetting(settingsTarget, resolvedKey, entry.ignoreSittingCash);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
+      applyTargetProportionsSetting(settingsTarget, resolvedKey, entry.targetProportions);
     }
   }
 
@@ -1077,6 +1185,141 @@ function traverseAndUpdate(container, keySet, newDate, modelKey) {
   return { updated, count: totalCount };
 }
 
+function areTargetProportionMapsEqual(a, b) {
+  if (!a && !b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+  const keysA = Object.keys(a).sort();
+  const keysB = Object.keys(b).sort();
+  if (keysA.length !== keysB.length) {
+    return false;
+  }
+  for (let index = 0; index < keysA.length; index += 1) {
+    const keyA = keysA[index];
+    const keyB = keysB[index];
+    if (keyA !== keyB) {
+      return false;
+    }
+    const valueA = Number(a[keyA]);
+    const valueB = Number(b[keyB]);
+    if (!Number.isFinite(valueA) && !Number.isFinite(valueB)) {
+      if (a[keyA] !== b[keyB]) {
+        return false;
+      }
+      continue;
+    }
+    if (!Number.isFinite(valueA) || !Number.isFinite(valueB)) {
+      return false;
+    }
+    if (Math.abs(valueA - valueB) > 1e-6) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function applyTargetProportionsToEntry(entry, normalizedMap) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+  const existing = normalizeTargetProportions(entry.targetProportions, { strict: false });
+  const hasNormalized = normalizedMap && Object.keys(normalizedMap).length > 0;
+
+  if (!hasNormalized) {
+    if (existing || Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
+      delete entry.targetProportions;
+      return true;
+    }
+    return false;
+  }
+
+  if (existing && areTargetProportionMapsEqual(existing, normalizedMap)) {
+    const stored = entry.targetProportions;
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+      if (areTargetProportionMapsEqual(stored, normalizedMap)) {
+        return false;
+      }
+    }
+  }
+
+  entry.targetProportions = Object.entries(normalizedMap).reduce((acc, [symbol, percent]) => {
+    acc[symbol] = percent;
+    return acc;
+  }, {});
+  return true;
+}
+
+function traverseAndSetTargetProportions(container, keySet, normalizedMap) {
+  if (!container) {
+    return { updated: false, count: 0, matched: false };
+  }
+
+  let updated = false;
+  let totalCount = 0;
+  let matched = false;
+
+  const processEntry = (entry, fallbackKey) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const candidates = [
+      entry.number,
+      entry.accountNumber,
+      entry.accountId,
+      entry.id,
+      entry.key,
+      fallbackKey,
+    ];
+    if (candidates.some((candidate) => matchesAccountKey(keySet, candidate))) {
+      matched = true;
+      if (applyTargetProportionsToEntry(entry, normalizedMap)) {
+        updated = true;
+        totalCount += 1;
+      }
+    }
+  };
+
+  const walk = (node, fallbackKey) => {
+    if (!node) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item) => {
+        if (item && typeof item === 'object') {
+          processEntry(item);
+          walk(item);
+        } else {
+          walk(item);
+        }
+      });
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    processEntry(node, fallbackKey);
+
+    Object.entries(node).forEach(([key, value]) => {
+      if (matchesAccountKey(keySet, key) && value && typeof value === 'object') {
+        matched = true;
+        if (applyTargetProportionsToEntry(value, normalizedMap)) {
+          updated = true;
+          totalCount += 1;
+        }
+      }
+      walk(value, key);
+    });
+  };
+
+  walk(container);
+
+  return { updated, count: totalCount, matched };
+}
+
 function updateAccountLastRebalance(accountKey, options = {}) {
   const keySet = buildAccountKeySet(accountKey);
   if (!keySet) {
@@ -1142,6 +1385,79 @@ function updateAccountLastRebalance(accountKey, options = {}) {
   return { lastRebalance: newDate, updatedCount: updateResult.count };
 }
 
+function updateAccountTargetProportions(accountKey, rawProportions) {
+  const keySet = buildAccountKeySet(accountKey);
+  if (!keySet) {
+    const error = new Error('Account identifier is required');
+    error.code = 'INVALID_ACCOUNT';
+    throw error;
+  }
+
+  let normalizedMap = null;
+  try {
+    normalizedMap = normalizeTargetProportions(rawProportions, { strict: true });
+  } catch (error) {
+    if (error && error.code === 'INVALID_PROPORTIONS') {
+      throw error;
+    }
+    throw error;
+  }
+
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath) {
+    const error = new Error('Accounts file path is not configured');
+    error.code = 'NO_FILE';
+    throw error;
+  }
+  if (!fs.existsSync(filePath)) {
+    const error = new Error('Accounts file not found at ' + filePath);
+    error.code = 'NO_FILE';
+    throw error;
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  if (!content.trim()) {
+    const error = new Error('Accounts file is empty');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    const error = new Error('Failed to parse accounts file');
+    error.code = 'PARSE_ERROR';
+    error.cause = parseError;
+    throw error;
+  }
+
+  const updateResult = traverseAndSetTargetProportions(parsed, keySet, normalizedMap);
+  if (!updateResult.matched) {
+    const error = new Error('Account configuration not found');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  if (updateResult.updated) {
+    const serialized = JSON.stringify(parsed, null, 2);
+    fs.writeFileSync(filePath, serialized + (serialized.endsWith('\n') ? '' : '\n'), 'utf-8');
+
+    cachedMarker = null;
+    cachedOverrides = {};
+    cachedPortalOverrides = {};
+    cachedChatOverrides = {};
+    cachedSettings = {};
+    cachedOrdering = [];
+    cachedDefaultAccount = null;
+    hasLoggedError = false;
+    loadAccountOverrides();
+  }
+
+  const effectiveMap = normalizedMap && Object.keys(normalizedMap).length ? normalizedMap : null;
+  return { targetProportions: effectiveMap, updated: updateResult.updated, updatedCount: updateResult.count };
+}
+
 module.exports = {
   getAccountNameOverrides,
   getAccountPortalOverrides,
@@ -1150,6 +1466,7 @@ module.exports = {
   getAccountOrdering,
   getDefaultAccountId,
   updateAccountLastRebalance,
+  updateAccountTargetProportions,
   get accountNamesFilePath() {
     return resolvedFilePath;
   },
