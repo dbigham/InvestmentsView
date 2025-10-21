@@ -19,6 +19,7 @@
     "http-proxy-agent": "^7.0.2",
     "https-proxy-agent": "^7.0.5",
     "node-cache": "^5.1.2",
+    "openai": "^4.104.0",
     "proxy-from-env": "^1.1.0",
     "tough-cookie": "^6.0.0",
     "undici": "^7.16.0",

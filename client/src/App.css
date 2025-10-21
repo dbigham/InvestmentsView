@@ -2689,6 +2689,139 @@ textarea {
   gap: 12px;
 }
 
+.news-panel {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.news-panel__header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.news-panel__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.news-panel__context {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.news-panel__symbols {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.news-panel__timestamp {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.news-panel__status {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.news-panel__error {
+  border: 1px solid var(--color-negative);
+  background: var(--color-negative-soft);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.news-panel__error-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-negative);
+}
+
+.news-panel__retry {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.news-panel__retry:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.news-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.news-panel__item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.news-panel__item-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.news-panel__item-title a {
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.news-panel__item-title a:hover {
+  text-decoration: underline;
+  color: var(--color-accent);
+}
+
+.news-panel__item-meta {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.news-panel__item-summary {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.news-panel__empty {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.news-panel__disclaimer {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
 .orders-panel__range {
   margin: 0 0 4px;
   font-size: 12px;

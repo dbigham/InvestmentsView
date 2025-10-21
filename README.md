@@ -24,8 +24,9 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 
      inside the `server` directory. Repeat for every login you want to mirror (for example, `--id=daniel` and `--id=meredith`). When omitted, `--id` defaults to `primary` and updates that entry.
    - Optionally adjust `CLIENT_ORIGIN` or `PORT` if you change the frontend host.
-   - Optional: set `DEBUG_QUESTRADE_API=true` to log every Questrade API response (defaults to disabled to keep the console quiet).
-   - (Optional) Copy `server/account-beneficiaries.example.json` to `server/account-beneficiaries.json` and replace the placeholder account numbers with your own. The proxy reads this file to attach household beneficiary metadata (for example "Eli Bigham" or "Philanthropy") to each account.
+- Optional: set `DEBUG_QUESTRADE_API=true` to log every Questrade API response (defaults to disabled to keep the console quiet).
+- Optional: set `OPENAI_API_KEY` (and optionally `OPENAI_NEWS_MODEL`) to enable the portfolio "News" tab powered by OpenAI's GPT models.
+  - (Optional) Copy `server/account-beneficiaries.example.json` to `server/account-beneficiaries.json` and replace the placeholder account numbers with your own. The proxy reads this file to attach household beneficiary metadata (for example "Eli Bigham" or "Philanthropy") to each account.
    - (Optional) Copy `server/accounts.example.json` to `server/accounts.json` to define friendly account names, chat links, and Questrade portal UUIDs per account number. The proxy watches this file (or the path pointed to by `ACCOUNTS_FILE` / `ACCOUNT_NAMES_FILE`) for updates and forwards the resolved metadata to the UI so Ctrl/⌘-clicking the account selector can open the matching page in the Questrade portal. You can also:
      - Set `showQQQDetails` to surface the per-account QQQ temperature card.
      - Add an `investmentModels` array (each entry may include `model`, `symbol`, `leveragedSymbol`, `reserveSymbol`, and `lastRebalance`) to evaluate strategies with the optional bridge.
@@ -73,6 +74,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - Total equity card with today's and open P&L badges, cash, buying power, and a funding summary (net deposits, cumulative P&L, annualized return, and account-level adjustments).
 - Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
 - Dividends tab that groups historical distributions by symbol, currency, and time range.
+- News tab that summarizes recent web articles about the current holdings by querying OpenAI's GPT-5 model (requires an OpenAI API key).
 - Action menu to copy a text summary, draft a CAGR prompt, or build an "invest cash evenly" plan from live holdings and balances.
 - Manual refresh button to force a new fetch from Questrade.
 - People overlay that converts every account to CAD and totals holdings for each household member.
