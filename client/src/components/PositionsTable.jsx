@@ -78,6 +78,8 @@ const TABLE_HEADERS = [
   },
 ];
 
+const TABLE_HEADERS_WITHOUT_TARGET = TABLE_HEADERS.filter((column) => column.key !== 'targetProportion');
+
 function resolveTotalCost(position) {
   if (position.totalCost !== undefined && position.totalCost !== null) {
     return position.totalCost;
@@ -119,6 +121,14 @@ function formatShare(value) {
   }
   const numeric = Number(value);
   return `${formatNumber(numeric, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+}
+
+function hasTargetProportionValue(position) {
+  if (!position || position.targetProportion === null || position.targetProportion === undefined) {
+    return false;
+  }
+  const numeric = Number(position.targetProportion);
+  return Number.isFinite(numeric);
 }
 
 function sanitizeDisplayValue(value) {
@@ -437,8 +447,15 @@ function PositionsTable({
     });
   }, [positions, aggregateMarketValue]);
 
+  const showTargetColumn = useMemo(
+    () => decoratedPositions.some((position) => hasTargetProportionValue(position)),
+    [decoratedPositions]
+  );
+
+  const activeHeaders = showTargetColumn ? TABLE_HEADERS : TABLE_HEADERS_WITHOUT_TARGET;
+
   const sortedPositions = useMemo(() => {
-    const header = TABLE_HEADERS.find((column) => column.key === sortState.column);
+    const header = activeHeaders.find((column) => column.key === sortState.column);
     if (!header) {
       return decoratedPositions.slice();
     }
@@ -454,10 +471,10 @@ function PositionsTable({
     }
     const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
-  }, [decoratedPositions, sortState]);
+  }, [activeHeaders, decoratedPositions, sortState]);
 
   const handleSort = useCallback((columnKey) => {
-    const header = TABLE_HEADERS.find((column) => column.key === columnKey);
+    const header = activeHeaders.find((column) => column.key === columnKey);
     if (!header) {
       return;
     }
@@ -490,7 +507,18 @@ function PositionsTable({
       }
       return nextState;
     });
-  }, [onSortChange, pnlMode]);
+  }, [activeHeaders, onSortChange, pnlMode]);
+
+  useEffect(() => {
+    if (showTargetColumn || sortState.column !== 'targetProportion') {
+      return;
+    }
+    const fallbackState = { column: 'symbol', direction: 'asc', valueMode: null };
+    setSortState(fallbackState);
+    if (typeof onSortChange === 'function') {
+      onSortChange({ column: fallbackState.column, direction: fallbackState.direction });
+    }
+  }, [onSortChange, showTargetColumn, sortState.column]);
 
   const handleTogglePnlMode = useCallback(() => {
     const nextMode = pnlMode === 'currency' ? 'percent' : 'currency';
@@ -694,10 +722,12 @@ function PositionsTable({
     );
   }
 
+  const tableClassName = showTargetColumn ? 'positions-table' : 'positions-table positions-table--no-target';
+
   const renderTable = () => (
-    <div className="positions-table" role="table">
+    <div className={tableClassName} role="table">
       <div className="positions-table__row positions-table__row--head" role="row">
-        {TABLE_HEADERS.map((column) => {
+        {activeHeaders.map((column) => {
           const isSorted = column.key === sortState.column;
           const sortDirectionValue = isSorted ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none';
           return (
@@ -721,6 +751,9 @@ function PositionsTable({
       <div className="positions-table__body">
         {sortedPositions.map((position, index) => {
           const displayShare = sanitizeDisplayValue(formatShare(position.portfolioShare));
+          const displayTargetShare = showTargetColumn
+            ? sanitizeDisplayValue(formatShare(position.targetProportion))
+            : '';
           const displayDescription = truncateDescription(position.description);
           const averageEntryPrice = sanitizeDisplayValue(
             formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })
@@ -840,9 +873,11 @@ function PositionsTable({
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                 {displayShare}
               </div>
-              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {sanitizeDisplayValue(formatShare(position.targetProportion))}
-              </div>
+              {showTargetColumn ? (
+                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                  {displayTargetShare}
+                </div>
+              ) : null}
             </div>
           );
         })}

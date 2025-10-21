@@ -2960,6 +2960,11 @@ textarea {
   padding: 14px 20px;
 }
 
+.positions-table--no-target .positions-table__row,
+.positions-table--no-target .positions-table__row--head {
+  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 120px;
+}
+
 .positions-table__row--head {
   background: var(--color-surface-alt);
   font-size: 12px;
