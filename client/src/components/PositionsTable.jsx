@@ -103,7 +103,7 @@ function derivePercentages(position) {
 
 function formatQuantity(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '\u2014';
+    return '';
   }
   const numeric = Number(value);
   const hasFraction = Math.abs(numeric % 1) > 0.0000001;
@@ -115,15 +115,28 @@ function formatQuantity(value) {
 
 function formatShare(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return '\u2014';
+    return '';
   }
   const numeric = Number(value);
   return `${formatNumber(numeric, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+function sanitizeDisplayValue(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === '\u2014') {
+      return '';
+    }
+  }
+  return value;
+}
+
 function truncateDescription(value) {
   if (!value) {
-    return '\u2014';
+    return '';
   }
   const normalized = String(value);
   if (normalized.length <= 21) {
@@ -310,10 +323,11 @@ function PnlBadge({ value, percent, mode, onToggle }) {
   const hasPercent = percent !== null && Number.isFinite(percent);
   const formattedPercent = hasPercent
     ? formatSignedPercent(percent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : '\u2014';
-  const formattedCurrency = formatSignedMoney(value);
-  const formatted = isPercentMode ? formattedPercent : formattedCurrency;
-  const tooltip = isPercentMode ? formattedCurrency : formattedPercent;
+    : '';
+  const formattedCurrency = sanitizeDisplayValue(formatSignedMoney(value));
+  const sanitizedPercent = sanitizeDisplayValue(formattedPercent);
+  const formatted = isPercentMode ? sanitizedPercent : formattedCurrency;
+  const tooltip = isPercentMode ? formattedCurrency : sanitizedPercent;
 
   return (
     <button
@@ -706,8 +720,17 @@ function PositionsTable({
 
       <div className="positions-table__body">
         {sortedPositions.map((position, index) => {
-          const displayShare = formatShare(position.portfolioShare);
+          const displayShare = sanitizeDisplayValue(formatShare(position.portfolioShare));
           const displayDescription = truncateDescription(position.description);
+          const averageEntryPrice = sanitizeDisplayValue(
+            formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+          );
+          const currentPrice = sanitizeDisplayValue(
+            formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          );
+          const currentMarketValue = sanitizeDisplayValue(
+            formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          );
           const fallbackKey = `${position.accountNumber || position.accountId || 'row'}:${
             position.symbolId ?? position.symbol ?? index
           }`;
@@ -779,7 +802,7 @@ function PositionsTable({
                     </button>
                   ) : null}
                 </div>
-                <div className="positions-table__symbol-name" title={position.description || '\u2014'}>
+                <div className="positions-table__symbol-name" title={position.description || ''}>
                   {displayDescription}
                 </div>
               </div>
@@ -803,22 +826,22 @@ function PositionsTable({
                 {formatQuantity(position.openQuantity)}
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+                {averageEntryPrice}
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {currentPrice}
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {currentMarketValue}
               </div>
               <div className="positions-table__cell positions-table__cell--currency" role="cell">
-                <span>{position.currency || '\u2014'}</span>
+                <span>{position.currency || ''}</span>
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                 {displayShare}
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {formatShare(position.targetProportion)}
+                {sanitizeDisplayValue(formatShare(position.targetProportion))}
               </div>
             </div>
           );
