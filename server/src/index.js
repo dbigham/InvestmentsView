@@ -1821,14 +1821,18 @@ async function getTokenContext(login) {
   const cacheKey = getTokenCacheKey(login.id);
   const cached = tokenCache.get(cacheKey);
   if (cached) {
-    console.log('[Questrade][token-cache] Using cached access token for login', resolveLoginDisplay(login), {
-      acquiredAt: new Date(cached.acquiredAt).toISOString(),
-      expiresIn: cached.expiresIn,
-      apiServer: cached.apiServer,
-    });
+    if (DEBUG_QUESTRADE_API) {
+      console.log('[Questrade][token-cache] Using cached access token for login', resolveLoginDisplay(login), {
+        acquiredAt: new Date(cached.acquiredAt).toISOString(),
+        expiresIn: cached.expiresIn,
+        apiServer: cached.apiServer,
+      });
+    }
     return cached;
   }
-  console.log('[Questrade][token-cache] Cache miss for login', resolveLoginDisplay(login));
+  if (DEBUG_QUESTRADE_API) {
+    console.log('[Questrade][token-cache] Cache miss for login', resolveLoginDisplay(login));
+  }
   return refreshAccessToken(login);
 }
 
