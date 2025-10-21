@@ -3,6 +3,7 @@ const cors = require('cors');
 const axios = require('axios');
 const { CookieJar } = require('tough-cookie');
 const NodeCache = require('node-cache');
+const OpenAI = require('openai');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -46,6 +47,7 @@ const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const DEBUG_QUESTRADE_API = process.env.DEBUG_QUESTRADE_API === 'true';
 const tokenCache = new NodeCache();
+const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
 const QUESTRADE_API_MAX_ATTEMPTS = 4;
 const QUESTRADE_API_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
@@ -63,6 +65,12 @@ const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
   'UND_ERR_SOCKET',
   'UND_ERR_CONNECT',
 ]);
+
+const OPENAI_API_KEY = typeof process.env.OPENAI_API_KEY === 'string' ? process.env.OPENAI_API_KEY.trim() : '';
+const OPENAI_NEWS_MODEL = process.env.OPENAI_NEWS_MODEL || 'gpt-5.0';
+const MAX_NEWS_SYMBOLS = 24;
+let openAiClient = null;
+let openAiClientInitError = null;
 
 function maskTokenForLog(token) {
   if (!token || typeof token !== 'string') {
@@ -410,6 +418,232 @@ function normalizeDateOnly(value) {
     }
   }
   return null;
+}
+
+function ensureOpenAiClient() {
+  if (openAiClientInitError) {
+    throw openAiClientInitError;
+  }
+  if (!OPENAI_API_KEY) {
+    return null;
+  }
+  if (!openAiClient) {
+    try {
+      openAiClient = new OpenAI({ apiKey: OPENAI_API_KEY });
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      openAiClientInitError = normalizedError;
+      throw normalizedError;
+    }
+  }
+  return openAiClient;
+}
+
+function normalizeNewsSymbols(symbols) {
+  if (!Array.isArray(symbols)) {
+    return [];
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (let index = 0; index < symbols.length; index += 1) {
+    const normalizedSymbol = normalizeSymbol(symbols[index]);
+    if (!normalizedSymbol || seen.has(normalizedSymbol)) {
+      continue;
+    }
+    seen.add(normalizedSymbol);
+    normalized.push(normalizedSymbol);
+    if (normalized.length >= MAX_NEWS_SYMBOLS) {
+      break;
+    }
+  }
+  return normalized;
+}
+
+function buildNewsCacheKey(accountKey, symbols) {
+  const normalizedAccountKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  return `${normalizedAccountKey || 'portfolio'}|${symbols.join('|')}`;
+}
+
+function extractOpenAiResponseText(response) {
+  if (!response || typeof response !== 'object') {
+    return null;
+  }
+  if (typeof response.output_text === 'string') {
+    return response.output_text;
+  }
+  if (Array.isArray(response.output_text)) {
+    for (let index = 0; index < response.output_text.length; index += 1) {
+      const entry = response.output_text[index];
+      if (typeof entry === 'string' && entry.trim()) {
+        return entry;
+      }
+    }
+  }
+  if (Array.isArray(response.output)) {
+    for (let i = 0; i < response.output.length; i += 1) {
+      const outputEntry = response.output[i];
+      if (!outputEntry || typeof outputEntry !== 'object' || !Array.isArray(outputEntry.content)) {
+        continue;
+      }
+      for (let j = 0; j < outputEntry.content.length; j += 1) {
+        const contentEntry = outputEntry.content[j];
+        if (!contentEntry || typeof contentEntry !== 'object') {
+          continue;
+        }
+        if (typeof contentEntry.text === 'string' && contentEntry.text.trim()) {
+          return contentEntry.text;
+        }
+        if (typeof contentEntry.output_text === 'string' && contentEntry.output_text.trim()) {
+          return contentEntry.output_text;
+        }
+      }
+    }
+  }
+  if (Array.isArray(response.choices) && response.choices.length) {
+    const firstChoice = response.choices[0];
+    if (firstChoice && firstChoice.message) {
+      const message = firstChoice.message;
+      if (typeof message.content === 'string' && message.content.trim()) {
+        return message.content;
+      }
+      if (Array.isArray(message.content)) {
+        for (let index = 0; index < message.content.length; index += 1) {
+          const part = message.content[index];
+          if (part && typeof part.text === 'string' && part.text.trim()) {
+            return part.text;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeNewsArticle(article) {
+  if (!article || typeof article !== 'object') {
+    return null;
+  }
+  const title = typeof article.title === 'string' ? article.title.trim() : '';
+  const url = typeof article.url === 'string' ? article.url.trim() : '';
+  if (!title || !url) {
+    return null;
+  }
+  const summary = typeof article.summary === 'string' ? article.summary.trim() : '';
+  const source = typeof article.source === 'string' ? article.source.trim() : '';
+  const publishedRaw =
+    typeof article.published_at === 'string'
+      ? article.published_at.trim()
+      : typeof article.publishedAt === 'string'
+        ? article.publishedAt.trim()
+        : '';
+  return {
+    title,
+    url,
+    summary: summary || null,
+    source: source || null,
+    publishedAt: publishedRaw || null,
+  };
+}
+
+async function fetchPortfolioNewsFromOpenAi(params) {
+  const { accountLabel, symbols } = params || {};
+  const client = params && params.client ? params.client : ensureOpenAiClient();
+  if (!client) {
+    const error = new Error('OpenAI API key not configured');
+    error.code = 'OPENAI_NOT_CONFIGURED';
+    throw error;
+  }
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    return { articles: [], disclaimer: null };
+  }
+
+  const trimmedLabel = typeof accountLabel === 'string' ? accountLabel.trim() : '';
+  let response;
+  try {
+    response = await client.responses.create({
+      model: OPENAI_NEWS_MODEL,
+      temperature: 0.3,
+      max_output_tokens: 1100,
+      tools: [{ type: 'web_search' }],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'portfolio_news',
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              articles: {
+                type: 'array',
+                maxItems: 8,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['title', 'url'],
+                  properties: {
+                    title: { type: 'string' },
+                    url: { type: 'string' },
+                    summary: { type: 'string' },
+                    source: { type: 'string' },
+                    published_at: { type: 'string' },
+                    publishedAt: { type: 'string' },
+                  },
+                },
+              },
+              disclaimer: { type: 'string' },
+            },
+            required: ['articles'],
+          },
+        },
+      },
+      instructions:
+        'You are a portfolio research assistant. Use the web_search tool when helpful to gather the most recent, reputable news articles or posts about the provided securities. Respond with concise JSON summaries.',
+      input: [
+        `Account label: ${trimmedLabel || 'Portfolio'}`,
+        `Stock symbols: ${symbols.join(', ')}`,
+        'Task: Find up to eight relevant and timely news articles or notable posts published within the past 14 days that mention these tickers. Prioritize reputable financial publications, company announcements, and influential analysis.',
+        'For each article provide the title, a direct URL, the publisher/source when available, the publication date (ISO 8601 preferred), and a concise summary under 60 words.',
+      ].join('\n'),
+    });
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      const status = error.status || error.code;
+      if (status === 401 || status === 403) {
+        const wrapped = new Error('OpenAI request was not authorized');
+        wrapped.code = 'OPENAI_UNAUTHORIZED';
+        throw wrapped;
+      }
+      if (status === 429) {
+        const wrapped = new Error('OpenAI rate limit exceeded');
+        wrapped.code = 'OPENAI_RATE_LIMIT';
+        throw wrapped;
+      }
+    }
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+
+  const outputText = extractOpenAiResponseText(response);
+  if (!outputText) {
+    throw new Error('OpenAI response did not contain any text output');
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(outputText);
+  } catch (parseError) {
+    const error = new Error('Failed to parse OpenAI news response as JSON');
+    error.cause = parseError instanceof Error ? parseError : new Error(String(parseError));
+    throw error;
+  }
+
+  const rawArticles = Array.isArray(parsed.articles) ? parsed.articles : [];
+  const articles = rawArticles.map(normalizeNewsArticle).filter(Boolean);
+  const disclaimer = typeof parsed.disclaimer === 'string' ? parsed.disclaimer.trim() : '';
+
+  return {
+    articles,
+    disclaimer: disclaimer || null,
+  };
 }
 
 function getBenchmarkCacheKey(symbol, startDate, endDate) {
@@ -6530,6 +6764,85 @@ function normalizeTemperatureChartResponse(requestedModel, response) {
     latest,
   };
 }
+
+app.post('/api/news', async function (req, res) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const accountId = typeof body.accountId === 'string' ? body.accountId.trim() : '';
+  const accountLabel = typeof body.accountLabel === 'string' ? body.accountLabel.trim() : '';
+  const symbols = normalizeNewsSymbols(body.symbols);
+  const accountKey = accountId || accountLabel || 'portfolio';
+  const cacheKey = buildNewsCacheKey(accountKey, symbols);
+
+  if (!symbols.length) {
+    const emptyPayload = {
+      articles: [],
+      symbols,
+      generatedAt: new Date().toISOString(),
+    };
+    if (accountLabel) {
+      emptyPayload.accountLabel = accountLabel;
+    }
+    portfolioNewsCache.set(cacheKey, emptyPayload);
+    return res.json(emptyPayload);
+  }
+
+  const cached = portfolioNewsCache.get(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+
+  let openAi;
+  try {
+    openAi = ensureOpenAiClient();
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Failed to initialize OpenAI client';
+    console.error('Failed to initialize OpenAI client for portfolio news:', message);
+    return res.status(500).json({ message: 'Failed to initialize portfolio news client', details: message });
+  }
+
+  if (!openAi) {
+    return res
+      .status(503)
+      .json({ message: 'Portfolio news is unavailable: OpenAI API key not configured' });
+  }
+
+  try {
+    const result = await fetchPortfolioNewsFromOpenAi({
+      accountLabel: accountLabel || accountId || 'Portfolio',
+      symbols,
+      client: openAi,
+    });
+
+    const payload = {
+      articles: result.articles,
+      symbols,
+      generatedAt: new Date().toISOString(),
+    };
+    if (accountLabel) {
+      payload.accountLabel = accountLabel;
+    }
+    if (result.disclaimer) {
+      payload.disclaimer = result.disclaimer;
+    }
+
+    portfolioNewsCache.set(cacheKey, payload);
+    return res.json(payload);
+  } catch (error) {
+    if (error && (error.code === 'OPENAI_NOT_CONFIGURED' || error.code === 'OPENAI_UNAUTHORIZED')) {
+      return res
+        .status(503)
+        .json({ message: 'Portfolio news is unavailable', details: error.message });
+    }
+    if (error && error.code === 'OPENAI_RATE_LIMIT') {
+      return res
+        .status(503)
+        .json({ message: 'Portfolio news temporarily unavailable', details: error.message });
+    }
+    const message = error && error.message ? error.message : 'Unknown error';
+    console.error('Failed to load portfolio news:', message);
+    return res.status(500).json({ message: 'Failed to load portfolio news', details: message });
+  }
+});
 
 app.get('/api/quote', async function (req, res) {
   const rawSymbol = typeof req.query.symbol === 'string' ? req.query.symbol : '';

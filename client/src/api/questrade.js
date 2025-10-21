@@ -114,6 +114,12 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   return url.toString();
 }
 
+function buildPortfolioNewsUrl() {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/news', base);
+  return url.toString();
+}
+
 export async function getSummary(accountId) {
   const response = await fetch(buildUrl(accountId));
   if (!response.ok) {
@@ -212,6 +218,52 @@ export async function getBenchmarkReturns(params) {
         }
       } catch (nestedError) {
         console.warn('Failed to read benchmark returns error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function getPortfolioNews(payload, options = {}) {
+  const accountId = payload && typeof payload.accountId === 'string' ? payload.accountId.trim() : '';
+  const accountLabel = payload && typeof payload.accountLabel === 'string' ? payload.accountLabel.trim() : '';
+  const symbols = Array.isArray(payload?.symbols)
+    ? payload.symbols
+        .map((symbol) => (typeof symbol === 'string' ? symbol.trim() : ''))
+        .filter(Boolean)
+    : [];
+
+  const requestBody = {};
+  if (accountId) {
+    requestBody.accountId = accountId;
+  }
+  if (accountLabel) {
+    requestBody.accountLabel = accountLabel;
+  }
+  requestBody.symbols = symbols;
+
+  const response = await fetch(buildPortfolioNewsUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+    signal: options?.signal,
+  });
+
+  if (!response.ok) {
+    let message = 'Failed to load portfolio news';
+    try {
+      const payloadData = await response.json();
+      message = payloadData?.message || payloadData?.details || message;
+    } catch (_parseError) {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (_readError) {
+        // Ignore read errors and fall back to the default message.
       }
     }
     throw new Error(message);

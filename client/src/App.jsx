@@ -13,6 +13,7 @@ import {
   markAccountRebalanced,
   getTotalPnlSeries,
   setAccountTargetProportions,
+  getPortfolioNews,
   setAccountSymbolNotes,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
@@ -26,6 +27,7 @@ import TotalPnlDialog from './components/TotalPnlDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
 import TargetProportionsDialog from './components/TargetProportionsDialog';
+import PortfolioNews from './components/PortfolioNews';
 import SymbolNotesDialog from './components/SymbolNotesDialog';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
@@ -36,6 +38,7 @@ import './App.css';
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
 const MODEL_CHART_DEFAULT_START_DATE = '1980-01-01';
+const MAX_NEWS_SYMBOLS = 24;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -208,6 +211,31 @@ function getAccountLabel(account) {
     return number;
   }
   return '';
+}
+
+function extractSymbolsForNews(positions) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return [];
+  }
+  const seen = new Set();
+  const symbols = [];
+  for (let index = 0; index < positions.length; index += 1) {
+    const position = positions[index];
+    const rawSymbol = position && typeof position.symbol === 'string' ? position.symbol.trim() : '';
+    if (!rawSymbol) {
+      continue;
+    }
+    const normalized = rawSymbol.toUpperCase();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    symbols.push(normalized);
+    if (symbols.length >= MAX_NEWS_SYMBOLS) {
+      break;
+    }
+  }
+  return symbols;
 }
 
 function normalizeModelAction(action) {
@@ -2848,6 +2876,15 @@ export default function App() {
   const [benchmarkSummary, setBenchmarkSummary] = useState({ status: 'idle', data: null, error: null });
   const [investmentModelCharts, setInvestmentModelCharts] = useState({});
   const investmentModelChartsRef = useRef({});
+  const [portfolioNewsState, setPortfolioNewsState] = useState({
+    status: 'idle',
+    articles: [],
+    error: null,
+    disclaimer: null,
+    generatedAt: null,
+    cacheKey: null,
+    symbols: [],
+  });
   const quoteCacheRef = useRef(new Map());
   const [showTotalPnlDialog, setShowTotalPnlDialog] = useState(false);
   const [totalPnlSeriesState, setTotalPnlSeriesState] = useState({
@@ -3413,15 +3450,23 @@ export default function App() {
   const hasDividendSummary = Boolean(selectedAccountDividends);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
   const showOrdersPanel = portfolioViewTab === 'orders';
+  const showNewsPanel = portfolioViewTab === 'news';
+  const resolvedNewsSymbols =
+    Array.isArray(portfolioNewsState.symbols) && portfolioNewsState.symbols.length
+      ? portfolioNewsState.symbols
+      : newsSymbols;
+  const newsStatus = portfolioNewsState.status === 'idle' ? 'loading' : portfolioNewsState.status;
 
   const positionsTabId = 'portfolio-tab-positions';
   const ordersTabId = 'portfolio-tab-orders';
   const dividendsTabId = 'portfolio-tab-dividends';
   const modelsTabId = 'portfolio-tab-models';
+  const newsTabId = 'portfolio-tab-news';
   const positionsPanelId = 'portfolio-panel-positions';
   const ordersPanelId = 'portfolio-panel-orders';
   const dividendsPanelId = 'portfolio-panel-dividends';
   const modelsPanelId = 'portfolio-panel-models';
+  const newsPanelId = 'portfolio-panel-news';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
   const a1ReferenceAccount = useMemo(() => {
     if (!accounts.length) {
@@ -3530,6 +3575,33 @@ export default function App() {
     return list;
   }, [positionsWithShare]);
 
+  const newsSymbols = useMemo(() => extractSymbolsForNews(orderedPositions), [orderedPositions]);
+  const newsAccountId = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return 'all';
+    }
+    if (selectedAccountInfo && selectedAccountInfo.id !== undefined && selectedAccountInfo.id !== null) {
+      return String(selectedAccountInfo.id);
+    }
+    if (typeof selectedAccount === 'string' && selectedAccount.trim()) {
+      return selectedAccount.trim();
+    }
+    return '';
+  }, [selectedAccount, selectedAccountInfo]);
+  const newsAccountLabel = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return 'All accounts';
+    }
+    if (selectedAccountInfo) {
+      return getAccountLabel(selectedAccountInfo) || '';
+    }
+    return '';
+  }, [selectedAccount, selectedAccountInfo]);
+  const newsCacheKey = useMemo(() => {
+    const accountComponent = newsAccountId || newsAccountLabel || 'portfolio';
+    return `${accountComponent}|${newsSymbols.join('|')}`;
+  }, [newsAccountId, newsAccountLabel, newsSymbols]);
+
   const currencyOptions = useMemo(() => buildCurrencyOptions(balances), [balances]);
 
   useEffect(() => {
@@ -3541,6 +3613,110 @@ export default function App() {
       setCurrencyView(currencyOptions[0].value);
     }
   }, [currencyOptions, currencyView]);
+
+  useEffect(() => {
+    if (portfolioViewTab !== 'news') {
+      return;
+    }
+
+    if (!newsSymbols.length) {
+      setPortfolioNewsState((prev) => {
+        if (
+          prev.status === 'ready' &&
+          !prev.error &&
+          (Array.isArray(prev.symbols) ? prev.symbols.length === 0 : true) &&
+          prev.cacheKey === newsCacheKey
+        ) {
+          return prev;
+        }
+        return {
+          status: 'ready',
+          articles: [],
+          error: null,
+          disclaimer: null,
+          generatedAt: null,
+          cacheKey: newsCacheKey,
+          symbols: [],
+        };
+      });
+      return;
+    }
+
+    if (portfolioNewsState.status === 'ready' && portfolioNewsState.cacheKey === newsCacheKey) {
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    setPortfolioNewsState((prev) => ({
+      ...prev,
+      status: 'loading',
+      error: null,
+      cacheKey: newsCacheKey,
+      symbols: newsSymbols,
+    }));
+
+    getPortfolioNews(
+      {
+        accountId: newsAccountId,
+        accountLabel: newsAccountLabel,
+        symbols: newsSymbols,
+      },
+      { signal: controller.signal }
+    )
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        const articles = Array.isArray(payload?.articles) ? payload.articles.filter(Boolean) : [];
+        const disclaimer = typeof payload?.disclaimer === 'string' ? payload.disclaimer.trim() : '';
+        const generatedAt = typeof payload?.generatedAt === 'string' ? payload.generatedAt : null;
+        const responseSymbols = Array.isArray(payload?.symbols)
+          ? payload.symbols.map((symbol) => (typeof symbol === 'string' ? symbol.trim().toUpperCase() : '')).filter(Boolean)
+          : null;
+        setPortfolioNewsState({
+          status: 'ready',
+          articles,
+          error: null,
+          disclaimer: disclaimer || null,
+          generatedAt,
+          cacheKey: newsCacheKey,
+          symbols: responseSymbols && responseSymbols.length ? responseSymbols : newsSymbols,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        if (error && error.name === 'AbortError') {
+          return;
+        }
+        const message = error && error.message ? error.message : 'Failed to load portfolio news';
+        setPortfolioNewsState({
+          status: 'error',
+          articles: [],
+          error: message,
+          disclaimer: null,
+          generatedAt: null,
+          cacheKey: newsCacheKey,
+          symbols: newsSymbols,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    portfolioViewTab,
+    newsSymbols,
+    newsAccountId,
+    newsAccountLabel,
+    newsCacheKey,
+    portfolioNewsState.status,
+    portfolioNewsState.cacheKey,
+  ]);
 
   const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
   const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
@@ -4347,7 +4523,8 @@ export default function App() {
       portfolioViewTab !== 'positions' &&
       portfolioViewTab !== 'orders' &&
       portfolioViewTab !== 'dividends' &&
-      portfolioViewTab !== 'models'
+      portfolioViewTab !== 'models' &&
+      portfolioViewTab !== 'news'
     ) {
       setPortfolioViewTab('positions');
       return;
@@ -5548,6 +5725,15 @@ export default function App() {
     }
   }, [showReturnBreakdown, fundingSummaryForDisplay]);
 
+  const handleRetryNews = useCallback(() => {
+    setPortfolioNewsState((prev) => ({
+      ...prev,
+      status: 'idle',
+      error: null,
+      cacheKey: null,
+    }));
+  }, []);
+
   const handleRetryQqqDetails = useCallback(() => {
     fetchQqqTemperature();
   }, [fetchQqqTemperature]);
@@ -5861,6 +6047,17 @@ export default function App() {
                     Dividends
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  id={newsTabId}
+                  role="tab"
+                  aria-selected={portfolioViewTab === 'news'}
+                  aria-controls={newsPanelId}
+                  className={portfolioViewTab === 'news' ? 'active' : ''}
+                  onClick={() => setPortfolioViewTab('news')}
+                >
+                  News
+                </button>
               </div>
             </header>
 
@@ -5943,6 +6140,23 @@ export default function App() {
                 <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
               </div>
             ) : null}
+            <div
+              id={newsPanelId}
+              role="tabpanel"
+              aria-labelledby={newsTabId}
+              hidden={!showNewsPanel}
+            >
+              <PortfolioNews
+                status={newsStatus}
+                articles={portfolioNewsState.articles}
+                error={portfolioNewsState.error}
+                disclaimer={portfolioNewsState.disclaimer}
+                generatedAt={portfolioNewsState.generatedAt}
+                symbols={resolvedNewsSymbols}
+                accountLabel={newsAccountLabel}
+                onRetry={handleRetryNews}
+              />
+            </div>
           </section>
         )}
 
