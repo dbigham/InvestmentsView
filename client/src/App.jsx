@@ -14,6 +14,7 @@ import {
   getTotalPnlSeries,
   setAccountTargetProportions,
   getPortfolioNews,
+  setAccountSymbolNotes,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -27,6 +28,7 @@ import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
 import TargetProportionsDialog from './components/TargetProportionsDialog';
 import PortfolioNews from './components/PortfolioNews';
+import SymbolNotesDialog from './components/SymbolNotesDialog';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -399,6 +401,67 @@ function buildPositionsAllocationTable(positions) {
   rows.forEach((row) => {
     lines.push(formatRow(row));
   });
+
+  const noteEntries = [];
+  const seenNotes = new Set();
+
+  const appendNoteEntry = (label, note) => {
+    if (!label) {
+      return;
+    }
+    if (typeof note !== 'string') {
+      return;
+    }
+    const trimmed = note.trim();
+    if (!trimmed) {
+      return;
+    }
+    const normalized = trimmed.replace(/\r\n/g, '\n');
+    const key = `${label}\n${normalized}`;
+    if (seenNotes.has(key)) {
+      return;
+    }
+    seenNotes.add(key);
+    const noteLines = normalized.split('\n');
+    noteLines.forEach((line, index) => {
+      if (index === 0) {
+        noteEntries.push(`${label}: ${line}`);
+      } else {
+        noteEntries.push(`  ${line}`);
+      }
+    });
+  };
+
+  positions.forEach((position) => {
+    const symbolLabel = position && position.symbol ? String(position.symbol).trim().toUpperCase() : '';
+    if (!symbolLabel) {
+      return;
+    }
+    let appended = false;
+    if (Array.isArray(position.accountNotes) && position.accountNotes.length) {
+      position.accountNotes.forEach((entry) => {
+        const noteValue = typeof entry?.notes === 'string' ? entry.notes : '';
+        if (!noteValue.trim()) {
+          return;
+        }
+        const accountLabel = entry?.accountDisplayName || entry?.accountNumber || entry?.accountId || null;
+        const label = accountLabel ? `${symbolLabel} (${accountLabel})` : symbolLabel;
+        appendNoteEntry(label, noteValue);
+        appended = true;
+      });
+    }
+    if (!appended) {
+      appendNoteEntry(symbolLabel, typeof position.notes === 'string' ? position.notes : '');
+    }
+  });
+
+  if (noteEntries.length) {
+    lines.push('');
+    lines.push('Notes:');
+    noteEntries.forEach((entry) => {
+      lines.push(entry);
+    });
+  }
 
   return lines.join('\n');
 }
@@ -2516,6 +2579,7 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
         isRealTime: Boolean(position?.isRealTime),
         rowId: `all:${symbolKey}`,
         key: symbolKey,
+        accountNotes: new Map(),
       };
       groups.set(symbolKey, group);
     }
@@ -2565,6 +2629,63 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
     if (totalCost !== null) {
       bucket.totalCost += totalCost;
       bucket.costWeight += quantity;
+    }
+
+    const appendAccountNote = (entry) => {
+      if (!entry) {
+        return;
+      }
+      const accountKey = entry.accountId || entry.accountNumber;
+      if (!accountKey) {
+        return;
+      }
+      const normalizedKey = String(accountKey);
+      if (!normalizedKey) {
+        return;
+      }
+      const existing = group.accountNotes.get(normalizedKey) || {
+        accountId: entry.accountId || null,
+        accountNumber: entry.accountNumber || null,
+        accountDisplayName: entry.accountDisplayName || null,
+        accountOwnerLabel: entry.accountOwnerLabel || null,
+        notes: '',
+        targetProportion: Number.isFinite(entry.targetProportion) ? entry.targetProportion : null,
+      };
+      const candidateNote = typeof entry.notes === 'string' ? entry.notes : '';
+      if (candidateNote) {
+        existing.notes = candidateNote;
+      }
+      if (!existing.accountDisplayName && entry.accountDisplayName) {
+        existing.accountDisplayName = entry.accountDisplayName;
+      }
+      if (!existing.accountOwnerLabel && entry.accountOwnerLabel) {
+        existing.accountOwnerLabel = entry.accountOwnerLabel;
+      }
+      if (!existing.accountNumber && entry.accountNumber) {
+        existing.accountNumber = entry.accountNumber;
+      }
+      if (!existing.accountId && entry.accountId) {
+        existing.accountId = entry.accountId;
+      }
+      if (Number.isFinite(entry.targetProportion)) {
+        existing.targetProportion = entry.targetProportion;
+      }
+      group.accountNotes.set(normalizedKey, existing);
+    };
+
+    if (Array.isArray(position.accountNotes) && position.accountNotes.length) {
+      position.accountNotes.forEach((entry) => {
+        appendAccountNote(entry);
+      });
+    } else {
+      appendAccountNote({
+        accountId: position.accountId || null,
+        accountNumber: position.accountNumber || null,
+        accountDisplayName: position.accountDisplayName || null,
+        accountOwnerLabel: position.accountOwnerLabel || null,
+        notes: typeof position.notes === 'string' ? position.notes : '',
+        targetProportion: Number.isFinite(position.targetProportion) ? position.targetProportion : null,
+      });
     }
   });
 
@@ -2617,6 +2738,23 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
         : null;
 
     const resolvedSymbolId = group.symbolId ?? group.key;
+    const accountNotes = group.accountNotes
+      ? Array.from(group.accountNotes.values()).map((entry) => {
+          return {
+            accountId: entry.accountId || null,
+            accountNumber: entry.accountNumber || null,
+            accountDisplayName: entry.accountDisplayName || null,
+            accountOwnerLabel: entry.accountOwnerLabel || null,
+            notes: typeof entry.notes === 'string' ? entry.notes : '',
+            targetProportion: Number.isFinite(entry.targetProportion) ? entry.targetProportion : null,
+          };
+        })
+      : [];
+    accountNotes.sort((a, b) => {
+      const labelA = (a.accountDisplayName || a.accountNumber || a.accountId || '').toString();
+      const labelB = (b.accountDisplayName || b.accountNumber || b.accountId || '').toString();
+      return labelA.localeCompare(labelB, undefined, { sensitivity: 'base' });
+    });
 
     return {
       symbol: group.symbol ?? group.key,
@@ -2635,6 +2773,8 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
       isRealTime: group.isRealTime,
       rowId: group.rowId,
       normalizedMarketValue: group.marketValueBase,
+      notes: null,
+      accountNotes,
     };
   });
 
@@ -2722,6 +2862,7 @@ export default function App() {
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
   const [targetProportionEditor, setTargetProportionEditor] = useState(null);
+  const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
@@ -5283,6 +5424,146 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const handleShowSymbolNotes = useCallback(
+    (position) => {
+      if (!position || typeof position.symbol !== 'string') {
+        return;
+      }
+      const trimmedSymbol = position.symbol.trim().toUpperCase();
+      if (!trimmedSymbol) {
+        return;
+      }
+
+      const sourceEntries = Array.isArray(position.accountNotes) && position.accountNotes.length
+        ? position.accountNotes
+        : [
+            {
+              accountId: position.accountId || null,
+              accountNumber: position.accountNumber || null,
+              accountDisplayName: position.accountDisplayName || null,
+              accountOwnerLabel: position.accountOwnerLabel || null,
+              notes: typeof position.notes === 'string' ? position.notes : '',
+              targetProportion: Number.isFinite(position.targetProportion)
+                ? position.targetProportion
+                : null,
+            },
+          ];
+
+      const bucket = new Map();
+      sourceEntries.forEach((entry) => {
+        if (!entry) {
+          return;
+        }
+        const rawAccountId = entry.accountId != null ? String(entry.accountId) : null;
+        const rawAccountNumber = entry.accountNumber != null ? String(entry.accountNumber) : null;
+        const key = rawAccountId || rawAccountNumber;
+        if (!key) {
+          return;
+        }
+        const existing = bucket.get(key) || {
+          accountKey: key,
+          accountId: rawAccountId,
+          accountNumber: rawAccountNumber,
+          accountLabel: null,
+          ownerLabel: null,
+          notes: '',
+          targetProportion: Number.isFinite(entry.targetProportion) ? entry.targetProportion : null,
+        };
+        const accountRecord = rawAccountId && accountsById.has(rawAccountId) ? accountsById.get(rawAccountId) : null;
+        const displayNameCandidate =
+          (typeof entry.accountDisplayName === 'string' && entry.accountDisplayName.trim()) ||
+          (accountRecord && accountRecord.displayName) ||
+          (rawAccountNumber && rawAccountNumber.trim());
+        if (displayNameCandidate) {
+          existing.accountLabel = displayNameCandidate;
+        }
+        const ownerCandidate =
+          entry.accountOwnerLabel ||
+          (accountRecord && (accountRecord.ownerLabel || accountRecord.loginLabel)) ||
+          null;
+        if (ownerCandidate) {
+          existing.ownerLabel = ownerCandidate;
+        }
+        const noteValue = typeof entry.notes === 'string' ? entry.notes : '';
+        if (noteValue) {
+          existing.notes = noteValue;
+        }
+        if (Number.isFinite(entry.targetProportion)) {
+          existing.targetProportion = entry.targetProportion;
+        }
+        bucket.set(key, existing);
+      });
+
+      const normalizedEntries = Array.from(bucket.values())
+        .map((entry) => {
+          const label = entry.accountLabel || entry.accountNumber || entry.accountId || entry.accountKey;
+          return {
+            accountKey: entry.accountKey,
+            accountId: entry.accountId,
+            accountNumber: entry.accountNumber,
+            accountLabel: label,
+            ownerLabel: entry.ownerLabel || null,
+            notes: typeof entry.notes === 'string' ? entry.notes : '',
+            targetProportion: Number.isFinite(entry.targetProportion) ? entry.targetProportion : null,
+          };
+        })
+        .filter((entry) => entry.accountKey)
+        .sort((a, b) => a.accountLabel.localeCompare(b.accountLabel, undefined, { sensitivity: 'base' }));
+
+      if (!normalizedEntries.length) {
+        return;
+      }
+
+      setSymbolNotesEditor({ symbol: trimmedSymbol, entries: normalizedEntries });
+    },
+    [accountsById]
+  );
+
+  const handleCloseSymbolNotes = useCallback(() => {
+    setSymbolNotesEditor(null);
+  }, []);
+
+  const handleSaveSymbolNotes = useCallback(
+    async (drafts) => {
+      if (!symbolNotesEditor || !symbolNotesEditor.symbol) {
+        return;
+      }
+      const { symbol, entries } = symbolNotesEditor;
+      const changes = [];
+      entries.forEach((entry) => {
+        if (!entry || !entry.accountKey) {
+          return;
+        }
+        const currentValue = drafts && Object.prototype.hasOwnProperty.call(drafts, entry.accountKey)
+          ? drafts[entry.accountKey]
+          : entry.notes;
+        const normalizedExisting = typeof entry.notes === 'string' ? entry.notes.trim() : '';
+        const normalizedNext = typeof currentValue === 'string' ? currentValue.trim() : '';
+        if (normalizedExisting === normalizedNext) {
+          return;
+        }
+        changes.push({ accountKey: entry.accountKey, note: normalizedNext });
+      });
+
+      if (!changes.length) {
+        setSymbolNotesEditor(null);
+        return;
+      }
+
+      try {
+        await Promise.all(
+          changes.map(({ accountKey, note }) => setAccountSymbolNotes(accountKey, symbol, note))
+        );
+        setSymbolNotesEditor(null);
+        setRefreshKey((value) => value + 1);
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : 'Failed to save notes.';
+        throw new Error(message);
+      }
+    },
+    [setRefreshKey, symbolNotesEditor]
+  );
+
   const handleSetPlanningContext = useCallback(() => {
     if (selectedAccount === 'all') {
       return;
@@ -5797,6 +6078,7 @@ export default function App() {
                 embedded
                 investmentModelSymbolMap={investmentModelSymbolMap}
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
+                onShowNotes={handleShowSymbolNotes}
               />
             </div>
 
@@ -5950,6 +6232,14 @@ export default function App() {
           targetProportions={targetProportionEditor.targetProportions}
           onClose={handleCloseTargetProportions}
           onSave={handleSaveTargetProportions}
+        />
+      )}
+      {symbolNotesEditor && (
+        <SymbolNotesDialog
+          symbol={symbolNotesEditor.symbol}
+          entries={symbolNotesEditor.entries}
+          onClose={handleCloseSymbolNotes}
+          onSave={handleSaveSymbolNotes}
         />
       )}
       {pnlBreakdownMode && (

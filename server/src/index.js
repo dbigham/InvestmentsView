@@ -20,6 +20,8 @@ const {
   getDefaultAccountId,
   updateAccountLastRebalance,
   updateAccountTargetProportions,
+  updateAccountSymbolNote,
+  extractSymbolSettingsFromOverride,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
@@ -1468,22 +1470,26 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     target.ignoreSittingCash = override.ignoreSittingCash;
   }
 
-  if (Object.prototype.hasOwnProperty.call(override, 'targetProportions')) {
-    const source = override.targetProportions;
-    if (source && typeof source === 'object' && Object.keys(source).length) {
-      target.targetProportions = Object.entries(source).reduce((acc, [symbol, percent]) => {
-        const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
-        if (trimmedSymbol) {
-          const numeric = Number(percent);
-          if (Number.isFinite(numeric)) {
-            acc[trimmedSymbol] = numeric;
-          }
-        }
-        return acc;
-      }, {});
-    } else {
-      delete target.targetProportions;
-    }
+  const {
+    symbolSettings: resolvedSymbolSettings,
+    targetProportions: resolvedTargetProportions,
+    symbolNotes: resolvedSymbolNotes,
+  } = extractSymbolSettingsFromOverride(override);
+
+  if (resolvedSymbolSettings) {
+    target.symbolSettings = resolvedSymbolSettings;
+  } else if (Object.prototype.hasOwnProperty.call(target, 'symbolSettings')) {
+    delete target.symbolSettings;
+  }
+  if (resolvedTargetProportions) {
+    target.targetProportions = resolvedTargetProportions;
+  } else if (Object.prototype.hasOwnProperty.call(target, 'targetProportions')) {
+    delete target.targetProportions;
+  }
+  if (resolvedSymbolNotes) {
+    target.symbolNotes = resolvedSymbolNotes;
+  } else if (Object.prototype.hasOwnProperty.call(target, 'symbolNotes')) {
+    delete target.symbolNotes;
   }
 }
 
@@ -6451,18 +6457,58 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
         ? position.symbol.trim().toUpperCase()
         : null;
     let targetProportion = null;
-    if (
-      symbolKey &&
-      accountInfo &&
-      accountInfo.targetProportions &&
-      typeof accountInfo.targetProportions === 'object'
-    ) {
-      const candidate = accountInfo.targetProportions[symbolKey];
-      const numeric = Number(candidate);
-      if (Number.isFinite(numeric)) {
-        targetProportion = numeric;
+    let symbolNote = null;
+    if (symbolKey && accountInfo) {
+      if (accountInfo.symbolSettings && typeof accountInfo.symbolSettings === 'object') {
+        const entry = accountInfo.symbolSettings[symbolKey];
+        if (entry && typeof entry === 'object') {
+          const numeric = Number(entry.targetProportion);
+          if (Number.isFinite(numeric)) {
+            targetProportion = numeric;
+          }
+          if (typeof entry.notes === 'string') {
+            const trimmedNote = entry.notes.trim();
+            if (trimmedNote) {
+              symbolNote = trimmedNote;
+            }
+          }
+        }
+      }
+      if (targetProportion === null && accountInfo.targetProportions && typeof accountInfo.targetProportions === 'object') {
+        const candidate = accountInfo.targetProportions[symbolKey];
+        const numeric = Number(candidate);
+        if (Number.isFinite(numeric)) {
+          targetProportion = numeric;
+        }
+      }
+      if (!symbolNote && accountInfo.symbolNotes && typeof accountInfo.symbolNotes === 'object') {
+        const candidateNote = accountInfo.symbolNotes[symbolKey];
+        if (typeof candidateNote === 'string') {
+          const trimmedNote = candidateNote.trim();
+          if (trimmedNote) {
+            symbolNote = trimmedNote;
+          }
+        }
       }
     }
+
+    const accountDisplayName = accountInfo ? accountInfo.displayName || null : null;
+    const normalizedTargetProportion = Number.isFinite(targetProportion) ? targetProportion : null;
+    const resolvedNote = symbolNote || null;
+    const accountNotesEntry = {
+      accountId: accountInfo ? accountInfo.id || position.accountId || null : position.accountId || null,
+      accountNumber: accountInfo ? accountInfo.number || position.accountNumber || null : position.accountNumber || null,
+      accountDisplayName,
+      accountOwnerLabel:
+        accountInfo && accountInfo.ownerLabel
+          ? accountInfo.ownerLabel
+          : accountInfo && accountInfo.loginLabel
+            ? accountInfo.loginLabel
+            : null,
+      notes: resolvedNote || '',
+      targetProportion: normalizedTargetProportion,
+    };
+    const accountNotes = accountNotesEntry.accountId || accountNotesEntry.accountNumber ? [accountNotesEntry] : [];
     return {
       accountId: position.accountId,
       accountNumber: position.accountNumber || (accountInfo ? accountInfo.number : null),
@@ -6484,7 +6530,10 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
       openPnl: position.openPnl,
       totalCost: position.totalCost,
       isRealTime: position.isRealTime,
-      targetProportion,
+      targetProportion: normalizedTargetProportion,
+      notes: resolvedNote,
+      accountDisplayName,
+      accountNotes,
     };
   });
 }
@@ -7065,6 +7114,48 @@ app.post('/api/accounts/:accountKey/target-proportions', function (req, res) {
     }
     console.error('Failed to update target proportions:', error);
     return res.status(500).json({ message: 'Failed to update target proportions' });
+  }
+});
+
+app.post('/api/accounts/:accountKey/symbol-notes', function (req, res) {
+  const rawAccountKey = typeof req.params.accountKey === 'string' ? req.params.accountKey : '';
+  const accountKey = rawAccountKey.trim();
+  if (!accountKey) {
+    return res.status(400).json({ message: 'Account identifier is required' });
+  }
+
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const rawSymbol = typeof payload.symbol === 'string' ? payload.symbol : '';
+  const symbol = rawSymbol.trim();
+  if (!symbol) {
+    return res.status(400).json({ message: 'Symbol is required' });
+  }
+
+  const notesValue = Object.prototype.hasOwnProperty.call(payload, 'notes') ? payload.notes : payload.note;
+
+  try {
+    const result = updateAccountSymbolNote(accountKey, symbol, notesValue);
+    return res.json({ symbol: result.symbol, notes: result.note, updated: result.updated });
+  } catch (error) {
+    if (error && error.code === 'INVALID_ACCOUNT') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'INVALID_SYMBOL') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'NOT_FOUND') {
+      return res.status(404).json({ message: 'Account configuration not found' });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to update symbol note:', error);
+    return res.status(500).json({ message: 'Failed to update symbol note' });
   }
 });
 
@@ -7812,6 +7903,76 @@ app.get('/api/summary', async function (req, res) {
         };
       });
       const primaryModel = models.length ? models[0] : null;
+      const symbolSettings =
+        account.symbolSettings && typeof account.symbolSettings === 'object' && !Array.isArray(account.symbolSettings)
+          ? account.symbolSettings
+          : null;
+
+      let targetProportionMap = null;
+      let symbolNotesMap = null;
+
+      if (symbolSettings) {
+        Object.entries(symbolSettings).forEach(([symbol, entry]) => {
+          const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
+          if (!trimmedSymbol) {
+            return;
+          }
+          if (entry && typeof entry === 'object') {
+            if (Object.prototype.hasOwnProperty.call(entry, 'targetProportion')) {
+              const numeric = Number(entry.targetProportion);
+              if (Number.isFinite(numeric)) {
+                if (!targetProportionMap) {
+                  targetProportionMap = {};
+                }
+                targetProportionMap[trimmedSymbol] = numeric;
+              }
+            }
+            if (Object.prototype.hasOwnProperty.call(entry, 'notes')) {
+              const note = typeof entry.notes === 'string' ? entry.notes.trim() : '';
+              if (note) {
+                if (!symbolNotesMap) {
+                  symbolNotesMap = {};
+                }
+                symbolNotesMap[trimmedSymbol] = note;
+              }
+            }
+          }
+        });
+      }
+
+      if (!targetProportionMap && account.targetProportions && typeof account.targetProportions === 'object') {
+        const source = account.targetProportions;
+        if (Object.keys(source).length) {
+          targetProportionMap = Object.entries(source).reduce((acc, [symbol, percent]) => {
+            const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
+            if (trimmedSymbol) {
+              const numeric = Number(percent);
+              if (Number.isFinite(numeric)) {
+                acc[trimmedSymbol] = numeric;
+              }
+            }
+            return acc;
+          }, {});
+          if (Object.keys(targetProportionMap).length === 0) {
+            targetProportionMap = null;
+          }
+        }
+      }
+
+      if (!symbolNotesMap && account.symbolNotes && typeof account.symbolNotes === 'object') {
+        const entries = Object.entries(account.symbolNotes).reduce((acc, [symbol, note]) => {
+          const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
+          const normalizedNote = typeof note === 'string' ? note.trim() : '';
+          if (trimmedSymbol && normalizedNote) {
+            acc[trimmedSymbol] = normalizedNote;
+          }
+          return acc;
+        }, {});
+        if (Object.keys(entries).length) {
+          symbolNotesMap = entries;
+        }
+      }
+
       return {
         id: account.id,
         number: account.number,
@@ -7840,21 +8001,8 @@ app.get('/api/summary', async function (req, res) {
           Number.isFinite(account.ignoreSittingCash)
             ? Math.max(0, account.ignoreSittingCash)
             : null,
-        targetProportions:
-          account.targetProportions &&
-          typeof account.targetProportions === 'object' &&
-          Object.keys(account.targetProportions).length
-            ? Object.entries(account.targetProportions).reduce((acc, [symbol, percent]) => {
-                const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
-                if (trimmedSymbol) {
-                  const numeric = Number(percent);
-                  if (Number.isFinite(numeric)) {
-                    acc[trimmedSymbol] = numeric;
-                  }
-                }
-                return acc;
-              }, {})
-            : null,
+        targetProportions: targetProportionMap,
+        symbolNotes: symbolNotesMap,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });
