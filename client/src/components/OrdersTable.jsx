@@ -68,7 +68,7 @@ function formatStatus(value) {
   }
   const spaced = String(value)
     .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[_\-]+/g, ' ')
+    .replace(/[_-]+/g, ' ')
     .trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
