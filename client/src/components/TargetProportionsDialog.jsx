@@ -78,6 +78,17 @@ function formatPercentDisplay(value) {
   return `${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+function truncateDescription(value) {
+  if (!value) {
+    return '';
+  }
+  const normalized = String(value);
+  if (normalized.length <= 21) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 21).trimEnd()}...`;
+}
+
 export default function TargetProportionsDialog({
   accountLabel,
   positions,
@@ -336,15 +347,19 @@ export default function TargetProportionsDialog({
                         const inputValue = inputs[position.symbol] ?? '';
                         const currentShareLabel = formatPercentDisplay(position.portfolioShare);
                         const existingTargetLabel = formatPercentDisplay(position.targetProportion);
+                        const truncatedDescription = truncateDescription(position.description);
                         const rowHasError = invalidSymbols.has(position.symbol);
                         return (
                           <tr key={position.symbol}>
                             <th scope="row">
                               <div className="target-proportions-table__symbol">
                                 <span className="target-proportions-table__symbol-ticker">{position.symbol}</span>
-                                {position.description && (
-                                  <span className="target-proportions-table__symbol-name" title={position.description}>
-                                    {position.description}
+                                {truncatedDescription && (
+                                  <span
+                                    className="target-proportions-table__symbol-name"
+                                    title={position.description || undefined}
+                                  >
+                                    {truncatedDescription}
                                   </span>
                                 )}
                               </div>

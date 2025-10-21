@@ -380,6 +380,7 @@ function PositionsTable({
   investmentModelSymbolMap = null,
   onShowInvestmentModel = null,
   onShowNotes = null,
+  forceShowTargetColumn = false,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
@@ -448,8 +449,10 @@ function PositionsTable({
   }, [positions, aggregateMarketValue]);
 
   const showTargetColumn = useMemo(
-    () => decoratedPositions.some((position) => hasTargetProportionValue(position)),
-    [decoratedPositions]
+    () =>
+      forceShowTargetColumn ||
+      decoratedPositions.some((position) => hasTargetProportionValue(position)),
+    [decoratedPositions, forceShowTargetColumn]
   );
 
   const activeHeaders = showTargetColumn ? TABLE_HEADERS : TABLE_HEADERS_WITHOUT_TARGET;
@@ -990,6 +993,7 @@ PositionsTable.propTypes = {
   investmentModelSymbolMap: PropTypes.instanceOf(Map),
   onShowInvestmentModel: PropTypes.func,
   onShowNotes: PropTypes.func,
+  forceShowTargetColumn: PropTypes.bool,
 };
 
 PositionsTable.defaultProps = {
@@ -1003,6 +1007,7 @@ PositionsTable.defaultProps = {
   investmentModelSymbolMap: null,
   onShowInvestmentModel: null,
   onShowNotes: null,
+  forceShowTargetColumn: false,
 };
 
 export default PositionsTable;

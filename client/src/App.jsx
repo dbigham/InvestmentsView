@@ -2862,6 +2862,7 @@ export default function App() {
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
   const [targetProportionEditor, setTargetProportionEditor] = useState(null);
+  const [forcedTargetAccounts, setForcedTargetAccounts] = useState(() => new Set());
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
@@ -3570,6 +3571,18 @@ export default function App() {
     });
     return list;
   }, [positionsWithShare]);
+
+  const hasTargetProportionsForSelection = useMemo(
+    () => orderedPositions.some((position) => Number.isFinite(position?.targetProportion)),
+    [orderedPositions]
+  );
+
+  const forcedTargetForSelectedAccount = selectedAccountKey
+    ? forcedTargetAccounts.has(selectedAccountKey)
+    : false;
+
+  const showTargetColumnForSelection =
+    hasTargetProportionsForSelection || forcedTargetForSelectedAccount;
 
   const newsSymbols = useMemo(() => extractSymbolsForNews(orderedPositions), [orderedPositions]);
   const resolvedNewsSymbols =
@@ -5285,8 +5298,29 @@ export default function App() {
       if (!targetProportionEditor || !targetProportionEditor.accountKey) {
         return;
       }
+      const accountKey = targetProportionEditor.accountKey;
+      const hasConfiguredTargets =
+        nextProportions && typeof nextProportions === 'object' && Object.keys(nextProportions).length > 0;
       try {
-        await setAccountTargetProportions(targetProportionEditor.accountKey, nextProportions);
+        await setAccountTargetProportions(accountKey, nextProportions);
+        setForcedTargetAccounts((previous) => {
+          if (!accountKey) {
+            return previous;
+          }
+          const next = new Set(previous);
+          if (hasConfiguredTargets) {
+            if (next.has(accountKey)) {
+              return previous;
+            }
+            next.add(accountKey);
+            return next;
+          }
+          if (!next.has(accountKey)) {
+            return previous;
+          }
+          next.delete(accountKey);
+          return next;
+        });
         setTargetProportionEditor(null);
         setRefreshKey((value) => value + 1);
       } catch (error) {
@@ -5297,7 +5331,7 @@ export default function App() {
         }
       }
     },
-    [targetProportionEditor, setRefreshKey]
+    [targetProportionEditor, setForcedTargetAccounts, setRefreshKey]
   );
 
   useEffect(() => {
@@ -5866,9 +5900,14 @@ export default function App() {
     );
   }
 
+  const summaryMainClassName =
+    !showTargetColumnForSelection && orderedPositions.length > 0
+      ? 'summary-main summary-main--compact'
+      : 'summary-main';
+
   return (
     <div className="summary-page">
-      <main className="summary-main">
+      <main className={summaryMainClassName}>
         <header className="page-header">
           <AccountSelector
             accounts={accounts}
@@ -6095,6 +6134,7 @@ export default function App() {
                 investmentModelSymbolMap={investmentModelSymbolMap}
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
                 onShowNotes={handleShowSymbolNotes}
+                forceShowTargetColumn={forcedTargetForSelectedAccount}
               />
             </div>
 
