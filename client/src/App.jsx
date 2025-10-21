@@ -2885,6 +2885,7 @@ export default function App() {
     cacheKey: null,
     symbols: [],
   });
+  const [portfolioNewsRetryKey, setPortfolioNewsRetryKey] = useState(0);
   const quoteCacheRef = useRef(new Map());
   const [showTotalPnlDialog, setShowTotalPnlDialog] = useState(false);
   const [totalPnlSeriesState, setTotalPnlSeriesState] = useState({
@@ -3643,20 +3644,39 @@ export default function App() {
       return;
     }
 
-    if (portfolioNewsState.status === 'ready' && portfolioNewsState.cacheKey === newsCacheKey) {
+    let shouldFetch = true;
+
+    setPortfolioNewsState((prev) => {
+      if (prev.cacheKey === newsCacheKey) {
+        if (prev.status === 'ready') {
+          shouldFetch = false;
+          return prev;
+        }
+        if (prev.status === 'loading') {
+          shouldFetch = false;
+          return prev;
+        }
+        if (prev.status === 'error') {
+          shouldFetch = false;
+          return prev;
+        }
+      }
+
+      return {
+        ...prev,
+        status: 'loading',
+        error: null,
+        cacheKey: newsCacheKey,
+        symbols: newsSymbols,
+      };
+    });
+
+    if (!shouldFetch) {
       return;
     }
 
     let cancelled = false;
     const controller = new AbortController();
-
-    setPortfolioNewsState((prev) => ({
-      ...prev,
-      status: 'loading',
-      error: null,
-      cacheKey: newsCacheKey,
-      symbols: newsSymbols,
-    }));
 
     getPortfolioNews(
       {
@@ -3709,15 +3729,7 @@ export default function App() {
       cancelled = true;
       controller.abort();
     };
-  }, [
-    portfolioViewTab,
-    newsSymbols,
-    newsAccountId,
-    newsAccountLabel,
-    newsCacheKey,
-    portfolioNewsState.status,
-    portfolioNewsState.cacheKey,
-  ]);
+  }, [portfolioViewTab, newsSymbols, newsAccountId, newsAccountLabel, newsCacheKey, portfolioNewsRetryKey]);
 
   const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
   const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
@@ -5735,6 +5747,7 @@ export default function App() {
       error: null,
       cacheKey: null,
     }));
+    setPortfolioNewsRetryKey((value) => value + 1);
   }, []);
 
   const handleRetryQqqDetails = useCallback(() => {
