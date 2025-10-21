@@ -355,6 +355,7 @@ function PositionsTable({
   embedded = false,
   investmentModelSymbolMap = null,
   onShowInvestmentModel = null,
+  onShowNotes = null,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
@@ -529,6 +530,27 @@ function PositionsTable({
     }
   }, [closeContextMenu, contextMenuState.position]);
 
+  const handleOpenNotesFromMenu = useCallback(() => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition || typeof onShowNotes !== 'function') {
+      return;
+    }
+    onShowNotes(targetPosition);
+  }, [closeContextMenu, contextMenuState.position, onShowNotes]);
+
+  const handleNotesIndicatorClick = useCallback(
+    (event, targetPosition) => {
+      event.stopPropagation();
+      event.preventDefault();
+      closeContextMenu();
+      if (typeof onShowNotes === 'function') {
+        onShowNotes(targetPosition);
+      }
+    },
+    [closeContextMenu, onShowNotes]
+  );
+
   const handleRowNavigation = useCallback(
     (event, symbol) => {
       closeContextMenu();
@@ -692,6 +714,22 @@ function PositionsTable({
           const rowKey = position.rowId || fallbackKey;
           const normalizedSymbol =
             typeof position.symbol === 'string' ? position.symbol.trim().toUpperCase() : '';
+          const symbolLabel =
+            typeof position.symbol === 'string' && position.symbol.trim()
+              ? position.symbol.trim()
+              : position.symbol || 'this symbol';
+          const hasNotes = (() => {
+            if (typeof position.notes === 'string' && position.notes.trim()) {
+              return true;
+            }
+            if (Array.isArray(position.accountNotes)) {
+              return position.accountNotes.some(
+                (entry) => entry && typeof entry.notes === 'string' && entry.notes.trim()
+              );
+            }
+            return false;
+          })();
+          const showNotesIndicator = hasNotes && typeof onShowNotes === 'function';
           let modelSection = null;
           if (normalizedSymbol && investmentModelSymbolMap) {
             if (investmentModelSymbolMap instanceof Map) {
@@ -713,6 +751,19 @@ function PositionsTable({
               <div className="positions-table__cell positions-table__cell--symbol" role="cell">
                 <div className="positions-table__symbol-header">
                   <div className="positions-table__symbol-ticker">{position.symbol}</div>
+                  {showNotesIndicator ? (
+                    <button
+                      type="button"
+                      className="positions-table__notes-indicator"
+                      onClick={(event) => handleNotesIndicatorClick(event, position)}
+                      title={`View notes for ${symbolLabel}`}
+                      aria-label={`View notes for ${symbolLabel}`}
+                    >
+                      <span className="positions-table__notes-indicator-icon" aria-hidden="true">
+                        📝
+                      </span>
+                    </button>
+                  ) : null}
                   {modelSection && typeof onShowInvestmentModel === 'function' ? (
                     <button
                       type="button"
@@ -783,6 +834,18 @@ function PositionsTable({
       style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
     >
       <ul className="positions-table__context-menu-list" role="menu">
+        {typeof onShowNotes === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleOpenNotesFromMenu}
+            >
+              Notes
+            </button>
+          </li>
+        ) : null}
         <li role="none">
           <button
             type="button"
@@ -844,6 +907,19 @@ PositionsTable.propTypes = {
       rowId: PropTypes.string,
       normalizedMarketValue: PropTypes.number,
       targetProportion: PropTypes.number,
+      notes: PropTypes.string,
+      accountDisplayName: PropTypes.string,
+      accountOwnerLabel: PropTypes.string,
+      accountNotes: PropTypes.arrayOf(
+        PropTypes.shape({
+          accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+          accountNumber: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+          accountDisplayName: PropTypes.string,
+          accountOwnerLabel: PropTypes.string,
+          notes: PropTypes.string,
+          targetProportion: PropTypes.number,
+        })
+      ),
     })
   ).isRequired,
   totalMarketValue: PropTypes.number,
@@ -855,6 +931,7 @@ PositionsTable.propTypes = {
   embedded: PropTypes.bool,
   investmentModelSymbolMap: PropTypes.instanceOf(Map),
   onShowInvestmentModel: PropTypes.func,
+  onShowNotes: PropTypes.func,
 };
 
 PositionsTable.defaultProps = {
@@ -867,6 +944,7 @@ PositionsTable.defaultProps = {
   embedded: false,
   investmentModelSymbolMap: null,
   onShowInvestmentModel: null,
+  onShowNotes: null,
 };
 
 export default PositionsTable;

@@ -19,7 +19,16 @@
   },
   "53384040": {
     "name": "Margin",
-    "portalAccountId": "3c920e1f-1b7c-44f1-8a46-111111111111"
+    "portalAccountId": "3c920e1f-1b7c-44f1-8a46-111111111111",
+    "symbols": {
+      "QQQ": {
+        "targetProportion": 35,
+        "notes": "Core growth holding"
+      },
+      "MSFT": {
+        "notes": "Review position after earnings"
+      }
+    }
   },
   "accounts": [
     {

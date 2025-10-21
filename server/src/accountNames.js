@@ -354,6 +354,291 @@ function normalizeTargetSymbol(value) {
   return normalized || null;
 }
 
+function normalizeSymbolTargetProportion(value) {
+  const numeric = normalizeNumberLike(value);
+  if (numeric === null) {
+    return null;
+  }
+  const percent = Number(numeric);
+  if (!Number.isFinite(percent) || percent <= 0) {
+    return null;
+  }
+  const bounded = Math.min(Math.max(percent, 0), 1000);
+  const rounded = Math.round((bounded + Number.EPSILON) * 10000) / 10000;
+  return rounded;
+}
+
+function normalizeSymbolNote(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+}
+
+function normalizeSymbolEntry(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const entry = {};
+
+    if (Object.prototype.hasOwnProperty.call(value, 'targetProportion')) {
+      const target = normalizeSymbolTargetProportion(value.targetProportion);
+      if (target !== null) {
+        entry.targetProportion = target;
+      }
+    }
+
+    const percentCandidate =
+      value.targetProportion ??
+      value.percent ??
+      value.percentage ??
+      value.weight ??
+      value.value ??
+      value.target ??
+      value.targetPercent ??
+      value.targetPercentage;
+    const normalizedPercent = normalizeSymbolTargetProportion(percentCandidate);
+    if (normalizedPercent !== null) {
+      entry.targetProportion = normalizedPercent;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(value, 'notes')) {
+      const note = normalizeSymbolNote(value.notes);
+      if (note) {
+        entry.notes = note;
+      }
+    } else {
+      const noteCandidate = value.note ?? value.comment ?? value.text;
+      const normalizedNote = normalizeSymbolNote(noteCandidate);
+      if (normalizedNote) {
+        entry.notes = normalizedNote;
+      }
+    }
+
+    return Object.keys(entry).length ? entry : null;
+  }
+
+  const normalizedPercent = normalizeSymbolTargetProportion(value);
+  if (normalizedPercent !== null) {
+    return { targetProportion: normalizedPercent };
+  }
+
+  const normalizedNote = normalizeSymbolNote(value);
+  if (normalizedNote) {
+    return { notes: normalizedNote };
+  }
+
+  return null;
+}
+
+function normalizeSymbolSettings(container) {
+  const map = new Map();
+  if (!container) {
+    return map;
+  }
+
+  const recordEntry = (symbolCandidate, entryValue) => {
+    const symbol = normalizeTargetSymbol(symbolCandidate);
+    if (!symbol) {
+      return;
+    }
+    const normalizedEntry = normalizeSymbolEntry(entryValue);
+    if (!normalizedEntry) {
+      return;
+    }
+    const existing = map.get(symbol) || {};
+    if (Object.prototype.hasOwnProperty.call(normalizedEntry, 'targetProportion')) {
+      existing.targetProportion = normalizedEntry.targetProportion;
+    }
+    if (Object.prototype.hasOwnProperty.call(normalizedEntry, 'notes')) {
+      existing.notes = normalizedEntry.notes;
+    }
+    map.set(symbol, existing);
+  };
+
+  if (Array.isArray(container)) {
+    container.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const symbolCandidate =
+        entry.symbol ?? entry.ticker ?? entry.code ?? entry.key ?? entry.name ?? entry.id;
+      recordEntry(symbolCandidate, entry);
+    });
+    return map;
+  }
+
+  if (typeof container === 'object') {
+    Object.entries(container).forEach(([key, value]) => {
+      recordEntry(key, value);
+    });
+  }
+
+  return map;
+}
+
+function serializeSymbolSettings(map) {
+  if (!map || map.size === 0) {
+    return null;
+  }
+  const entries = [];
+  map.forEach((value, symbol) => {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    const container = {};
+    if (Number.isFinite(value.targetProportion)) {
+      container.targetProportion = value.targetProportion;
+    }
+    if (typeof value.notes === 'string' && value.notes) {
+      container.notes = value.notes;
+    }
+    if (Object.keys(container).length > 0) {
+      entries.push([symbol, container]);
+    }
+  });
+  if (!entries.length) {
+    return null;
+  }
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  const result = {};
+  entries.forEach(([symbol, container]) => {
+    result[symbol] = container;
+  });
+  return result;
+}
+
+function buildTargetProportionMapFromSettings(map) {
+  if (!map || map.size === 0) {
+    return null;
+  }
+  const entries = [];
+  map.forEach((value, symbol) => {
+    if (!value || !Number.isFinite(value.targetProportion)) {
+      return;
+    }
+    entries.push([symbol, value.targetProportion]);
+  });
+  if (!entries.length) {
+    return null;
+  }
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  const result = {};
+  entries.forEach(([symbol, percent]) => {
+    result[symbol] = percent;
+  });
+  return result;
+}
+
+function buildSymbolNotesMapFromSettings(map) {
+  if (!map || map.size === 0) {
+    return null;
+  }
+  const entries = [];
+  map.forEach((value, symbol) => {
+    if (!value || typeof value.notes !== 'string' || !value.notes) {
+      return;
+    }
+    entries.push([symbol, value.notes]);
+  });
+  if (!entries.length) {
+    return null;
+  }
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  const result = {};
+  entries.forEach(([symbol, note]) => {
+    result[symbol] = note;
+  });
+  return result;
+}
+
+function readSymbolSettingsFromEntry(entry) {
+  const map = new Map();
+  if (!entry || typeof entry !== 'object') {
+    return map;
+  }
+  const existingSymbols = normalizeSymbolSettings(entry.symbols);
+  existingSymbols.forEach((value, symbol) => {
+    map.set(symbol, Object.assign({}, value));
+  });
+  const targetMap = normalizeTargetProportions(entry.targetProportions, { strict: false });
+  if (targetMap) {
+    Object.entries(targetMap).forEach(([symbol, percent]) => {
+      const existing = map.get(symbol) || {};
+      existing.targetProportion = percent;
+      map.set(symbol, existing);
+    });
+  }
+  return map;
+}
+
+function writeSymbolSettingsToEntry(entry, map) {
+  const nextSymbols = serializeSymbolSettings(map);
+  const nextTargets = buildTargetProportionMapFromSettings(map);
+
+  const existingSymbols = serializeSymbolSettings(normalizeSymbolSettings(entry?.symbols));
+  const existingTargets = normalizeTargetProportions(entry?.targetProportions, { strict: false });
+
+  const nextSymbolsJson = JSON.stringify(nextSymbols);
+  const existingSymbolsJson = JSON.stringify(existingSymbols);
+  const nextTargetsJson = JSON.stringify(nextTargets);
+  const existingTargetsJson = JSON.stringify(existingTargets);
+
+  let changed = false;
+
+  if (nextSymbolsJson !== existingSymbolsJson) {
+    if (nextSymbols) {
+      entry.symbols = nextSymbols;
+    } else if (entry && Object.prototype.hasOwnProperty.call(entry, 'symbols')) {
+      delete entry.symbols;
+    }
+    changed = true;
+  }
+
+  if (nextTargetsJson !== existingTargetsJson) {
+    if (nextTargets) {
+      entry.targetProportions = nextTargets;
+    } else if (entry && Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
+      delete entry.targetProportions;
+    }
+    changed = true;
+  }
+
+  return changed;
+}
+
+function extractSymbolSettingsFromOverride(override) {
+  if (!override || typeof override !== 'object') {
+    return { symbolSettings: null, targetProportions: null, symbolNotes: null };
+  }
+
+  const map = normalizeSymbolSettings(override.symbols);
+  const targetMap = normalizeTargetProportions(override.targetProportions, { strict: false });
+  if (targetMap) {
+    Object.entries(targetMap).forEach(([symbol, percent]) => {
+      const existing = map.get(symbol) || {};
+      existing.targetProportion = percent;
+      map.set(symbol, existing);
+    });
+  }
+
+  const symbolSettings = serializeSymbolSettings(map);
+  const targetProportions = buildTargetProportionMapFromSettings(map);
+  const symbolNotes = buildSymbolNotesMapFromSettings(map);
+
+  return {
+    symbolSettings: symbolSettings || null,
+    targetProportions: targetProportions || null,
+    symbolNotes: symbolNotes || null,
+  };
+}
+
 function normalizeTargetProportions(value, { strict = false } = {}) {
   if (value === null || value === undefined) {
     return null;
@@ -366,17 +651,11 @@ function normalizeTargetProportions(value, { strict = false } = {}) {
     if (!symbol) {
       return;
     }
-    const numeric = normalizeNumberLike(percentCandidate);
-    if (numeric === null) {
+    const normalizedPercent = normalizeSymbolTargetProportion(percentCandidate);
+    if (normalizedPercent === null) {
       return;
     }
-    const percent = Number(numeric);
-    if (!Number.isFinite(percent) || percent <= 0) {
-      return;
-    }
-    const bounded = Math.min(Math.max(percent, 0), 1000);
-    const rounded = Math.round((bounded + Number.EPSILON) * 10000) / 10000;
-    entries.set(symbol, rounded);
+    entries.set(symbol, normalizedPercent);
   };
 
   if (Array.isArray(value)) {
@@ -449,6 +728,20 @@ function applyTargetProportionsSetting(target, key, value) {
     return;
   }
   container.targetProportions = normalized;
+}
+
+function applySymbolSettingsSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalizedMap = normalizeSymbolSettings(value);
+  const serialized = serializeSymbolSettings(normalizedMap);
+  if (serialized) {
+    container.symbols = serialized;
+  } else {
+    delete container.symbols;
+  }
 }
 
 function normalizeDateOnly(value) {
@@ -711,6 +1004,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
       applyTargetProportionsSetting(settingsTarget, resolvedKey, entry.targetProportions);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'symbols')) {
+      applySymbolSettingsSetting(settingsTarget, resolvedKey, entry.symbols);
     }
   }
 
@@ -1225,31 +1521,70 @@ function applyTargetProportionsToEntry(entry, normalizedMap) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return false;
   }
-  const existing = normalizeTargetProportions(entry.targetProportions, { strict: false });
-  const hasNormalized = normalizedMap && Object.keys(normalizedMap).length > 0;
 
-  if (!hasNormalized) {
-    if (existing || Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
-      delete entry.targetProportions;
-      return true;
-    }
-    return false;
+  const settingsMap = readSymbolSettingsFromEntry(entry);
+  const normalizedEntries =
+    normalizedMap && typeof normalizedMap === 'object'
+      ? Object.entries(normalizedMap)
+      : [];
+
+  if (!normalizedEntries.length) {
+    settingsMap.forEach((value, symbol) => {
+      if (!value || typeof value !== 'object') {
+        settingsMap.delete(symbol);
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(value, 'targetProportion')) {
+        if (typeof value.notes === 'string' && value.notes) {
+          settingsMap.set(symbol, { notes: value.notes });
+        } else {
+          settingsMap.delete(symbol);
+        }
+      }
+    });
+    return writeSymbolSettingsToEntry(entry, settingsMap);
   }
 
-  if (existing && areTargetProportionMapsEqual(existing, normalizedMap)) {
-    const stored = entry.targetProportions;
-    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-      if (areTargetProportionMapsEqual(stored, normalizedMap)) {
-        return false;
+  const normalizedMapEntries = new Map();
+  normalizedEntries.forEach(([symbol, percent]) => {
+    const normalizedSymbol = normalizeTargetSymbol(symbol);
+    if (!normalizedSymbol) {
+      return;
+    }
+    const numeric = normalizeSymbolTargetProportion(percent);
+    if (numeric === null) {
+      return;
+    }
+    normalizedMapEntries.set(normalizedSymbol, numeric);
+  });
+
+  normalizedMapEntries.forEach((percent, symbol) => {
+    const existing = settingsMap.get(symbol) || {};
+    const nextEntry = Object.assign({}, existing, { targetProportion: percent });
+    if (typeof existing.notes === 'string' && existing.notes) {
+      nextEntry.notes = existing.notes;
+    }
+    settingsMap.set(symbol, nextEntry);
+  });
+
+  settingsMap.forEach((value, symbol) => {
+    if (normalizedMapEntries.has(symbol)) {
+      return;
+    }
+    if (!value || typeof value !== 'object') {
+      settingsMap.delete(symbol);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'targetProportion')) {
+      if (typeof value.notes === 'string' && value.notes) {
+        settingsMap.set(symbol, { notes: value.notes });
+      } else {
+        settingsMap.delete(symbol);
       }
     }
-  }
+  });
 
-  entry.targetProportions = Object.entries(normalizedMap).reduce((acc, [symbol, percent]) => {
-    acc[symbol] = percent;
-    return acc;
-  }, {});
-  return true;
+  return writeSymbolSettingsToEntry(entry, settingsMap);
 }
 
 function traverseAndSetTargetProportions(container, keySet, normalizedMap) {
@@ -1318,6 +1653,120 @@ function traverseAndSetTargetProportions(container, keySet, normalizedMap) {
   walk(container);
 
   return { updated, count: totalCount, matched };
+}
+
+function applySymbolNoteToEntry(entry, symbolKey, noteValue) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+
+  const symbol = normalizeTargetSymbol(symbolKey);
+  if (!symbol) {
+    const error = new Error('Symbol is required');
+    error.code = 'INVALID_SYMBOL';
+    throw error;
+  }
+
+  const settingsMap = readSymbolSettingsFromEntry(entry);
+  const existing = settingsMap.get(symbol) || null;
+  const existingNote = existing && typeof existing.notes === 'string' ? existing.notes : '';
+  const normalizedNote = normalizeSymbolNote(noteValue) || '';
+
+  if (!existing && !normalizedNote) {
+    return false;
+  }
+
+  if (existing) {
+    const nextEntry = {};
+    if (Object.prototype.hasOwnProperty.call(existing, 'targetProportion')) {
+      nextEntry.targetProportion = existing.targetProportion;
+    }
+    if (normalizedNote) {
+      nextEntry.notes = normalizedNote;
+    }
+    if (!normalizedNote && !Object.prototype.hasOwnProperty.call(nextEntry, 'targetProportion')) {
+      settingsMap.delete(symbol);
+    } else {
+      settingsMap.set(symbol, nextEntry);
+    }
+  } else if (normalizedNote) {
+    settingsMap.set(symbol, { notes: normalizedNote });
+  }
+
+  if (existingNote === normalizedNote) {
+    // No effective change after normalization
+    return false;
+  }
+
+  return writeSymbolSettingsToEntry(entry, settingsMap);
+}
+
+function traverseAndSetSymbolNote(container, keySet, symbolKey, noteValue) {
+  if (!container) {
+    return { updated: false, matched: false, count: 0 };
+  }
+
+  let updated = false;
+  let matched = false;
+  let count = 0;
+
+  const processEntry = (entry, fallbackKey) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const candidates = [
+      entry.number,
+      entry.accountNumber,
+      entry.accountId,
+      entry.id,
+      entry.key,
+      fallbackKey,
+    ];
+    if (candidates.some((candidate) => matchesAccountKey(keySet, candidate))) {
+      matched = true;
+      if (applySymbolNoteToEntry(entry, symbolKey, noteValue)) {
+        updated = true;
+        count += 1;
+      }
+    }
+  };
+
+  const walk = (node, fallbackKey) => {
+    if (!node) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item) => {
+        if (item && typeof item === 'object') {
+          processEntry(item);
+          walk(item);
+        } else {
+          walk(item);
+        }
+      });
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    processEntry(node, fallbackKey);
+
+    Object.entries(node).forEach(([key, value]) => {
+      if (matchesAccountKey(keySet, key) && value && typeof value === 'object') {
+        if (applySymbolNoteToEntry(value, symbolKey, noteValue)) {
+          updated = true;
+          matched = true;
+          count += 1;
+        }
+      }
+      walk(value, key);
+    });
+  };
+
+  walk(container);
+
+  return { updated, matched, count };
 }
 
 function updateAccountLastRebalance(accountKey, options = {}) {
@@ -1458,6 +1907,81 @@ function updateAccountTargetProportions(accountKey, rawProportions) {
   return { targetProportions: effectiveMap, updated: updateResult.updated, updatedCount: updateResult.count };
 }
 
+function updateAccountSymbolNote(accountKey, symbolKey, noteValue) {
+  const keySet = buildAccountKeySet(accountKey);
+  if (!keySet) {
+    const error = new Error('Account identifier is required');
+    error.code = 'INVALID_ACCOUNT';
+    throw error;
+  }
+
+  const normalizedSymbol = normalizeTargetSymbol(symbolKey);
+  if (!normalizedSymbol) {
+    const error = new Error('Symbol is required');
+    error.code = 'INVALID_SYMBOL';
+    throw error;
+  }
+
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath) {
+    const error = new Error('Accounts file path is not configured');
+    error.code = 'NO_FILE';
+    throw error;
+  }
+  if (!fs.existsSync(filePath)) {
+    const error = new Error('Accounts file not found at ' + filePath);
+    error.code = 'NO_FILE';
+    throw error;
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  if (!content.trim()) {
+    const error = new Error('Accounts file is empty');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    const error = new Error('Failed to parse accounts file');
+    error.code = 'PARSE_ERROR';
+    error.cause = parseError;
+    throw error;
+  }
+
+  const updateResult = traverseAndSetSymbolNote(parsed, keySet, normalizedSymbol, noteValue);
+  if (!updateResult.matched) {
+    const error = new Error('Account configuration not found');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  if (updateResult.updated) {
+    const serialized = JSON.stringify(parsed, null, 2);
+    fs.writeFileSync(filePath, serialized + (serialized.endsWith('\n') ? '' : '\n'), 'utf-8');
+
+    cachedMarker = null;
+    cachedOverrides = {};
+    cachedPortalOverrides = {};
+    cachedChatOverrides = {};
+    cachedSettings = {};
+    cachedOrdering = [];
+    cachedDefaultAccount = null;
+    hasLoggedError = false;
+    loadAccountOverrides();
+  }
+
+  const normalizedNote = normalizeSymbolNote(noteValue);
+
+  return {
+    symbol: normalizedSymbol,
+    note: normalizedNote || null,
+    updated: updateResult.updated,
+  };
+}
+
 module.exports = {
   getAccountNameOverrides,
   getAccountPortalOverrides,
@@ -1467,6 +1991,8 @@ module.exports = {
   getDefaultAccountId,
   updateAccountLastRebalance,
   updateAccountTargetProportions,
+  updateAccountSymbolNote,
+  extractSymbolSettingsFromOverride,
   get accountNamesFilePath() {
     return resolvedFilePath;
   },
