@@ -3451,6 +3451,7 @@ export default function App() {
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
   const showOrdersPanel = portfolioViewTab === 'orders';
   const showNewsPanel = portfolioViewTab === 'news';
+  const newsSymbols = useMemo(() => extractSymbolsForNews(orderedPositions), [orderedPositions]);
   const resolvedNewsSymbols =
     Array.isArray(portfolioNewsState.symbols) && portfolioNewsState.symbols.length
       ? portfolioNewsState.symbols
@@ -3575,7 +3576,6 @@ export default function App() {
     return list;
   }, [positionsWithShare]);
 
-  const newsSymbols = useMemo(() => extractSymbolsForNews(orderedPositions), [orderedPositions]);
   const newsAccountId = useMemo(() => {
     if (selectedAccount === 'all') {
       return 'all';
