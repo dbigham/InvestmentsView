@@ -69,6 +69,18 @@ function buildMarkRebalancedUrl(accountKey) {
   return url.toString();
 }
 
+function buildTargetProportionsUrl(accountKey) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+  const encodedKey = encodeURIComponent(trimmedKey);
+  const path = `/api/accounts/${encodedKey}/target-proportions`;
+  const url = new URL(path, base);
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -225,6 +237,41 @@ export async function markAccountRebalanced(accountKey, options = {}) {
         }
       } catch (nestedError) {
         console.warn('Failed to read markAccountRebalanced error response body', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function setAccountTargetProportions(accountKey, proportions) {
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+
+  const payload = { proportions: proportions ?? null };
+
+  const response = await fetch(buildTargetProportionsUrl(trimmedKey), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Failed to update target proportions';
+    try {
+      const data = await response.json();
+      message = data?.message || data?.details || message;
+    } catch (parseError) {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        // ignore
       }
     }
     throw new Error(message);

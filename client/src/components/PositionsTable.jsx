@@ -69,6 +69,13 @@ const TABLE_HEADERS = [
     sortType: 'number',
     accessor: (row) => row.portfolioShare ?? 0,
   },
+  {
+    key: 'targetProportion',
+    label: 'Target %',
+    className: 'positions-table__head--numeric',
+    sortType: 'number',
+    accessor: (row) => (Number.isFinite(row.targetProportion) ? row.targetProportion : -Infinity),
+  },
 ];
 
 function resolveTotalCost(position) {
@@ -759,6 +766,9 @@ function PositionsTable({
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                 {displayShare}
               </div>
+              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                {formatShare(position.targetProportion)}
+              </div>
             </div>
           );
         })}
@@ -833,6 +843,7 @@ PositionsTable.propTypes = {
       totalCost: PropTypes.number,
       rowId: PropTypes.string,
       normalizedMarketValue: PropTypes.number,
+      targetProportion: PropTypes.number,
     })
   ).isRequired,
   totalMarketValue: PropTypes.number,
