@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { formatDate, formatDateTime, formatNumber } from '../utils/formatters';
+import { formatDateTime, formatNumber } from '../utils/formatters';
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -92,21 +92,42 @@ function classifyStatus(value) {
 
 function formatTimeInForce(value) {
   if (!value) {
+    return { label: '—', title: undefined };
+  }
+  const normalized = normalizeKey(value);
+  const specialLookup = {
+    goodtillcancelled: { label: 'GTC', title: 'Good till canceled' },
+    goodtillcanceled: { label: 'GTC', title: 'Good till canceled' },
+    gtcd: { label: 'GTC', title: 'Good till canceled' },
+    goodtillextendedday: { label: 'GTED', title: 'Good till extended day' },
+  };
+  if (specialLookup[normalized]) {
+    return specialLookup[normalized];
+  }
+
+  const defaultLookup = {
+    day: { label: 'Day', title: undefined },
+    goodtildate: { label: 'Good till date', title: undefined },
+    ioc: { label: 'Immediate or cancel', title: undefined },
+    fok: { label: 'Fill or kill', title: undefined },
+  };
+
+  if (defaultLookup[normalized]) {
+    return defaultLookup[normalized];
+  }
+
+  return { label: value, title: undefined };
+}
+
+function truncateDescription(value) {
+  if (!value) {
     return '—';
   }
-  const lookup = {
-    day: 'Day',
-    gtcd: 'Good till cancelled',
-    goodtillcancelled: 'Good till cancelled',
-    goodtildate: 'Good till date',
-    ioc: 'Immediate or cancel',
-    fok: 'Fill or kill',
-  };
-  const normalized = normalizeKey(value);
-  if (lookup[normalized]) {
-    return lookup[normalized];
+  const normalized = String(value);
+  if (normalized.length <= 21) {
+    return normalized;
   }
-  return value;
+  return `${normalized.slice(0, 21).trimEnd()}...`;
 }
 
 function formatAction(value) {
@@ -188,8 +209,7 @@ function OrdersTable({ orders, accountsById, showAccountColumn }) {
                 <th scope="col">Symbol</th>
                 <th scope="col">Status</th>
                 <th scope="col">Action</th>
-                <th scope="col">Order type</th>
-                <th scope="col">Limit price</th>
+                <th scope="col">Price</th>
                 <th scope="col">Duration</th>
                 <th scope="col" className="orders-table__head--numeric">Qty</th>
                 <th scope="col">Time placed</th>
@@ -220,6 +240,9 @@ function OrdersTable({ orders, accountsById, showAccountColumn }) {
                     ? order.filledQuantity
                     : order.openQuantity;
                 const quantityLabel = formatQuantity(quantityValue);
+                const descriptionTitle = order.description ? String(order.description) : undefined;
+                const descriptionLabel = order.description ? truncateDescription(order.description) : null;
+                const timeInForceDisplay = formatTimeInForce(order.timeInForce);
                 const quantityTitleParts = [];
                 if (isFiniteNumber(order.filledQuantity)) {
                   quantityTitleParts.push(`Filled ${formatQuantity(order.filledQuantity)}`);
@@ -235,26 +258,30 @@ function OrdersTable({ orders, accountsById, showAccountColumn }) {
                     {showAccountColumn ? (
                       <td className="orders-table__cell">
                         <div className="orders-table__account-label">{accountCell.label}</div>
-                        {accountCell.owner ? (
-                          <div className="orders-table__account-owner">{accountCell.owner}</div>
-                        ) : null}
                       </td>
                     ) : null}
                     <td className="orders-table__cell orders-table__cell--symbol">
                       <div className="orders-table__symbol">{order.symbol || '—'}</div>
-                      {order.description ? (
-                        <div className="orders-table__description">{order.description}</div>
+                      {descriptionLabel ? (
+                        <div className="orders-table__description" title={descriptionTitle}>
+                          {descriptionLabel}
+                        </div>
                       ) : null}
                     </td>
                     <td className="orders-table__cell">
                       <span className={statusClass}>{statusLabel}</span>
                     </td>
                     <td className="orders-table__cell">{formatAction(order.action)}</td>
-                    <td className="orders-table__cell">{order.type || '—'}</td>
                     <td className="orders-table__cell orders-table__cell--numeric" title={priceTitle}>
                       {priceLabel}
                     </td>
-                    <td className="orders-table__cell">{formatTimeInForce(order.timeInForce)}</td>
+                    <td className="orders-table__cell">
+                      {timeInForceDisplay.title ? (
+                        <span title={timeInForceDisplay.title}>{timeInForceDisplay.label}</span>
+                      ) : (
+                        timeInForceDisplay.label
+                      )}
+                    </td>
                     <td className="orders-table__cell orders-table__cell--numeric" title={quantityTitle}>
                       {quantityLabel}
                     </td>
