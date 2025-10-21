@@ -1383,6 +1383,7 @@ textarea {
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
   text-align: right;
+  vertical-align: middle;
 }
 
 .target-proportions-table__input-group {

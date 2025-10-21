@@ -378,7 +378,7 @@ export default function TargetProportionsDialog({
                                     id={`target-proportion-${position.symbol}-hint`}
                                     className="target-proportions-table__hint"
                                   >
-                                    Current target: {existingTargetLabel}
+                                    {existingTargetLabel}
                                   </p>
                                 )}
                               </div>
