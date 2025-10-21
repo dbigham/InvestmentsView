@@ -1421,12 +1421,6 @@ textarea {
   color: var(--color-negative);
 }
 
-.target-proportions-table__hint {
-  margin: 0;
-  font-size: 11px;
-  color: var(--color-text-muted);
-}
-
 .target-proportions-dialog__empty {
   font-size: 13px;
   color: var(--color-text-secondary);
