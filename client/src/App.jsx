@@ -5552,9 +5552,11 @@ export default function App() {
       }
 
       try {
-        await Promise.all(
-          changes.map(({ accountKey, note }) => setAccountSymbolNotes(accountKey, symbol, note))
-        );
+        for (const { accountKey, note } of changes) {
+          // Save sequentially to avoid overwriting concurrent updates on the server
+          // where each request rewrites the full accounts configuration file.
+          await setAccountSymbolNotes(accountKey, symbol, note);
+        }
         setSymbolNotesEditor(null);
         setRefreshKey((value) => value + 1);
       } catch (error) {
