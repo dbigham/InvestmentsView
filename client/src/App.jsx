@@ -5281,8 +5281,11 @@ export default function App() {
       return !normalizedAccountId && !normalizedAccountNumber;
     });
 
+    const normalizedAccountKey = normalizedAccountId || normalizedAccountNumber || accountKeyRaw;
+
     setTargetProportionEditor({
       accountKey: accountKeyRaw,
+      normalizedAccountKey: normalizedAccountKey || null,
       accountLabel: accountLabel || accountKeyRaw,
       positions: relevantPositions,
       targetProportions: selectedAccountInfo.targetProportions || null,
@@ -5299,26 +5302,38 @@ export default function App() {
         return;
       }
       const accountKey = targetProportionEditor.accountKey;
+      const normalizedAccountKey =
+        (targetProportionEditor.normalizedAccountKey &&
+          String(targetProportionEditor.normalizedAccountKey).trim()) ||
+        null;
       const hasConfiguredTargets =
         nextProportions && typeof nextProportions === 'object' && Object.keys(nextProportions).length > 0;
       try {
         await setAccountTargetProportions(accountKey, nextProportions);
         setForcedTargetAccounts((previous) => {
-          if (!accountKey) {
+          const forcedKeySource = normalizedAccountKey || accountKey;
+          const forcedKeyString =
+            typeof forcedKeySource === 'string'
+              ? forcedKeySource
+              : forcedKeySource
+              ? String(forcedKeySource)
+              : '';
+          const forcedKey = forcedKeyString.trim();
+          if (!forcedKey) {
             return previous;
           }
           const next = new Set(previous);
           if (hasConfiguredTargets) {
-            if (next.has(accountKey)) {
+            if (next.has(forcedKey)) {
               return previous;
             }
-            next.add(accountKey);
+            next.add(forcedKey);
             return next;
           }
-          if (!next.has(accountKey)) {
+          if (!next.has(forcedKey)) {
             return previous;
           }
-          next.delete(accountKey);
+          next.delete(forcedKey);
           return next;
         });
         setTargetProportionEditor(null);
