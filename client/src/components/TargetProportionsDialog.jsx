@@ -335,7 +335,6 @@ export default function TargetProportionsDialog({
                       {normalizedPositions.map((position) => {
                         const inputValue = inputs[position.symbol] ?? '';
                         const currentShareLabel = formatPercentDisplay(position.portfolioShare);
-                        const existingTargetLabel = formatPercentDisplay(position.targetProportion);
                         const rowHasError = invalidSymbols.has(position.symbol);
                         return (
                           <tr key={position.symbol}>
@@ -364,22 +363,9 @@ export default function TargetProportionsDialog({
                                   onChange={(event) => handleInputChange(position.symbol, event.target.value)}
                                   onBlur={() => handleInputBlur(position.symbol)}
                                   aria-invalid={rowHasError}
-                                  aria-describedby={
-                                    position.targetProportion !== null
-                                      ? `target-proportion-${position.symbol}-hint`
-                                      : undefined
-                                  }
                                 />
                                 {rowHasError && (
                                   <p className="target-proportions-table__error">Enter a value between 0 and 1000.</p>
-                                )}
-                                {position.targetProportion !== null && (
-                                  <p
-                                    id={`target-proportion-${position.symbol}-hint`}
-                                    className="target-proportions-table__hint"
-                                  >
-                                    Current target: {existingTargetLabel}
-                                  </p>
                                 )}
                               </div>
                             </td>
