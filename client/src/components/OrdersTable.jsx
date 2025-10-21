@@ -151,25 +151,7 @@ function formatAccountLabel(order, accountsById) {
   return { label: displayName || '—', owner: null };
 }
 
-function buildRangeLabel(range) {
-  if (!range || typeof range !== 'object') {
-    return null;
-  }
-  const startLabel = range.start ? formatDate(range.start) : null;
-  const endLabel = range.end ? formatDate(range.end) : null;
-  if (startLabel && endLabel && startLabel !== endLabel) {
-    return `Showing orders from ${startLabel} to ${endLabel}`;
-  }
-  if (startLabel) {
-    return `Showing orders since ${startLabel}`;
-  }
-  if (endLabel) {
-    return `Showing orders through ${endLabel}`;
-  }
-  return null;
-}
-
-function OrdersTable({ orders, accountsById, showAccountColumn, range }) {
+function OrdersTable({ orders, accountsById, showAccountColumn }) {
   const sortedOrders = useMemo(() => {
     if (!Array.isArray(orders)) {
       return [];
@@ -193,12 +175,10 @@ function OrdersTable({ orders, accountsById, showAccountColumn, range }) {
       });
   }, [orders]);
 
-  const rangeLabel = useMemo(() => buildRangeLabel(range), [range]);
   const hasOrders = sortedOrders.length > 0;
 
   return (
     <section className="orders-panel" aria-label="Recent orders">
-      {rangeLabel ? <p className="orders-panel__range">{rangeLabel}</p> : null}
       <div className="orders-table__wrapper">
         {hasOrders ? (
           <table className="orders-table">
@@ -321,17 +301,12 @@ OrdersTable.propTypes = {
     PropTypes.object,
   ]),
   showAccountColumn: PropTypes.bool,
-  range: PropTypes.shape({
-    start: PropTypes.string,
-    end: PropTypes.string,
-  }),
 };
 
 OrdersTable.defaultProps = {
   orders: [],
   accountsById: null,
   showAccountColumn: false,
-  range: null,
 };
 
 export default OrdersTable;
