@@ -29,6 +29,7 @@ import DividendBreakdown from './components/DividendBreakdown';
 import TargetProportionsDialog from './components/TargetProportionsDialog';
 import PortfolioNews from './components/PortfolioNews';
 import SymbolNotesDialog from './components/SymbolNotesDialog';
+import PlanningContextDialog from './components/PlanningContextDialog';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -2864,6 +2865,7 @@ export default function App() {
   const [targetProportionEditor, setTargetProportionEditor] = useState(null);
   const [forcedTargetAccounts, setForcedTargetAccounts] = useState(() => new Set());
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
+  const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
@@ -5629,48 +5631,67 @@ export default function App() {
   );
 
   const handleSetPlanningContext = useCallback(() => {
-    if (selectedAccount === 'all') {
-      return;
-    }
-    if (typeof window === 'undefined') {
+    if (selectedAccount === 'all' || !selectedAccountInfo) {
       return;
     }
 
-    const defaultValue = typeof activePlanningContext === 'string' ? activePlanningContext : '';
-    const message =
-      'Describe how this account should be managed (use of funds, time horizon, risk appetite, etc.).\n\nLeave the field blank to clear the saved context.';
-    const nextValue = window.prompt(message, defaultValue);
-    if (nextValue === null) {
-      return;
-    }
+    const initialValue = typeof activePlanningContext === 'string' ? activePlanningContext : '';
+    const accountLabel = getAccountLabel(selectedAccountInfo) || 'Selected account';
 
-    const trimmed = nextValue.trim();
-
-    setAccountPlanningContexts((prev) => {
-      const previousStore = prev && typeof prev === 'object' ? prev : EMPTY_OBJECT;
-      const currentValue = typeof previousStore[selectedAccount] === 'string'
-        ? previousStore[selectedAccount]
-        : '';
-
-      if (!trimmed) {
-        if (!currentValue) {
-          return prev;
-        }
-        const { [selectedAccount]: _removed, ...rest } = previousStore;
-        return Object.keys(rest).length ? rest : EMPTY_OBJECT;
-      }
-
-      if (currentValue === trimmed) {
-        return prev;
-      }
-
-      return { ...previousStore, [selectedAccount]: trimmed };
+    setPlanningContextEditor({
+      accountKey: selectedAccount,
+      accountLabel,
+      initialValue,
     });
   }, [
-    selectedAccount,
     activePlanningContext,
-    setAccountPlanningContexts,
+    selectedAccount,
+    selectedAccountInfo,
+    setPlanningContextEditor,
   ]);
+
+  const handleClosePlanningContext = useCallback(() => {
+    setPlanningContextEditor(null);
+  }, [setPlanningContextEditor]);
+
+  const handleSavePlanningContext = useCallback(
+    async (accountKey, value) => {
+      if (!accountKey) {
+        setPlanningContextEditor(null);
+        return;
+      }
+
+      const trimmed = typeof value === 'string' ? value.trim() : '';
+
+      setAccountPlanningContexts((prev) => {
+        const previousStore = prev && typeof prev === 'object' ? prev : EMPTY_OBJECT;
+        const currentValue = typeof previousStore[accountKey] === 'string' ? previousStore[accountKey] : '';
+
+        if (!trimmed) {
+          if (!currentValue) {
+            return prev;
+          }
+          const { [accountKey]: _removed, ...rest } = previousStore;
+          return Object.keys(rest).length ? rest : EMPTY_OBJECT;
+        }
+
+        if (currentValue === trimmed) {
+          return prev;
+        }
+
+        return { ...previousStore, [accountKey]: trimmed };
+      });
+
+      setPlanningContextEditor(null);
+    },
+    [setAccountPlanningContexts, setPlanningContextEditor]
+  );
+
+  useEffect(() => {
+    if (selectedAccount === 'all') {
+      setPlanningContextEditor(null);
+    }
+  }, [selectedAccount, setPlanningContextEditor]);
 
   const handleEstimateFutureCagr = useCallback(async () => {
     openChatGpt();
@@ -6303,6 +6324,14 @@ export default function App() {
           targetProportions={targetProportionEditor.targetProportions}
           onClose={handleCloseTargetProportions}
           onSave={handleSaveTargetProportions}
+        />
+      )}
+      {planningContextEditor && (
+        <PlanningContextDialog
+          accountLabel={planningContextEditor.accountLabel}
+          initialValue={planningContextEditor.initialValue}
+          onClose={handleClosePlanningContext}
+          onSave={(value) => handleSavePlanningContext(planningContextEditor.accountKey, value)}
         />
       )}
       {symbolNotesEditor && (
