@@ -565,8 +565,8 @@ async function fetchPortfolioNewsFromOpenAi(params) {
       temperature: 0.3,
       max_output_tokens: 1100,
       tools: [{ type: 'web_search' }],
-      response_format: {
-        type: 'json_schema',
+      text: {
+        format: 'json_schema',
         json_schema: {
           name: 'portfolio_news',
           schema: {
