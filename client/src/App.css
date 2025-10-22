@@ -1386,7 +1386,11 @@ textarea {
   font-size: 13px;
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.target-proportions-table__target {
   vertical-align: middle;
 }
 

@@ -364,7 +364,7 @@ export default function TargetProportionsDialog({
                               </div>
                             </th>
                             <td className="target-proportions-table__metric">{currentShareLabel}</td>
-                            <td>
+                            <td className="target-proportions-table__target">
                               <div className="target-proportions-table__input-group">
                                 <input
                                   type="text"
