@@ -268,13 +268,13 @@ export async function getPortfolioNews(payload, options = {}) {
     try {
       const payloadData = await response.json();
       message = payloadData?.message || payloadData?.details || message;
-    } catch (_parseError) {
+    } catch {
       try {
         const text = await response.text();
         if (text && text.trim()) {
           message = text.trim();
         }
-      } catch (_readError) {
+      } catch {
         // Ignore read errors and fall back to the default message.
       }
     }

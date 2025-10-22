@@ -2699,6 +2699,58 @@ textarea {
   gap: 12px;
 }
 
+.orders-panel__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.orders-panel__input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.orders-panel__filter-input {
+  width: 100%;
+  padding: 10px 40px 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.orders-panel__filter-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.orders-panel__filter-input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+.orders-panel__clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.orders-panel__clear:hover,
+.orders-panel__clear:focus-visible {
+  color: var(--color-text-primary);
+}
+
 .news-panel {
   padding: 24px;
   display: flex;
@@ -2830,12 +2882,6 @@ textarea {
   font-size: 12px;
   color: var(--color-text-muted);
   margin: 0;
-}
-
-.orders-panel__range {
-  margin: 0 0 4px;
-  font-size: 12px;
-  color: var(--color-text-muted);
 }
 
 .orders-table__wrapper {

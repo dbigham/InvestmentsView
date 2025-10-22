@@ -172,7 +172,7 @@ function formatAccountLabel(order, accountsById) {
   return { label: displayName || '—', owner: null };
 }
 
-function OrdersTable({ orders, accountsById, showAccountColumn }) {
+function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) {
   const sortedOrders = useMemo(() => {
     if (!Array.isArray(orders)) {
       return [];
@@ -292,7 +292,7 @@ function OrdersTable({ orders, accountsById, showAccountColumn }) {
             </tbody>
           </table>
         ) : (
-          <div className="orders-table__empty">No orders found for this period.</div>
+          <div className="orders-table__empty">{emptyMessage}</div>
         )}
       </div>
     </section>
@@ -328,12 +328,14 @@ OrdersTable.propTypes = {
     PropTypes.object,
   ]),
   showAccountColumn: PropTypes.bool,
+  emptyMessage: PropTypes.string,
 };
 
 OrdersTable.defaultProps = {
   orders: [],
   accountsById: null,
   showAccountColumn: false,
+  emptyMessage: 'No orders found for this period.',
 };
 
 export default OrdersTable;

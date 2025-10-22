@@ -2210,7 +2210,8 @@ async function fetchBalances(login, accountId) {
 }
 
 const RECENT_ORDERS_LOOKBACK_DAYS = 90;
-const MAX_ORDER_HISTORY_PAGES = 5;
+const MAX_ORDER_HISTORY_PAGES = 20;
+const DEFAULT_ORDER_HISTORY_MONTHS = 12;
 
 async function fetchOrders(login, accountId, options = {}) {
   const now = new Date();
@@ -2221,6 +2222,8 @@ async function fetchOrders(login, accountId, options = {}) {
   const endTime =
     typeof options.endTime === 'string' && options.endTime ? options.endTime : now.toISOString();
   const stateFilter = typeof options.stateFilter === 'string' && options.stateFilter ? options.stateFilter : 'All';
+  const maxPagesOption = Number.isFinite(options.maxPages) ? options.maxPages : MAX_ORDER_HISTORY_PAGES;
+  const maxPages = Math.max(1, Math.min(Math.round(maxPagesOption), 500));
 
   const params = { stateFilter, startTime, endTime };
   let path = '/v1/accounts/' + accountId + '/orders';
@@ -2228,7 +2231,7 @@ async function fetchOrders(login, accountId, options = {}) {
   const orders = [];
   let page = 0;
 
-  while (path && page < MAX_ORDER_HISTORY_PAGES) {
+  while (path && page < maxPages) {
     page += 1;
     const data = await questradeRequest(login, path, requestOptions || {});
     const batch = Array.isArray(data?.orders) ? data.orders : [];
@@ -2244,6 +2247,137 @@ async function fetchOrders(login, accountId, options = {}) {
   }
 
   return orders;
+}
+
+async function fetchOrdersHistory(login, accountId, options = {}) {
+  const endDate =
+    options.endDate instanceof Date && !Number.isNaN(options.endDate.getTime())
+      ? options.endDate
+      : new Date();
+  const fallbackStart = addMonths(endDate, -DEFAULT_ORDER_HISTORY_MONTHS);
+  let startDate =
+    options.startDate instanceof Date && !Number.isNaN(options.startDate.getTime())
+      ? options.startDate
+      : fallbackStart;
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    startDate = new Date(endDate.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS);
+  }
+  if (startDate > endDate) {
+    startDate = new Date(endDate.getTime());
+  }
+
+  const stateFilter =
+    typeof options.stateFilter === 'string' && options.stateFilter.trim()
+      ? options.stateFilter.trim()
+      : 'All';
+  const windowDays = Math.max(1, Math.round(options.windowDays || RECENT_ORDERS_LOOKBACK_DAYS));
+  const maxPages = Number.isFinite(options.maxPages) ? options.maxPages : 100;
+
+  const ordersMap = new Map();
+  let cursor = new Date(startDate.getTime());
+  const endTimeMs = endDate.getTime();
+
+  while (cursor.getTime() <= endTimeMs) {
+    const windowEndMs = Math.min(cursor.getTime() + windowDays * DAY_IN_MS, endTimeMs);
+    const windowEnd = new Date(windowEndMs);
+    let batch = [];
+    try {
+      batch = await fetchOrders(login, accountId, {
+        startTime: cursor.toISOString(),
+        endTime: windowEnd.toISOString(),
+        stateFilter,
+        maxPages,
+      });
+    } catch (error) {
+      throw error;
+    }
+
+    if (Array.isArray(batch)) {
+      batch.forEach((order) => {
+        if (!order || typeof order !== 'object') {
+          return;
+        }
+        const identifier = resolveOrderIdentifier(order);
+        const existing = identifier && ordersMap.has(identifier) ? ordersMap.get(identifier) : null;
+        const chosen = pickMoreRecentOrder(existing, order);
+        if (identifier) {
+          ordersMap.set(identifier, chosen);
+        } else if (!existing) {
+          const fallbackKey = Symbol('order');
+          ordersMap.set(fallbackKey, chosen);
+        }
+      });
+    }
+
+    if (windowEndMs >= endTimeMs) {
+      break;
+    }
+    cursor = new Date(windowEndMs + 1000);
+  }
+
+  return Array.from(ordersMap.values()).filter(Boolean);
+}
+
+function resolveOrderIdentifier(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  if (order.orderId !== null && order.orderId !== undefined) {
+    return 'id:' + String(order.orderId);
+  }
+  if (order.id !== null && order.id !== undefined) {
+    return 'id:' + String(order.id);
+  }
+  const accountKey =
+    order.accountId != null
+      ? 'acct:' + String(order.accountId)
+      : order.accountNumber != null
+        ? 'acct:' + String(order.accountNumber)
+        : '';
+  const symbol = order.symbol != null ? String(order.symbol) : '';
+  const timestamp =
+    order.creationTime ||
+    order.createdTime ||
+    order.updateTime ||
+    order.updatedTime ||
+    order.time ||
+    '';
+  const side = order.side || order.action || '';
+  const quantity =
+    Number.isFinite(Number(order.totalQuantity))
+      ? 'qty:' + String(Number(order.totalQuantity))
+      : Number.isFinite(Number(order.openQuantity))
+        ? 'qty:' + String(Number(order.openQuantity))
+        : Number.isFinite(Number(order.filledQuantity))
+          ? 'qty:' + String(Number(order.filledQuantity))
+          : '';
+  const keyParts = [accountKey, symbol, timestamp, side, quantity].filter(Boolean);
+  if (!keyParts.length) {
+    return null;
+  }
+  return 'fallback:' + keyParts.join('|');
+}
+
+function pickMoreRecentOrder(existing, candidate) {
+  if (!existing) {
+    return candidate;
+  }
+  if (!candidate) {
+    return existing;
+  }
+  const existingTime = Date.parse(
+    existing.updateTime || existing.updatedTime || existing.creationTime || existing.createdTime || ''
+  );
+  const candidateTime = Date.parse(
+    candidate.updateTime || candidate.updatedTime || candidate.creationTime || candidate.createdTime || ''
+  );
+  if (!Number.isFinite(existingTime) && Number.isFinite(candidateTime)) {
+    return candidate;
+  }
+  if (Number.isFinite(existingTime) && Number.isFinite(candidateTime) && candidateTime > existingTime) {
+    return candidate;
+  }
+  return existing;
 }
 
 const DEBUG_TOTAL_PNL = process.env.DEBUG_TOTAL_PNL === 'true';
@@ -6361,7 +6495,7 @@ async function mapWithConcurrency(items, limit, mapper) {
     }
   }
 
-  const workers = [];
+const workers = [];
   for (let i = 0; i < concurrency; i += 1) {
     workers.push(worker());
   }
@@ -6369,6 +6503,7 @@ async function mapWithConcurrency(items, limit, mapper) {
   return results;
 }
 
+const MAX_ORDER_HISTORY_CONCURRENCY = 3;
 const MAX_AGGREGATE_FUNDING_CONCURRENCY = 4;
 
 function buildInvestmentModelPositions(positions, accountId) {
@@ -6669,6 +6804,69 @@ function decorateOrders(orders, symbolsMap, accountsMap) {
       gtdDate: normalizeString(order?.gtdDate) || null,
     };
   });
+}
+
+function dedupeOrdersByIdentifier(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) {
+    return [];
+  }
+
+  const uniqueMap = new Map();
+  const fallback = [];
+
+  orders.forEach(function (order) {
+    if (!order || typeof order !== 'object') {
+      return;
+    }
+    const identifier = resolveOrderIdentifier(order);
+    if (identifier) {
+      const existing = uniqueMap.get(identifier) || null;
+      const chosen = pickMoreRecentOrder(existing, order) || order;
+      uniqueMap.set(identifier, chosen);
+    } else {
+      fallback.push(order);
+    }
+  });
+
+  const deduped = Array.from(uniqueMap.values());
+  if (fallback.length === 0) {
+    return deduped;
+  }
+
+  const fallbackMap = new Map();
+  fallback.forEach(function (order, index) {
+    if (!order || typeof order !== 'object') {
+      return;
+    }
+    const accountKey =
+      order.accountId != null
+        ? 'acct:' + String(order.accountId)
+        : order.accountNumber != null
+          ? 'acct:' + String(order.accountNumber)
+          : 'acct:' + index;
+    const symbol = order.symbol != null ? String(order.symbol) : '';
+    const timestamp =
+      order.creationTime || order.createdTime || order.updateTime || order.updatedTime || String(index);
+    const side = order.side || order.action || '';
+    const quantityValue =
+      Number.isFinite(Number(order.totalQuantity))
+        ? 'qty:' + String(Number(order.totalQuantity))
+        : Number.isFinite(Number(order.openQuantity))
+          ? 'qty:' + String(Number(order.openQuantity))
+          : Number.isFinite(Number(order.filledQuantity))
+            ? 'qty:' + String(Number(order.filledQuantity))
+            : '';
+    const fallbackKey = ['fb', accountKey, symbol, timestamp, side, quantityValue].filter(Boolean).join('|');
+    const existing = fallbackMap.get(fallbackKey) || null;
+    const chosen = pickMoreRecentOrder(existing, order) || order;
+    fallbackMap.set(fallbackKey, chosen);
+  });
+
+  fallbackMap.forEach(function (order) {
+    deduped.push(order);
+  });
+
+  return deduped;
 }
 
 function toFiniteNumber(value) {
@@ -7461,33 +7659,10 @@ app.get('/api/summary', async function (req, res) {
         return fetchBalances(context.login, context.account.number);
       })
     );
-    const orderWindowEnd = new Date();
-    const orderWindowStart = new Date(orderWindowEnd.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS);
-    const orderWindowStartIso = orderWindowStart.toISOString();
-    const orderWindowEndIso = orderWindowEnd.toISOString();
-    const ordersPromise = Promise.all(
-      selectedContexts.map(async function (context) {
-        try {
-          return await fetchOrders(context.login, context.account.number, {
-            startTime: orderWindowStartIso,
-            endTime: orderWindowEndIso,
-            stateFilter: 'All',
-          });
-        } catch (ordersError) {
-          const message = ordersError && ordersError.message ? ordersError.message : String(ordersError);
-          console.warn(
-            'Failed to fetch orders for account ' + context.account.id + ':',
-            message
-          );
-          return [];
-        }
-      })
-    );
 
-    const [positionsResults, balancesResults, ordersResults] = await Promise.all([
+    const [positionsResults, balancesResults] = await Promise.all([
       positionsPromise,
       balancesPromise,
-      ordersPromise,
     ]);
     const perAccountCombinedBalances = {};
     selectedContexts.forEach(function (context, index) {
@@ -7496,6 +7671,25 @@ app.get('/api/summary', async function (req, res) {
         perAccountCombinedBalances[context.account.id] = summary;
       }
     });
+
+    const accountActivityContextCache = new Map();
+
+    async function ensureAccountActivityContext(context) {
+      if (!context || !context.account || !context.account.id) {
+        return null;
+      }
+      const accountId = context.account.id;
+      if (!accountActivityContextCache.has(accountId)) {
+        const contextPromise = buildAccountActivityContext(context.login, context.account).catch(
+          (error) => {
+            accountActivityContextCache.delete(accountId);
+            throw error;
+          }
+        );
+        accountActivityContextCache.set(accountId, contextPromise);
+      }
+      return accountActivityContextCache.get(accountId);
+    }
     const flattenedPositions = positionsResults
       .map(function (positions, index) {
         const context = selectedContexts[index];
@@ -7508,12 +7702,82 @@ app.get('/api/summary', async function (req, res) {
         });
       })
       .flat();
-    const flattenedOrders = ordersResults
-      .map(function (orders, index) {
-        const context = selectedContexts[index];
-        if (!Array.isArray(orders)) {
+
+    const orderFetchResults = selectedContexts.length
+      ? await mapWithConcurrency(
+          selectedContexts,
+          Math.min(MAX_ORDER_HISTORY_CONCURRENCY, selectedContexts.length),
+          async function (context) {
+            let activityContext = null;
+            try {
+              activityContext = await ensureAccountActivityContext(context);
+            } catch (activityError) {
+              const activityMessage =
+                activityError && activityError.message ? activityError.message : String(activityError);
+              console.warn(
+                'Failed to prepare activity history for order lookup for account ' + context.account.id + ':',
+                activityMessage
+              );
+            }
+
+            const now = new Date();
+            let historyStart = null;
+            if (
+              activityContext &&
+              activityContext.crawlStart instanceof Date &&
+              !Number.isNaN(activityContext.crawlStart.getTime())
+            ) {
+              historyStart = activityContext.crawlStart;
+            } else if (
+              activityContext &&
+              activityContext.earliestFunding instanceof Date &&
+              !Number.isNaN(activityContext.earliestFunding.getTime())
+            ) {
+              historyStart = activityContext.earliestFunding;
+            }
+            if (!(historyStart instanceof Date) || Number.isNaN(historyStart.getTime())) {
+              historyStart = addMonths(now, -DEFAULT_ORDER_HISTORY_MONTHS);
+            }
+            if (!(historyStart instanceof Date) || Number.isNaN(historyStart.getTime())) {
+              historyStart = new Date(now.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS);
+            }
+            const normalizedStart = clampDate(historyStart, MIN_ACTIVITY_DATE) || historyStart || now;
+
+            let orders = [];
+            try {
+              orders = await fetchOrdersHistory(context.login, context.account.number, {
+                startDate: normalizedStart,
+                endDate: now,
+                stateFilter: 'All',
+                maxPages: 200,
+              });
+            } catch (ordersError) {
+              const message = ordersError && ordersError.message ? ordersError.message : String(ordersError);
+              console.warn(
+                'Failed to fetch orders for account ' + context.account.id + ':',
+                message
+              );
+              orders = [];
+            }
+
+            return {
+              context,
+              orders,
+              start: normalizedStart instanceof Date && !Number.isNaN(normalizedStart.getTime())
+                ? normalizedStart.toISOString()
+                : null,
+              end: now.toISOString(),
+            };
+          }
+        )
+      : [];
+
+    const flattenedOrders = orderFetchResults
+      .map(function (result) {
+        if (!result || !result.context || !Array.isArray(result.orders)) {
           return [];
         }
+        const { context, orders } = result;
         return orders.map(function (order) {
           return Object.assign({}, order, {
             accountId: context.account.id,
@@ -7524,6 +7788,41 @@ app.get('/api/summary', async function (req, res) {
       })
       .flat();
 
+    let orderWindowStartIso = null;
+    let orderWindowEndIso = new Date().toISOString();
+
+    orderFetchResults.forEach(function (result) {
+      if (!result) {
+        return;
+      }
+      if (result.start && (!orderWindowStartIso || result.start < orderWindowStartIso)) {
+        orderWindowStartIso = result.start;
+      }
+      if (result.end && result.end > orderWindowEndIso) {
+        orderWindowEndIso = result.end;
+      }
+    });
+
+    const dedupedOrders = dedupeOrdersByIdentifier(flattenedOrders);
+
+    dedupedOrders.forEach(function (order) {
+      if (!order || typeof order !== 'object') {
+        return;
+      }
+      const creation = typeof order.creationTime === 'string' ? order.creationTime : null;
+      const update = typeof order.updateTime === 'string' ? order.updateTime : null;
+      if (creation && (!orderWindowStartIso || creation < orderWindowStartIso)) {
+        orderWindowStartIso = creation;
+      }
+      if (update && update > orderWindowEndIso) {
+        orderWindowEndIso = update;
+      }
+    });
+
+    if (!orderWindowStartIso) {
+      orderWindowStartIso = orderWindowEndIso;
+    }
+
     const symbolIdsByLogin = new Map();
     flattenedPositions.forEach(function (position) {
       if (!position.symbolId) {
@@ -7533,7 +7832,7 @@ app.get('/api/summary', async function (req, res) {
       loginBucket.add(position.symbolId);
       symbolIdsByLogin.set(position.loginId, loginBucket);
     });
-    flattenedOrders.forEach(function (order) {
+    dedupedOrders.forEach(function (order) {
       if (!order || !order.symbolId) {
         return;
       }
@@ -7559,7 +7858,7 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
-    const decoratedOrders = decorateOrders(flattenedOrders, symbolsMap, accountsMap);
+    const decoratedOrders = decorateOrders(dedupedOrders, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
@@ -7615,24 +7914,6 @@ app.get('/api/summary', async function (req, res) {
 
     const accountFundingSummaries = {};
     const accountDividendSummaries = {};
-    const accountActivityContextCache = new Map();
-
-    async function ensureAccountActivityContext(context) {
-      if (!context || !context.account || !context.account.id) {
-        return null;
-      }
-      const accountId = context.account.id;
-      if (!accountActivityContextCache.has(accountId)) {
-        const contextPromise = buildAccountActivityContext(context.login, context.account).catch(
-          (error) => {
-            accountActivityContextCache.delete(accountId);
-            throw error;
-          }
-        );
-        accountActivityContextCache.set(accountId, contextPromise);
-      }
-      return accountActivityContextCache.get(accountId);
-    }
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
       let sharedActivityContext = null;
