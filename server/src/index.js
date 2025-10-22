@@ -21,6 +21,7 @@ const {
   updateAccountLastRebalance,
   updateAccountTargetProportions,
   updateAccountSymbolNote,
+  updateAccountPlanningContext,
   extractSymbolSettingsFromOverride,
 } = require('./accountNames');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
@@ -1416,6 +1417,17 @@ function resolveAccountOverrideValue(overrides, account, login) {
   return null;
 }
 
+function normalizePlanningContext(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+}
+
 function applyAccountSettingsOverrideToAccount(target, override) {
   if (!target || override === undefined) {
     return;
@@ -1539,6 +1551,15 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     target.symbolNotes = resolvedSymbolNotes;
   } else if (Object.prototype.hasOwnProperty.call(target, 'symbolNotes')) {
     delete target.symbolNotes;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'planningContext')) {
+    const normalizedContext = normalizePlanningContext(override.planningContext);
+    if (normalizedContext) {
+      target.planningContext = normalizedContext;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'planningContext')) {
+      delete target.planningContext;
+    }
   }
 }
 
@@ -7212,6 +7233,41 @@ app.post('/api/accounts/:accountKey/symbol-notes', function (req, res) {
   }
 });
 
+app.post('/api/accounts/:accountKey/planning-context', function (req, res) {
+  const rawAccountKey = typeof req.params.accountKey === 'string' ? req.params.accountKey : '';
+  const accountKey = rawAccountKey.trim();
+  if (!accountKey) {
+    return res.status(400).json({ message: 'Account identifier is required' });
+  }
+
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const contextValue = Object.prototype.hasOwnProperty.call(payload, 'planningContext')
+    ? payload.planningContext
+    : payload.context ?? payload.note ?? payload.value ?? payload.text ?? null;
+
+  try {
+    const result = updateAccountPlanningContext(accountKey, contextValue);
+    return res.json({ planningContext: result.planningContext, updated: result.updated });
+  } catch (error) {
+    if (error && error.code === 'INVALID_ACCOUNT') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'NOT_FOUND') {
+      return res.status(404).json({ message: 'Account configuration not found' });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to update planning context:', error);
+    return res.status(500).json({ message: 'Failed to update planning context' });
+  }
+});
+
 app.get('/api/summary', async function (req, res) {
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
@@ -8056,6 +8112,10 @@ app.get('/api/summary', async function (req, res) {
             : null,
         targetProportions: targetProportionMap,
         symbolNotes: symbolNotesMap,
+        planningContext:
+          typeof account.planningContext === 'string' && account.planningContext.trim()
+            ? account.planningContext.trim()
+            : null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });

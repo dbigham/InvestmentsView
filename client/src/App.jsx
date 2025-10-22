@@ -15,6 +15,7 @@ import {
   setAccountTargetProportions,
   getPortfolioNews,
   setAccountSymbolNotes,
+  setAccountPlanningContext,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -2855,10 +2856,6 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
-  const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
-    'accountPlanningContexts',
-    EMPTY_OBJECT
-  );
   const [showPeople, setShowPeople] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
@@ -3036,16 +3033,29 @@ export default function App() {
     return selectedAccountState;
   }, [activeAccountId, filteredAccountIds, selectedAccountState]);
 
+  const selectedAccountInfo = useMemo(() => {
+    if (!selectedAccount || selectedAccount === 'all') {
+      return null;
+    }
+    return (
+      accounts.find((account) => {
+        if (!account) {
+          return false;
+        }
+        const accountId = typeof account.id === 'string' ? account.id : null;
+        const accountNumber = typeof account.number === 'string' ? account.number : null;
+        return accountId === selectedAccount || accountNumber === selectedAccount;
+      }) || null
+    );
+  }, [accounts, selectedAccount]);
+
   const activePlanningContext = useMemo(() => {
     if (selectedAccount === 'all') {
       return '';
     }
-    if (!accountPlanningContexts || typeof accountPlanningContexts !== 'object') {
-      return '';
-    }
-    const stored = accountPlanningContexts[selectedAccount];
+    const stored = selectedAccountInfo?.planningContext;
     return typeof stored === 'string' ? stored : '';
-  }, [accountPlanningContexts, selectedAccount]);
+  }, [selectedAccount, selectedAccountInfo]);
 
   useEffect(() => {
     if (activeAccountId !== 'default') {
@@ -3164,21 +3174,6 @@ export default function App() {
     [selectedAccount, accounts, setSelectedAccountState, setActiveAccountId, setSelectedRebalanceReminder]
   );
 
-  const selectedAccountInfo = useMemo(() => {
-    if (!selectedAccount || selectedAccount === 'all') {
-      return null;
-    }
-    return (
-      accounts.find((account) => {
-        if (!account) {
-          return false;
-        }
-        const accountId = typeof account.id === 'string' ? account.id : null;
-        const accountNumber = typeof account.number === 'string' ? account.number : null;
-        return accountId === selectedAccount || accountNumber === selectedAccount;
-      }) || null
-    );
-  }, [accounts, selectedAccount]);
   const selectedAccountKey = useMemo(() => {
     if (selectedAccount === 'all') {
       return 'all';
@@ -5662,29 +5657,26 @@ export default function App() {
       }
 
       const trimmed = typeof value === 'string' ? value.trim() : '';
+      const existing = typeof activePlanningContext === 'string' ? activePlanningContext.trim() : '';
+      if (trimmed === existing) {
+        setPlanningContextEditor(null);
+        return;
+      }
 
-      setAccountPlanningContexts((prev) => {
-        const previousStore = prev && typeof prev === 'object' ? prev : EMPTY_OBJECT;
-        const currentValue = typeof previousStore[accountKey] === 'string' ? previousStore[accountKey] : '';
-
-        if (!trimmed) {
-          if (!currentValue) {
-            return prev;
-          }
-          const { [accountKey]: _removed, ...rest } = previousStore;
-          return Object.keys(rest).length ? rest : EMPTY_OBJECT;
-        }
-
-        if (currentValue === trimmed) {
-          return prev;
-        }
-
-        return { ...previousStore, [accountKey]: trimmed };
-      });
+      try {
+        await setAccountPlanningContext(accountKey, trimmed);
+      } catch (error) {
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : 'Failed to save planning context.';
+        throw new Error(message);
+      }
 
       setPlanningContextEditor(null);
+      setRefreshKey((value) => value + 1);
     },
-    [setAccountPlanningContexts, setPlanningContextEditor]
+    [activePlanningContext, setPlanningContextEditor, setRefreshKey]
   );
 
   useEffect(() => {
