@@ -91,11 +91,15 @@ textarea {
 }
 
 .summary-main {
-  max-width: 1360px;
+  max-width: 1280px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.summary-main--compact {
+  max-width: 1120px;
 }
 
 .page-header {
@@ -1405,9 +1409,9 @@ textarea {
 }
 
 .target-proportions-table__input:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
+  outline: none;
   border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(56, 155, 60, 0.24);
 }
 
 .target-proportions-table__input--error {
