@@ -551,7 +551,15 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                     >
                       <div className="invest-plan-conversion__header">
                         <div className="invest-plan-symbol">
-                          <span className="invest-plan-symbol__ticker">{conversion.symbol}</span>
+                          <button
+                            type="button"
+                            className="invest-plan-symbol__ticker"
+                            onClick={() => copyValue(conversion.symbol, `${conversion.symbol} symbol`)}
+                            title="Copy symbol"
+                            aria-label={`Copy ${conversion.symbol} symbol`}
+                          >
+                            {conversion.symbol}
+                          </button>
                           {conversion.displayDescription && (
                             <span
                               className="invest-plan-symbol__name"
@@ -700,7 +708,15 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                           </td>
                           <th scope="row">
                             <div className="invest-plan-symbol">
-                              <span className="invest-plan-symbol__ticker">{purchase.symbol}</span>
+                              <button
+                                type="button"
+                                className="invest-plan-symbol__ticker"
+                                onClick={() => copyValue(purchase.symbol, `${purchase.symbol} symbol`)}
+                                title="Copy symbol"
+                                aria-label={`Copy ${purchase.symbol} symbol`}
+                              >
+                                {purchase.symbol}
+                              </button>
                               {purchase.displayDescription && (
                                 <span
                                   className="invest-plan-symbol__name"
