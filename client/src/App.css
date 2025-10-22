@@ -1362,7 +1362,14 @@ textarea {
   border-top: 1px solid var(--color-border);
   font-size: 13px;
   color: var(--color-text-primary);
+}
+
+.target-proportions-table tbody th {
   vertical-align: top;
+}
+
+.target-proportions-table tbody td {
+  vertical-align: middle;
 }
 
 .target-proportions-table__symbol {
