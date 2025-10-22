@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { formatDateTime, formatNumber } from '../utils/formatters';
+import { buildQuoteUrl, openQuote } from '../utils/quotes';
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -198,6 +199,37 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
 
   const hasOrders = sortedOrders.length > 0;
 
+  const handleRowNavigation = useCallback((event, symbol) => {
+    if (!symbol) {
+      return;
+    }
+
+    const element = event.target;
+    if (element && typeof element.closest === 'function' && element.closest('button, a')) {
+      return;
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      const questradeUrl = buildQuoteUrl(symbol, 'questrade');
+      if (!questradeUrl) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openQuote(symbol, 'questrade');
+      return;
+    }
+
+    const provider = event.altKey ? 'yahoo' : 'google';
+    const url = buildQuoteUrl(symbol, provider);
+    if (!url) {
+      return;
+    }
+
+    event.stopPropagation();
+    openQuote(symbol, provider);
+  }, []);
+
   return (
     <section className="orders-panel" aria-label="Recent orders">
       <div className="orders-table__wrapper">
@@ -254,7 +286,11 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
                 const timeLabel = order.creationTime || order.updateTime ? formatDateTime(order.creationTime || order.updateTime) : '—';
 
                 return (
-                  <tr key={rowKey}>
+                  <tr
+                    key={rowKey}
+                    className="orders-table__row orders-table__row--clickable"
+                    onClick={(event) => handleRowNavigation(event, order.symbol)}
+                  >
                     {showAccountColumn ? (
                       <td className="orders-table__cell">
                         <div className="orders-table__account-label">{accountCell.label}</div>

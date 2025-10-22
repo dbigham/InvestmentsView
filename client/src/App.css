@@ -2950,6 +2950,10 @@ textarea {
   background: rgba(56, 155, 60, 0.05);
 }
 
+.orders-table__row--clickable {
+  cursor: pointer;
+}
+
 .orders-table__cell--numeric {
   text-align: right;
 }
