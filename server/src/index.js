@@ -558,56 +558,81 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   }
 
   const trimmedLabel = typeof accountLabel === 'string' ? accountLabel.trim() : '';
-  let response;
-  try {
-    response = await client.responses.create({
-      model: OPENAI_NEWS_MODEL,
-      temperature: 0.3,
-      max_output_tokens: 1100,
-      tools: [{ type: 'web_search' }],
-      text: {
-        format: 'json_schema',
-        json_schema: {
-          name: 'portfolio_news',
-          schema: {
+  const structuredOutputFormat = {
+    type: 'json_schema',
+    name: 'portfolio_news',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        articles: {
+          type: 'array',
+          maxItems: 8,
+          items: {
             type: 'object',
             additionalProperties: false,
+            required: ['title', 'url'],
             properties: {
-              articles: {
-                type: 'array',
-                maxItems: 8,
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['title', 'url'],
-                  properties: {
-                    title: { type: 'string' },
-                    url: { type: 'string' },
-                    summary: { type: 'string' },
-                    source: { type: 'string' },
-                    published_at: { type: 'string' },
-                    publishedAt: { type: 'string' },
-                  },
-                },
-              },
-              disclaimer: { type: 'string' },
+              title: { type: 'string' },
+              url: { type: 'string' },
+              summary: { type: 'string' },
+              source: { type: 'string' },
+              published_at: { type: 'string' },
+              publishedAt: { type: 'string' },
             },
-            required: ['articles'],
           },
         },
+        disclaimer: { type: 'string' },
       },
-      instructions:
-        'You are a portfolio research assistant. Use the web_search tool when helpful to gather the most recent, reputable news articles or posts about the provided securities. Respond with concise JSON summaries.',
-      input: [
-        `Account label: ${trimmedLabel || 'Portfolio'}`,
-        `Stock symbols: ${symbols.join(', ')}`,
-        'Task: Find up to eight relevant and timely news articles or notable posts published within the past 14 days that mention these tickers. Prioritize reputable financial publications, company announcements, and influential analysis.',
-        'For each article provide the title, a direct URL, the publisher/source when available, the publication date (ISO 8601 preferred), and a concise summary under 60 words.',
-      ].join('\n'),
-    });
-  } catch (error) {
-    if (error && typeof error === 'object') {
-      const status = error.status || error.code;
+      required: ['articles'],
+    },
+  };
+
+  const baseRequest = {
+    model: OPENAI_NEWS_MODEL,
+    temperature: 0.3,
+    max_output_tokens: 1100,
+    tools: [{ type: 'web_search' }],
+    instructions:
+      'You are a portfolio research assistant. Use the web_search tool when helpful to gather the most recent, reputable news articles or posts about the provided securities. Respond with concise JSON summaries.',
+    input: [
+      `Account label: ${trimmedLabel || 'Portfolio'}`,
+      `Stock symbols: ${symbols.join(', ')}`,
+      'Task: Find up to eight relevant and timely news articles or notable posts published within the past 14 days that mention these tickers. Prioritize reputable financial publications, company announcements, and influential analysis.',
+      'For each article provide the title, a direct URL, the publisher/source when available, the publication date (ISO 8601 preferred), and a concise summary under 60 words.',
+    ].join('\n'),
+  };
+
+  function shouldRetryWithLegacyResponseFormat(requestError) {
+    if (!requestError || typeof requestError !== 'object') {
+      return false;
+    }
+    const statusCode = Number(requestError.status || requestError.statusCode || requestError.code || 0);
+    if (statusCode && statusCode !== 400) {
+      return false;
+    }
+    const messageParts = [];
+    if (typeof requestError.message === 'string') {
+      messageParts.push(requestError.message);
+    }
+    if (requestError.error && typeof requestError.error === 'object') {
+      if (typeof requestError.error.message === 'string') {
+        messageParts.push(requestError.error.message);
+      }
+      if (typeof requestError.error.param === 'string') {
+        messageParts.push(requestError.error.param);
+      }
+    }
+    if (!messageParts.length) {
+      return false;
+    }
+    const normalizedMessage = messageParts.join(' ').toLowerCase();
+    return normalizedMessage.includes('text.format') || normalizedMessage.includes("text format") || normalizedMessage.includes("unknown parameter: 'text'");
+  }
+
+  function rethrowAsOpenAiError(requestError) {
+    if (requestError && typeof requestError === 'object') {
+      const status = requestError.status || requestError.code;
       if (status === 401 || status === 403) {
         const wrapped = new Error('OpenAI request was not authorized');
         wrapped.code = 'OPENAI_UNAUTHORIZED';
@@ -619,7 +644,31 @@ async function fetchPortfolioNewsFromOpenAi(params) {
         throw wrapped;
       }
     }
-    throw error instanceof Error ? error : new Error(String(error));
+    throw requestError instanceof Error ? requestError : new Error(String(requestError));
+  }
+
+  let response;
+  try {
+    response = await client.responses.create({
+      ...baseRequest,
+      text: { format: structuredOutputFormat },
+    });
+  } catch (error) {
+    if (shouldRetryWithLegacyResponseFormat(error)) {
+      try {
+        response = await client.responses.create({
+          ...baseRequest,
+          response_format: {
+            type: 'json_schema',
+            json_schema: structuredOutputFormat,
+          },
+        });
+      } catch (legacyError) {
+        rethrowAsOpenAiError(legacyError);
+      }
+    } else {
+      rethrowAsOpenAiError(error);
+    }
   }
 
   const outputText = extractOpenAiResponseText(response);
