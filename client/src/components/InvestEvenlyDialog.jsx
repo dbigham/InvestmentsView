@@ -399,8 +399,8 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
     return Number.isFinite(total) && total > 0 ? total : null;
   }, [plan?.targetProportions]);
 
-  const useTargetProportions = Boolean(plan?.usingTargetProportions);
   const hasTargetProportions = targetProportionCount > 0;
+  const useTargetProportions = hasTargetProportions && plan?.usingTargetProportions !== false;
   const canUseTargetProportions = hasTargetProportions && typeof onAdjustPlan === 'function';
   const configuredTargetTotalLabel = Number.isFinite(configuredTargetTotal)
     ? formatTargetPercentValue(configuredTargetTotal)
