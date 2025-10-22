@@ -2953,7 +2953,7 @@ textarea {
 .positions-table__row,
 .positions-table__row--head {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 120px 110px;
+  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 108px 110px;
   gap: 8px;
   align-items: center;
   padding: 14px 20px;
@@ -2961,7 +2961,7 @@ textarea {
 
 .positions-table--no-target .positions-table__row,
 .positions-table--no-target .positions-table__row--head {
-  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 120px;
+  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 108px;
 }
 
 .positions-table__row--head {
@@ -3219,7 +3219,12 @@ textarea {
 @media (max-width: 1100px) {
   .positions-table__row,
   .positions-table__row--head {
-    grid-template-columns: minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 110px 104px;
+    grid-template-columns: minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 100px 104px;
+  }
+
+  .positions-table--no-target .positions-table__row,
+  .positions-table--no-target .positions-table__row--head {
+    grid-template-columns: minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 100px;
   }
 }
 
