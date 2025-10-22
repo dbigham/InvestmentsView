@@ -93,6 +93,18 @@ function buildSymbolNotesUrl(accountKey) {
   return url.toString();
 }
 
+function buildPlanningContextUrl(accountKey) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+  const encodedKey = encodeURIComponent(trimmedKey);
+  const path = `/api/accounts/${encodedKey}/planning-context`;
+  const url = new URL(path, base);
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -368,6 +380,43 @@ export async function setAccountSymbolNotes(accountKey, symbol, notes) {
 
   if (!response.ok) {
     let message = 'Failed to update symbol notes';
+    try {
+      const data = await response.json();
+      message = data?.message || data?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function setAccountPlanningContext(accountKey, planningContext) {
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+
+  const payload = {
+    planningContext: typeof planningContext === 'string' ? planningContext : '',
+  };
+
+  const response = await fetch(buildPlanningContextUrl(trimmedKey), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Failed to update planning context';
     try {
       const data = await response.json();
       message = data?.message || data?.details || message;
