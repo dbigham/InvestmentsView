@@ -14,6 +14,7 @@
   --color-divider: #edf1f7;
   --color-accent: #389B3C;
   --color-accent-soft: #E6F3E7;
+  --color-focus-outline: #2563eb;
   --color-negative: #d04b4b;
   --color-negative-soft: #fdecee;
   --color-neutral-soft: #eef2f7;
@@ -1872,6 +1873,23 @@ textarea {
   font-size: 14px;
   letter-spacing: 0.02em;
   color: var(--color-text-primary);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.invest-plan-symbol__ticker:hover,
+.invest-plan-symbol__ticker:focus-visible {
+  text-decoration: underline;
+}
+
+.invest-plan-symbol__ticker:focus-visible {
+  outline: 2px solid var(--color-focus-outline);
+  outline-offset: 2px;
 }
 
 .invest-plan-symbol__name {
