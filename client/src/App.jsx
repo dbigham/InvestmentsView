@@ -44,6 +44,17 @@ const MAX_NEWS_SYMBOLS = 24;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+const DIVIDEND_TIMEFRAME_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: '1y', label: 'Last year' },
+  { value: '6m', label: 'Last 6 months' },
+  { value: '1m', label: 'Last month' },
+  { value: '1w', label: 'Last week' },
+  { value: '1d', label: 'Last day' },
+];
+
+const DEFAULT_DIVIDEND_TIMEFRAME = DIVIDEND_TIMEFRAME_OPTIONS[0].value;
+
 function parseDateOnly(value) {
   if (typeof value !== 'string') {
     return null;
@@ -498,6 +509,31 @@ function createEmptyDividendSummary() {
   };
 }
 
+function resolveDividendSummaryForTimeframe(summary, timeframeKey) {
+  if (!summary || typeof summary !== 'object') {
+    return null;
+  }
+  const normalizedKey = typeof timeframeKey === 'string' && timeframeKey ? timeframeKey : 'all';
+  if (normalizedKey === 'all') {
+    return summary;
+  }
+  const map =
+    summary.timeframes && typeof summary.timeframes === 'object' && !Array.isArray(summary.timeframes)
+      ? summary.timeframes
+      : null;
+  if (map) {
+    const match = map[normalizedKey];
+    if (match && typeof match === 'object') {
+      return match;
+    }
+    const fallback = map.all;
+    if (fallback && typeof fallback === 'object') {
+      return fallback;
+    }
+  }
+  return summary;
+}
+
 function parseDateLike(value) {
   if (!value) {
     return null;
@@ -518,7 +554,7 @@ function parseDateLike(value) {
   return null;
 }
 
-function aggregateDividendSummaries(dividendsByAccount, accountIds) {
+function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey = 'all') {
   if (!dividendsByAccount || typeof dividendsByAccount !== 'object') {
     return createEmptyDividendSummary();
   }
@@ -561,7 +597,8 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds) {
   };
 
   normalizedIds.forEach((accountId) => {
-    const summary = dividendsByAccount[accountId];
+    const container = dividendsByAccount[accountId];
+    const summary = resolveDividendSummaryForTimeframe(container, timeframeKey);
     if (!summary || typeof summary !== 'object') {
       return;
     }
@@ -2857,7 +2894,8 @@ export default function App() {
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
   const [ordersFilter, setOrdersFilter] = useState('');
-  const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
+  const [dividendTimeframe, setDividendTimeframe] = useState(DEFAULT_DIVIDEND_TIMEFRAME);
+  const [_accountPlanningContexts, _setAccountPlanningContexts] = usePersistentState(
     'accountPlanningContexts',
     EMPTY_OBJECT
   );
@@ -3325,6 +3363,13 @@ export default function App() {
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const rawOrders = useMemo(() => (Array.isArray(data?.orders) ? data.orders : []), [data?.orders]);
   const ordersFilterInputId = useId();
+  const dividendTimeframeSelectId = useId();
+  const normalizedDividendTimeframe = useMemo(() => {
+    if (DIVIDEND_TIMEFRAME_OPTIONS.some((option) => option.value === dividendTimeframe)) {
+      return dividendTimeframe;
+    }
+    return DEFAULT_DIVIDEND_TIMEFRAME;
+  }, [dividendTimeframe]);
   const balances = data?.balances || null;
   const normalizedOrdersFilter = typeof ordersFilter === 'string' ? ordersFilter.trim() : '';
   const ordersFilterQuery = normalizedOrdersFilter.toLowerCase();
@@ -3491,17 +3536,34 @@ export default function App() {
   }, [selectedAccount, accountFunding, filteredAccountIds, selectedAccountInfo]);
   const selectedAccountDividends = useMemo(() => {
     if (selectedAccount === 'all') {
-      return aggregateDividendSummaries(accountDividends, filteredAccountIds);
+      return aggregateDividendSummaries(
+        accountDividends,
+        filteredAccountIds,
+        normalizedDividendTimeframe
+      );
     }
     if (!selectedAccountInfo) {
       return null;
     }
     const entry = accountDividends[selectedAccountInfo.id];
+    const resolvedSummary = resolveDividendSummaryForTimeframe(
+      entry,
+      normalizedDividendTimeframe
+    );
+    if (resolvedSummary && typeof resolvedSummary === 'object') {
+      return resolvedSummary;
+    }
     if (entry && typeof entry === 'object') {
-      return entry;
+      return createEmptyDividendSummary();
     }
     return createEmptyDividendSummary();
-  }, [selectedAccount, selectedAccountInfo, accountDividends, filteredAccountIds]);
+  }, [
+    selectedAccount,
+    selectedAccountInfo,
+    accountDividends,
+    filteredAccountIds,
+    normalizedDividendTimeframe,
+  ]);
   const hasDividendSummary = Boolean(selectedAccountDividends);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
   const showOrdersPanel = portfolioViewTab === 'orders';
@@ -6326,6 +6388,32 @@ export default function App() {
                 aria-labelledby={dividendsTabId}
                 hidden={!showDividendsPanel}
               >
+                <div className="dividends-panel__controls">
+                  <label className="dividends-panel__label" htmlFor={dividendTimeframeSelectId}>
+                    Timeframe
+                  </label>
+                  <select
+                    id={dividendTimeframeSelectId}
+                    className="dividends-panel__select"
+                    value={normalizedDividendTimeframe}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      if (
+                        DIVIDEND_TIMEFRAME_OPTIONS.some((option) => option.value === nextValue)
+                      ) {
+                        setDividendTimeframe(nextValue);
+                      } else {
+                        setDividendTimeframe(DEFAULT_DIVIDEND_TIMEFRAME);
+                      }
+                    }}
+                  >
+                    {DIVIDEND_TIMEFRAME_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
               </div>
             ) : null}

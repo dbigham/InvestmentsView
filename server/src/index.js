@@ -4914,6 +4914,72 @@ async function computeNetDeposits(login, account, perAccountCombinedBalances, op
 }
 
 
+const DIVIDEND_TIMEFRAME_DEFINITIONS = [
+  { key: 'all', type: 'all' },
+  { key: '1y', type: 'months', amount: 12 },
+  { key: '6m', type: 'months', amount: 6 },
+  { key: '1m', type: 'months', amount: 1 },
+  { key: '1w', type: 'days', amount: 7 },
+  { key: '1d', type: 'days', amount: 1 },
+];
+
+function normalizeDateInput(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function normalizeRangeStart(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function normalizeRangeEndExclusive(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const endOfDay = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1)
+  );
+  return endOfDay;
+}
+
+function computeDividendTimeframeStart(referenceDate, definition) {
+  if (!definition || definition.type === 'all') {
+    return null;
+  }
+  const base =
+    referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())
+      ? referenceDate
+      : new Date();
+  const startOfToday = new Date(
+    Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate())
+  );
+  if (definition.type === 'months') {
+    return addMonths(startOfToday, -Math.abs(definition.amount || 0));
+  }
+  if (definition.type === 'days') {
+    return addDays(startOfToday, -Math.abs(definition.amount || 0));
+  }
+  return null;
+}
+
 async function computeDividendBreakdown(login, account, options = {}) {
   if (!account || !account.id) {
     return null;
@@ -4928,7 +4994,28 @@ async function computeDividendBreakdown(login, account, options = {}) {
   const activities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   const dividendActivities = activities.filter((activity) => isDividendActivity(activity));
 
-  if (!dividendActivities.length) {
+  const rawStart = normalizeDateInput(options.startDate);
+  const rawEnd = normalizeDateInput(options.endDate);
+  const startFilter = normalizeRangeStart(rawStart);
+  const endFilterExclusive = normalizeRangeEndExclusive(rawEnd);
+
+  const filteredDividendActivities =
+    startFilter || endFilterExclusive
+      ? dividendActivities.filter((activity) => {
+          const timestamp = resolveActivityTimestamp(activity);
+          if (timestamp instanceof Date && !Number.isNaN(timestamp.getTime())) {
+            if (startFilter && timestamp < startFilter) {
+              return false;
+            }
+            if (endFilterExclusive && timestamp >= endFilterExclusive) {
+              return false;
+            }
+          }
+          return true;
+        })
+      : dividendActivities;
+
+  if (!filteredDividendActivities.length) {
     return {
       entries: [],
       totalsByCurrency: {},
@@ -4948,7 +5035,7 @@ async function computeDividendBreakdown(login, account, options = {}) {
   let earliest = null;
   let latest = null;
 
-  for (const activity of dividendActivities) {
+  for (const activity of filteredDividendActivities) {
     const details = resolveActivityAmountDetails(activity);
     if (!details) {
       continue;
@@ -5122,6 +5209,37 @@ async function computeDividendBreakdown(login, account, options = {}) {
     endDate: latest ? formatDateOnly(latest) : null,
     totalCount,
   };
+}
+
+async function computeDividendSummaries(login, account, options = {}) {
+  const baseOptions = options && typeof options === 'object' ? { ...options } : {};
+  const baseSummary = await computeDividendBreakdown(login, account, baseOptions);
+  if (!baseSummary) {
+    return null;
+  }
+
+  const timeframes = { all: baseSummary };
+  const referenceDate = new Date();
+
+  for (const definition of DIVIDEND_TIMEFRAME_DEFINITIONS) {
+    if (!definition || definition.key === 'all') {
+      continue;
+    }
+    const timeframeStart = computeDividendTimeframeStart(referenceDate, definition);
+    if (!timeframeStart) {
+      continue;
+    }
+    const summary = await computeDividendBreakdown(login, account, {
+      ...baseOptions,
+      startDate: timeframeStart,
+    });
+    if (summary) {
+      timeframes[definition.key] = summary;
+    }
+  }
+
+  baseSummary.timeframes = timeframes;
+  return baseSummary;
 }
 
 function enumerateDateKeys(startDate, endDate) {
@@ -8006,7 +8124,7 @@ app.get('/api/summary', async function (req, res) {
       }
 
       try {
-        const dividendSummary = await computeDividendBreakdown(context.login, context.account, {
+        const dividendSummary = await computeDividendSummaries(context.login, context.account, {
           activityContext: sharedActivityContext,
         });
         if (dividendSummary) {
@@ -8253,7 +8371,7 @@ app.get('/api/summary', async function (req, res) {
         }
 
         try {
-          const dividendSummary = await computeDividendBreakdown(
+          const dividendSummary = await computeDividendSummaries(
             context.login,
             context.account,
             activityContext ? { activityContext } : undefined
