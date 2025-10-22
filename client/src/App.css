@@ -4072,6 +4072,181 @@ button.time-pill:hover .time-pill__icon {
   font-weight: 600;
 }
 
+.planning-context-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1100;
+}
+
+.planning-context-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  width: min(520px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.planning-context-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px 24px 0;
+}
+
+.planning-context-dialog__heading h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.planning-context-dialog__subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.planning-context-dialog__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.planning-context-dialog__close:hover:not(:disabled),
+.planning-context-dialog__close:focus-visible:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.planning-context-dialog__close:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.planning-context-dialog__form {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.planning-context-dialog__body {
+  padding: 16px 24px 24px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.planning-context-dialog__status {
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  background: rgba(255, 235, 230, 0.9);
+  color: #7f1d1d;
+  font-size: 13px;
+}
+
+.planning-context-dialog__label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.planning-context-dialog__account {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.planning-context-dialog__hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.planning-context-dialog__textarea {
+  resize: vertical;
+  min-height: 150px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 1.45;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.planning-context-dialog__textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-border-active);
+  box-shadow: 0 0 0 3px rgba(74, 134, 255, 0.2);
+}
+
+.planning-context-dialog__textarea:disabled {
+  background: var(--color-surface-alt);
+  cursor: default;
+}
+
+.planning-context-dialog__footer {
+  padding: 16px 24px 24px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.planning-context-dialog__button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.planning-context-dialog__button:hover:not(:disabled),
+.planning-context-dialog__button:focus-visible:not(:disabled) {
+  background: var(--color-surface-alt);
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.planning-context-dialog__button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.planning-context-dialog__button--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.planning-context-dialog__button--primary:hover:not(:disabled),
+.planning-context-dialog__button--primary:focus-visible:not(:disabled) {
+  filter: brightness(0.98);
+}
+
 .symbol-notes-overlay {
   position: fixed;
   inset: 0;
