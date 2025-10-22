@@ -3889,6 +3889,36 @@ button.time-pill:hover .time-pill__icon {
   color: var(--color-text-primary);
 }
 
+.dividends-panel__controls {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 12px;
+}
+
+.dividends-panel__label {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.dividends-panel__select {
+  font-size: 0.9rem;
+  color: var(--color-text-primary);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  padding: 6px 28px 6px 12px;
+  line-height: 1.2;
+}
+
+.dividends-panel__select:focus {
+  outline: none;
+  border-color: var(--color-border-active);
+  box-shadow: 0 0 0 2px var(--color-focus-ring, rgba(59, 130, 246, 0.28));
+}
+
 .return-breakdown-overlay {
   position: fixed;
   inset: 0;
