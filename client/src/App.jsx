@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import TodoSummary from './components/TodoSummary';
@@ -2855,6 +2855,7 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
+  const [ordersFilter, setOrdersFilter] = useState('');
   const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
     'accountPlanningContexts',
     EMPTY_OBJECT
@@ -3324,8 +3325,11 @@ export default function App() {
   }, [selectedAccountInfo, selectedAccount, selectedRebalanceReminder]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const rawOrders = useMemo(() => (Array.isArray(data?.orders) ? data.orders : []), [data?.orders]);
+  const ordersFilterInputId = useId();
   const balances = data?.balances || null;
   const ordersWindow = data?.ordersWindow || null;
+  const normalizedOrdersFilter = typeof ordersFilter === 'string' ? ordersFilter.trim() : '';
+  const ordersFilterQuery = normalizedOrdersFilter.toLowerCase();
   const ordersForSelectedAccount = useMemo(() => {
     if (!rawOrders.length) {
       return [];
@@ -3354,6 +3358,92 @@ export default function App() {
       return orderAccountId === normalizedTarget;
     });
   }, [rawOrders, selectedAccount, selectedAccountInfo, accountsInView]);
+  const filteredOrdersForSelectedAccount = useMemo(() => {
+    if (!ordersFilterQuery) {
+      return ordersForSelectedAccount;
+    }
+
+    return ordersForSelectedAccount.filter((order) => {
+      if (!order || typeof order !== 'object') {
+        return false;
+      }
+      const fields = [
+        order.symbol,
+        order.description,
+        order.status,
+        order.action,
+        order.type,
+        order.displayName,
+        order.accountOwnerLabel,
+        order.accountNumber,
+        order.orderId,
+        order.currency,
+        order.notes,
+      ];
+      if (order.creationTime) {
+        fields.push(order.creationTime);
+      }
+      if (order.updateTime) {
+        fields.push(order.updateTime);
+      }
+      if (Number.isFinite(order.totalQuantity)) {
+        fields.push(String(order.totalQuantity));
+      }
+      if (Number.isFinite(order.filledQuantity)) {
+        fields.push(String(order.filledQuantity));
+      }
+      if (Number.isFinite(order.openQuantity)) {
+        fields.push(String(order.openQuantity));
+      }
+      return fields.some((value) => {
+        if (value === null || value === undefined) {
+          return false;
+        }
+        return String(value).toLowerCase().includes(ordersFilterQuery);
+      });
+    });
+  }, [ordersForSelectedAccount, ordersFilterQuery]);
+  const hasOrdersFilter = normalizedOrdersFilter.length > 0;
+  const ordersTotalCount = ordersForSelectedAccount.length;
+  const ordersDisplayedCount = filteredOrdersForSelectedAccount.length;
+  const ordersEmptyMessage = hasOrdersFilter
+    ? 'No orders match the current filter.'
+    : 'No orders found for this period.';
+  const ordersRangeDescription = useMemo(() => {
+    if (!ordersWindow || typeof ordersWindow !== 'object') {
+      return '';
+    }
+    const startLabel = ordersWindow.start ? formatDate(ordersWindow.start) : null;
+    const endLabel = ordersWindow.end ? formatDate(ordersWindow.end) : null;
+    const normalizedStart = startLabel && startLabel !== '\u2014' ? startLabel : null;
+    const normalizedEnd = endLabel && endLabel !== '\u2014' ? endLabel : null;
+    if (normalizedStart && normalizedEnd) {
+      if (normalizedStart === normalizedEnd) {
+        return `Orders for ${normalizedStart}.`;
+      }
+      return `Orders from ${normalizedStart} to ${normalizedEnd}.`;
+    }
+    if (normalizedStart) {
+      return `Orders since ${normalizedStart}.`;
+    }
+    if (normalizedEnd) {
+      return `Orders through ${normalizedEnd}.`;
+    }
+    return '';
+  }, [ordersWindow]);
+  const ordersCountDescription = useMemo(() => {
+    if (!ordersTotalCount) {
+      return '';
+    }
+    const totalLabel = formatNumber(ordersTotalCount, { maximumFractionDigits: 0 });
+    if (hasOrdersFilter) {
+      const displayedLabel = formatNumber(ordersDisplayedCount, { maximumFractionDigits: 0 });
+      const plural = ordersTotalCount === 1 ? 'order' : 'orders';
+      return `Showing ${displayedLabel} of ${totalLabel} ${plural}`;
+    }
+    const plural = ordersTotalCount === 1 ? 'order' : 'orders';
+    return `${totalLabel} ${plural}`;
+  }, [ordersTotalCount, ordersDisplayedCount, hasOrdersFilter]);
   const accountFundingSource = data?.accountFunding;
   const accountFunding = useMemo(
     () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
@@ -5488,6 +5578,14 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const handleOrdersFilterChange = useCallback((event) => {
+    setOrdersFilter(event.target.value);
+  }, []);
+
+  const handleClearOrdersFilter = useCallback(() => {
+    setOrdersFilter('');
+  }, []);
+
   const handleShowSymbolNotes = useCallback(
     (position) => {
       if (!position || typeof position.symbol !== 'string') {
@@ -5581,6 +5679,21 @@ export default function App() {
       setSymbolNotesEditor({ symbol: trimmedSymbol, entries: normalizedEntries });
     },
     [accountsById]
+  );
+
+  const handleShowSymbolOrders = useCallback(
+    (position) => {
+      if (!position || typeof position.symbol !== 'string') {
+        return;
+      }
+      const trimmedSymbol = position.symbol.trim().toUpperCase();
+      if (!trimmedSymbol) {
+        return;
+      }
+      setPortfolioViewTab('orders');
+      setOrdersFilter(trimmedSymbol);
+    },
+    [setOrdersFilter, setPortfolioViewTab]
   );
 
   const handleCloseSymbolNotes = useCallback(() => {
@@ -6170,6 +6283,7 @@ export default function App() {
                 investmentModelSymbolMap={investmentModelSymbolMap}
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
                 onShowNotes={handleShowSymbolNotes}
+                onShowOrders={handleShowSymbolOrders}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
               />
             </div>
@@ -6180,11 +6294,48 @@ export default function App() {
               aria-labelledby={ordersTabId}
               hidden={!showOrdersPanel}
             >
+              <div className="orders-panel__controls">
+                <label className="orders-panel__label" htmlFor={ordersFilterInputId}>
+                  Filter orders
+                </label>
+                <div className="orders-panel__input-group">
+                  <input
+                    id={ordersFilterInputId}
+                    type="text"
+                    className="orders-panel__filter-input"
+                    value={ordersFilter}
+                    onChange={handleOrdersFilterChange}
+                    placeholder="Search by symbol, account, action, or status"
+                    inputMode="search"
+                    autoComplete="off"
+                  />
+                  {hasOrdersFilter ? (
+                    <button
+                      type="button"
+                      className="orders-panel__clear"
+                      onClick={handleClearOrdersFilter}
+                      aria-label="Clear order filter"
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {ordersRangeDescription || ordersCountDescription ? (
+                <div className="orders-panel__meta">
+                  {ordersRangeDescription ? (
+                    <p className="orders-panel__range">{ordersRangeDescription}</p>
+                  ) : null}
+                  {ordersCountDescription ? (
+                    <p className="orders-panel__count">{ordersCountDescription}</p>
+                  ) : null}
+                </div>
+              ) : null}
               <OrdersTable
-                orders={ordersForSelectedAccount}
+                orders={filteredOrdersForSelectedAccount}
                 accountsById={accountsById}
                 showAccountColumn={selectedAccount === 'all'}
-                range={ordersWindow}
+                emptyMessage={ordersEmptyMessage}
               />
             </div>
 

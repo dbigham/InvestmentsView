@@ -380,6 +380,7 @@ function PositionsTable({
   investmentModelSymbolMap = null,
   onShowInvestmentModel = null,
   onShowNotes = null,
+  onShowOrders = null,
   forceShowTargetColumn = false,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
@@ -583,6 +584,15 @@ function PositionsTable({
     }
     onShowNotes(targetPosition);
   }, [closeContextMenu, contextMenuState.position, onShowNotes]);
+
+  const handleOpenOrdersFromMenu = useCallback(() => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition || typeof onShowOrders !== 'function') {
+      return;
+    }
+    onShowOrders(targetPosition);
+  }, [closeContextMenu, contextMenuState.position, onShowOrders]);
 
   const handleNotesIndicatorClick = useCallback(
     (event, targetPosition) => {
@@ -895,6 +905,18 @@ function PositionsTable({
       style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
     >
       <ul className="positions-table__context-menu-list" role="menu">
+        {typeof onShowOrders === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleOpenOrdersFromMenu}
+            >
+              Orders
+            </button>
+          </li>
+        ) : null}
         {typeof onShowNotes === 'function' ? (
           <li role="none">
             <button
@@ -993,6 +1015,7 @@ PositionsTable.propTypes = {
   investmentModelSymbolMap: PropTypes.instanceOf(Map),
   onShowInvestmentModel: PropTypes.func,
   onShowNotes: PropTypes.func,
+  onShowOrders: PropTypes.func,
   forceShowTargetColumn: PropTypes.bool,
 };
 
@@ -1007,6 +1030,7 @@ PositionsTable.defaultProps = {
   investmentModelSymbolMap: null,
   onShowInvestmentModel: null,
   onShowNotes: null,
+  onShowOrders: null,
   forceShowTargetColumn: false,
 };
 
