@@ -2705,13 +2705,6 @@ textarea {
   gap: 6px;
 }
 
-.orders-panel__label {
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-}
-
 .orders-panel__input-group {
   position: relative;
   display: flex;
@@ -2756,14 +2749,6 @@ textarea {
 .orders-panel__clear:hover,
 .orders-panel__clear:focus-visible {
   color: var(--color-text-primary);
-}
-
-.orders-panel__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 4px;
 }
 
 .news-panel {
@@ -2897,18 +2882,6 @@ textarea {
   font-size: 12px;
   color: var(--color-text-muted);
   margin: 0;
-}
-
-.orders-panel__range {
-  margin: 0 0 4px;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
-.orders-panel__count {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary);
 }
 
 .orders-table__wrapper {

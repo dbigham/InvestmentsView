@@ -3327,7 +3327,6 @@ export default function App() {
   const rawOrders = useMemo(() => (Array.isArray(data?.orders) ? data.orders : []), [data?.orders]);
   const ordersFilterInputId = useId();
   const balances = data?.balances || null;
-  const ordersWindow = data?.ordersWindow || null;
   const normalizedOrdersFilter = typeof ordersFilter === 'string' ? ordersFilter.trim() : '';
   const ordersFilterQuery = normalizedOrdersFilter.toLowerCase();
   const ordersForSelectedAccount = useMemo(() => {
@@ -3404,46 +3403,9 @@ export default function App() {
     });
   }, [ordersForSelectedAccount, ordersFilterQuery]);
   const hasOrdersFilter = normalizedOrdersFilter.length > 0;
-  const ordersTotalCount = ordersForSelectedAccount.length;
-  const ordersDisplayedCount = filteredOrdersForSelectedAccount.length;
   const ordersEmptyMessage = hasOrdersFilter
     ? 'No orders match the current filter.'
     : 'No orders found for this period.';
-  const ordersRangeDescription = useMemo(() => {
-    if (!ordersWindow || typeof ordersWindow !== 'object') {
-      return '';
-    }
-    const startLabel = ordersWindow.start ? formatDate(ordersWindow.start) : null;
-    const endLabel = ordersWindow.end ? formatDate(ordersWindow.end) : null;
-    const normalizedStart = startLabel && startLabel !== '\u2014' ? startLabel : null;
-    const normalizedEnd = endLabel && endLabel !== '\u2014' ? endLabel : null;
-    if (normalizedStart && normalizedEnd) {
-      if (normalizedStart === normalizedEnd) {
-        return `Orders for ${normalizedStart}.`;
-      }
-      return `Orders from ${normalizedStart} to ${normalizedEnd}.`;
-    }
-    if (normalizedStart) {
-      return `Orders since ${normalizedStart}.`;
-    }
-    if (normalizedEnd) {
-      return `Orders through ${normalizedEnd}.`;
-    }
-    return '';
-  }, [ordersWindow]);
-  const ordersCountDescription = useMemo(() => {
-    if (!ordersTotalCount) {
-      return '';
-    }
-    const totalLabel = formatNumber(ordersTotalCount, { maximumFractionDigits: 0 });
-    if (hasOrdersFilter) {
-      const displayedLabel = formatNumber(ordersDisplayedCount, { maximumFractionDigits: 0 });
-      const plural = ordersTotalCount === 1 ? 'order' : 'orders';
-      return `Showing ${displayedLabel} of ${totalLabel} ${plural}`;
-    }
-    const plural = ordersTotalCount === 1 ? 'order' : 'orders';
-    return `${totalLabel} ${plural}`;
-  }, [ordersTotalCount, ordersDisplayedCount, hasOrdersFilter]);
   const accountFundingSource = data?.accountFunding;
   const accountFunding = useMemo(
     () => (accountFundingSource && typeof accountFundingSource === 'object' ? accountFundingSource : EMPTY_OBJECT),
@@ -6295,9 +6257,6 @@ export default function App() {
               hidden={!showOrdersPanel}
             >
               <div className="orders-panel__controls">
-                <label className="orders-panel__label" htmlFor={ordersFilterInputId}>
-                  Filter orders
-                </label>
                 <div className="orders-panel__input-group">
                   <input
                     id={ordersFilterInputId}
@@ -6307,6 +6266,7 @@ export default function App() {
                     onChange={handleOrdersFilterChange}
                     placeholder="Search by symbol, account, action, or status"
                     inputMode="search"
+                    aria-label="Filter orders"
                     autoComplete="off"
                   />
                   {hasOrdersFilter ? (
@@ -6321,16 +6281,6 @@ export default function App() {
                   ) : null}
                 </div>
               </div>
-              {ordersRangeDescription || ordersCountDescription ? (
-                <div className="orders-panel__meta">
-                  {ordersRangeDescription ? (
-                    <p className="orders-panel__range">{ordersRangeDescription}</p>
-                  ) : null}
-                  {ordersCountDescription ? (
-                    <p className="orders-panel__count">{ordersCountDescription}</p>
-                  ) : null}
-                </div>
-              ) : null}
               <OrdersTable
                 orders={filteredOrdersForSelectedAccount}
                 accountsById={accountsById}
