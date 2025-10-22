@@ -5218,7 +5218,9 @@ async function computeDividendSummaries(login, account, options = {}) {
     return null;
   }
 
-  const timeframes = { all: baseSummary };
+  // Build timeframe summaries. Avoid circular references by not
+  // pointing `timeframes.all` at `baseSummary` directly.
+  const timeframes = {};
   const referenceDate = new Date();
 
   for (const definition of DIVIDEND_TIMEFRAME_DEFINITIONS) {
@@ -5238,6 +5240,9 @@ async function computeDividendSummaries(login, account, options = {}) {
     }
   }
 
+  // Set the 'all' timeframe to a shallow copy so attaching
+  // `timeframes` below does not create a circular structure.
+  timeframes.all = { ...baseSummary };
   baseSummary.timeframes = timeframes;
   return baseSummary;
 }
