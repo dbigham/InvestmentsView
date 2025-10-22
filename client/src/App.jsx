@@ -3033,6 +3033,22 @@ export default function App() {
     return selectedAccountState;
   }, [activeAccountId, filteredAccountIds, selectedAccountState]);
 
+  const selectedAccountInfo = useMemo(() => {
+    if (!selectedAccount || selectedAccount === 'all') {
+      return null;
+    }
+    return (
+      accounts.find((account) => {
+        if (!account) {
+          return false;
+        }
+        const accountId = typeof account.id === 'string' ? account.id : null;
+        const accountNumber = typeof account.number === 'string' ? account.number : null;
+        return accountId === selectedAccount || accountNumber === selectedAccount;
+      }) || null
+    );
+  }, [accounts, selectedAccount]);
+
   const activePlanningContext = useMemo(() => {
     if (selectedAccount === 'all') {
       return '';
@@ -3158,21 +3174,6 @@ export default function App() {
     [selectedAccount, accounts, setSelectedAccountState, setActiveAccountId, setSelectedRebalanceReminder]
   );
 
-  const selectedAccountInfo = useMemo(() => {
-    if (!selectedAccount || selectedAccount === 'all') {
-      return null;
-    }
-    return (
-      accounts.find((account) => {
-        if (!account) {
-          return false;
-        }
-        const accountId = typeof account.id === 'string' ? account.id : null;
-        const accountNumber = typeof account.number === 'string' ? account.number : null;
-        return accountId === selectedAccount || accountNumber === selectedAccount;
-      }) || null
-    );
-  }, [accounts, selectedAccount]);
   const selectedAccountKey = useMemo(() => {
     if (selectedAccount === 'all') {
       return 'all';
