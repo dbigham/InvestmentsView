@@ -324,7 +324,6 @@ export default function TotalPnlDialog({
   const markerLabel = Number.isFinite(markerValue) ? formatMoney(markerValue) : null;
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
-  const tooltipSinceLabel = displayRangeStart ? `since ${formatDate(displayRangeStart)}` : null;
   const labelPosition = useMemo(() => {
     const point = hoverPoint || marker;
     if (!point) {
@@ -345,12 +344,9 @@ export default function TotalPnlDialog({
         amount: formatMoney(
           useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
         ),
-        secondary: tooltipSinceLabel,
         date: formatDate(hoverPoint.date),
       }
     : null;
-
-  const markerSecondary = tooltipSinceLabel;
 
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
@@ -592,11 +588,6 @@ export default function TotalPnlDialog({
                     {(hoverLabel || markerLabel) && (
                       <div className="qqq-section__chart-label" style={labelPosition}>
                         <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
-                        {(hoverLabel?.secondary || markerSecondary) && (
-                          <span className="pnl-dialog__label-delta">
-                            {hoverLabel ? hoverLabel.secondary : markerSecondary}
-                          </span>
-                        )}
                         <span className="pnl-dialog__label-date">
                           {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
                         </span>
