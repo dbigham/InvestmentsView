@@ -463,6 +463,7 @@ export default function SummaryMetrics({
   totalPnlRangeOptions,
   selectedTotalPnlRange,
   onTotalPnlRangeChange,
+  onAdjustDeployment,
 }) {
   const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
@@ -922,6 +923,7 @@ export default function SummaryMetrics({
               value={formatMoney(deployedValue)}
               extra={deployedPercentLabel}
               tone="neutral"
+              onActivate={onAdjustDeployment}
             />
           )}
           {deploymentAvailable && (
@@ -930,6 +932,7 @@ export default function SummaryMetrics({
               value={formatMoney(reserveValue)}
               extra={reservePercentLabel}
               tone="neutral"
+              onActivate={onAdjustDeployment}
             />
           )}
         </dl>
@@ -1066,6 +1069,7 @@ SummaryMetrics.propTypes = {
   ),
   selectedTotalPnlRange: PropTypes.string,
   onTotalPnlRangeChange: PropTypes.func,
+  onAdjustDeployment: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -1100,4 +1104,5 @@ SummaryMetrics.defaultProps = {
   totalPnlRangeOptions: [],
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,
+  onAdjustDeployment: null,
 };

@@ -1,33 +1,13 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatMoney, formatNumber } from '../utils/formatters';
-
-const DESCRIPTION_CHAR_LIMIT = 21;
-const JOURNALLING_URL = 'https://my.questrade.com/clients/en/my_requests/journalling.aspx';
-
-function formatCopyNumber(value, decimals = 2, { trimTrailingZeros = false } = {}) {
-  if (!Number.isFinite(value)) {
-    return null;
-  }
-  const precision = Math.max(0, Math.min(6, decimals));
-  const normalized = Number(value);
-  if (!Number.isFinite(normalized)) {
-    return null;
-  }
-  const fixed = normalized.toFixed(precision);
-  if (!trimTrailingZeros || precision === 0) {
-    return fixed;
-  }
-  return fixed.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
-}
-
-function formatCurrencyLabel(value, currency) {
-  if (!Number.isFinite(value)) {
-    return '—';
-  }
-  const code = currency || 'CAD';
-  return `${formatMoney(value)} ${code}`;
-}
+import {
+  formatCopyNumber,
+  formatCurrencyLabel,
+  formatShareDisplay,
+  JOURNALLING_URL,
+  truncateDescription,
+} from './investPlanUtils';
 
 function formatWeight(weight) {
   if (!Number.isFinite(weight)) {
@@ -41,25 +21,6 @@ function formatTargetPercentValue(value) {
     return '—';
   }
   return `${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
-}
-
-function formatShareDisplay(shares, precision) {
-  if (!Number.isFinite(shares) || shares <= 0) {
-    return '—';
-  }
-  const digits = Math.max(0, Number.isFinite(precision) ? precision : 0);
-  return formatNumber(shares, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
-function truncateDescription(value) {
-  if (!value) {
-    return null;
-  }
-  const normalized = String(value);
-  if (normalized.length <= DESCRIPTION_CHAR_LIMIT) {
-    return normalized;
-  }
-  return `${normalized.slice(0, DESCRIPTION_CHAR_LIMIT).trimEnd()}...`;
 }
 
 export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onAdjustPlan }) {
