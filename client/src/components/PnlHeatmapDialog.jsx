@@ -253,6 +253,7 @@ const HEATMAP_SYMBOL_LABELS = {
   VXUS: 'Non-US',
   VCN: 'Canadian',
   QQQ: 'Nasdaq-100',
+  ENB: "Enbridge"
 };
 
 function resolveDisplaySymbol(symbol) {
