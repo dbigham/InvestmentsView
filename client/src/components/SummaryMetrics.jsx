@@ -463,6 +463,7 @@ export default function SummaryMetrics({
   totalPnlRangeOptions,
   selectedTotalPnlRange,
   onTotalPnlRangeChange,
+  onAdjustDeployment,
 }) {
   const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
