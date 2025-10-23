@@ -469,7 +469,6 @@ export default function SummaryMetrics({
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
-  const buyingPower = balances?.buyingPower ?? null;
   const deploymentAvailable =
     deploymentSummary &&
     (Number.isFinite(deploymentSummary.deployedValue) ||
@@ -911,6 +910,12 @@ export default function SummaryMetrics({
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
           <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
+          <MetricRow
+            label="Cash"
+            value={formatMoney(cash)}
+            tone="neutral"
+            onActivate={onShowCashBreakdown || null}
+          />
           {deploymentAvailable && (
             <MetricRow
               label="Deployed"
@@ -927,13 +932,6 @@ export default function SummaryMetrics({
               tone="neutral"
             />
           )}
-          <MetricRow
-            label="Cash"
-            value={formatMoney(cash)}
-            tone="neutral"
-            onActivate={onShowCashBreakdown || null}
-          />
-          <MetricRow label="Buying power" value={formatMoney(buyingPower)} tone="neutral" />
         </dl>
       </div>
 
@@ -961,7 +959,6 @@ SummaryMetrics.propTypes = {
     totalEquity: PropTypes.number,
     marketValue: PropTypes.number,
     cash: PropTypes.number,
-    buyingPower: PropTypes.number,
   }),
   deploymentSummary: PropTypes.shape({
     deployedValue: PropTypes.number,
