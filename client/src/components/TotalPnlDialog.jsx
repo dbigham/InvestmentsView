@@ -132,7 +132,7 @@ function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
   };
 }
 
-function formatIssues(issues) {
+function formatIssues(issues, missingPriceSymbols) {
   if (!Array.isArray(issues) || !issues.length) {
     return [];
   }
@@ -141,6 +141,12 @@ function formatIssues(issues) {
       return null;
     }
     if (issue === 'missing-price-data') {
+      const symbols = Array.isArray(missingPriceSymbols) ? missingPriceSymbols.filter(Boolean) : [];
+      if (symbols.length) {
+        const unique = Array.from(new Set(symbols.map((s) => String(s).trim()))).filter(Boolean);
+        unique.sort((a, b) => a.localeCompare(b));
+        return `Missing price data for: ${unique.join(', ')}`;
+      }
       return 'Missing price data for one or more symbols.';
     }
     if (issue.startsWith('missing-usd-rate')) {
@@ -401,7 +407,10 @@ export default function TotalPnlDialog({
 
   const totalEquity = Number.isFinite(summary.totalEquityCad) ? summary.totalEquityCad : null;
 
-  const normalizedIssues = useMemo(() => formatIssues(data?.issues), [data?.issues]);
+  const normalizedIssues = useMemo(
+    () => formatIssues(data?.issues, data?.missingPriceSymbols),
+    [data?.issues, data?.missingPriceSymbols]
+  );
 
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {

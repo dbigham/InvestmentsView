@@ -158,6 +158,12 @@ function getDispatcherForUrl(targetUrl, { reuse = false } = {}) {
 const YAHOO_CHART_BASE_URL = 'https://query1.finance.yahoo.com';
 const YAHOO_QUOTE_BASE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote';
 
+// Explicit per-symbol Yahoo alias overrides. Keys are case-insensitive.
+const YAHOO_SYMBOL_ALIASES = new Map([
+  // CBIT is a Cboe Canada (NEO) listing that Yahoo exposes as CBIT.V
+  ['cbit.vn', 'CBIT.V'],
+]);
+
 function resolveYahooSymbol(symbol) {
   if (typeof symbol !== 'string') {
     return null;
@@ -167,8 +173,18 @@ function resolveYahooSymbol(symbol) {
     return null;
   }
   let normalized = trimmed;
+  // Apply explicit alias overrides first
+  const alias = YAHOO_SYMBOL_ALIASES.get(normalized.toLowerCase());
+  if (alias) {
+    normalized = alias;
+  }
   if (/\.U\./i.test(normalized)) {
     normalized = normalized.replace(/\.U\./gi, '-U.');
+  }
+  // Questrade uses .VN for symbols listed on Cboe Canada (formerly NEO).
+  // Yahoo generally lists these under the .TO suffix.
+  if (/\.VN$/i.test(normalized)) {
+    normalized = normalized.replace(/\.VN$/i, '.TO');
   }
   return normalized;
 }
@@ -5402,18 +5418,35 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
 
   const exclusiveEnd = addDays(endDate, 1) || new Date(endDate.getTime() + DAY_IN_MS);
 
-  let history = null;
-  try {
-    history = await fetchYahooHistorical(symbol, {
-      period1: startDate,
-      period2: exclusiveEnd,
-      interval: '1d',
-    });
-  } catch (error) {
-    history = null;
-  }
+  // Try fetching via Yahoo with a few possible symbol variants
+  const candidates = (() => {
+    const base = resolveYahooSymbol(symbol) || symbol;
+    const list = [base];
+    if (/\.VN$/i.test(base)) {
+      list.push(base.replace(/\.VN$/i, '.NE'));
+      list.push(base.replace(/\.VN$/i, '.TO'));
+    }
+    // Deduplicate and keep order
+    return Array.from(new Set(list));
+  })();
 
-  let normalized = normalizeYahooHistoricalEntries(history);
+  let normalized = [];
+  for (const candidate of candidates) {
+    let history = null;
+    try {
+      history = await fetchYahooHistorical(candidate, {
+        period1: startDate,
+        period2: exclusiveEnd,
+        interval: '1d',
+      });
+    } catch (error) {
+      history = null;
+    }
+    normalized = normalizeYahooHistoricalEntries(history);
+    if (normalized.length) {
+      break;
+    }
+  }
 
   if (!normalized.length && options && options.login) {
     const rawSymbolId = Number.isFinite(options.symbolId)
