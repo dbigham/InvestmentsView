@@ -3916,7 +3916,7 @@ button.time-pill:hover .time-pill__icon {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
-  padding: 0 24px 12px;
+  padding: 12px 24px 6px;
 }
 
 .dividends-panel__label {
