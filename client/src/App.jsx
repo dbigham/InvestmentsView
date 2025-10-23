@@ -1345,6 +1345,7 @@ const TODO_AMOUNT_TOLERANCE = 0.01;
 const TODO_TYPE_ORDER = { rebalance: 0, cash: 1 };
 
 const RESERVE_SYMBOLS = new Set(['SGOV', 'BIL', 'VBIL', 'PSA.TO', 'HFR.TO']);
+const RESERVE_FALLBACK_SYMBOL = 'VBIL';
 
 function normalizeSymbolKey(value) {
   if (typeof value !== 'string') {
@@ -2325,6 +2326,9 @@ function buildDeploymentAdjustmentPlan({
     return null;
   }
 
+  const TRANSACTION_EPSILON = 0.005;
+  const USD_SHARE_PRECISION = 4;
+
   const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
   const rawTarget = Number(targetDeployedPercent);
   const targetPercent = Number.isFinite(rawTarget) ? Math.min(100, Math.max(0, rawTarget)) : null;
@@ -2395,14 +2399,12 @@ function buildDeploymentAdjustmentPlan({
   const targetReserveBase = totalBase - targetDeployedBase;
 
   const deployScale = currentDeployedBase > 0 ? targetDeployedBase / currentDeployedBase : 0;
-  const reserveScale = currentReserveBase > 0 ? targetReserveBase / currentReserveBase : 0;
+  const hasReserveBase = currentReserveBase > TRANSACTION_EPSILON;
+  const reserveScale = hasReserveBase ? targetReserveBase / currentReserveBase : null;
 
   if (currentDeployedBase <= 0 && targetDeployedBase > 0) {
     return null;
   }
-
-  const TRANSACTION_EPSILON = 0.005;
-  const USD_SHARE_PRECISION = 4;
 
   const transactions = [];
   const netFlows = new Map();
@@ -2456,43 +2458,130 @@ function buildDeploymentAdjustmentPlan({
     });
   });
 
-  reserveHoldings.forEach((holding) => {
-    if (!Number.isFinite(holding.normalizedValue) || holding.normalizedValue === 0) {
-      return;
-    }
-    const targetValue = holding.normalizedValue * reserveScale;
-    const deltaBase = targetValue - holding.normalizedValue;
-    if (!Number.isFinite(deltaBase) || Math.abs(deltaBase) < TRANSACTION_EPSILON) {
-      return;
-    }
-    const deltaCurrency = convertAmountToCurrency(
-      deltaBase,
-      normalizedBase,
-      holding.currency,
-      currencyRates,
-      normalizedBase
-    );
-    if (!Number.isFinite(deltaCurrency) || Math.abs(deltaCurrency) < TRANSACTION_EPSILON) {
-      return;
-    }
-    const price = holding.price;
-    const shares = Number.isFinite(price) && price > 0 ? deltaCurrency / price : null;
-    const side = deltaCurrency >= 0 ? 'BUY' : 'SELL';
-    pushTransaction({
-      scope: 'RESERVE',
-      side,
-      symbol: holding.symbol,
-      description: holding.description,
-      currency: holding.currency,
-      amount: deltaCurrency,
-      shares,
-      sharePrecision: holding.currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
-      price: price ?? null,
+  if (reserveScale !== null) {
+    reserveHoldings.forEach((holding) => {
+      if (!Number.isFinite(holding.normalizedValue) || holding.normalizedValue === 0) {
+        return;
+      }
+      const targetValue = holding.normalizedValue * reserveScale;
+      const deltaBase = targetValue - holding.normalizedValue;
+      if (!Number.isFinite(deltaBase) || Math.abs(deltaBase) < TRANSACTION_EPSILON) {
+        return;
+      }
+      const deltaCurrency = convertAmountToCurrency(
+        deltaBase,
+        normalizedBase,
+        holding.currency,
+        currencyRates,
+        normalizedBase
+      );
+      if (!Number.isFinite(deltaCurrency) || Math.abs(deltaCurrency) < TRANSACTION_EPSILON) {
+        return;
+      }
+      const price = holding.price;
+      const shares = Number.isFinite(price) && price > 0 ? deltaCurrency / price : null;
+      const side = deltaCurrency >= 0 ? 'BUY' : 'SELL';
+      pushTransaction({
+        scope: 'RESERVE',
+        side,
+        symbol: holding.symbol,
+        description: holding.description,
+        currency: holding.currency,
+        amount: deltaCurrency,
+        shares,
+        sharePrecision: holding.currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
+        price: price ?? null,
+      });
     });
-  });
+  }
 
-  const targetCashCadBase = cadCashBase * reserveScale;
-  const targetCashUsdBase = usdCashBase * reserveScale;
+  if (reserveScale === null) {
+    const reserveIncreaseBase = targetReserveBase;
+    if (reserveIncreaseBase > TRANSACTION_EPSILON) {
+      let targets = reserveHoldings
+        .filter((holding) => Number.isFinite(holding.price) && holding.price > 0)
+        .map((holding) => ({
+          symbol: holding.symbol,
+          description: holding.description,
+          currency: holding.currency,
+          price: holding.price ?? null,
+          weight: holding.normalizedValue > 0 ? holding.normalizedValue : 0,
+          sharePrecision: holding.currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
+        }));
+
+      if (!targets.length) {
+        const fallbackSymbol = RESERVE_FALLBACK_SYMBOL;
+        const fallbackOverride = resolvePriceOverride(priceOverrideMap, fallbackSymbol);
+        const fallbackDetails = findPositionDetails(positions, fallbackSymbol);
+        const fallbackPrice =
+          coercePositiveNumber(fallbackOverride?.price) ??
+          coercePositiveNumber(fallbackDetails?.price) ??
+          null;
+        const fallbackCurrency = (
+          fallbackOverride?.currency || fallbackDetails?.currency || 'USD'
+        ).toUpperCase();
+        const fallbackDescription = fallbackOverride?.description ?? fallbackDetails?.description ?? null;
+
+        targets = [
+          {
+            symbol: fallbackSymbol,
+            description: fallbackDescription,
+            currency: fallbackCurrency,
+            price: fallbackPrice,
+            weight: 1,
+            sharePrecision: fallbackCurrency === 'CAD' ? 0 : USD_SHARE_PRECISION,
+          },
+        ];
+      }
+
+      const weightTotal = targets.reduce(
+        (sum, entry) => sum + (Number.isFinite(entry.weight) && entry.weight > 0 ? entry.weight : 0),
+        0
+      );
+      if (weightTotal > 0) {
+        targets = targets.map((entry) => ({ ...entry, weight: entry.weight / weightTotal }));
+      } else if (targets.length > 0) {
+        const equalWeight = 1 / targets.length;
+        targets = targets.map((entry) => ({ ...entry, weight: equalWeight }));
+      }
+
+      targets.forEach((entry) => {
+        if (!Number.isFinite(entry.weight) || entry.weight <= 0) {
+          return;
+        }
+        const allocationBase = reserveIncreaseBase * entry.weight;
+        if (!Number.isFinite(allocationBase) || allocationBase <= TRANSACTION_EPSILON) {
+          return;
+        }
+        const allocationAmount = convertAmountToCurrency(
+          allocationBase,
+          normalizedBase,
+          entry.currency,
+          currencyRates,
+          normalizedBase
+        );
+        if (!Number.isFinite(allocationAmount) || allocationAmount <= TRANSACTION_EPSILON) {
+          return;
+        }
+        const price = entry.price;
+        const shares = Number.isFinite(price) && price > 0 ? allocationAmount / price : null;
+        pushTransaction({
+          scope: 'RESERVE',
+          side: 'BUY',
+          symbol: entry.symbol,
+          description: entry.description,
+          currency: entry.currency,
+          amount: allocationAmount,
+          shares,
+          sharePrecision: entry.sharePrecision,
+          price: price ?? null,
+        });
+      });
+    }
+  }
+
+  const targetCashCadBase = reserveScale !== null ? cadCashBase * reserveScale : 0;
+  const targetCashUsdBase = reserveScale !== null ? usdCashBase * reserveScale : 0;
   const targetCashCad = convertAmountToCurrency(
     targetCashCadBase,
     normalizedBase,
@@ -5938,7 +6027,7 @@ export default function App() {
     selectedAccountInfo,
   ]);
 
-  const handleOpenDeploymentAdjustment = useCallback(() => {
+  const handleOpenDeploymentAdjustment = useCallback(async () => {
     if (!orderedPositions.length) {
       return;
     }
@@ -5947,13 +6036,67 @@ export default function App() {
       ? activeDeploymentSummary.deployedPercent
       : 0;
 
+    const priceOverrides = new Map();
+
+    const hasReserveHoldings = orderedPositions.some((position) => {
+      if (!position || typeof position.symbol !== 'string') {
+        return false;
+      }
+      const symbolKey = normalizeSymbolKey(position.symbol);
+      if (!symbolKey || !RESERVE_SYMBOLS.has(symbolKey)) {
+        return false;
+      }
+      const quantity = coercePositiveNumber(position.openQuantity);
+      const marketValue = coercePositiveNumber(position.marketValue);
+      return (Number.isFinite(quantity) && quantity > 0) || (Number.isFinite(marketValue) && marketValue > 0);
+    });
+
+    if (!hasReserveHoldings) {
+      const fallbackSymbol = RESERVE_FALLBACK_SYMBOL;
+      const fallbackDetails = findPositionDetails(orderedPositions, fallbackSymbol);
+      const fallbackPrice = coercePositiveNumber(fallbackDetails?.price);
+      if (fallbackPrice !== null) {
+        priceOverrides.set(fallbackSymbol, {
+          price: fallbackPrice,
+          currency:
+            typeof fallbackDetails?.currency === 'string'
+              ? fallbackDetails.currency.toUpperCase()
+              : null,
+          description: fallbackDetails?.description ?? null,
+        });
+      } else {
+        const cachedOverride = quoteCacheRef.current.get(fallbackSymbol);
+        if (cachedOverride && coercePositiveNumber(cachedOverride.price)) {
+          priceOverrides.set(fallbackSymbol, cachedOverride);
+        } else {
+          try {
+            const quote = await getQuote(fallbackSymbol);
+            if (quote && coercePositiveNumber(quote.price)) {
+              const override = {
+                price: coercePositiveNumber(quote.price),
+                currency:
+                  typeof quote.currency === 'string' && quote.currency.trim()
+                    ? quote.currency.trim().toUpperCase()
+                    : null,
+                description: typeof quote.name === 'string' ? quote.name : null,
+              };
+              quoteCacheRef.current.set(fallbackSymbol, override);
+              priceOverrides.set(fallbackSymbol, override);
+            }
+          } catch (error) {
+            console.error('Failed to load reserve fallback quote', error);
+          }
+        }
+      }
+    }
+
     const planInputs = {
       positions: orderedPositions,
       balances,
       currencyRates,
       baseCurrency,
       reserveSymbols: RESERVE_SYMBOLS,
-      priceOverrides: null,
+      priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
     };
 
     const plan = buildDeploymentAdjustmentPlan({

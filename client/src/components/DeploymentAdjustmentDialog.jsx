@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatMoney, formatNumber } from '../utils/formatters';
+import {
+  formatCopyNumber,
+  formatCurrencyLabel,
+  formatShareDisplay,
+  JOURNALLING_URL,
+  truncateDescription,
+} from './investPlanUtils';
 
 function clampPercent(value) {
   if (!Number.isFinite(value)) {
@@ -29,13 +36,6 @@ function formatPercentLabel(value) {
   return `${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
-function formatCurrencyLabel(value, currency) {
-  if (!Number.isFinite(value)) {
-    return '—';
-  }
-  return `${formatMoney(value)} ${currency}`;
-}
-
 function formatSignedCurrencyLabel(value, currency) {
   if (!Number.isFinite(value)) {
     return '—';
@@ -48,14 +48,6 @@ function formatSignedCurrencyLabel(value, currency) {
     return `+${formatted} ${currency}`;
   }
   return `${formatted} ${currency}`;
-}
-
-function formatShareChange(value, precision) {
-  if (!Number.isFinite(value) || Math.abs(value) < 1e-6) {
-    return '—';
-  }
-  const digits = Math.max(0, Number.isFinite(precision) ? precision : 0);
-  return formatNumber(Math.abs(value), { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 function normalizeTransactionScope(scope) {
@@ -77,6 +69,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
   const [sliderValue, setSliderValue] = useState(() => clampPercent(plan?.targetDeployedPercent ?? 0));
   const [inputValue, setInputValue] = useState(() => formatPercentInput(plan?.targetDeployedPercent));
   const [copyStatus, setCopyStatus] = useState(null);
+  const [completedTransactions, setCompletedTransactions] = useState(() => new Set());
 
   useEffect(() => {
     const percent = clampPercent(plan?.targetDeployedPercent ?? 0);
@@ -107,6 +100,10 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
     }, 2500);
     return () => window.clearTimeout(timer);
   }, [copyStatus]);
+
+  useEffect(() => {
+    setCompletedTransactions(new Set());
+  }, [plan?.transactions]);
 
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
@@ -160,39 +157,79 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
     }
   };
 
-  const handleCopySummary = useCallback(async () => {
-    if (!plan?.summaryText || typeof copyToClipboard !== 'function') {
+  const handleToggleTransaction = useCallback((rowKey) => {
+    setCompletedTransactions((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) {
+        next.delete(rowKey);
+      } else {
+        next.add(rowKey);
+      }
+      return next;
+    });
+  }, []);
+
+  const copyValue = useCallback(
+    async (value, label) => {
+      if (!value || typeof copyToClipboard !== 'function') {
+        return;
+      }
+      try {
+        await copyToClipboard(value);
+        setCopyStatus({ message: `${label || 'Value'} copied to clipboard.`, tone: 'success' });
+      } catch (error) {
+        console.error('Failed to copy value', error);
+        setCopyStatus({ message: 'Unable to copy value. Copy manually if needed.', tone: 'error' });
+      }
+    },
+    [copyToClipboard]
+  );
+
+  const handleCopySummary = useCallback(() => {
+    if (!plan?.summaryText) {
       return;
     }
-    try {
-      await copyToClipboard(plan.summaryText);
-      setCopyStatus({ message: 'Plan summary copied to clipboard.', tone: 'success' });
-    } catch (error) {
-      console.error('Failed to copy deployment plan summary', error);
-      setCopyStatus({ message: 'Unable to copy plan summary. Copy manually if needed.', tone: 'error' });
-    }
-  }, [plan?.summaryText, copyToClipboard]);
+    copyValue(plan.summaryText, 'Plan summary');
+  }, [plan?.summaryText, copyValue]);
 
   const transactionRows = useMemo(() => {
     if (!Array.isArray(plan?.transactions) || !plan.transactions.length) {
       return [];
     }
     return plan.transactions.map((transaction, index) => {
-      const amountLabel = formatCurrencyLabel(Math.abs(transaction.amount), transaction.currency || 'CAD');
-      const priceLabel = Number.isFinite(transaction.price)
-        ? `${formatMoney(transaction.price)} ${transaction.currency || 'CAD'}`
+      const currency = transaction.currency || 'CAD';
+      const amountValue = Number.isFinite(transaction.amount) ? Math.abs(transaction.amount) : null;
+      const amountLabel = Number.isFinite(amountValue)
+        ? formatCurrencyLabel(amountValue, currency)
         : '—';
-      const sharesLabel = formatShareChange(transaction.shares, transaction.sharePrecision);
+      const amountCopy = Number.isFinite(amountValue) && amountValue > 0
+        ? formatCopyNumber(amountValue, 2)
+        : null;
+      const sharesValue = Number.isFinite(transaction.shares) ? Math.abs(transaction.shares) : null;
+      const shareLabel = Number.isFinite(sharesValue) && sharesValue > 0
+        ? formatShareDisplay(sharesValue, transaction.sharePrecision)
+        : '—';
+      const shareCopy = Number.isFinite(sharesValue) && sharesValue > 0
+        ? formatCopyNumber(sharesValue, transaction.sharePrecision ?? 0, { trimTrailingZeros: true })
+        : null;
+      const priceLabel = Number.isFinite(transaction.price)
+        ? `${formatMoney(transaction.price)} ${currency}`
+        : '—';
+
+      const symbol = transaction.symbol ? transaction.symbol : '—';
       return {
-        key: `${transaction.symbol || index}:${index}`,
+        rowKey: `${transaction.symbol || index}:${index}`,
         scope: normalizeTransactionScope(transaction.scope),
         side: transaction.side === 'SELL' ? 'Sell' : 'Buy',
-        symbol: transaction.symbol || '—',
+        symbol,
+        canCopySymbol: symbol !== '—',
         description: transaction.description || null,
+        displayDescription: truncateDescription(transaction.description),
         amountLabel,
-        sharesLabel,
+        amountCopy,
+        shareLabel,
+        shareCopy,
         priceLabel,
-        currency: transaction.currency || 'CAD',
       };
     });
   }, [plan?.transactions]);
@@ -202,33 +239,60 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
       return [];
     }
     return plan.conversions.map((conversion, index) => {
-      const direction = conversion.type === 'CAD_TO_USD' ? 'CAD → USD' : 'USD → CAD';
-      const spendLabel = Number.isFinite(conversion.spendAmount)
-        ? `${formatMoney(conversion.spendAmount)} ${conversion.currency || 'CAD'}`
+      const symbol = conversion.symbol || (conversion.type === 'CAD_TO_USD' ? 'DLR.TO' : 'DLR.U.TO');
+      const spendCurrency = conversion.currency || (conversion.type === 'CAD_TO_USD' ? 'CAD' : 'USD');
+      const targetCurrency = conversion.targetCurrency || (conversion.type === 'CAD_TO_USD' ? 'USD' : 'CAD');
+      const spendAmount = Number.isFinite(conversion.spendAmount)
+        ? conversion.spendAmount
+        : spendCurrency === 'CAD'
+        ? conversion.cadAmount
+        : conversion.usdAmount;
+      const spendValue = Number.isFinite(spendAmount) ? spendAmount : null;
+      const amountLabel = Number.isFinite(spendValue)
+        ? formatCurrencyLabel(spendValue, spendCurrency)
         : '—';
-      const receiveLabel = Number.isFinite(conversion.actualReceiveAmount)
-        ? `${formatMoney(conversion.actualReceiveAmount)} ${conversion.targetCurrency || 'USD'}`
+      const amountCopy = Number.isFinite(spendValue) && spendValue > 0
+        ? formatCopyNumber(spendValue, 2)
+        : null;
+      const targetAmount = Number.isFinite(conversion.actualReceiveAmount)
+        ? conversion.actualReceiveAmount
+        : targetCurrency === 'CAD'
+        ? conversion.cadAmount
+        : conversion.usdAmount;
+      const targetValue = Number.isFinite(targetAmount) ? targetAmount : null;
+      const targetLabel = Number.isFinite(targetValue)
+        ? formatCurrencyLabel(targetValue, targetCurrency)
+        : null;
+      const shareValue = Number.isFinite(conversion.shares) && conversion.shares > 0 ? conversion.shares : null;
+      const shareLabel = shareValue !== null
+        ? formatShareDisplay(shareValue, conversion.sharePrecision)
         : '—';
-      const shareLabel = Number.isFinite(conversion.shares)
-        ? formatNumber(conversion.shares, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
-        : '—';
+      const shareCopy = shareValue !== null
+        ? formatCopyNumber(shareValue, conversion.sharePrecision ?? 0, { trimTrailingZeros: true })
+        : null;
       const priceLabel = Number.isFinite(conversion.sharePrice)
-        ? `${formatMoney(conversion.sharePrice)} ${conversion.currency || 'CAD'}`
-        : '—';
+        ? formatCurrencyLabel(conversion.sharePrice, spendCurrency)
+        : null;
+
       return {
-        key: `${conversion.symbol || index}:${index}`,
-        symbol: conversion.symbol || 'DLR',
+        key: `${symbol}:${index}`,
+        symbol,
         description: conversion.description || null,
-        direction,
-        spendLabel,
-        receiveLabel,
+        displayDescription: truncateDescription(conversion.description),
+        direction: conversion.type === 'CAD_TO_USD' ? 'Convert CAD → USD' : 'Convert USD → CAD',
+        amountLabel,
+        amountCopy,
+        targetLabel,
         shareLabel,
+        shareCopy,
         priceLabel,
       };
     });
   }, [plan?.conversions]);
 
   const accountLabel = plan?.accountLabel || plan?.accountName || plan?.accountNumber || null;
+  const accountNumber = plan?.accountNumber ? String(plan.accountNumber) : null;
+  const accountUrl = plan?.accountUrl || null;
   const summaryDetails = [
     {
       label: 'Current deployed',
@@ -256,6 +320,16 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
               Adjust deployment
             </h2>
             {accountLabel && <p className="invest-plan-dialog__account">{accountLabel}</p>}
+            {accountUrl && (
+              <a
+                className="invest-plan-dialog__account-link"
+                href={accountUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open account in Questrade
+              </a>
+            )}
           </div>
           <button
             type="button"
@@ -324,25 +398,85 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
           {conversionRows.length > 0 && (
             <section className="invest-plan-section">
               <h3 className="invest-plan-section__title">FX conversions</h3>
-              <div className="deployment-plan-conversions">
+              <div className="invest-plan-conversions__extras">
+                <a
+                  className="invest-plan-conversions__journal-link"
+                  href={JOURNALLING_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Journal shares in Questrade
+                </a>
+                {accountNumber && (
+                  <span className="invest-plan-conversions__account-number">
+                    Account number: <strong>{accountNumber}</strong>
+                  </span>
+                )}
+              </div>
+              <ul className="invest-plan-conversions">
                 {conversionRows.map((conversion) => (
-                  <div key={conversion.key} className="deployment-plan-conversions__item">
-                    <div className="deployment-plan-conversions__symbol">
-                      <span className="deployment-plan-conversions__ticker">{conversion.symbol}</span>
-                      {conversion.description && (
-                        <span className="deployment-plan-conversions__name">{conversion.description}</span>
+                  <li key={conversion.key} className="invest-plan-conversions__item">
+                    <div className="invest-plan-conversion__header">
+                      <div className="invest-plan-symbol">
+                        <button
+                          type="button"
+                          className="invest-plan-symbol__ticker"
+                          onClick={() => copyValue(conversion.symbol, `${conversion.symbol} symbol`)}
+                          title="Copy symbol"
+                          aria-label={`Copy ${conversion.symbol} symbol`}
+                        >
+                          {conversion.symbol}
+                        </button>
+                        {conversion.displayDescription && (
+                          <span
+                            className="invest-plan-symbol__name"
+                            title={conversion.description || undefined}
+                          >
+                            {conversion.displayDescription}
+                          </span>
+                        )}
+                      </div>
+                      <span className="invest-plan-conversion__direction">{conversion.direction}</span>
+                    </div>
+                    <div className="invest-plan-conversion__actions">
+                      {conversion.amountCopy ? (
+                        <button
+                          type="button"
+                          className="invest-plan-copy-button"
+                          onClick={() => copyValue(conversion.amountCopy, `${conversion.symbol} amount`)}
+                        >
+                          Spend {conversion.amountLabel}
+                        </button>
+                      ) : (
+                        <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
+                          Spend {conversion.amountLabel}
+                        </span>
+                      )}
+                      {conversion.shareCopy && conversion.shareLabel !== '—' && (
+                        <button
+                          type="button"
+                          className="invest-plan-copy-button"
+                          onClick={() => copyValue(conversion.shareCopy, `${conversion.symbol} shares`)}
+                        >
+                          Buy {conversion.shareLabel}
+                        </button>
                       )}
                     </div>
-                    <div className="deployment-plan-conversions__details">
-                      <span>{conversion.direction}</span>
-                      <span>Spend: {conversion.spendLabel}</span>
-                      <span>Receive: {conversion.receiveLabel}</span>
-                      <span>Shares: {conversion.shareLabel}</span>
-                      <span>Price: {conversion.priceLabel}</span>
+                    <div className="invest-plan-conversion__details">
+                      {conversion.targetLabel && (
+                        <span className="invest-plan-conversion__detail">
+                          Target: {conversion.targetLabel}
+                        </span>
+                      )}
+                      {conversion.priceLabel && (
+                        <span className="invest-plan-conversion__detail">
+                          Price: {conversion.priceLabel}
+                        </span>
+                      )}
                     </div>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </section>
           )}
 
@@ -353,6 +487,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                 <table className="invest-plan-purchases">
                   <thead>
                     <tr>
+                      <th scope="col" className="invest-plan-purchases__checkbox-header">Done</th>
                       <th scope="col">Area</th>
                       <th scope="col">Action</th>
                       <th scope="col">Symbol</th>
@@ -362,23 +497,82 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                     </tr>
                   </thead>
                   <tbody>
-                    {transactionRows.map((row) => (
-                      <tr key={row.key}>
-                        <td>{row.scope}</td>
-                        <td>{row.side}</td>
-                        <th scope="row">
-                          <div className="invest-plan-symbol">
-                            <span className="invest-plan-symbol__ticker">{row.symbol}</span>
-                            {row.description && (
-                              <span className="invest-plan-symbol__name">{row.description}</span>
+                    {transactionRows.map((row) => {
+                      const isCompleted = completedTransactions.has(row.rowKey);
+                      const rowClassName = isCompleted
+                        ? 'invest-plan-purchases__row invest-plan-purchases__row--completed'
+                        : 'invest-plan-purchases__row';
+                      return (
+                        <tr key={row.rowKey} className={rowClassName}>
+                          <td className="invest-plan-purchases__checkbox-cell">
+                            <input
+                              type="checkbox"
+                              className="invest-plan-purchases__checkbox"
+                              checked={isCompleted}
+                              onChange={() => handleToggleTransaction(row.rowKey)}
+                              aria-label={`Mark ${row.symbol} ${row.side.toLowerCase()} as ${
+                                isCompleted ? 'not completed' : 'completed'
+                              }`}
+                            />
+                          </td>
+                          <td>{row.scope}</td>
+                          <td>{row.side}</td>
+                          <th scope="row">
+                            <div className="invest-plan-symbol">
+                              {row.canCopySymbol ? (
+                                <button
+                                  type="button"
+                                  className="invest-plan-symbol__ticker"
+                                  onClick={() => copyValue(row.symbol, `${row.symbol} symbol`)}
+                                  title="Copy symbol"
+                                  aria-label={`Copy ${row.symbol} symbol`}
+                                >
+                                  {row.symbol}
+                                </button>
+                              ) : (
+                                <span className="invest-plan-symbol__ticker">{row.symbol}</span>
+                              )}
+                              {row.displayDescription && (
+                                <span className="invest-plan-symbol__name" title={row.description || undefined}>
+                                  {row.displayDescription}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <td>
+                            {row.amountCopy ? (
+                              <button
+                                type="button"
+                                className="invest-plan-copy-button"
+                                onClick={() => copyValue(row.amountCopy, `${row.symbol} amount`)}
+                              >
+                                {row.amountLabel}
+                              </button>
+                            ) : (
+                              <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
+                                {row.amountLabel}
+                              </span>
                             )}
-                          </div>
-                        </th>
-                        <td>{row.amountLabel}</td>
-                        <td>{row.sharesLabel}</td>
-                        <td>{row.priceLabel}</td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td>
+                            {row.shareCopy ? (
+                              <button
+                                type="button"
+                                className="invest-plan-copy-button"
+                                onClick={() => copyValue(row.shareCopy, `${row.symbol} shares`)}
+                              >
+                                {row.shareLabel}
+                              </button>
+                            ) : (
+                              <span className="invest-plan-copy-button invest-plan-copy-button--disabled">
+                                {row.shareLabel}
+                              </span>
+                            )}
+                          </td>
+                          <td>{row.priceLabel}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -456,6 +650,7 @@ DeploymentAdjustmentDialog.propTypes = {
     accountLabel: PropTypes.string,
     accountName: PropTypes.string,
     accountNumber: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    accountUrl: PropTypes.string,
     summaryText: PropTypes.string,
     transactions: PropTypes.arrayOf(
       PropTypes.shape({
