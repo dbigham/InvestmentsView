@@ -231,7 +231,8 @@ export default function TotalPnlDialog({
     [filteredSeries]
   );
   const summaryHasDisplayDelta = Number.isFinite(data?.summary?.totalPnlSinceDisplayStartCad);
-  const useDisplayStartDelta = summaryHasDisplayDelta || seriesHasDisplayDelta;
+  // Only use display-start deltas when in CAGR mode; otherwise show absolute all-time values
+  const useDisplayStartDelta = isCagrMode && (summaryHasDisplayDelta || seriesHasDisplayDelta);
   const chartMetrics = useMemo(
     () => buildChartMetrics(filteredSeries, { useDisplayStartDelta }),
     [filteredSeries, useDisplayStartDelta]

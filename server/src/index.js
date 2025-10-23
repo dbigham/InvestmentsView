@@ -3756,16 +3756,39 @@ async function discoverEarliestFundingDate(login, accountId, accountKey) {
       };
       const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey);
       const funding = filterFundingActivities(activities);
-      if (funding.length > 0) {
-        const windowEarliest = findEarliestFundingTimestamp(funding);
+      // Consider trade-like position movements (e.g., book-value transfers logged as trades with quantity)
+      // as a fallback when no explicit funding is present for the window.
+      const tradeLike = activities.filter((activity) => {
+        if (!activity || typeof activity !== 'object') {
+          return false;
+        }
+        const type = typeof activity.type === 'string' ? activity.type : '';
+        const description = typeof activity.description === 'string' ? activity.description : '';
+        // Exclude dividends/distributions explicitly
+        if (/dividend|distribution/i.test(type) || /dividend|distribution/i.test(description)) {
+          return false;
+        }
+        const qty = Number(activity.quantity);
+        if (Number.isFinite(qty) && Math.abs(qty) > 1e-8) {
+          return true;
+        }
+        // Book-value hints without cash
+        if (/\bBOOK\s+VALUE\b/i.test(description)) {
+          return true;
+        }
+        return false;
+      });
+      const relevant = funding.length > 0 ? funding : tradeLike;
+      if (relevant.length > 0) {
+        const windowEarliest = findEarliestFundingTimestamp(relevant);
         if (windowEarliest && (!earliest || windowEarliest < earliest)) {
           earliest = windowEarliest;
         }
         consecutiveEmpty = 0;
         debugTotalPnl(
           accountKey,
-          'Funding month hit',
-          Object.assign({ activities: funding.length }, monthLabel)
+          funding.length > 0 ? 'Funding month hit' : 'Trade-like month hit',
+          Object.assign({ activities: relevant.length }, monthLabel)
         );
       } else {
         consecutiveEmpty += 1;
@@ -5725,8 +5748,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!dateKey) {
       return;
     }
-    const resolvedSymbol = resolveActivitySymbol(activity);
-    processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol || null });
+    const directSymbol = normalizeSymbol(activity.symbol);
+    const fallbackSymbol = resolveActivitySymbol(activity);
+    const resolvedSymbol = directSymbol || fallbackSymbol || null;
+    processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol });
 
     const symbolId = Number(activity.symbolId);
     const activityCurrency = normalizeCurrency(activity.currency) || null;
@@ -5762,6 +5787,55 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   });
 
   processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+
+  // Fetch symbol details early and augment activities missing symbols using symbolId
+  let symbolDetails = {};
+  if (symbolIds.size > 0) {
+    try {
+      symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
+    } catch (symbolError) {
+      symbolDetails = {};
+    }
+  }
+  if (processedActivities.length && symbolDetails && typeof symbolDetails === 'object') {
+    for (const entry of processedActivities) {
+      if (!entry || entry.symbol) {
+        continue;
+      }
+      const id = Number(entry.activity && entry.activity.symbolId);
+      if (!Number.isFinite(id) || id <= 0) {
+        continue;
+      }
+      const detail = symbolDetails[id];
+      const detailSymbol = detail && typeof detail.symbol === 'string' ? detail.symbol : null;
+      const normalized = detailSymbol ? normalizeSymbol(detailSymbol) : null;
+      if (!normalized) {
+        continue;
+      }
+      entry.symbol = normalized;
+      if (!symbolMeta.has(normalized)) {
+        symbolMeta.set(normalized, {
+          symbolId: id,
+          currency:
+            (detail && normalizeCurrency(detail.currency)) || inferSymbolCurrency(normalized) || null,
+          activityCurrency: normalizeCurrency(entry.activity && entry.activity.currency) || null,
+        });
+      } else {
+        const meta = symbolMeta.get(normalized);
+        if (meta) {
+          if ((!meta.symbolId || meta.symbolId <= 0)) {
+            meta.symbolId = id;
+          }
+          if (!meta.currency && detail && detail.currency) {
+            meta.currency = normalizeCurrency(detail.currency) || meta.currency || null;
+          }
+          if (!meta.activityCurrency && entry.activity && entry.activity.currency) {
+            meta.activityCurrency = normalizeCurrency(entry.activity.currency);
+          }
+        }
+      }
+    }
+  }
 
   const accountNumber = account.number || account.accountNumber || account.id;
 
@@ -5841,11 +5915,19 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   let seededHoldings = null;
   let seededCash = null;
-  if (closingHoldings.size || closingCashByCurrency.size) {
+  const hasPreStartPositionActivity = processedActivities.some((entry) => {
+    if (!entry || !(entry.timestamp instanceof Date) || entry.timestamp >= startDate) {
+      return false;
+    }
+    const qty = Number(entry.activity && entry.activity.quantity);
+    return Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON;
+  });
+  if ((closingHoldings.size || closingCashByCurrency.size) && hasPreStartPositionActivity) {
     seededHoldings = closingHoldings.size ? new Map(closingHoldings) : new Map();
     seededCash = closingCashByCurrency.size ? new Map(closingCashByCurrency) : new Map();
     if (processedActivities.length) {
-      const endTimestamp = endDate instanceof Date && !Number.isNaN(endDate.getTime()) ? endDate.getTime() + DAY_IN_MS : null;
+      const endTimestamp =
+        endDate instanceof Date && !Number.isNaN(endDate.getTime()) ? endDate.getTime() + DAY_IN_MS : null;
       const reversed = processedActivities
         .filter((entry) => {
           if (!entry || !(entry.timestamp instanceof Date) || Number.isNaN(entry.timestamp.getTime())) {
@@ -5885,10 +5967,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         }
       }
     }
+  } else {
+    // No activity precedes the period start; avoid seeding phantom holdings/cash.
+    seededHoldings = new Map();
+    seededCash = new Map();
   }
 
-  let symbolDetails = {};
-  if (symbolIds.size > 0) {
+  // symbolDetails may already be fetched above; if not, fetch now
+  if ((!symbolDetails || Object.keys(symbolDetails).length === 0) && symbolIds.size > 0) {
     try {
       symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
     } catch (symbolError) {
@@ -6098,6 +6184,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       };
 
   const applyCagrStart = options.applyAccountCagrStartDate !== false;
+  const shouldScalePnl = false; // disable P&L scaling to avoid distorting shape
   const targetStartPnl = Number.isFinite(rawFirstPnl) ? rawFirstPnl : 0;
   const targetEndPnlCandidate =
     netDepositsSummary.totalPnl && Number.isFinite(netDepositsSummary.totalPnl.allTimeCad)
@@ -6107,7 +6194,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         : null;
 
   if (
-    applyCagrStart &&
+    applyCagrStart && shouldScalePnl &&
     Number.isFinite(rawFirstPnl) &&
     Number.isFinite(rawLastPnl) &&
     Number.isFinite(targetEndPnlCandidate) &&
@@ -6203,7 +6290,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const normalizedPoints = filteredPoints.map((point) => ({ ...point }));
 
   const displayStartPoint = normalizedPoints.length ? normalizedPoints[0] : null;
-  const displayStartTotals = displayStartPoint
+  let displayStartTotals = displayStartPoint
     ? {
         totalPnlCad: Number.isFinite(displayStartPoint.totalPnlCad) ? displayStartPoint.totalPnlCad : null,
         equityCad: Number.isFinite(displayStartPoint.equityCad) ? displayStartPoint.equityCad : null,
@@ -6212,6 +6299,17 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           : null,
       }
     : null;
+
+  // When applying a CAGR start date, treat the baseline at the display start as cost-basis only (P&L = 0),
+  // so that deltas represent gains/losses since the selected start date regardless of earlier positions.
+  if (applyCagrStart && displayStartTotals && Number.isFinite(displayStartTotals.cumulativeNetDepositsCad)) {
+    const depositsAtStart = displayStartTotals.cumulativeNetDepositsCad;
+    displayStartTotals = {
+      totalPnlCad: 0,
+      equityCad: depositsAtStart,
+      cumulativeNetDepositsCad: depositsAtStart,
+    };
+  }
 
   let baselineTotals = null;
   if (normalizedPoints.length) {

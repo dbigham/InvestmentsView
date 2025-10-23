@@ -381,7 +381,8 @@ async function main() {
   const hasRelativeSeries = Array.isArray(displaySeries)
     && displaySeries.some((point) => Number.isFinite(point && point.totalPnlSinceDisplayStartCad));
   const summaryHasDisplayDelta = Number.isFinite(series.summary?.totalPnlSinceDisplayStartCad);
-  const useDisplayStartRelative = summaryHasDisplayDelta || (!keepCagrStart && hasRelativeSeries);
+  // Show deltas only when we are keeping the CAGR start date; otherwise show absolute (all-time) values
+  const useDisplayStartRelative = keepCagrStart && (summaryHasDisplayDelta || hasRelativeSeries);
 
   console.log('Summary:');
   console.log('  Net deposits CAD:', formatNumber(series.summary.netDepositsCad));
