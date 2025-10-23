@@ -1748,7 +1748,7 @@ textarea {
 }
 
 .deployment-plan-controls__number-input {
-  width: 72px;
+  width: 84px;
   padding: 6px 8px;
   font-size: 14px;
   border: 1px solid var(--color-divider);

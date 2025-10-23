@@ -2386,6 +2386,7 @@ function buildDeploymentAdjustmentPlan({
   const usdCash = resolveCashForCurrency(balances, 'USD');
   const cadCashBase = normalizeCurrencyAmount(cadCash, 'CAD', currencyRates, normalizedBase);
   const usdCashBase = normalizeCurrencyAmount(usdCash, 'USD', currencyRates, normalizedBase);
+  const cashReserveBase = cadCashBase + usdCashBase;
 
   const totalBase = deployedBaseTotal + reserveBaseTotal + cadCashBase + usdCashBase;
   if (!Number.isFinite(totalBase) || totalBase <= 0) {
@@ -2398,9 +2399,24 @@ function buildDeploymentAdjustmentPlan({
   const targetDeployedBase = (targetPercent / 100) * totalBase;
   const targetReserveBase = totalBase - targetDeployedBase;
 
+  const targetCashTotalBase = Math.min(targetReserveBase, cashReserveBase);
+  const cashScale =
+    cashReserveBase > TRANSACTION_EPSILON && targetCashTotalBase > 0
+      ? targetCashTotalBase / cashReserveBase
+      : 0;
+  const targetCashCadBase = cashReserveBase > TRANSACTION_EPSILON ? cadCashBase * cashScale : 0;
+  const targetCashUsdBase = cashReserveBase > TRANSACTION_EPSILON ? usdCashBase * cashScale : 0;
+  const desiredReserveHoldingsBase = Math.max(0, targetReserveBase - targetCashTotalBase);
+
   const deployScale = currentDeployedBase > 0 ? targetDeployedBase / currentDeployedBase : 0;
-  const hasReserveBase = currentReserveBase > TRANSACTION_EPSILON;
-  const reserveScale = hasReserveBase ? targetReserveBase / currentReserveBase : null;
+  const reserveHoldingsBase = reserveBaseTotal;
+  const hasReserveHoldings = reserveHoldings.some(
+    (holding) => Number.isFinite(holding.normalizedValue) && Math.abs(holding.normalizedValue) > TRANSACTION_EPSILON
+  );
+  const reserveScale =
+    hasReserveHoldings && reserveHoldingsBase > TRANSACTION_EPSILON
+      ? desiredReserveHoldingsBase / reserveHoldingsBase
+      : null;
 
   if (currentDeployedBase <= 0 && targetDeployedBase > 0) {
     return null;
@@ -2496,7 +2512,7 @@ function buildDeploymentAdjustmentPlan({
   }
 
   if (reserveScale === null) {
-    const reserveIncreaseBase = targetReserveBase;
+    const reserveIncreaseBase = desiredReserveHoldingsBase;
     if (reserveIncreaseBase > TRANSACTION_EPSILON) {
       let targets = reserveHoldings
         .filter((holding) => Number.isFinite(holding.price) && holding.price > 0)
@@ -2580,8 +2596,6 @@ function buildDeploymentAdjustmentPlan({
     }
   }
 
-  const targetCashCadBase = reserveScale !== null ? cadCashBase * reserveScale : 0;
-  const targetCashUsdBase = reserveScale !== null ? usdCashBase * reserveScale : 0;
   const targetCashCad = convertAmountToCurrency(
     targetCashCadBase,
     normalizedBase,
