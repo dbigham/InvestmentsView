@@ -476,6 +476,10 @@ export default function SummaryMetrics({
       Number.isFinite(deploymentSummary.reserveValue) ||
       Number.isFinite(deploymentSummary.deployedPercent) ||
       Number.isFinite(deploymentSummary.reservePercent));
+  const isCombinedView =
+    currencyOption?.scope === 'combined' &&
+    (currencyOption?.currency === 'CAD' || currencyOption?.currency === 'USD');
+  const showDeploymentBreakdown = deploymentAvailable && isCombinedView;
   const deployedValue = Number.isFinite(deploymentSummary?.deployedValue)
     ? deploymentSummary.deployedValue
     : 0;
@@ -917,7 +921,7 @@ export default function SummaryMetrics({
             tone="neutral"
             onActivate={onShowCashBreakdown || null}
           />
-          {deploymentAvailable && (
+          {showDeploymentBreakdown && (
             <MetricRow
               label="Deployed"
               value={formatMoney(deployedValue)}
@@ -926,7 +930,7 @@ export default function SummaryMetrics({
               onActivate={onAdjustDeployment}
             />
           )}
-          {deploymentAvailable && (
+          {showDeploymentBreakdown && (
             <MetricRow
               label="Reserve"
               value={formatMoney(reserveValue)}
