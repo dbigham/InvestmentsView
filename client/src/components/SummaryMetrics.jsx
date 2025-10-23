@@ -433,6 +433,7 @@ export default function SummaryMetrics({
   currencyOptions,
   onCurrencyChange,
   balances,
+  deploymentSummary,
   pnl,
   fundingSummary,
   asOf,
@@ -468,7 +469,25 @@ export default function SummaryMetrics({
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
-  const buyingPower = balances?.buyingPower ?? null;
+  const deploymentAvailable =
+    deploymentSummary &&
+    (Number.isFinite(deploymentSummary.deployedValue) ||
+      Number.isFinite(deploymentSummary.reserveValue) ||
+      Number.isFinite(deploymentSummary.deployedPercent) ||
+      Number.isFinite(deploymentSummary.reservePercent));
+  const deployedValue = Number.isFinite(deploymentSummary?.deployedValue)
+    ? deploymentSummary.deployedValue
+    : 0;
+  const reserveValue = Number.isFinite(deploymentSummary?.reserveValue)
+    ? deploymentSummary.reserveValue
+    : 0;
+  const percentDisplayOptions = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+  const deployedPercentLabel = Number.isFinite(deploymentSummary?.deployedPercent)
+    ? `(${formatNumber(deploymentSummary.deployedPercent, percentDisplayOptions)}%)`
+    : null;
+  const reservePercentLabel = Number.isFinite(deploymentSummary?.reservePercent)
+    ? `(${formatNumber(deploymentSummary.reservePercent, percentDisplayOptions)}%)`
+    : null;
 
   const totalPnlValue = Number.isFinite(fundingSummary?.totalPnlCad)
     ? fundingSummary.totalPnlCad
@@ -897,7 +916,22 @@ export default function SummaryMetrics({
             tone="neutral"
             onActivate={onShowCashBreakdown || null}
           />
-          <MetricRow label="Buying power" value={formatMoney(buyingPower)} tone="neutral" />
+          {deploymentAvailable && (
+            <MetricRow
+              label="Deployed"
+              value={formatMoney(deployedValue)}
+              extra={deployedPercentLabel}
+              tone="neutral"
+            />
+          )}
+          {deploymentAvailable && (
+            <MetricRow
+              label="Reserve"
+              value={formatMoney(reserveValue)}
+              extra={reservePercentLabel}
+              tone="neutral"
+            />
+          )}
         </dl>
       </div>
 
@@ -925,7 +959,12 @@ SummaryMetrics.propTypes = {
     totalEquity: PropTypes.number,
     marketValue: PropTypes.number,
     cash: PropTypes.number,
-    buyingPower: PropTypes.number,
+  }),
+  deploymentSummary: PropTypes.shape({
+    deployedValue: PropTypes.number,
+    deployedPercent: PropTypes.number,
+    reserveValue: PropTypes.number,
+    reservePercent: PropTypes.number,
   }),
   pnl: PropTypes.shape({
     dayPnl: PropTypes.number,
@@ -1032,6 +1071,7 @@ SummaryMetrics.propTypes = {
 SummaryMetrics.defaultProps = {
   currencyOption: null,
   balances: null,
+  deploymentSummary: null,
   asOf: null,
   onRefresh: null,
   displayTotalEquity: null,

@@ -1343,6 +1343,16 @@ const TODO_AMOUNT_EPSILON = 0.009;
 const TODO_AMOUNT_TOLERANCE = 0.01;
 const TODO_TYPE_ORDER = { rebalance: 0, cash: 1 };
 
+const RESERVE_SYMBOLS = new Set(['SGOV', 'BIL', 'VBIL', 'PSA.TO', 'HFR.TO']);
+
+function normalizeSymbolKey(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed.toUpperCase() : '';
+}
+
 function buildTodoItems({ accountIds, accountsById, accountBalances, investmentModelSections }) {
   if (!Array.isArray(accountIds) || accountIds.length === 0) {
     return [];
@@ -4006,6 +4016,156 @@ export default function App() {
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
+  const activeAccountIdsForDeployment = useMemo(() => {
+    if (selectedAccount === 'all') {
+      if (!accountsInView.length) {
+        return null;
+      }
+      const identifiers = accountsInView
+        .map((accountId) => {
+          if (accountId === undefined || accountId === null) {
+            return '';
+          }
+          const normalized = String(accountId).trim();
+          return normalized || '';
+        })
+        .filter(Boolean);
+      return identifiers.length ? new Set(identifiers) : null;
+    }
+
+    const identifiers = new Set();
+    if (selectedAccountInfo && selectedAccountInfo.id !== undefined && selectedAccountInfo.id !== null) {
+      const normalizedId = String(selectedAccountInfo.id).trim();
+      if (normalizedId) {
+        identifiers.add(normalizedId);
+      }
+    }
+    if (selectedAccount !== undefined && selectedAccount !== null && selectedAccount !== 'all') {
+      const normalizedSelection = String(selectedAccount).trim();
+      if (normalizedSelection) {
+        identifiers.add(normalizedSelection);
+      }
+    }
+
+    return identifiers.size ? identifiers : null;
+  }, [selectedAccount, selectedAccountInfo, accountsInView]);
+
+  const reservePositionsByCurrency = useMemo(() => {
+    if (!Array.isArray(rawPositions) || rawPositions.length === 0) {
+      return new Map();
+    }
+
+    let relevantPositions = rawPositions;
+    if (activeAccountIdsForDeployment && activeAccountIdsForDeployment.size > 0) {
+      relevantPositions = rawPositions.filter((position) => {
+        if (!position) {
+          return false;
+        }
+        const positionAccountId =
+          position.accountId !== undefined && position.accountId !== null
+            ? String(position.accountId).trim()
+            : '';
+        if (positionAccountId && activeAccountIdsForDeployment.has(positionAccountId)) {
+          return true;
+        }
+        const positionAccountNumber =
+          position.accountNumber !== undefined && position.accountNumber !== null
+            ? String(position.accountNumber).trim()
+            : '';
+        if (positionAccountNumber && activeAccountIdsForDeployment.has(positionAccountNumber)) {
+          return true;
+        }
+        return false;
+      });
+    }
+
+    if (!relevantPositions.length) {
+      return new Map();
+    }
+
+    const totals = new Map();
+    relevantPositions.forEach((position) => {
+      if (!position) {
+        return;
+      }
+      const symbolKey = normalizeSymbolKey(position.symbol);
+      if (!symbolKey || !RESERVE_SYMBOLS.has(symbolKey)) {
+        return;
+      }
+
+      const marketValue = coerceNumber(position.currentMarketValue);
+      if (marketValue === null || !Number.isFinite(marketValue) || marketValue <= 0) {
+        return;
+      }
+
+      const currencyKey = normalizeSymbolKey(position.currency);
+      if (!currencyKey) {
+        return;
+      }
+
+      const existing = totals.get(currencyKey) || 0;
+      totals.set(currencyKey, existing + marketValue);
+    });
+
+    return totals;
+  }, [rawPositions, activeAccountIdsForDeployment]);
+
+  const activeDeploymentSummary = useMemo(() => {
+    if (!activeCurrency || !activeBalances) {
+      return null;
+    }
+
+    const totalEquityValue = coerceNumber(activeBalances.totalEquity);
+    const marketValueValue = coerceNumber(activeBalances.marketValue);
+    const total =
+      totalEquityValue !== null
+        ? totalEquityValue
+        : marketValueValue !== null
+          ? marketValueValue
+          : 0;
+
+    const cashValueRaw = coerceNumber(activeBalances.cash);
+    const cashValue = cashValueRaw !== null ? cashValueRaw : 0;
+
+    let reserveFromPositions = 0;
+    if (reservePositionsByCurrency && reservePositionsByCurrency.size > 0) {
+      const targetCurrency = normalizeSymbolKey(activeCurrency.currency) || baseCurrency;
+      reservePositionsByCurrency.forEach((amount, sourceCurrency) => {
+        if (!Number.isFinite(amount) || amount <= 0) {
+          return;
+        }
+        const converted = convertAmountToCurrency(
+          amount,
+          sourceCurrency,
+          targetCurrency,
+          currencyRates,
+          baseCurrency
+        );
+        if (Number.isFinite(converted)) {
+          reserveFromPositions += converted;
+        }
+      });
+    }
+
+    const reserveValue = Math.max(0, cashValue + reserveFromPositions);
+    const deployedValue = Math.max(0, total - reserveValue);
+    const deployedPercent = total > 0 ? (deployedValue / total) * 100 : null;
+    const reservePercent = total > 0 ? (reserveValue / total) * 100 : null;
+
+    return {
+      deployedValue,
+      deployedPercent,
+      reserveValue,
+      reservePercent,
+    };
+  }, [
+    activeCurrency,
+    activeBalances,
+    reservePositionsByCurrency,
+    currencyRates,
+    baseCurrency,
+  ]);
+
   const fundingSummaryVariants = useMemo(() => {
     if (!selectedAccountFunding) {
       return null;
@@ -6155,6 +6315,7 @@ export default function App() {
             currencyOptions={currencyOptions}
             onCurrencyChange={setCurrencyView}
             balances={activeBalances}
+            deploymentSummary={activeDeploymentSummary}
             pnl={activePnl}
             fundingSummary={fundingSummaryForDisplay}
             asOf={asOf}
