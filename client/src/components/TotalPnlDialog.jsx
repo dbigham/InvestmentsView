@@ -321,6 +321,8 @@ export default function TotalPnlDialog({
       ? marker.totalPnl
       : null;
   const markerLabel = Number.isFinite(markerValue) ? formatMoney(markerValue) : null;
+  const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
+  const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
   const labelPosition = useMemo(() => {
     const point = hoverPoint || marker;
     if (!point) {
@@ -341,23 +343,9 @@ export default function TotalPnlDialog({
         amount: formatMoney(
           useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
         ),
-        secondary:
-          !useDisplayStartDelta &&
-          Number.isFinite(hoverPoint.totalPnlDelta) &&
-          Math.abs(hoverPoint.totalPnlDelta) > 0.005
-            ? `${formatSignedMoney(hoverPoint.totalPnlDelta)} since start`
-            : null,
         date: formatDate(hoverPoint.date),
       }
     : null;
-
-  const markerSecondary =
-    !useDisplayStartDelta &&
-    marker &&
-    Number.isFinite(marker.totalPnlDelta) &&
-    Math.abs(marker.totalPnlDelta) > 0.005
-      ? `${formatSignedMoney(marker.totalPnlDelta)} since start`
-      : null;
 
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
@@ -402,9 +390,6 @@ export default function TotalPnlDialog({
   } else if (totalPnlTone === 'neutral') {
     totalPnlClassNames.push('pnl-dialog__summary-value--neutral');
   }
-  const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
-  const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
-
   const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
   const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
     ? summary.netDepositsAllTimeCad
@@ -602,11 +587,6 @@ export default function TotalPnlDialog({
                     {(hoverLabel || markerLabel) && (
                       <div className="qqq-section__chart-label" style={labelPosition}>
                         <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
-                        {(hoverLabel?.secondary || markerSecondary) && (
-                          <span className="pnl-dialog__label-delta">
-                            {hoverLabel ? hoverLabel.secondary : markerSecondary}
-                          </span>
-                        )}
                         <span className="pnl-dialog__label-date">
                           {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
                         </span>
