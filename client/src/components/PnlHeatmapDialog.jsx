@@ -245,6 +245,24 @@ function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
 
 const STYLE_TWO_MIN_SHARE = 0.005;
 
+const HEATMAP_SYMBOL_LABELS = {
+  SGOV: 'T-Bills',
+  SPLG: 'S&P 500',
+  TSLA: 'Tesla',
+  NVDA: 'NVIDIA',
+  VXUS: 'Non-US',
+  VCN: 'Canadian',
+  QQQ: 'Nasdaq-100',
+};
+
+function resolveDisplaySymbol(symbol) {
+  if (!symbol) {
+    return symbol;
+  }
+  const key = String(symbol).toUpperCase();
+  return HEATMAP_SYMBOL_LABELS[key] || symbol;
+}
+
 const MERGED_SYMBOL_ALIASES = new Map([
   ['QQQM', 'QQQ'],
   ['IBIT.U', 'IBIT'],
@@ -411,6 +429,7 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
           position.symbolId ||
           String(position.id || position.symbol || Math.random()),
         symbol: position.symbol || position.symbolId || '—',
+        displaySymbol: resolveDisplaySymbol(position.symbol || position.symbolId || '—'),
         description: position.description || null,
         weight: marketValue,
         marketValue,
@@ -967,7 +986,9 @@ export default function PnlHeatmapDialog({
                     : null
                   : null;
                 const tooltipLines = [
-                  node.description ? `${node.symbol} — ${node.description}` : node.symbol,
+                  node.description
+                    ? `${node.displaySymbol || node.symbol} — ${node.description}`
+                    : node.displaySymbol || node.symbol,
                   pnlLine,
                   priceLine,
                   !isStyleTwo && shareLabel ? `Portfolio share: ${shareLabel}` : null,
@@ -1005,7 +1026,7 @@ export default function PnlHeatmapDialog({
                       className="pnl-heatmap-board__symbol"
                       style={{ fontSize: `${symbolFontSize}px`, lineHeight: 1 }}
                     >
-                      {node.symbol}
+                      {node.displaySymbol || node.symbol}
                     </span>
                     <span
                       className="pnl-heatmap-board__value"
