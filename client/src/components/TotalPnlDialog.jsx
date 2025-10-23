@@ -321,6 +321,9 @@ export default function TotalPnlDialog({
       ? marker.totalPnl
       : null;
   const markerLabel = Number.isFinite(markerValue) ? formatMoney(markerValue) : null;
+  const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
+  const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
+  const tooltipSinceLabel = displayRangeStart ? `since ${formatDate(displayRangeStart)}` : null;
   const labelPosition = useMemo(() => {
     const point = hoverPoint || marker;
     if (!point) {
@@ -341,23 +344,12 @@ export default function TotalPnlDialog({
         amount: formatMoney(
           useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
         ),
-        secondary:
-          !useDisplayStartDelta &&
-          Number.isFinite(hoverPoint.totalPnlDelta) &&
-          Math.abs(hoverPoint.totalPnlDelta) > 0.005
-            ? `${formatSignedMoney(hoverPoint.totalPnlDelta)} since start`
-            : null,
+        secondary: tooltipSinceLabel,
         date: formatDate(hoverPoint.date),
       }
     : null;
 
-  const markerSecondary =
-    !useDisplayStartDelta &&
-    marker &&
-    Number.isFinite(marker.totalPnlDelta) &&
-    Math.abs(marker.totalPnlDelta) > 0.005
-      ? `${formatSignedMoney(marker.totalPnlDelta)} since start`
-      : null;
+  const markerSecondary = tooltipSinceLabel;
 
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
@@ -402,9 +394,6 @@ export default function TotalPnlDialog({
   } else if (totalPnlTone === 'neutral') {
     totalPnlClassNames.push('pnl-dialog__summary-value--neutral');
   }
-  const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.periodStartDate;
-  const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.periodEndDate;
-
   const netDepositsCombined = Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad : null;
   const netDepositsAllTime = Number.isFinite(summary.netDepositsAllTimeCad)
     ? summary.netDepositsAllTimeCad
