@@ -3913,10 +3913,10 @@ button.time-pill:hover .time-pill__icon {
 
 .dividends-panel__controls {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: center;
   gap: 8px;
-  padding: 12px 24px 6px;
+  padding: 16px 24px 4px;
 }
 
 .dividends-panel__label {
