@@ -468,7 +468,7 @@ export default function QqqTemperatureSection({
               onClick={handleMarkRebalanced}
               disabled={markingRebalanced || loading}
             >
-              {markingRebalanced ? 'Working…' : 'Rebalanced'}
+              {markingRebalanced ? 'Working…' : 'Mark as Rebalanced'}
             </button>
           )}
         </div>

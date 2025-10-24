@@ -368,7 +368,7 @@ function ActionMenu({
                 onClick={handleMarkAsRebalanced}
                 disabled={busy}
               >
-                Mark as rebalanced
+                Mark as Rebalanced
               </button>
             </li>
           )}
