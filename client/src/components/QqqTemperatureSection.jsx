@@ -285,6 +285,8 @@ export default function QqqTemperatureSection({
   const evaluationData = evaluationStatus === 'ok' && evaluation && typeof evaluation === 'object' ? evaluation.data || null : null;
   const evaluationDecision = evaluationData && typeof evaluationData === 'object' ? evaluationData.decision || null : null;
   const evaluationReason = evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.reason || null : null;
+  const evaluationDescription =
+    evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.description || null : null;
   const evaluationAction = evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.action || null : null;
   const evaluationActionClass = evaluationAction
     ? String(evaluationAction)
@@ -419,11 +421,15 @@ export default function QqqTemperatureSection({
   const evaluationBlock = evaluationContent ? (
     <div className={`qqq-section__evaluation qqq-section__evaluation--${evaluationStatus}`}>{evaluationContent}</div>
   ) : null;
+  const targetMetText = 'target allocation already met';
+  const normalizedReason = evaluationReason ? String(evaluationReason).toLowerCase() : '';
+  const normalizedDescription = evaluationDescription ? String(evaluationDescription).toLowerCase() : '';
+  const allowHoldOverride = normalizedReason.includes(targetMetText) || normalizedDescription.includes(targetMetText);
   const canMarkRebalanced = Boolean(
     lastRebalance &&
       typeof onMarkRebalanced === 'function' &&
       normalizedEvaluationAction &&
-      normalizedEvaluationAction !== 'hold'
+      (normalizedEvaluationAction !== 'hold' || allowHoldOverride)
   );
   const showModelMeta = Boolean(lastRebalance || canMarkRebalanced);
 
