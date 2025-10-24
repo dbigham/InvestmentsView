@@ -6,6 +6,8 @@ const CHART_WIDTH = 720;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 0, bottom: 4.5, left: 0 };
 const DEFAULT_REFERENCE_TEMPERATURES = [1, 1.5, 0.5];
+const SUPPLEMENTAL_REFERENCE_TEMPERATURES = [0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4];
+const EXTENDED_REFERENCE_TEMPERATURES = [1.6, 1.7, 1.8, 1.9, 2];
 
 const TIMEFRAME_OPTIONS = [
   { value: '1M', label: '1 month' },
@@ -116,7 +118,7 @@ function filterSeries(series, timeframe) {
   });
 }
 
-function buildChartMetrics(series) {
+function buildChartMetrics(series, referenceTemperatures = DEFAULT_REFERENCE_TEMPERATURES) {
   if (!Array.isArray(series) || series.length === 0) {
     return null;
   }
@@ -130,9 +132,14 @@ function buildChartMetrics(series) {
     return null;
   }
   const values = sanitized.map((entry) => entry.temperature);
-  const baseLines = [1, 1.5, 0.5];
-  const minValue = Math.min(...values, ...baseLines);
-  const maxValue = Math.max(...values, ...baseLines);
+  const normalizedReferenceTemperatures = Array.isArray(referenceTemperatures)
+    ? referenceTemperatures.filter((value) => Number.isFinite(value))
+    : [];
+  const referenceValues = normalizedReferenceTemperatures.length
+    ? normalizedReferenceTemperatures
+    : DEFAULT_REFERENCE_TEMPERATURES;
+  const minValue = Math.min(...values, ...referenceValues);
+  const maxValue = Math.max(...values, ...referenceValues);
   const range = maxValue - minValue;
   const padding = range === 0 ? 0.1 : range * 0.1;
   const minDomain = Math.max(0, minValue - padding);
@@ -178,7 +185,7 @@ export default function QqqTemperatureSection({
   const [timeframe, setTimeframe] = useState('5Y');
   const [markingRebalanced, setMarkingRebalanced] = useState(false);
   const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
-  const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
+  const latestTemperature = Number(data?.latest?.temperature);
   const referenceTemperatures = useMemo(() => {
     if (!Array.isArray(data?.referenceTemperatures)) {
       return DEFAULT_REFERENCE_TEMPERATURES;
@@ -191,12 +198,54 @@ export default function QqqTemperatureSection({
     }
     return normalized;
   }, [data?.referenceTemperatures]);
-  const latestTemperature = Number(data?.latest?.temperature);
+  const supplementalReferenceTemperatures = useMemo(() => {
+    const values = [...SUPPLEMENTAL_REFERENCE_TEMPERATURES];
+    if (Number.isFinite(latestTemperature) && latestTemperature > 1.5) {
+      values.push(...EXTENDED_REFERENCE_TEMPERATURES);
+    }
+    return values;
+  }, [latestTemperature]);
+  const domainReferenceTemperatures = useMemo(() => {
+    const combined = new Set();
+    referenceTemperatures.forEach((value) => {
+      if (Number.isFinite(value)) {
+        combined.add(value);
+      }
+    });
+    supplementalReferenceTemperatures.forEach((value) => {
+      if (Number.isFinite(value)) {
+        combined.add(value);
+      }
+    });
+    if (combined.size === 0) {
+      DEFAULT_REFERENCE_TEMPERATURES.forEach((value) => combined.add(value));
+    }
+    return Array.from(combined);
+  }, [referenceTemperatures, supplementalReferenceTemperatures]);
+  const chartMetrics = useMemo(
+    () => buildChartMetrics(filteredSeries, domainReferenceTemperatures),
+    [filteredSeries, domainReferenceTemperatures],
+  );
   const latestLabel = Number.isFinite(latestTemperature)
     ? `T = ${formatNumber(latestTemperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : null;
 
   const hasChart = chartMetrics && chartMetrics.points.length >= 1;
+  const additionalReferenceLines = useMemo(() => {
+    if (!hasChart || !chartMetrics) {
+      return [];
+    }
+    const baselineSet = new Set(
+      referenceTemperatures
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value)),
+    );
+    return supplementalReferenceTemperatures
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && !baselineSet.has(value))
+      .map((value) => ({ value, y: chartMetrics.yFor(value) }))
+      .filter((entry) => Number.isFinite(entry.y));
+  }, [chartMetrics, hasChart, referenceTemperatures, supplementalReferenceTemperatures]);
   const displayRangeStart = chartMetrics ? chartMetrics.rangeStart : data?.rangeStart;
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.rangeEnd;
   const resolvedTitle = title || (modelName ? 'Investment Model' : 'QQQ temperature');
@@ -522,6 +571,20 @@ export default function QqqTemperatureSection({
               height={CHART_HEIGHT}
               rx="16"
             />
+            {additionalReferenceLines.length > 0 && (
+              <g className="qqq-section__reference-lines">
+                {additionalReferenceLines.map((line) => (
+                  <line
+                    key={line.value}
+                    className="qqq-section__line qqq-section__line--reference"
+                    x1={PADDING.left}
+                    x2={CHART_WIDTH - PADDING.right}
+                    y1={line.y}
+                    y2={line.y}
+                  />
+                ))}
+              </g>
+            )}
             {guideLines && (
               <g className="qqq-section__guides">
                 {Number.isFinite(guideLines.base) && (
