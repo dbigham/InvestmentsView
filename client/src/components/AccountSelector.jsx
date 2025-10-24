@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { openAccountSummary } from '../utils/questrade';
+import { buildAccountViewUrl } from '../utils/navigation';
 
 function normalizeLabel(value) {
   if (!value) {
@@ -297,10 +298,26 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
     }
   }, [disabled, isOpen]);
 
-  const handleSelect = (option) => {
+  const handleSelect = (option, event) => {
     if (!option) {
       return;
     }
+
+    const shouldOpenInNewTab = Boolean(
+      event && (event.ctrlKey || event.metaKey || event.button === 1)
+    );
+    if (shouldOpenInNewTab) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const targetUrl = buildAccountViewUrl(option.value);
+      if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      }
+      setIsOpen(false);
+      return;
+    }
+
     if (option.value !== selected) {
       onChange(option.value);
     }
@@ -456,7 +473,7 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
                     aria-selected={option.value === selected}
                     className={optionClasses.join(' ')}
                     onMouseEnter={() => setHighlightedIndex(index)}
-                    onClick={() => handleSelect(option)}
+                    onClick={(event) => handleSelect(option, event)}
                   >
                     <div className="account-selector__option-content">
                       {option.meta && <span className="account-selector__meta">{option.meta}</span>}
