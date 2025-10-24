@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatNumber, formatPercent } from '../utils/formatters';
 
@@ -173,8 +173,10 @@ export default function QqqTemperatureSection({
   modelName,
   lastRebalance,
   evaluation,
+  onMarkRebalanced,
 }) {
   const [timeframe, setTimeframe] = useState('5Y');
+  const [markingRebalanced, setMarkingRebalanced] = useState(false);
   const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
   const chartMetrics = useMemo(() => buildChartMetrics(filteredSeries), [filteredSeries]);
   const referenceTemperatures = useMemo(() => {
@@ -283,12 +285,19 @@ export default function QqqTemperatureSection({
   const evaluationData = evaluationStatus === 'ok' && evaluation && typeof evaluation === 'object' ? evaluation.data || null : null;
   const evaluationDecision = evaluationData && typeof evaluationData === 'object' ? evaluationData.decision || null : null;
   const evaluationReason = evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.reason || null : null;
+  const evaluationDescription =
+    evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.description || null : null;
   const evaluationAction = evaluationDecision && typeof evaluationDecision === 'object' ? evaluationDecision.action || null : null;
   const evaluationActionClass = evaluationAction
     ? String(evaluationAction)
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
     : 'hold';
+  const normalizedEvaluationAction = evaluationAction
+    ? String(evaluationAction)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '')
+    : '';
   const evaluationMetrics = [];
   const percentOptions = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
 
@@ -412,6 +421,31 @@ export default function QqqTemperatureSection({
   const evaluationBlock = evaluationContent ? (
     <div className={`qqq-section__evaluation qqq-section__evaluation--${evaluationStatus}`}>{evaluationContent}</div>
   ) : null;
+  const targetMetText = 'target allocation already met';
+  const normalizedReason = evaluationReason ? String(evaluationReason).toLowerCase() : '';
+  const normalizedDescription = evaluationDescription ? String(evaluationDescription).toLowerCase() : '';
+  const allowHoldOverride = normalizedReason.includes(targetMetText) || normalizedDescription.includes(targetMetText);
+  const canMarkRebalanced = Boolean(
+    lastRebalance &&
+      typeof onMarkRebalanced === 'function' &&
+      normalizedEvaluationAction &&
+      (normalizedEvaluationAction !== 'hold' || allowHoldOverride)
+  );
+  const showModelMeta = Boolean(lastRebalance || canMarkRebalanced);
+
+  const handleMarkRebalanced = useCallback(async () => {
+    if (!onMarkRebalanced || markingRebalanced) {
+      return;
+    }
+    setMarkingRebalanced(true);
+    try {
+      await onMarkRebalanced();
+    } catch (error) {
+      console.error('Failed to mark investment model as rebalanced', error);
+    } finally {
+      setMarkingRebalanced(false);
+    }
+  }, [onMarkRebalanced, markingRebalanced]);
 
   return (
     <section className="qqq-section" aria-labelledby={headingId}>
@@ -420,11 +454,23 @@ export default function QqqTemperatureSection({
         <span className="qqq-section__updated">{`Updated ${formatDate(data?.updated)}`}</span>
       </div>
 
-      {lastRebalance && (
+      {showModelMeta && (
         <div className="qqq-section__model-meta">
-          <span>
-            <span className="qqq-section__meta-label">Last rebalance:</span> {formatDate(lastRebalance)}
-          </span>
+          {lastRebalance && (
+            <span>
+              <span className="qqq-section__meta-label">Last rebalance:</span> {formatDate(lastRebalance)}
+            </span>
+          )}
+          {canMarkRebalanced && (
+            <button
+              type="button"
+              className="qqq-section__mark-button"
+              onClick={handleMarkRebalanced}
+              disabled={markingRebalanced || loading}
+            >
+              {markingRebalanced ? 'Working…' : 'Mark as Rebalanced'}
+            </button>
+          )}
         </div>
       )}
 
@@ -565,6 +611,7 @@ QqqTemperatureSection.propTypes = {
     data: PropTypes.object,
     message: PropTypes.string,
   }),
+  onMarkRebalanced: PropTypes.func,
 };
 
 QqqTemperatureSection.defaultProps = {
@@ -576,4 +623,5 @@ QqqTemperatureSection.defaultProps = {
   modelName: null,
   lastRebalance: null,
   evaluation: null,
+  onMarkRebalanced: null,
 };
