@@ -36,6 +36,7 @@ import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl } from './utils/questrade';
+import { buildAccountViewUrl, readAccountIdFromLocation } from './utils/navigation';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -3417,8 +3418,20 @@ function preparePositionsForHeatmap(positions, currencyRates, baseCurrency = 'CA
 }
 
 export default function App() {
-  const [selectedAccountState, setSelectedAccountState] = useState('all');
-  const [activeAccountId, setActiveAccountId] = useState('default');
+  const initialAccountIdFromUrl = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    return readAccountIdFromLocation(window.location);
+  }, []);
+
+  const [selectedAccountState, setSelectedAccountState] = useState(() => {
+    if (!initialAccountIdFromUrl || initialAccountIdFromUrl === 'default') {
+      return 'all';
+    }
+    return initialAccountIdFromUrl;
+  });
+  const [activeAccountId, setActiveAccountId] = useState(() => initialAccountIdFromUrl || 'default');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
@@ -3476,6 +3489,17 @@ export default function App() {
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const nextUrl = buildAccountViewUrl(activeAccountId);
+    if (!nextUrl || nextUrl === window.location.href) {
+      return;
+    }
+    window.history.replaceState(null, '', nextUrl);
+  }, [activeAccountId]);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
   const rebalanceTodos = useMemo(() => {
