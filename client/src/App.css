@@ -3666,6 +3666,10 @@ button.time-pill:hover .time-pill__icon {
   stroke-linecap: round;
 }
 
+.qqq-section__reference-lines {
+  stroke-linecap: round;
+}
+
 .qqq-section__line {
   stroke: rgba(136, 149, 167, 0.4);
   stroke-width: 1;
@@ -3678,6 +3682,11 @@ button.time-pill:hover .time-pill__icon {
 
 .qqq-section__line--guide {
   stroke-dasharray: 6 6;
+}
+
+.qqq-section__line--reference {
+  stroke: rgba(136, 149, 167, 0.18);
+  stroke-dasharray: 3 6;
 }
 
 .qqq-section__series-path {
