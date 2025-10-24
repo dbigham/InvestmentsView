@@ -303,17 +303,19 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
       return;
     }
 
-    const shouldOpenInNewTab = Boolean(event && (event.ctrlKey || event.metaKey));
+    const shouldOpenInNewTab = Boolean(
+      event && (event.ctrlKey || event.metaKey || event.button === 1)
+    );
     if (shouldOpenInNewTab) {
+      event.preventDefault();
+      event.stopPropagation();
+
       const targetUrl = buildAccountViewUrl(option.value);
       if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
-        const opened = window.open(targetUrl, '_blank', 'noopener,noreferrer');
-        if (opened) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
       }
+      setIsOpen(false);
+      return;
     }
 
     if (option.value !== selected) {
