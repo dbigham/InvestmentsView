@@ -12,6 +12,7 @@ export default function QqqTemperatureDialog({
   lastRebalance,
   evaluation,
   title,
+  onMarkRebalanced,
 }) {
   useEffect(() => {
     function handleKeyDown(event) {
@@ -47,6 +48,7 @@ export default function QqqTemperatureDialog({
             modelName={modelName}
             lastRebalance={lastRebalance}
             evaluation={evaluation}
+            onMarkRebalanced={onMarkRebalanced}
           />
         </div>
       </div>
@@ -64,6 +66,7 @@ QqqTemperatureDialog.propTypes = {
   lastRebalance: PropTypes.string,
   evaluation: QqqTemperatureSection.propTypes.evaluation,
   title: PropTypes.string,
+  onMarkRebalanced: PropTypes.func,
 };
 
 QqqTemperatureDialog.defaultProps = {
@@ -75,4 +78,5 @@ QqqTemperatureDialog.defaultProps = {
   lastRebalance: null,
   evaluation: QqqTemperatureSection.defaultProps.evaluation,
   title: 'Investment Model',
+  onMarkRebalanced: null,
 };

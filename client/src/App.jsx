@@ -5177,11 +5177,18 @@ export default function App() {
           return accumulator;
         }
         const accountLabel = getAccountLabel(account);
+        const rawAccountNumber =
+          account?.number !== undefined && account?.number !== null
+            ? String(account.number).trim()
+            : account?.accountNumber !== undefined && account?.accountNumber !== null
+              ? String(account.accountNumber).trim()
+              : '';
         models.forEach((model) => {
           accumulator.push({
             ...model,
             accountId,
             accountLabel,
+            accountNumber: rawAccountNumber || null,
           });
         });
         return accumulator;
@@ -5193,10 +5200,17 @@ export default function App() {
     }
 
     const accountLabel = getAccountLabel(selectedAccountInfo);
+    const rawAccountNumber =
+      selectedAccountInfo?.number !== undefined && selectedAccountInfo?.number !== null
+        ? String(selectedAccountInfo.number).trim()
+        : selectedAccountInfo?.accountNumber !== undefined && selectedAccountInfo?.accountNumber !== null
+          ? String(selectedAccountInfo.accountNumber).trim()
+          : '';
     return resolveAccountModelsForDisplay(selectedAccountInfo).map((model) => ({
       ...model,
       accountId: selectedAccountInfo.id,
       accountLabel,
+      accountNumber: rawAccountNumber || null,
     }));
   }, [selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
   const investmentModelSections = useMemo(() => {
@@ -5230,7 +5244,20 @@ export default function App() {
       const evaluationAction =
         evaluation?.data?.decision?.action ?? evaluation?.decision?.action ?? evaluation?.action ?? null;
       const evaluationStatus = evaluation?.status ?? null;
-      const accountLabel = model.accountLabel || getAccountLabel(accountsById.get(model.accountId));
+      const accountInfo = accountsById.get(model.accountId);
+      const accountLabel = model.accountLabel || getAccountLabel(accountInfo);
+      const resolvedAccountNumber = (() => {
+        if (typeof model.accountNumber === 'string' && model.accountNumber.trim()) {
+          return model.accountNumber.trim();
+        }
+        const candidate =
+          accountInfo?.number !== undefined && accountInfo?.number !== null
+            ? String(accountInfo.number).trim()
+            : accountInfo?.accountNumber !== undefined && accountInfo?.accountNumber !== null
+              ? String(accountInfo.accountNumber).trim()
+              : '';
+        return candidate || null;
+      })();
       const modelLabel = model.title
         ? model.title
         : modelKey
@@ -5247,6 +5274,7 @@ export default function App() {
         evaluationAction,
         evaluationStatus,
         displayTitle,
+        accountNumber: resolvedAccountNumber,
       };
     });
 
@@ -5948,6 +5976,29 @@ export default function App() {
       console.error('Failed to update rebalance date', error);
     }
   }, [markRebalanceContext, setRefreshKey]);
+
+  const handleMarkModelAsRebalanced = useCallback(
+    async (section) => {
+      if (!section || typeof section !== 'object') {
+        return;
+      }
+      const rawAccountNumber =
+        section.accountNumber !== undefined && section.accountNumber !== null
+          ? String(section.accountNumber).trim()
+          : '';
+      const modelName = typeof section.model === 'string' ? section.model.trim() : '';
+      if (!rawAccountNumber || !modelName) {
+        return;
+      }
+      try {
+        await markAccountRebalanced(rawAccountNumber, { model: modelName });
+        setRefreshKey((value) => value + 1);
+      } catch (error) {
+        console.error('Failed to update investment model rebalance date', error);
+      }
+    },
+    [setRefreshKey]
+  );
 
   const enhancePlanWithAccountContext = useCallback(
     (plan) => {
@@ -6834,6 +6885,7 @@ export default function App() {
   let investmentModelDialogLastRebalance = null;
   let investmentModelDialogEvaluation = null;
   let investmentModelDialogTitle = 'Investment Model';
+  let investmentModelDialogOnMarkRebalanced = null;
 
   if (activeInvestmentModelDialog?.type === 'global') {
     investmentModelDialogData = qqqData;
@@ -6860,6 +6912,9 @@ export default function App() {
       activeAccountModelSection?.displayTitle ||
       activeAccountModelSection?.title ||
       (investmentModelDialogModelName ? `${investmentModelDialogModelName} Investment Model` : 'Investment Model');
+    if (activeAccountModelSection?.accountNumber && activeAccountModelSection?.model) {
+      investmentModelDialogOnMarkRebalanced = () => handleMarkModelAsRebalanced(activeAccountModelSection);
+    }
   } else {
     showInvestmentModelDialog = false;
   }
@@ -7192,6 +7247,11 @@ export default function App() {
                         modelName={modelKey || null}
                         lastRebalance={section.lastRebalance || null}
                         evaluation={section.evaluation || null}
+                        onMarkRebalanced={
+                          section.accountNumber && section.model
+                            ? () => handleMarkModelAsRebalanced(section)
+                            : null
+                        }
                       />
                     );
                   })
@@ -7295,6 +7355,7 @@ export default function App() {
           lastRebalance={investmentModelDialogLastRebalance}
           evaluation={investmentModelDialogEvaluation}
           title={investmentModelDialogTitle}
+          onMarkRebalanced={investmentModelDialogOnMarkRebalanced}
         />
       )}
       {showTotalPnlDialog && (
