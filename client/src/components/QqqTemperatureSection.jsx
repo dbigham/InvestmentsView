@@ -198,13 +198,28 @@ export default function QqqTemperatureSection({
     }
     return normalized;
   }, [data?.referenceTemperatures]);
+  const maxSeriesTemperature = useMemo(() => {
+    if (!Array.isArray(filteredSeries) || filteredSeries.length === 0) {
+      return null;
+    }
+    const numeric = filteredSeries
+      .map((entry) => Number(entry.temperature))
+      .filter((value) => Number.isFinite(value));
+    if (numeric.length === 0) {
+      return null;
+    }
+    return Math.max(...numeric);
+  }, [filteredSeries]);
   const supplementalReferenceTemperatures = useMemo(() => {
+    if (Number.isFinite(maxSeriesTemperature) && maxSeriesTemperature > 3) {
+      return [];
+    }
     const values = [...SUPPLEMENTAL_REFERENCE_TEMPERATURES];
     if (Number.isFinite(latestTemperature) && latestTemperature > 1.5) {
       values.push(...EXTENDED_REFERENCE_TEMPERATURES);
     }
     return values;
-  }, [latestTemperature]);
+  }, [latestTemperature, maxSeriesTemperature]);
   const domainReferenceTemperatures = useMemo(() => {
     const combined = new Set();
     referenceTemperatures.forEach((value) => {
