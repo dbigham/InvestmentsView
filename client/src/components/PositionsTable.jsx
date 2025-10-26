@@ -768,6 +768,25 @@ function PositionsTable({
             ? sanitizeDisplayValue(formatShare(position.targetProportion))
             : '';
           const displayDescription = truncateDescription(position.description);
+          const dividendYieldPercent = Number(position.dividendYieldPercent);
+          const hasDividendYield = Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0;
+          const dividendTooltipLabel = hasDividendYield
+            ? `Dividend: ${formatNumber(dividendYieldPercent, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}%`
+            : null;
+          const tooltipLines = [];
+          if (typeof position.description === 'string') {
+            const trimmedDescription = position.description.trim();
+            if (trimmedDescription) {
+              tooltipLines.push(trimmedDescription);
+            }
+          }
+          if (dividendTooltipLabel) {
+            tooltipLines.push(dividendTooltipLabel);
+          }
+          const symbolTooltip = tooltipLines.join('\n');
           const averageEntryPrice = sanitizeDisplayValue(
             formatMoney(position.averageEntryPrice, { minimumFractionDigits: 4, maximumFractionDigits: 4 })
           );
@@ -848,7 +867,7 @@ function PositionsTable({
                     </button>
                   ) : null}
                 </div>
-                <div className="positions-table__symbol-name" title={position.description || ''}>
+                <div className="positions-table__symbol-name" title={symbolTooltip || ''}>
                   {displayDescription}
                 </div>
               </div>
@@ -991,6 +1010,7 @@ PositionsTable.propTypes = {
       normalizedMarketValue: PropTypes.number,
       targetProportion: PropTypes.number,
       notes: PropTypes.string,
+      dividendYieldPercent: PropTypes.number,
       accountDisplayName: PropTypes.string,
       accountOwnerLabel: PropTypes.string,
       accountNotes: PropTypes.arrayOf(

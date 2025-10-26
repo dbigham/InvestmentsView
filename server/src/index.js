@@ -258,6 +258,160 @@ function ensureYahooFinanceClient() {
 const QUOTE_CACHE_TTL_SECONDS = 60;
 const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
 
+const DIVIDEND_YIELD_CACHE_DIR = path.join(__dirname, '..', '.cache', 'dividend-yields');
+const DIVIDEND_YIELD_CACHE_MAX_AGE_MS = 15 * DAY_IN_MS;
+const dividendYieldMemoryCache = new Map();
+let dividendYieldCacheDirEnsured = false;
+let dividendDependencyWarningIssued = false;
+
+function ensureDividendYieldCacheDir() {
+  if (dividendYieldCacheDirEnsured) {
+    return;
+  }
+  try {
+    fs.mkdirSync(DIVIDEND_YIELD_CACHE_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('[Dividends] Failed to ensure dividend yield cache directory:', error?.message || String(error));
+  }
+  dividendYieldCacheDirEnsured = true;
+}
+
+function getDividendYieldCacheFilePath(symbolKey) {
+  const hash = crypto.createHash('sha1').update(symbolKey).digest('hex');
+  return path.join(DIVIDEND_YIELD_CACHE_DIR, `${hash}.json`);
+}
+
+function readDividendYieldCache(symbolKey) {
+  try {
+    ensureDividendYieldCacheDir();
+    const filePath = getDividendYieldCacheFilePath(symbolKey);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const contents = fs.readFileSync(filePath, 'utf-8');
+    if (!contents) {
+      return null;
+    }
+    const parsed = JSON.parse(contents);
+    const cachedAtRaw = parsed && (parsed.cachedAt || parsed.cached_at || parsed.cached_at_ms || parsed.cachedAtMs);
+    const cachedAtMs = typeof cachedAtRaw === 'number' ? cachedAtRaw : Date.parse(cachedAtRaw || '');
+    if (!Number.isFinite(cachedAtMs)) {
+      return null;
+    }
+    const numericValue = parsed && Object.prototype.hasOwnProperty.call(parsed, 'value') ? Number(parsed.value) : null;
+    const value = Number.isFinite(numericValue) && numericValue > 0 ? numericValue : null;
+    return { cachedAt: cachedAtMs, value };
+  } catch (error) {
+    console.warn('[Dividends] Failed to read dividend yield cache entry:', error?.message || String(error));
+    return null;
+  }
+}
+
+function writeDividendYieldCache(symbolKey, entry) {
+  try {
+    ensureDividendYieldCacheDir();
+    const payload = {
+      cachedAt: new Date(entry.cachedAt).toISOString(),
+      value: entry.value == null ? null : Number(entry.value),
+    };
+    fs.writeFileSync(getDividendYieldCacheFilePath(symbolKey), JSON.stringify(payload));
+  } catch (error) {
+    console.warn('[Dividends] Failed to persist dividend yield cache entry:', error?.message || String(error));
+  }
+}
+
+function getCachedDividendYield(symbolKey) {
+  if (!symbolKey) {
+    return { hit: false, value: null };
+  }
+  const now = Date.now();
+  const memoryEntry = dividendYieldMemoryCache.get(symbolKey) || null;
+  if (memoryEntry && now - memoryEntry.cachedAt <= DIVIDEND_YIELD_CACHE_MAX_AGE_MS) {
+    return { hit: true, value: memoryEntry.value };
+  }
+  if (memoryEntry) {
+    dividendYieldMemoryCache.delete(symbolKey);
+  }
+  const diskEntry = readDividendYieldCache(symbolKey);
+  if (diskEntry && now - diskEntry.cachedAt <= DIVIDEND_YIELD_CACHE_MAX_AGE_MS) {
+    dividendYieldMemoryCache.set(symbolKey, diskEntry);
+    return { hit: true, value: diskEntry.value };
+  }
+  return { hit: false, value: null };
+}
+
+function setCachedDividendYield(symbolKey, value) {
+  if (!symbolKey) {
+    return;
+  }
+  const numericValue = Number(value);
+  const normalizedValue = Number.isFinite(numericValue) && numericValue > 0 ? numericValue : null;
+  const entry = { cachedAt: Date.now(), value: normalizedValue };
+  dividendYieldMemoryCache.set(symbolKey, entry);
+  writeDividendYieldCache(symbolKey, entry);
+}
+
+function normalizeDividendYieldPercent(rawValue) {
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  if (numeric <= 1) {
+    return Number((numeric * 100).toFixed(4));
+  }
+  if (numeric <= 100) {
+    return Number(numeric.toFixed(4));
+  }
+  return null;
+}
+
+async function fetchDividendYieldMap(symbolEntries) {
+  if (!Array.isArray(symbolEntries) || symbolEntries.length === 0) {
+    return new Map();
+  }
+  const results = new Map();
+  await mapWithConcurrency(symbolEntries, Math.min(4, symbolEntries.length), async function (entry) {
+    if (!entry || !entry.normalizedSymbol) {
+      return null;
+    }
+    const { normalizedSymbol, rawSymbol } = entry;
+    const cached = getCachedDividendYield(normalizedSymbol);
+    if (cached.hit) {
+      if (Number.isFinite(cached.value) && cached.value > 0) {
+        results.set(normalizedSymbol, cached.value);
+      }
+      return null;
+    }
+    if (!rawSymbol) {
+      setCachedDividendYield(normalizedSymbol, null);
+      return null;
+    }
+    try {
+      const quote = await fetchYahooQuote(rawSymbol);
+      const dividendYieldPercent = normalizeDividendYieldPercent(
+        quote && (quote.trailingAnnualDividendYield || quote.dividendYield || quote.yield)
+      );
+      setCachedDividendYield(normalizedSymbol, dividendYieldPercent);
+      if (Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0) {
+        results.set(normalizedSymbol, dividendYieldPercent);
+      }
+    } catch (error) {
+      if (error instanceof MissingYahooDependencyError || error?.code === 'MISSING_DEPENDENCY') {
+        if (!dividendDependencyWarningIssued) {
+          dividendDependencyWarningIssued = true;
+          console.warn('[Dividends] Yahoo Finance dependency unavailable; dividend yields will be omitted.');
+        }
+      } else {
+        const message = error?.message || String(error);
+        console.warn(`[Dividends] Failed to fetch dividend yield for ${normalizedSymbol}:`, message);
+      }
+      setCachedDividendYield(normalizedSymbol, null);
+    }
+    return null;
+  });
+  return results;
+}
+
 const BENCHMARK_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
@@ -6957,7 +7111,7 @@ function buildInvestmentModelRequest(account, positions, perAccountBalances, mod
   return payload;
 }
 
-function decoratePositions(positions, symbolsMap, accountsMap) {
+function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap) {
   return positions.map(function (position) {
     const symbolInfo = symbolsMap[position.symbolId];
     const accountInfo = accountsMap[position.accountId] || accountsMap[position.accountNumber] || null;
@@ -7004,6 +7158,21 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
     const accountDisplayName = accountInfo ? accountInfo.displayName || null : null;
     const normalizedTargetProportion = Number.isFinite(targetProportion) ? targetProportion : null;
     const resolvedNote = symbolNote || null;
+    let dividendYieldPercent = null;
+    if (symbolKey && dividendYieldMap) {
+      if (dividendYieldMap instanceof Map) {
+        const candidate = dividendYieldMap.get(symbolKey) ?? null;
+        if (Number.isFinite(candidate) && candidate > 0) {
+          dividendYieldPercent = candidate;
+        }
+      } else if (typeof dividendYieldMap === 'object') {
+        const candidate = dividendYieldMap[symbolKey];
+        const numericCandidate = Number(candidate);
+        if (Number.isFinite(numericCandidate) && numericCandidate > 0) {
+          dividendYieldPercent = numericCandidate;
+        }
+      }
+    }
     const accountNotesEntry = {
       accountId: accountInfo ? accountInfo.id || position.accountId || null : position.accountId || null,
       accountNumber: accountInfo ? accountInfo.number || position.accountNumber || null : position.accountNumber || null,
@@ -7043,6 +7212,7 @@ function decoratePositions(positions, symbolsMap, accountsMap) {
       notes: resolvedNote,
       accountDisplayName,
       accountNotes,
+      dividendYieldPercent,
     };
   });
 }
@@ -8157,7 +8327,34 @@ app.get('/api/summary', async function (req, res) {
       accountsMap[account.id] = account;
     });
 
-    const decoratedPositions = decoratePositions(flattenedPositions, symbolsMap, accountsMap);
+    const dividendSymbolEntriesMap = new Map();
+    flattenedPositions.forEach(function (position) {
+      if (!position) {
+        return;
+      }
+      const normalizedSymbol = normalizeSymbol(position.symbol);
+      if (!normalizedSymbol) {
+        return;
+      }
+      if (!dividendSymbolEntriesMap.has(normalizedSymbol)) {
+        const rawSymbol =
+          typeof position.symbol === 'string' && position.symbol.trim()
+            ? position.symbol.trim()
+            : normalizedSymbol;
+        dividendSymbolEntriesMap.set(normalizedSymbol, rawSymbol);
+      }
+    });
+    const dividendSymbolEntries = Array.from(dividendSymbolEntriesMap.entries()).map(function ([normalizedSymbol, rawSymbol]) {
+      return { normalizedSymbol, rawSymbol };
+    });
+    const dividendYieldMap = await fetchDividendYieldMap(dividendSymbolEntries);
+
+    const decoratedPositions = decoratePositions(
+      flattenedPositions,
+      symbolsMap,
+      accountsMap,
+      dividendYieldMap
+    );
     const decoratedOrders = decorateOrders(dedupedOrders, symbolsMap, accountsMap);
     const pnl = mergePnL(flattenedPositions);
     const balancesSummary = mergeBalances(balancesResults);
