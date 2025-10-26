@@ -1736,20 +1736,15 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     target.ignoreSittingCash = override.ignoreSittingCash;
   }
 
-  const {
-    symbolSettings: resolvedSymbolSettings,
-    targetProportions: resolvedTargetProportions,
-    symbolNotes: resolvedSymbolNotes,
-  } = extractSymbolSettingsFromOverride(override);
+  const { symbolSettings: resolvedSymbolSettings, symbolNotes: resolvedSymbolNotes } =
+    extractSymbolSettingsFromOverride(override);
 
   if (resolvedSymbolSettings) {
     target.symbolSettings = resolvedSymbolSettings;
   } else if (Object.prototype.hasOwnProperty.call(target, 'symbolSettings')) {
     delete target.symbolSettings;
   }
-  if (resolvedTargetProportions) {
-    target.targetProportions = resolvedTargetProportions;
-  } else if (Object.prototype.hasOwnProperty.call(target, 'targetProportions')) {
+  if (Object.prototype.hasOwnProperty.call(target, 'targetProportions')) {
     delete target.targetProportions;
   }
   if (resolvedSymbolNotes) {
@@ -7172,13 +7167,6 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap)
           }
         }
       }
-      if (targetProportion === null && accountInfo.targetProportions && typeof accountInfo.targetProportions === 'object') {
-        const candidate = accountInfo.targetProportions[symbolKey];
-        const numeric = Number(candidate);
-        if (Number.isFinite(numeric)) {
-          targetProportion = numeric;
-        }
-      }
       if (!symbolNote && accountInfo.symbolNotes && typeof accountInfo.symbolNotes === 'object') {
         const candidateNote = accountInfo.symbolNotes[symbolKey];
         if (typeof candidateNote === 'string') {
@@ -7867,7 +7855,7 @@ app.post('/api/accounts/:accountKey/target-proportions', function (req, res) {
   try {
     const result = updateAccountTargetProportions(accountKey, rawProportions);
     return res.json({
-      targetProportions: result.targetProportions,
+      symbols: result.symbols,
       updated: result.updated,
       updatedCount: result.updatedCount,
     });
@@ -8830,69 +8818,60 @@ app.get('/api/summary', async function (req, res) {
           ? account.symbolSettings
           : null;
 
-      let targetProportionMap = null;
+      let symbolConfigurations = null;
       let symbolNotesMap = null;
 
       if (symbolSettings) {
         Object.entries(symbolSettings).forEach(([symbol, entry]) => {
           const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
-          if (!trimmedSymbol) {
+          if (!trimmedSymbol || !entry || typeof entry !== 'object') {
             return;
           }
-          if (entry && typeof entry === 'object') {
-            if (Object.prototype.hasOwnProperty.call(entry, 'targetProportion')) {
-              const numeric = Number(entry.targetProportion);
-              if (Number.isFinite(numeric)) {
-                if (!targetProportionMap) {
-                  targetProportionMap = {};
-                }
-                targetProportionMap[trimmedSymbol] = numeric;
-              }
+
+          const sanitizedEntry = {};
+          if (Object.prototype.hasOwnProperty.call(entry, 'targetProportion')) {
+            const numeric = Number(entry.targetProportion);
+            if (Number.isFinite(numeric)) {
+              sanitizedEntry.targetProportion = numeric;
             }
-            if (Object.prototype.hasOwnProperty.call(entry, 'notes')) {
-              const note = typeof entry.notes === 'string' ? entry.notes.trim() : '';
-              if (note) {
-                if (!symbolNotesMap) {
-                  symbolNotesMap = {};
-                }
-                symbolNotesMap[trimmedSymbol] = note;
+          }
+          if (Object.prototype.hasOwnProperty.call(entry, 'notes')) {
+            const note = typeof entry.notes === 'string' ? entry.notes.trim() : '';
+            if (note) {
+              sanitizedEntry.notes = note;
+              if (!symbolNotesMap) {
+                symbolNotesMap = {};
               }
+              symbolNotesMap[trimmedSymbol] = note;
             }
+          }
+
+          if (Object.keys(sanitizedEntry).length) {
+            if (!symbolConfigurations) {
+              symbolConfigurations = {};
+            }
+            symbolConfigurations[trimmedSymbol] = sanitizedEntry;
           }
         });
       }
 
-      if (!targetProportionMap && account.targetProportions && typeof account.targetProportions === 'object') {
-        const source = account.targetProportions;
-        if (Object.keys(source).length) {
-          targetProportionMap = Object.entries(source).reduce((acc, [symbol, percent]) => {
-            const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
-            if (trimmedSymbol) {
-              const numeric = Number(percent);
-              if (Number.isFinite(numeric)) {
-                acc[trimmedSymbol] = numeric;
-              }
-            }
-            return acc;
-          }, {});
-          if (Object.keys(targetProportionMap).length === 0) {
-            targetProportionMap = null;
-          }
-        }
-      }
-
-      if (!symbolNotesMap && account.symbolNotes && typeof account.symbolNotes === 'object') {
-        const entries = Object.entries(account.symbolNotes).reduce((acc, [symbol, note]) => {
+      if (account.symbolNotes && typeof account.symbolNotes === 'object') {
+        Object.entries(account.symbolNotes).forEach(([symbol, note]) => {
           const trimmedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : null;
           const normalizedNote = typeof note === 'string' ? note.trim() : '';
-          if (trimmedSymbol && normalizedNote) {
-            acc[trimmedSymbol] = normalizedNote;
+          if (!trimmedSymbol || !normalizedNote) {
+            return;
           }
-          return acc;
-        }, {});
-        if (Object.keys(entries).length) {
-          symbolNotesMap = entries;
-        }
+          if (!symbolNotesMap) {
+            symbolNotesMap = {};
+          }
+          symbolNotesMap[trimmedSymbol] = normalizedNote;
+          if (!symbolConfigurations) {
+            symbolConfigurations = {};
+          }
+          const existing = symbolConfigurations[trimmedSymbol] || {};
+          symbolConfigurations[trimmedSymbol] = Object.assign({}, existing, { notes: normalizedNote });
+        });
       }
 
       return {
@@ -8923,7 +8902,7 @@ app.get('/api/summary', async function (req, res) {
           Number.isFinite(account.ignoreSittingCash)
             ? Math.max(0, account.ignoreSittingCash)
             : null,
-        targetProportions: targetProportionMap,
+        symbols: symbolConfigurations,
         symbolNotes: symbolNotesMap,
         planningContext:
           typeof account.planningContext === 'string' && account.planningContext.trim()

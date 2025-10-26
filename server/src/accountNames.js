@@ -525,28 +525,6 @@ function serializeSymbolSettings(map) {
   return result;
 }
 
-function buildTargetProportionMapFromSettings(map) {
-  if (!map || map.size === 0) {
-    return null;
-  }
-  const entries = [];
-  map.forEach((value, symbol) => {
-    if (!value || !Number.isFinite(value.targetProportion)) {
-      return;
-    }
-    entries.push([symbol, value.targetProportion]);
-  });
-  if (!entries.length) {
-    return null;
-  }
-  entries.sort((a, b) => a[0].localeCompare(b[0]));
-  const result = {};
-  entries.forEach(([symbol, percent]) => {
-    result[symbol] = percent;
-  });
-  return result;
-}
-
 function buildSymbolNotesMapFromSettings(map) {
   if (!map || map.size === 0) {
     return null;
@@ -591,15 +569,10 @@ function readSymbolSettingsFromEntry(entry) {
 
 function writeSymbolSettingsToEntry(entry, map) {
   const nextSymbols = serializeSymbolSettings(map);
-  const nextTargets = buildTargetProportionMapFromSettings(map);
-
   const existingSymbols = serializeSymbolSettings(normalizeSymbolSettings(entry?.symbols));
-  const existingTargets = normalizeTargetProportions(entry?.targetProportions, { strict: false });
 
   const nextSymbolsJson = JSON.stringify(nextSymbols);
   const existingSymbolsJson = JSON.stringify(existingSymbols);
-  const nextTargetsJson = JSON.stringify(nextTargets);
-  const existingTargetsJson = JSON.stringify(existingTargets);
 
   let changed = false;
 
@@ -612,12 +585,8 @@ function writeSymbolSettingsToEntry(entry, map) {
     changed = true;
   }
 
-  if (nextTargetsJson !== existingTargetsJson) {
-    if (nextTargets) {
-      entry.targetProportions = nextTargets;
-    } else if (entry && Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
-      delete entry.targetProportions;
-    }
+  if (entry && Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
+    delete entry.targetProportions;
     changed = true;
   }
 
@@ -626,7 +595,7 @@ function writeSymbolSettingsToEntry(entry, map) {
 
 function extractSymbolSettingsFromOverride(override) {
   if (!override || typeof override !== 'object') {
-    return { symbolSettings: null, targetProportions: null, symbolNotes: null };
+    return { symbolSettings: null, symbolNotes: null };
   }
 
   const map = normalizeSymbolSettings(override.symbols);
@@ -640,12 +609,10 @@ function extractSymbolSettingsFromOverride(override) {
   }
 
   const symbolSettings = serializeSymbolSettings(map);
-  const targetProportions = buildTargetProportionMapFromSettings(map);
   const symbolNotes = buildSymbolNotesMapFromSettings(map);
 
   return {
     symbolSettings: symbolSettings || null,
-    targetProportions: targetProportions || null,
     symbolNotes: symbolNotes || null,
   };
 }
@@ -734,11 +701,60 @@ function applyTargetProportionsSetting(target, key, value) {
   } catch (error) {
     normalized = null;
   }
-  if (!normalized) {
-    delete container.targetProportions;
-    return;
+  const settingsMap = normalizeSymbolSettings(container.symbols);
+
+  if (normalized) {
+    Object.entries(normalized).forEach(([symbol, percent]) => {
+      const existing = settingsMap.get(symbol) || {};
+      const nextEntry = Object.assign({}, existing, { targetProportion: percent });
+      if (typeof existing.notes === 'string' && existing.notes) {
+        nextEntry.notes = existing.notes;
+      }
+      settingsMap.set(symbol, nextEntry);
+    });
+
+    settingsMap.forEach((entry, symbol) => {
+      if (Object.prototype.hasOwnProperty.call(normalized, symbol)) {
+        return;
+      }
+      if (!entry || typeof entry !== 'object') {
+        settingsMap.delete(symbol);
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(entry, 'targetProportion')) {
+        if (typeof entry.notes === 'string' && entry.notes) {
+          settingsMap.set(symbol, { notes: entry.notes });
+        } else {
+          settingsMap.delete(symbol);
+        }
+      }
+    });
+  } else {
+    settingsMap.forEach((entry, symbol) => {
+      if (!entry || typeof entry !== 'object') {
+        settingsMap.delete(symbol);
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(entry, 'targetProportion')) {
+        if (typeof entry.notes === 'string' && entry.notes) {
+          settingsMap.set(symbol, { notes: entry.notes });
+        } else {
+          settingsMap.delete(symbol);
+        }
+      }
+    });
   }
-  container.targetProportions = normalized;
+
+  const serialized = serializeSymbolSettings(settingsMap);
+  if (serialized) {
+    container.symbols = serialized;
+  } else if (Object.prototype.hasOwnProperty.call(container, 'symbols')) {
+    delete container.symbols;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(container, 'targetProportions')) {
+    delete container.targetProportions;
+  }
 }
 
 function applySymbolSettingsSetting(target, key, value) {
@@ -1508,42 +1524,6 @@ function traverseAndUpdate(container, keySet, newDate, modelKey) {
   return { updated, count: totalCount };
 }
 
-function areTargetProportionMapsEqual(a, b) {
-  if (!a && !b) {
-    return true;
-  }
-  if (!a || !b) {
-    return false;
-  }
-  const keysA = Object.keys(a).sort();
-  const keysB = Object.keys(b).sort();
-  if (keysA.length !== keysB.length) {
-    return false;
-  }
-  for (let index = 0; index < keysA.length; index += 1) {
-    const keyA = keysA[index];
-    const keyB = keysB[index];
-    if (keyA !== keyB) {
-      return false;
-    }
-    const valueA = Number(a[keyA]);
-    const valueB = Number(b[keyB]);
-    if (!Number.isFinite(valueA) && !Number.isFinite(valueB)) {
-      if (a[keyA] !== b[keyB]) {
-        return false;
-      }
-      continue;
-    }
-    if (!Number.isFinite(valueA) || !Number.isFinite(valueB)) {
-      return false;
-    }
-    if (Math.abs(valueA - valueB) > 1e-6) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function applyTargetProportionsToEntry(entry, normalizedMap) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return false;
@@ -2024,7 +2004,15 @@ function updateAccountTargetProportions(accountKey, rawProportions) {
   }
 
   const effectiveMap = normalizedMap && Object.keys(normalizedMap).length ? normalizedMap : null;
-  return { targetProportions: effectiveMap, updated: updateResult.updated, updatedCount: updateResult.count };
+  const symbols =
+    effectiveMap && Object.keys(effectiveMap).length
+      ? Object.entries(effectiveMap).reduce((acc, [symbol, percent]) => {
+          acc[symbol] = { targetProportion: percent };
+          return acc;
+        }, {})
+      : null;
+
+  return { symbols, updated: updateResult.updated, updatedCount: updateResult.count };
 }
 
 function updateAccountSymbolNote(accountKey, symbolKey, noteValue) {

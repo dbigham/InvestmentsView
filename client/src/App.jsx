@@ -57,6 +57,52 @@ const DIVIDEND_TIMEFRAME_OPTIONS = [
 
 const DEFAULT_DIVIDEND_TIMEFRAME = DIVIDEND_TIMEFRAME_OPTIONS[0].value;
 
+function extractTargetProportionsFromSymbols(symbols) {
+  if (!symbols) {
+    return null;
+  }
+
+  const entries = [];
+
+  const recordEntry = (symbolCandidate, entryValue) => {
+    if (!entryValue || typeof entryValue !== 'object') {
+      return;
+    }
+    const symbol = typeof symbolCandidate === 'string' ? symbolCandidate.trim().toUpperCase() : '';
+    if (!symbol) {
+      return;
+    }
+    const percent = Number(entryValue.targetProportion);
+    if (!Number.isFinite(percent)) {
+      return;
+    }
+    entries.push([symbol, percent]);
+  };
+
+  if (symbols instanceof Map) {
+    symbols.forEach((entryValue, symbolCandidate) => {
+      recordEntry(symbolCandidate, entryValue);
+    });
+  } else if (typeof symbols === 'object') {
+    Object.entries(symbols).forEach(([symbolCandidate, entryValue]) => {
+      recordEntry(symbolCandidate, entryValue);
+    });
+  } else {
+    return null;
+  }
+
+  if (!entries.length) {
+    return null;
+  }
+
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+
+  return entries.reduce((acc, [symbol, percent]) => {
+    acc[symbol] = percent;
+    return acc;
+  }, {});
+}
+
 function parseDateOnly(value) {
   if (typeof value !== 'string') {
     return null;
@@ -3660,6 +3706,13 @@ export default function App() {
     );
   }, [accounts, selectedAccount]);
 
+  const selectedAccountTargetProportions = useMemo(() => {
+    if (!selectedAccountInfo) {
+      return null;
+    }
+    return extractTargetProportionsFromSymbols(selectedAccountInfo.symbols);
+  }, [selectedAccountInfo]);
+
   const activePlanningContext = useMemo(() => {
     if (selectedAccount === 'all') {
       return '';
@@ -6097,10 +6150,7 @@ export default function App() {
       baseCurrency,
       priceOverrides: priceOverrides.size ? new Map(priceOverrides) : null,
       cashOverrides: null,
-      targetProportions:
-        selectedAccountInfo && selectedAccountInfo.targetProportions
-          ? selectedAccountInfo.targetProportions
-          : null,
+      targetProportions: selectedAccountTargetProportions,
       useTargetProportions: false,
     };
 
@@ -6123,7 +6173,7 @@ export default function App() {
     currencyRates,
     baseCurrency,
     enhancePlanWithAccountContext,
-    selectedAccountInfo,
+    selectedAccountTargetProportions,
   ]);
 
   const handleOpenDeploymentAdjustment = useCallback(async () => {
@@ -6303,9 +6353,9 @@ export default function App() {
       normalizedAccountKey: normalizedAccountKey || null,
       accountLabel: accountLabel || accountKeyRaw,
       positions: relevantPositions,
-      targetProportions: selectedAccountInfo.targetProportions || null,
+      targetProportions: selectedAccountTargetProportions || null,
     });
-  }, [orderedPositions, selectedAccountInfo]);
+  }, [orderedPositions, selectedAccountInfo, selectedAccountTargetProportions]);
 
   const handleCloseTargetProportions = useCallback(() => {
     setTargetProportionEditor(null);
