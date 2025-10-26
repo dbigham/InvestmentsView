@@ -3152,6 +3152,7 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
         rowId: `all:${symbolKey}`,
         key: symbolKey,
         accountNotes: new Map(),
+        dividendYieldPercent: null,
       };
       groups.set(symbolKey, group);
     }
@@ -3173,6 +3174,9 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
     const currency = (position.currency || normalizedBase).toUpperCase();
     const totalCost = resolvePositionTotalCost(position);
     const currentPrice = isFiniteNumber(position.currentPrice) ? position.currentPrice : null;
+    const positionDividendYield = isFiniteNumber(position.dividendYieldPercent)
+      ? position.dividendYieldPercent
+      : null;
 
     group.openQuantity += quantity;
     group.marketValueBase += convert(marketValue, currency);
@@ -3183,6 +3187,11 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
       group.totalCostBaseWeight += quantity;
     }
     group.isRealTime = group.isRealTime || Boolean(position.isRealTime);
+
+    if (positionDividendYield !== null && positionDividendYield > 0) {
+      const currentYield = isFiniteNumber(group.dividendYieldPercent) ? group.dividendYieldPercent : 0;
+      group.dividendYieldPercent = Math.max(currentYield, positionDividendYield);
+    }
 
     if (currentPrice !== null && Math.abs(quantity) > 1e-9) {
       const weight = Math.abs(quantity);
@@ -3340,6 +3349,7 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
       currentMarketValue,
       currency: displayCurrency,
       totalCost: totalCost ?? null,
+      dividendYieldPercent: isFiniteNumber(group.dividendYieldPercent) ? group.dividendYieldPercent : null,
       accountId: 'all',
       accountNumber: 'all',
       isRealTime: group.isRealTime,

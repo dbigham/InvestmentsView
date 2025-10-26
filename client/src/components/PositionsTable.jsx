@@ -836,7 +836,11 @@ function PositionsTable({
               onClick={(event) => handleRowNavigation(event, position.symbol)}
               onContextMenu={(event) => handleRowContextMenu(event, position)}
             >
-              <div className="positions-table__cell positions-table__cell--symbol" role="cell">
+              <div
+                className="positions-table__cell positions-table__cell--symbol"
+                role="cell"
+                title={symbolTooltip || undefined}
+              >
                 <div className="positions-table__symbol-header">
                   <div className="positions-table__symbol-ticker">{position.symbol}</div>
                   {showNotesIndicator ? (
@@ -867,7 +871,7 @@ function PositionsTable({
                     </button>
                   ) : null}
                 </div>
-                <div className="positions-table__symbol-name" title={symbolTooltip || ''}>
+                <div className="positions-table__symbol-name">
                   {displayDescription}
                 </div>
               </div>

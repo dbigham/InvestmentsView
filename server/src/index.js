@@ -259,6 +259,8 @@ const QUOTE_CACHE_TTL_SECONDS = 60;
 const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
 
 const DIVIDEND_YIELD_CACHE_DIR = path.join(__dirname, '..', '.cache', 'dividend-yields');
+// Bump when changing how yields are computed so stale cache is ignored
+const DIVIDEND_YIELD_CACHE_SCHEMA_VERSION = 2;
 const DIVIDEND_YIELD_CACHE_MAX_AGE_MS = 15 * DAY_IN_MS;
 const dividendYieldMemoryCache = new Map();
 let dividendYieldCacheDirEnsured = false;
@@ -277,7 +279,10 @@ function ensureDividendYieldCacheDir() {
 }
 
 function getDividendYieldCacheFilePath(symbolKey) {
-  const hash = crypto.createHash('sha1').update(symbolKey).digest('hex');
+  const hash = crypto
+    .createHash('sha1')
+    .update(`${DIVIDEND_YIELD_CACHE_SCHEMA_VERSION}|${symbolKey}`)
+    .digest('hex');
   return path.join(DIVIDEND_YIELD_CACHE_DIR, `${hash}.json`);
 }
 
@@ -365,6 +370,38 @@ function normalizeDividendYieldPercent(rawValue) {
   return null;
 }
 
+// Prefer forward yield when available, fall back to trailing yield,
+// and as a last resort compute from trailing dividend rate and price.
+// Intentionally ignore the ambiguous Yahoo `yield` field.
+function resolveDividendYieldPercentFromQuote(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+
+  const forward = normalizeDividendYieldPercent(quote.dividendYield);
+  const trailing = normalizeDividendYieldPercent(quote.trailingAnnualDividendYield);
+
+  // If both present, choose the smaller to avoid overstating yield due to one-offs
+  if (Number.isFinite(forward) && forward > 0 && Number.isFinite(trailing) && trailing > 0) {
+    return Math.min(forward, trailing);
+  }
+  if (Number.isFinite(forward) && forward > 0) {
+    return forward;
+  }
+  if (Number.isFinite(trailing) && trailing > 0) {
+    return trailing;
+  }
+
+  // Try compute from trailing rate / market price
+  const rate = Number(quote.trailingAnnualDividendRate);
+  const price = Number(quote.regularMarketPrice || quote.postMarketPrice || quote.preMarketPrice);
+  if (Number.isFinite(rate) && rate > 0 && Number.isFinite(price) && price > 0) {
+    return normalizeDividendYieldPercent(rate / price);
+  }
+
+  return null;
+}
+
 async function fetchDividendYieldMap(symbolEntries) {
   if (!Array.isArray(symbolEntries) || symbolEntries.length === 0) {
     return new Map();
@@ -388,9 +425,7 @@ async function fetchDividendYieldMap(symbolEntries) {
     }
     try {
       const quote = await fetchYahooQuote(rawSymbol);
-      const dividendYieldPercent = normalizeDividendYieldPercent(
-        quote && (quote.trailingAnnualDividendYield || quote.dividendYield || quote.yield)
-      );
+      const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
       setCachedDividendYield(normalizedSymbol, dividendYieldPercent);
       if (Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0) {
         results.set(normalizedSymbol, dividendYieldPercent);
