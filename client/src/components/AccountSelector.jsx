@@ -226,7 +226,7 @@ function buildAccountGroupOption(group) {
   };
 }
 
-export default function AccountSelector({ accounts, accountGroups, selected, onChange, disabled }) {
+export default function AccountSelector({ accounts, accountGroups, groupRelations, selected, onChange, disabled }) {
   const baseReactId = useId();
   const fallbackId = useMemo(() => `account-selector-${Math.random().toString(36).slice(2)}`, []);
   const baseId = baseReactId || fallbackId;
@@ -246,26 +246,72 @@ export default function AccountSelector({ accounts, accountGroups, selected, onC
   }, [accounts]);
 
   const optionsState = useMemo(() => {
+    const normalize = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+    const relationsMap = new Map();
+    if (groupRelations && typeof groupRelations === 'object') {
+      Object.entries(groupRelations).forEach(([child, parents]) => {
+        const c = normalize(child);
+        const parentList = Array.isArray(parents) ? parents : [parents];
+        let set = relationsMap.get(c);
+        if (!set) {
+          set = new Set();
+          relationsMap.set(c, set);
+        }
+        parentList.forEach((p) => {
+          const pn = normalize(p);
+          if (pn) set.add(pn);
+        });
+      });
+    }
+
+    const isAncestor = (maybeParentName, childName) => {
+      const parentKey = normalize(maybeParentName);
+      const childKey = normalize(childName);
+      if (!parentKey || !childKey || parentKey === childKey) {
+        return false;
+      }
+      const seen = new Set();
+      const queue = [childKey];
+      while (queue.length) {
+        const current = queue.shift();
+        if (seen.has(current)) continue;
+        seen.add(current);
+        const parents = relationsMap.get(current);
+        if (!parents) continue;
+        if (parents.has(parentKey)) {
+          return true;
+        }
+        parents.forEach((p) => queue.push(p));
+      }
+      return false;
+    };
+
     const accountOptions = accounts
       .map((account) => buildAccountOption(account, { multipleOwners, totalAccounts }))
       .filter((option) => option && !shouldHideAccountOption(option));
-    const groupOptions = Array.isArray(accountGroups)
+    const groupOptionsRaw = Array.isArray(accountGroups)
       ? accountGroups
           .map((group) => buildAccountGroupOption(group))
           .filter((option) => option && !shouldHideAccountOption(option))
       : [];
+    const groupOptions = groupOptionsRaw
+      .slice()
+      .sort((a, b) => {
+        // Parents first: if a is ancestor of b, a comes first; if b is ancestor of a, b first.
+        if (isAncestor(a.primary, b.primary)) return -1;
+        if (isAncestor(b.primary, a.primary)) return 1;
+        // Fallback to alphabetical
+        return a.primary.localeCompare(b.primary, undefined, { sensitivity: 'base' });
+      });
     const allOption = buildAllOption(totalAccounts, accountOptions, multipleOwners);
     const optionsList = [];
     if (allOption) {
       optionsList.push(allOption);
     }
     if (groupOptions.length) {
-      groupOptions
-        .slice()
-        .sort((a, b) => a.primary.localeCompare(b.primary, undefined, { sensitivity: 'base' }))
-        .forEach((option) => {
-          optionsList.push(option);
-        });
+      groupOptions.forEach((option) => {
+        optionsList.push(option);
+      });
     }
     optionsList.push(...accountOptions);
     return {
@@ -274,7 +320,7 @@ export default function AccountSelector({ accounts, accountGroups, selected, onC
       groupOptions,
       allOption,
     };
-  }, [accounts, accountGroups, multipleOwners, totalAccounts]);
+  }, [accounts, accountGroups, groupRelations, multipleOwners, totalAccounts]);
 
   const options = optionsState.options;
   const accountOptions = optionsState.accountOptions;
@@ -580,6 +626,7 @@ AccountSelector.propTypes = {
       ownerLabels: PropTypes.arrayOf(PropTypes.string),
     })
   ),
+  groupRelations: PropTypes.object,
   selected: PropTypes.string.isRequired,
   onChange: PropTypes.func.isRequired,
   disabled: PropTypes.bool,
@@ -587,5 +634,6 @@ AccountSelector.propTypes = {
 
 AccountSelector.defaultProps = {
   accountGroups: [],
+  groupRelations: {},
   disabled: false,
 };

@@ -11,6 +11,7 @@ const zlib = require('zlib');
 const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
 const { getProxyForUrl } = require('proxy-from-env');
 require('dotenv').config();
+const accountNamesModule = require('./accountNames');
 const {
   getAccountNameOverrides,
   getAccountPortalOverrides,
@@ -23,7 +24,9 @@ const {
   updateAccountSymbolNote,
   updateAccountPlanningContext,
   extractSymbolSettingsFromOverride,
+  getAccountGroupRelations,
 } = require('./accountNames');
+const { assignAccountGroups } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
@@ -1642,23 +1645,14 @@ function normalizeAccountGroupName(value) {
   return normalized || null;
 }
 
-function slugifyAccountGroupKey(name) {
-  if (!name) {
-    return null;
-  }
-  const base = name
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return base || 'group';
-}
-
-function assignAccountGroups(accounts) {
+// NOTE: assignAccountGroups is now provided by ./grouping for testability.
+function __assignAccountGroupsInternalUnused(accounts, options) {
+  const opts = options || {};
+  const groupRelationsRaw = opts.groupRelations || null; // { childName: [parentName, ...] }
   const groupsByKey = new Map();
   const groupsById = new Map();
   const usedSlugs = new Set();
+  const displayNameByKey = new Map(); // lowercased key -> display name
 
   accounts.forEach((account) => {
     if (!account) {
@@ -1686,12 +1680,132 @@ function assignAccountGroups(accounts) {
       group = { id, name: groupName, accounts: [] };
       groupsByKey.set(key, group);
       groupsById.set(id, group);
+      displayNameByKey.set(key, groupName);
     }
 
     group.accounts.push(account);
     account.accountGroup = groupName;
     account.accountGroupId = group.id;
   });
+
+  // If group relations are provided (child -> [parent,...]), synthesize parent groups by aggregating
+  // accounts from descendant groups.
+  if (groupRelationsRaw && typeof groupRelationsRaw === 'object') {
+    // Normalize relations: childKey (lowercased) -> Set(parentKey)
+    const childToParents = new Map();
+    Object.entries(groupRelationsRaw).forEach(([rawChild, rawParents]) => {
+      const childName = normalizeAccountGroupName(rawChild);
+      const childKey = childName ? childName.toLowerCase() : null;
+      const parentList = Array.isArray(rawParents) ? rawParents : [];
+      if (!childKey) {
+        return;
+      }
+      let set = childToParents.get(childKey);
+      if (!set) {
+        set = new Set();
+        childToParents.set(childKey, set);
+      }
+      displayNameByKey.set(childKey, displayNameByKey.get(childKey) || childName);
+      parentList.forEach((rawParent) => {
+        const parentName = normalizeAccountGroupName(rawParent);
+        const parentKey = parentName ? parentName.toLowerCase() : null;
+        if (!parentKey) {
+          return;
+        }
+        set.add(parentKey);
+        displayNameByKey.set(parentKey, displayNameByKey.get(parentKey) || parentName);
+      });
+    });
+
+    // Build reverse mapping: parentKey -> Set(childKey)
+    const parentToChildren = new Map();
+    childToParents.forEach((parents, childKey) => {
+      parents.forEach((parentKey) => {
+        let children = parentToChildren.get(parentKey);
+        if (!children) {
+          children = new Set();
+          parentToChildren.set(parentKey, children);
+        }
+        children.add(childKey);
+      });
+    });
+
+    // Helper to get transitive descendants of a parent
+    const getDescendants = (parentKey) => {
+      const result = new Set();
+      const queue = [];
+      const seen = new Set();
+      const direct = parentToChildren.get(parentKey);
+      if (direct) {
+        direct.forEach((c) => queue.push(c));
+      }
+      while (queue.length) {
+        const child = queue.shift();
+        if (seen.has(child)) {
+          continue;
+        }
+        seen.add(child);
+        result.add(child);
+        const next = parentToChildren.get(child);
+        if (next) {
+          next.forEach((n) => queue.push(n));
+        }
+      }
+      return result;
+    };
+
+    // For each parent, aggregate accounts from all descendant groups (and include direct members if any)
+    parentToChildren.forEach((childrenSet, parentKey) => {
+      const parentName = displayNameByKey.get(parentKey) || parentKey;
+      // Ensure parent group exists with stable id
+      let parentGroup = groupsByKey.get(parentKey);
+      if (!parentGroup) {
+        const baseSlug = slugifyAccountGroupKey(parentName);
+        let slug = baseSlug;
+        let suffix = 2;
+        while (usedSlugs.has(slug)) {
+          slug = `${baseSlug}-${suffix}`;
+          suffix += 1;
+        }
+        usedSlugs.add(slug);
+        const id = `group:${slug}`;
+        parentGroup = { id, name: parentName, accounts: [] };
+        groupsByKey.set(parentKey, parentGroup);
+        groupsById.set(id, parentGroup);
+        displayNameByKey.set(parentKey, parentName);
+      }
+
+      const accountsSet = new Map(); // id -> account
+
+      // Include any direct members of the parent (if a base group already existed)
+      const maybeExisting = groupsByKey.get(parentKey);
+      if (maybeExisting && Array.isArray(maybeExisting.accounts)) {
+        maybeExisting.accounts.forEach((acc) => {
+          if (acc && acc.id) {
+            accountsSet.set(acc.id, acc);
+          }
+        });
+      }
+
+      const allDescendants = getDescendants(parentKey);
+      allDescendants.forEach((childKey) => {
+        const childGroup = groupsByKey.get(childKey);
+        if (!childGroup || !Array.isArray(childGroup.accounts)) {
+          return;
+        }
+        childGroup.accounts.forEach((acc) => {
+          if (acc && acc.id) {
+            accountsSet.set(acc.id, acc);
+          }
+        });
+      });
+
+      const aggregated = Array.from(accountsSet.values());
+      if (aggregated.length) {
+        parentGroup.accounts = aggregated;
+      }
+    });
+  }
 
   const accountGroups = Array.from(groupsById.values()).map((group) => {
     const ownerLabels = new Set();
@@ -8154,7 +8268,10 @@ app.get('/api/summary', async function (req, res) {
       return account;
     });
 
-    const { accountGroups, accountGroupsById } = assignAccountGroups(allAccounts);
+    const groupRelations = getAccountGroupRelations();
+    const { accountGroups, accountGroupsById } = assignAccountGroups(allAccounts, {
+      groupRelations,
+    });
 
     if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
       const orderingMap = new Map();
@@ -9090,6 +9207,9 @@ app.get('/api/summary', async function (req, res) {
     res.json({
       accounts: responseAccounts,
       accountGroups: responseAccountGroups,
+      // Debug aid: shows inferred group-of-group relations from config
+      groupRelations,
+      accountNamesFilePath: accountNamesModule.accountNamesFilePath,
       filteredAccountIds: selectedContexts.map(function (context) {
         return context.account.id;
       }),
@@ -9183,8 +9303,10 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         return res.status(404).json({ message: 'No accounts available for aggregation' });
       }
 
+      const groupRelations = getAccountGroupRelations();
       const { accountGroupsById } = assignAccountGroups(
-        contexts.map((context) => context.account)
+        contexts.map((context) => context.account),
+        { groupRelations }
       );
 
       let targetContexts = contexts;

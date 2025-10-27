@@ -8,8 +8,10 @@
     "dev": "nodemon --ignore token-store.json --ignore data/qqq-cache/** --ignore earliest-funding-cache.json --ignore '.cache/**' src/index.js",
     "seed-token": "node scripts/seed-refresh.js",
     "test": "node --test",
+    "test:unit": "node --test ./test/accountNamesTopLevelRelations.test.js ./test/accountNamesGroupRelations.test.js ./test/assignAccountGroupsHierarchy.test.js",
     "print-total-pnl": "node src/scripts/print-total-pnl-series.js",
-    "validate-total-pnl": "node src/scripts/validate-total-pnl.js"
+    "validate-total-pnl": "node src/scripts/validate-total-pnl.js",
+    "debug:groups": "node src/scripts/debug-groups.js"
   },
   "dependencies": {
     "axios": "^1.12.2",

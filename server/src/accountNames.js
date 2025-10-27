@@ -9,14 +9,30 @@ function resolveConfiguredFilePath() {
     if (path.isAbsolute(configured)) {
       return configured;
     }
-    return path.join(process.cwd(), configured);
+    // If a relative path is provided, prefer CWD but fall back to server root
+    const fromCwd = path.join(process.cwd(), configured);
+    if (fs.existsSync(fromCwd)) {
+      return fromCwd;
+    }
+    const fromServerRoot = path.join(__dirname, '..', configured);
+    if (fs.existsSync(fromServerRoot)) {
+      return fromServerRoot;
+    }
+    return fromCwd;
   }
   for (const name of DEFAULT_FILE_CANDIDATES) {
-    const candidate = path.join(process.cwd(), name);
-    if (fs.existsSync(candidate)) {
-      return candidate;
+    // 1) Try current working directory
+    const fromCwd = path.join(process.cwd(), name);
+    if (fs.existsSync(fromCwd)) {
+      return fromCwd;
+    }
+    // 2) Try server root (one level above this file)
+    const fromServerRoot = path.join(__dirname, '..', name);
+    if (fs.existsSync(fromServerRoot)) {
+      return fromServerRoot;
     }
   }
+  // Default to CWD path for predictable error messages elsewhere
   return path.join(process.cwd(), DEFAULT_FILE_CANDIDATES[0]);
 }
 
@@ -27,6 +43,7 @@ let cachedChatOverrides = {};
 let cachedSettings = {};
 let cachedOrdering = [];
 let cachedDefaultAccount = null;
+let cachedGroupRelations = {};
 let cachedMarker = null;
 let hasLoggedError = false;
 
@@ -961,6 +978,50 @@ function deriveChildContext(currentContext, source) {
   return { accountGroup: null, hasAccountGroup: true };
 }
 
+function collectGroupRelationsRaw(node, relationsMap) {
+  if (!node) {
+    return;
+  }
+  const addRelation = (childName, parentName) => {
+    const child = normalizeAccountGroupName(childName);
+    const parent = normalizeAccountGroupName(parentName);
+    if (!child || !parent) {
+      return;
+    }
+    let set = relationsMap.get(child);
+    if (!set) {
+      set = new Set();
+      relationsMap.set(child, set);
+    }
+    set.add(parent);
+  };
+  const isPlainObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  const hasAnyKey = (obj, keys) => keys.some((k) => Object.prototype.hasOwnProperty.call(obj, k));
+  const accountIdKeys = ['number', 'accountNumber', 'accountId', 'id', 'key'];
+
+  const walk = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => walk(item));
+      return;
+    }
+    if (!isPlainObject(value)) {
+      return;
+    }
+    // Record relation when entry declares a group but is not a concrete account (no id/number)
+    if (
+      typeof value.name === 'string' &&
+      Object.prototype.hasOwnProperty.call(value, 'accountGroup') &&
+      !hasAnyKey(value, accountIdKeys)
+    ) {
+      addRelation(value.name, value.accountGroup);
+    }
+    Object.values(value).forEach((child) => walk(child));
+  };
+
+  walk(node);
+}
+
 function resolvePortalCandidate(entry) {
   if (!entry || typeof entry !== 'object') {
     return null;
@@ -1019,7 +1080,8 @@ function extractEntry(
   fallbackKey,
   orderingTracker,
   context,
-  explicitAccountGroupKeys
+  explicitAccountGroupKeys,
+  groupRelations
 ) {
   if (entry === null || entry === undefined) {
     return;
@@ -1123,6 +1185,22 @@ function extractEntry(
     }
   }
 
+  // Capture group-to-parent mapping for container/group entries that declare an accountGroup
+  // but don’t resolve to an account key (i.e., they represent a group node, not an account).
+  if (hasExplicitAccountGroup && resolvedKey === undefined && groupRelations) {
+    const childGroupName = normalizeAccountGroupName(candidateLabel);
+    const parentGroupName = normalizeAccountGroupName(entry.accountGroup);
+    if (childGroupName && parentGroupName) {
+      const childKey = childGroupName;
+      let parents = groupRelations.get(childKey);
+      if (!parents) {
+        parents = new Set();
+        groupRelations.set(childKey, parents);
+      }
+      parents.add(parentGroupName);
+    }
+  }
+
   if (defaultTracker && resolvedKey !== undefined) {
     const resolvedDefault = coerceBoolean(entry.default);
     if (resolvedDefault === true && !defaultTracker.value) {
@@ -1150,7 +1228,8 @@ function extractEntry(
         entry[key],
         orderingTracker,
         childContext,
-        explicitAccountGroupKeys
+        explicitAccountGroupKeys,
+        groupRelations
       );
     }
   });
@@ -1165,7 +1244,8 @@ function collectOverridesFromContainer(
   container,
   orderingTracker,
   context,
-  explicitAccountGroupKeys
+  explicitAccountGroupKeys,
+  groupRelations
 ) {
   if (!container) {
     return;
@@ -1183,7 +1263,8 @@ function collectOverridesFromContainer(
           entry,
           orderingTracker,
           nextContext,
-          explicitAccountGroupKeys
+          explicitAccountGroupKeys,
+          groupRelations
         );
         return;
       }
@@ -1197,7 +1278,8 @@ function collectOverridesFromContainer(
         undefined,
         orderingTracker,
         context || null,
-        explicitAccountGroupKeys
+        explicitAccountGroupKeys,
+        groupRelations
       );
     });
     return;
@@ -1228,7 +1310,8 @@ function collectOverridesFromContainer(
         key,
         orderingTracker,
         containerContext,
-        explicitAccountGroupKeys
+        explicitAccountGroupKeys,
+        groupRelations
       );
       return;
     }
@@ -1243,7 +1326,8 @@ function collectOverridesFromContainer(
         value,
         orderingTracker,
         nextContext,
-        explicitAccountGroupKeys
+        explicitAccountGroupKeys,
+        groupRelations
       );
     }
   });
@@ -1257,6 +1341,15 @@ function normalizeAccountOverrides(raw) {
   const orderingTracker = { list: [], seen: new Set() };
   const defaultTracker = { value: null };
   const explicitAccountGroupKeys = new Set();
+  const groupRelations = new Map();
+  // Pre-scan raw config to pick up group->parent declarations robustly
+  try {
+    collectGroupRelationsRaw(raw, groupRelations);
+  } catch {}
+
+  // Note: We intentionally do not support explicit top-level groupRelations overrides.
+  // Group relationships are inferred from container entries that have a name and accountGroup
+  // but are not concrete accounts.
   if (!raw) {
     return {
       overrides,
@@ -1265,6 +1358,7 @@ function normalizeAccountOverrides(raw) {
       settings,
       ordering: orderingTracker.list,
       defaultAccount: null,
+      groupRelations: {},
     };
   }
   if (typeof raw !== 'object') {
@@ -1275,6 +1369,7 @@ function normalizeAccountOverrides(raw) {
       settings,
       ordering: orderingTracker.list,
       defaultAccount: null,
+      groupRelations: {},
     };
   }
 
@@ -1288,8 +1383,13 @@ function normalizeAccountOverrides(raw) {
       raw,
       orderingTracker,
       null,
-      explicitAccountGroupKeys
+      explicitAccountGroupKeys,
+      groupRelations
     );
+    const serializedRelations = {};
+    groupRelations.forEach((parents, child) => {
+      serializedRelations[child] = Array.from(parents);
+    });
     return {
       overrides,
       portalOverrides,
@@ -1297,6 +1397,7 @@ function normalizeAccountOverrides(raw) {
       settings,
       ordering: orderingTracker.list,
       defaultAccount: defaultTracker.value,
+      groupRelations: serializedRelations,
     };
   }
 
@@ -1310,7 +1411,8 @@ function normalizeAccountOverrides(raw) {
     raw,
     orderingTracker,
     rootContext,
-    explicitAccountGroupKeys
+    explicitAccountGroupKeys,
+    groupRelations
   );
 
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
@@ -1325,9 +1427,15 @@ function normalizeAccountOverrides(raw) {
         raw[key],
         orderingTracker,
         rootContext,
-        explicitAccountGroupKeys
+        explicitAccountGroupKeys,
+        groupRelations
       );
     }
+  });
+
+  const serializedRelations = {};
+  groupRelations.forEach((parents, child) => {
+    serializedRelations[child] = Array.from(parents);
   });
 
   return {
@@ -1337,6 +1445,7 @@ function normalizeAccountOverrides(raw) {
     settings,
     ordering: orderingTracker.list,
     defaultAccount: defaultTracker.value,
+    groupRelations: serializedRelations,
   };
 }
 
@@ -1352,6 +1461,7 @@ function loadAccountOverrides() {
     cachedChatOverrides = {};
     cachedSettings = {};
     cachedOrdering = [];
+    cachedGroupRelations = {};
     cachedMarker = null;
     cachedDefaultAccount = null;
     hasLoggedError = false;
@@ -1361,6 +1471,7 @@ function loadAccountOverrides() {
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
+      groupRelations: cachedGroupRelations,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1370,6 +1481,7 @@ function loadAccountOverrides() {
     cachedChatOverrides = {};
     cachedSettings = {};
     cachedOrdering = [];
+    cachedGroupRelations = {};
     cachedMarker = null;
     cachedDefaultAccount = null;
     hasLoggedError = false;
@@ -1379,6 +1491,7 @@ function loadAccountOverrides() {
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
+      groupRelations: cachedGroupRelations,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1391,6 +1504,7 @@ function loadAccountOverrides() {
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
+      groupRelations: cachedGroupRelations,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1401,6 +1515,7 @@ function loadAccountOverrides() {
     cachedChatOverrides = {};
     cachedSettings = {};
     cachedOrdering = [];
+    cachedGroupRelations = {};
     cachedMarker = marker;
     cachedDefaultAccount = null;
     hasLoggedError = false;
@@ -1410,6 +1525,7 @@ function loadAccountOverrides() {
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
       ordering: cachedOrdering,
+      groupRelations: cachedGroupRelations,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1420,6 +1536,7 @@ function loadAccountOverrides() {
   cachedChatOverrides = normalized.chatOverrides;
   cachedSettings = normalized.settings || {};
   cachedOrdering = normalized.ordering || [];
+  cachedGroupRelations = normalized.groupRelations || {};
   cachedMarker = marker;
   cachedDefaultAccount = normalized.defaultAccount || null;
   hasLoggedError = false;
@@ -1429,6 +1546,7 @@ function loadAccountOverrides() {
     chatOverrides: cachedChatOverrides,
     settings: cachedSettings,
     ordering: cachedOrdering,
+    groupRelations: cachedGroupRelations,
     defaultAccount: cachedDefaultAccount,
   };
 }
@@ -1502,6 +1620,18 @@ function getDefaultAccountId() {
       hasLoggedError = true;
     }
     return cachedDefaultAccount || null;
+  }
+}
+
+function getAccountGroupRelations() {
+  try {
+    return loadAccountOverrides().groupRelations || {};
+  } catch (error) {
+    if (!hasLoggedError) {
+      console.warn('Failed to load account overrides from ' + resolvedFilePath + ':', error.message);
+      hasLoggedError = true;
+    }
+    return cachedGroupRelations || {};
   }
 }
 
@@ -2280,6 +2410,7 @@ module.exports = {
   updateAccountSymbolNote,
   updateAccountPlanningContext,
   extractSymbolSettingsFromOverride,
+  getAccountGroupRelations,
   get accountNamesFilePath() {
     return resolvedFilePath;
   },
