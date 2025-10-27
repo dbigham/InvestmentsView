@@ -3739,6 +3739,7 @@ export default function App() {
     }
     return selectedAccountGroup ? selectedAccountGroup.name : null;
   }, [selectedAccount, selectedAccountGroup]);
+  const showingAllAccounts = selectedAccount === 'all';
   const isAggregateSelection = isAggregateAccountSelection(selectedAccount);
 
   const selectedAccountInfo = useMemo(() => {
