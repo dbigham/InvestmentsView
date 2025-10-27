@@ -324,7 +324,6 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
 
   const options = optionsState.options;
   const accountOptions = optionsState.accountOptions;
-  const groupOptions = optionsState.groupOptions;
   const allOption = optionsState.allOption;
 
   const [isOpen, setIsOpen] = useState(false);
@@ -417,7 +416,6 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
         window.open(targetUrl, '_blank', 'noopener,noreferrer');
       }
-      setIsOpen(false);
       return;
     }
 
