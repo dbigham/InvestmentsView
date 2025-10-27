@@ -1018,7 +1018,8 @@ function extractEntry(
   entry,
   fallbackKey,
   orderingTracker,
-  context
+  context,
+  explicitAccountGroupKeys
 ) {
   if (entry === null || entry === undefined) {
     return;
@@ -1109,9 +1110,16 @@ function extractEntry(
       applyPlanningContextSetting(settingsTarget, resolvedKey, entry.planningContext);
     }
     if (hasExplicitAccountGroup) {
+      const normalizedKey = String(resolvedKey).trim();
+      if (normalizedKey) {
+        explicitAccountGroupKeys.add(normalizedKey);
+      }
       applyAccountGroupSetting(settingsTarget, resolvedKey, entry.accountGroup);
     } else if (hasInheritedAccountGroup) {
-      applyAccountGroupSetting(settingsTarget, resolvedKey, inheritedAccountGroup);
+      const normalizedKey = String(resolvedKey).trim();
+      if (normalizedKey && !explicitAccountGroupKeys.has(normalizedKey)) {
+        applyAccountGroupSetting(settingsTarget, resolvedKey, inheritedAccountGroup);
+      }
     }
   }
 
@@ -1141,7 +1149,8 @@ function extractEntry(
         defaultTracker,
         entry[key],
         orderingTracker,
-        childContext
+        childContext,
+        explicitAccountGroupKeys
       );
     }
   });
@@ -1155,7 +1164,8 @@ function collectOverridesFromContainer(
   defaultTracker,
   container,
   orderingTracker,
-  context
+  context,
+  explicitAccountGroupKeys
 ) {
   if (!container) {
     return;
@@ -1172,7 +1182,8 @@ function collectOverridesFromContainer(
           defaultTracker,
           entry,
           orderingTracker,
-          nextContext
+          nextContext,
+          explicitAccountGroupKeys
         );
         return;
       }
@@ -1185,7 +1196,8 @@ function collectOverridesFromContainer(
         entry,
         undefined,
         orderingTracker,
-        context || null
+        context || null,
+        explicitAccountGroupKeys
       );
     });
     return;
@@ -1215,7 +1227,8 @@ function collectOverridesFromContainer(
         value,
         key,
         orderingTracker,
-        containerContext
+        containerContext,
+        explicitAccountGroupKeys
       );
       return;
     }
@@ -1229,7 +1242,8 @@ function collectOverridesFromContainer(
         defaultTracker,
         value,
         orderingTracker,
-        nextContext
+        nextContext,
+        explicitAccountGroupKeys
       );
     }
   });
@@ -1242,6 +1256,7 @@ function normalizeAccountOverrides(raw) {
   const settings = {};
   const orderingTracker = { list: [], seen: new Set() };
   const defaultTracker = { value: null };
+  const explicitAccountGroupKeys = new Set();
   if (!raw) {
     return {
       overrides,
@@ -1272,7 +1287,8 @@ function normalizeAccountOverrides(raw) {
       defaultTracker,
       raw,
       orderingTracker,
-      null
+      null,
+      explicitAccountGroupKeys
     );
     return {
       overrides,
@@ -1293,7 +1309,8 @@ function normalizeAccountOverrides(raw) {
     defaultTracker,
     raw,
     orderingTracker,
-    rootContext
+    rootContext,
+    explicitAccountGroupKeys
   );
 
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
@@ -1307,7 +1324,8 @@ function normalizeAccountOverrides(raw) {
         defaultTracker,
         raw[key],
         orderingTracker,
-        rootContext
+        rootContext,
+        explicitAccountGroupKeys
       );
     }
   });
