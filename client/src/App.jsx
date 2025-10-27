@@ -3635,6 +3635,23 @@ export default function App() {
         return true;
       });
   }, [data?.accountGroups]);
+  const groupRelations = useMemo(() => {
+    const raw = data?.groupRelations;
+    if (!raw || typeof raw !== 'object') {
+      return {};
+    }
+    // Normalize names (trim only; preserve case for display)
+    const normalized = {};
+    Object.entries(raw).forEach(([child, parents]) => {
+      const name = typeof child === 'string' ? child.trim() : '';
+      if (!name) return;
+      const list = Array.isArray(parents) ? parents : [parents];
+      normalized[name] = list
+        .map((p) => (typeof p === 'string' ? p.trim() : ''))
+        .filter(Boolean);
+    });
+    return normalized;
+  }, [data?.groupRelations]);
   const accountGroupsById = useMemo(() => {
     const map = new Map();
     accountGroups.forEach((group) => {
@@ -7220,6 +7237,7 @@ export default function App() {
           <AccountSelector
             accounts={accounts}
             accountGroups={accountGroups}
+            groupRelations={groupRelations}
             selected={selectedAccount}
             onChange={handleAccountChange}
             disabled={loading && !data}
