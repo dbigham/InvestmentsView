@@ -1,24 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="InvestmentsView app icon">
+<!-- Investments View favicon (SVG) - no IV monogram -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Investments View">
   <defs>
-    <linearGradient id="bgGradient" x1="0%" y1="100%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#0f172a" />
-      <stop offset="100%" stop-color="#1f3a68" />
+    <linearGradient id="bg" x1="0" y1="64" x2="64" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1E293B"/>
     </linearGradient>
-    <linearGradient id="accentGradient" x1="0%" y1="100%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#22d3ee" />
-      <stop offset="100%" stop-color="#38bdf8" />
+    <linearGradient id="accent" x1="12" y1="52" x2="52" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#22C55E"/>
     </linearGradient>
-    <linearGradient id="arrowGradient" x1="10%" y1="90%" x2="90%" y2="10%">
-      <stop offset="0%" stop-color="#bef264" />
-      <stop offset="100%" stop-color="#facc15" />
-    </linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0f172a" flood-opacity="0.35" />
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.2" flood-color="#10B981" flood-opacity="0.35"/>
     </filter>
+    <style>
+      @media (prefers-color-scheme: light) {
+        .bg { fill: url(#bg); }
+        .fg { stroke: url(#accent); }
+      }
+      @media (prefers-color-scheme: dark) {
+        .bg { fill: #0B1020; }
+        .fg { stroke: #34D399; }
+      }
+    </style>
   </defs>
-  <rect width="256" height="256" rx="56" fill="url(#bgGradient)" />
-  <g filter="url(#shadow)">
-    <path d="M64 176c18-46 46-72 80-72c21.4 0 38.7 9.1 53.7 26.5l-14.8 13.2c-11.9-14.1-24.9-20.7-38.9-20.7c-23.6 0-44.1 19.7-58.8 58.1H64Z" fill="url(#accentGradient)" />
-    <path d="M96 144l34 34l46-62l26 26l-72 72l-54-54l20-16Z" fill="url(#arrowGradient)" />
+
+  <!-- Rounded background -->
+  <rect class="bg" x="4" y="4" width="56" height="56" rx="14"/>
+
+  <!-- Subtle grid -->
+  <g opacity="0.08">
+    <path d="M16 16V48M28 16V48M40 16V48M52 16V48" stroke="#FFFFFF" stroke-width="2"/>
+    <path d="M16 48H52" stroke="#FFFFFF" stroke-width="2"/>
   </g>
+
+  <!-- Rising line (kept) -->
+  <path class="fg" filter="url(#glow)"
+        d="M14 40 L24 36 L32 30 L40 26 L48 20"
+        fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+
+  <!-- Arrow head (kept) -->
+  <path class="fg" d="M44 18 L50 18 L50 24" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
