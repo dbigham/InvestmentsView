@@ -390,6 +390,15 @@ function normalizePlanningContext(value) {
   return null;
 }
 
+function normalizeAccountGroupName(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const stringValue = typeof value === 'string' ? value : String(value);
+  const normalized = stringValue.replace(/\s+/g, ' ').trim();
+  return normalized || null;
+}
+
 function normalizeSymbolEntry(value) {
   if (value === null || value === undefined) {
     return null;
@@ -784,6 +793,19 @@ function applyPlanningContextSetting(target, key, value) {
   container.planningContext = normalized;
 }
 
+function applyAccountGroupSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeAccountGroupName(value);
+  if (!normalized) {
+    delete container.accountGroup;
+    return;
+  }
+  container.accountGroup = normalized;
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -1050,6 +1072,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'planningContext')) {
       applyPlanningContextSetting(settingsTarget, resolvedKey, entry.planningContext);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'accountGroup')) {
+      applyAccountGroupSetting(settingsTarget, resolvedKey, entry.accountGroup);
     }
   }
 

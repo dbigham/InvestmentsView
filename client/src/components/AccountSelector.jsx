@@ -184,7 +184,49 @@ function buildAllOption(totalAccounts, accountOptions, multipleOwners) {
   };
 }
 
-export default function AccountSelector({ accounts, selected, onChange, disabled }) {
+function buildAccountGroupOption(group) {
+  if (!group || typeof group !== 'object') {
+    return null;
+  }
+  const id = typeof group.id === 'string' ? group.id.trim() : '';
+  const name = typeof group.name === 'string' ? group.name.trim() : '';
+  if (!id || !name) {
+    return null;
+  }
+  const memberCount = Number.isFinite(group.memberCount)
+    ? Math.max(0, Math.round(group.memberCount))
+    : Array.isArray(group.accountIds)
+      ? group.accountIds.length
+      : 0;
+  const normalizedOwnerLabels = Array.isArray(group.ownerLabels)
+    ? Array.from(
+        new Set(
+          group.ownerLabels
+            .map((value) => (typeof value === 'string' ? value.trim() : ''))
+            .filter(Boolean)
+        )
+      )
+    : [];
+  let meta = null;
+  if (normalizedOwnerLabels.length === 1) {
+    meta = normalizedOwnerLabels[0];
+  } else if (normalizedOwnerLabels.length > 1) {
+    meta = `${normalizedOwnerLabels.length} owners`;
+  }
+  const secondaryParts = [];
+  if (memberCount > 0) {
+    secondaryParts.push(`Combined across ${memberCount} accounts`);
+  }
+  return {
+    value: id,
+    primary: name,
+    meta,
+    secondary: secondaryParts.join(' • ') || null,
+    group,
+  };
+}
+
+export default function AccountSelector({ accounts, accountGroups, selected, onChange, disabled }) {
   const baseReactId = useId();
   const fallbackId = useMemo(() => `account-selector-${Math.random().toString(36).slice(2)}`, []);
   const baseId = baseReactId || fallbackId;
@@ -207,21 +249,36 @@ export default function AccountSelector({ accounts, selected, onChange, disabled
     const accountOptions = accounts
       .map((account) => buildAccountOption(account, { multipleOwners, totalAccounts }))
       .filter((option) => option && !shouldHideAccountOption(option));
+    const groupOptions = Array.isArray(accountGroups)
+      ? accountGroups
+          .map((group) => buildAccountGroupOption(group))
+          .filter((option) => option && !shouldHideAccountOption(option))
+      : [];
     const allOption = buildAllOption(totalAccounts, accountOptions, multipleOwners);
     const optionsList = [];
     if (allOption) {
       optionsList.push(allOption);
     }
+    if (groupOptions.length) {
+      groupOptions
+        .slice()
+        .sort((a, b) => a.primary.localeCompare(b.primary, undefined, { sensitivity: 'base' }))
+        .forEach((option) => {
+          optionsList.push(option);
+        });
+    }
     optionsList.push(...accountOptions);
     return {
       options: optionsList,
       accountOptions,
+      groupOptions,
       allOption,
     };
-  }, [accounts, multipleOwners, totalAccounts]);
+  }, [accounts, accountGroups, multipleOwners, totalAccounts]);
 
   const options = optionsState.options;
   const accountOptions = optionsState.accountOptions;
+  const groupOptions = optionsState.groupOptions;
   const allOption = optionsState.allOption;
 
   const [isOpen, setIsOpen] = useState(false);
@@ -513,11 +570,22 @@ AccountSelector.propTypes = {
       showQQQDetails: PropTypes.bool,
     })
   ).isRequired,
+  accountGroups: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string.isRequired,
+      memberCount: PropTypes.number,
+      accountIds: PropTypes.arrayOf(PropTypes.string),
+      accountNumbers: PropTypes.arrayOf(PropTypes.string),
+      ownerLabels: PropTypes.arrayOf(PropTypes.string),
+    })
+  ),
   selected: PropTypes.string.isRequired,
   onChange: PropTypes.func.isRequired,
   disabled: PropTypes.bool,
 };
 
 AccountSelector.defaultProps = {
+  accountGroups: [],
   disabled: false,
 };

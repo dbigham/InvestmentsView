@@ -4,6 +4,7 @@
     "uuid": "ac4ea32e-3034-4232-056a-194d8395463c",
     "chatURL": "https://chat.openai.com/share/example",
     "showQQQDetails": true,
+    "accountGroup": "Main Household",
     "investmentModels": [
       {
         "model": "A1",
@@ -19,6 +20,7 @@
   },
   "53384040": {
     "name": "Margin",
+    "accountGroup": "Main Household",
     "portalAccountId": "3c920e1f-1b7c-44f1-8a46-111111111111",
     "symbols": {
       "QQQ": {
