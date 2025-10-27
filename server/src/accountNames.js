@@ -771,8 +771,16 @@ function applySymbolSettingsSetting(target, key, value) {
   if (!container) {
     return;
   }
+  const existingMap = normalizeSymbolSettings(container.symbols);
   const normalizedMap = normalizeSymbolSettings(value);
-  const serialized = serializeSymbolSettings(normalizedMap);
+
+  normalizedMap.forEach((entry, symbol) => {
+    const existing = existingMap.get(symbol) || {};
+    const merged = Object.assign({}, existing, entry);
+    existingMap.set(symbol, merged);
+  });
+
+  const serialized = serializeSymbolSettings(existingMap);
   if (serialized) {
     container.symbols = serialized;
   } else {
