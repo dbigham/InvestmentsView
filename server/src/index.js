@@ -1633,6 +1633,102 @@ function normalizePlanningContext(value) {
   return null;
 }
 
+function normalizeAccountGroupName(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const stringValue = typeof value === 'string' ? value : String(value);
+  const normalized = stringValue.replace(/\s+/g, ' ').trim();
+  return normalized || null;
+}
+
+function slugifyAccountGroupKey(name) {
+  if (!name) {
+    return null;
+  }
+  const base = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return base || 'group';
+}
+
+function assignAccountGroups(accounts) {
+  const groupsByKey = new Map();
+  const groupsById = new Map();
+  const usedSlugs = new Set();
+
+  accounts.forEach((account) => {
+    if (!account) {
+      return;
+    }
+    const groupName = normalizeAccountGroupName(account.accountGroup);
+    if (!groupName) {
+      account.accountGroup = null;
+      account.accountGroupId = null;
+      return;
+    }
+
+    const key = groupName.toLowerCase();
+    let group = groupsByKey.get(key);
+    if (!group) {
+      const baseSlug = slugifyAccountGroupKey(groupName);
+      let slug = baseSlug;
+      let suffix = 2;
+      while (usedSlugs.has(slug)) {
+        slug = `${baseSlug}-${suffix}`;
+        suffix += 1;
+      }
+      usedSlugs.add(slug);
+      const id = `group:${slug}`;
+      group = { id, name: groupName, accounts: [] };
+      groupsByKey.set(key, group);
+      groupsById.set(id, group);
+    }
+
+    group.accounts.push(account);
+    account.accountGroup = groupName;
+    account.accountGroupId = group.id;
+  });
+
+  const accountGroups = Array.from(groupsById.values()).map((group) => {
+    const ownerLabels = new Set();
+    const accountNumbers = new Set();
+    group.accounts.forEach((account) => {
+      if (!account) {
+        return;
+      }
+      if (typeof account.ownerLabel === 'string') {
+        const label = account.ownerLabel.trim();
+        if (label) {
+          ownerLabels.add(label);
+        }
+      }
+      if (account.number !== undefined && account.number !== null) {
+        const number = String(account.number).trim();
+        if (number) {
+          accountNumbers.add(number);
+        }
+      }
+    });
+    return {
+      id: group.id,
+      name: group.name,
+      accounts: group.accounts,
+      memberCount: group.accounts.length,
+      accountIds: group.accounts.map((account) => account.id),
+      accountNumbers: Array.from(accountNumbers),
+      ownerLabels: Array.from(ownerLabels),
+    };
+  });
+
+  accountGroups.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+  return { accountGroups, accountGroupsById: groupsById };
+}
+
 function applyAccountSettingsOverrideToAccount(target, override) {
   if (!target || override === undefined) {
     return;
@@ -1764,6 +1860,15 @@ function applyAccountSettingsOverrideToAccount(target, override) {
       target.planningContext = normalizedContext;
     } else if (Object.prototype.hasOwnProperty.call(target, 'planningContext')) {
       delete target.planningContext;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'accountGroup')) {
+    const normalizedGroup = normalizeAccountGroupName(override.accountGroup);
+    if (normalizedGroup) {
+      target.accountGroup = normalizedGroup;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'accountGroup')) {
+      delete target.accountGroup;
     }
   }
 }
@@ -8061,6 +8166,8 @@ app.get('/api/summary', async function (req, res) {
       return account;
     });
 
+    const { accountGroups, accountGroupsById } = assignAccountGroups(allAccounts);
+
     if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
       const orderingMap = new Map();
       configuredOrdering.forEach(function (entry, index) {
@@ -8124,22 +8231,38 @@ app.get('/api/summary', async function (req, res) {
     let selectedAccounts = allAccounts;
     let resolvedAccountId = null;
     let resolvedAccountNumber = null;
-    const viewingAllAccounts = includeAllAccounts || (isDefaultRequested && !defaultAccount);
+    const viewingAllAccountsRequest = includeAllAccounts || (isDefaultRequested && !defaultAccount);
+    let viewingAccountGroup = false;
+    let selectedAccountGroup = null;
 
     if (isDefaultRequested) {
       if (defaultAccount) {
         selectedAccounts = [defaultAccount];
       }
     } else if (!includeAllAccounts) {
-      selectedAccounts = allAccounts.filter(function (account) {
-        return account.id === requestedAccountId || account.number === requestedAccountId;
-      });
-      if (!selectedAccounts.length) {
-        return res.status(404).json({ message: 'No accounts found for the provided filter.' });
+      const groupMatch = accountGroupsById.get(requestedAccountId);
+      if (groupMatch) {
+        viewingAccountGroup = true;
+        selectedAccountGroup = groupMatch;
+        selectedAccounts = groupMatch.accounts.slice();
+        if (!selectedAccounts.length) {
+          return res.status(404).json({ message: 'No accounts found for the provided filter.' });
+        }
+      } else {
+        selectedAccounts = allAccounts.filter(function (account) {
+          return account.id === requestedAccountId || account.number === requestedAccountId;
+        });
+        if (!selectedAccounts.length) {
+          return res.status(404).json({ message: 'No accounts found for the provided filter.' });
+        }
       }
     }
 
-    if (viewingAllAccounts) {
+    const viewingAggregateAccounts = viewingAllAccountsRequest || viewingAccountGroup;
+
+    if (viewingAccountGroup) {
+      resolvedAccountId = selectedAccountGroup.id;
+    } else if (viewingAllAccountsRequest) {
       resolvedAccountId = 'all';
     } else if (selectedAccounts.length === 1) {
       resolvedAccountId = selectedAccounts[0].id;
@@ -8551,7 +8674,7 @@ app.get('/api/summary', async function (req, res) {
           message
         );
       }
-    } else if (viewingAllAccounts && selectedContexts.length > 1) {
+    } else if (viewingAggregateAccounts && selectedContexts.length > 1) {
       const aggregateTotals = {
         netDepositsCad: 0,
         netDepositsCount: 0,
@@ -8766,7 +8889,12 @@ app.get('/api/summary', async function (req, res) {
       }
 
       if (Object.keys(aggregateEntry).length > 0) {
-        accountFundingSummaries.all = aggregateEntry;
+        if (viewingAccountGroup && selectedAccountGroup) {
+          accountFundingSummaries[selectedAccountGroup.id] = aggregateEntry;
+        }
+        if (viewingAllAccountsRequest) {
+          accountFundingSummaries.all = aggregateEntry;
+        }
       }
     }
 
@@ -8929,7 +9057,41 @@ app.get('/api/summary', async function (req, res) {
           typeof account.planningContext === 'string' && account.planningContext.trim()
             ? account.planningContext.trim()
             : null,
+        accountGroup: account.accountGroup || null,
+        accountGroupId: account.accountGroupId || null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
+      };
+    });
+
+    const responseAccountGroups = accountGroups.map(function (group) {
+      const accountIds = Array.isArray(group.accountIds)
+        ? group.accountIds.map((id) => String(id))
+        : group.accounts.map((account) => account.id);
+      const accountNumbers = Array.isArray(group.accountNumbers)
+        ? group.accountNumbers.map((number) => String(number))
+        : group.accounts
+            .map((account) =>
+              account.number !== undefined && account.number !== null
+                ? String(account.number).trim()
+                : null
+            )
+            .filter(Boolean);
+      const ownerLabels = Array.isArray(group.ownerLabels)
+        ? group.ownerLabels
+        : group.accounts
+            .map((account) =>
+              typeof account.ownerLabel === 'string' ? account.ownerLabel.trim() : ''
+            )
+            .filter(Boolean);
+      const uniqueAccountNumbers = Array.from(new Set(accountNumbers));
+      const uniqueOwnerLabels = Array.from(new Set(ownerLabels));
+      return {
+        id: group.id,
+        name: group.name,
+        memberCount: Number.isFinite(group.memberCount) ? group.memberCount : accountIds.length,
+        accountIds,
+        accountNumbers: uniqueAccountNumbers,
+        ownerLabels: uniqueOwnerLabels,
       };
     });
 
@@ -8948,6 +9110,7 @@ app.get('/api/summary', async function (req, res) {
 
     res.json({
       accounts: responseAccounts,
+      accountGroups: responseAccountGroups,
       filteredAccountIds: selectedContexts.map(function (context) {
         return context.account.id;
       }),
@@ -8983,7 +9146,8 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
   }
 
   const normalizedKey = rawAccountKey.toLowerCase();
-  if (normalizedKey === 'all') {
+  const isGroupKey = normalizedKey.startsWith('group:');
+  if (normalizedKey === 'all' || isGroupKey) {
     try {
       const aggregateOptions = {};
       if (typeof req.query.startDate === 'string' && req.query.startDate.trim()) {
@@ -9040,12 +9204,29 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         return res.status(404).json({ message: 'No accounts available for aggregation' });
       }
 
+      const { accountGroupsById } = assignAccountGroups(
+        contexts.map((context) => context.account)
+      );
+
+      let targetContexts = contexts;
+      if (isGroupKey) {
+        const groupEntry = accountGroupsById.get(rawAccountKey);
+        if (!groupEntry || !groupEntry.accounts.length) {
+          return res.status(404).json({ message: 'No accounts available for aggregation' });
+        }
+        const allowedIds = new Set(groupEntry.accounts.map((account) => account.id));
+        targetContexts = contexts.filter((context) => allowedIds.has(context.account.id));
+        if (!targetContexts.length) {
+          return res.status(404).json({ message: 'No accounts available for aggregation' });
+        }
+      }
+
       const balancesResults = await Promise.all(
-        contexts.map((context) => fetchBalances(context.login, context.account.number))
+        targetContexts.map((context) => fetchBalances(context.login, context.account.number))
       );
       const perAccountCombinedBalances = {};
       balancesResults.forEach((balancesRaw, index) => {
-        const context = contexts[index];
+        const context = targetContexts[index];
         if (!context) {
           return;
         }
@@ -9056,7 +9237,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       });
 
       const seriesResults = await mapWithConcurrency(
-        contexts,
+        targetContexts,
         MAX_AGGREGATE_FUNDING_CONCURRENCY,
         async function (context) {
           try {
@@ -9195,7 +9376,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         }
       });
 
-      if (successfulSeries.length !== contexts.length || hadAccountFetchFailure) {
+      if (successfulSeries.length !== targetContexts.length || hadAccountFetchFailure) {
         aggregatedIssues.add('aggregate-partial-data');
       }
 

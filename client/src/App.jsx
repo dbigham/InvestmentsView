@@ -228,6 +228,17 @@ function getAccountLabel(account) {
   return '';
 }
 
+function isAccountGroupSelection(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  return value.startsWith('group:');
+}
+
+function isAggregateAccountSelection(value) {
+  return value === 'all' || isAccountGroupSelection(value);
+}
+
 function extractSymbolsForNews(positions) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return [];
@@ -3512,6 +3523,79 @@ export default function App() {
   }, [activeAccountId]);
 
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const accountGroups = useMemo(() => {
+    const rawGroups = data?.accountGroups;
+    if (!Array.isArray(rawGroups)) {
+      return [];
+    }
+    const seenIds = new Set();
+    return rawGroups
+      .map((group) => {
+        if (!group || typeof group !== 'object') {
+          return null;
+        }
+        const id = typeof group.id === 'string' ? group.id.trim() : '';
+        const name = typeof group.name === 'string' ? group.name.trim() : '';
+        if (!id || !name) {
+          return null;
+        }
+        const memberCount = Number.isFinite(group.memberCount)
+          ? Math.max(0, Math.round(group.memberCount))
+          : null;
+        const accountIds = Array.isArray(group.accountIds)
+          ? Array.from(
+              new Set(
+                group.accountIds
+                  .map((value) => (value === undefined || value === null ? '' : String(value).trim()))
+                  .filter(Boolean)
+              )
+            )
+          : [];
+        const accountNumbers = Array.isArray(group.accountNumbers)
+          ? Array.from(
+              new Set(
+                group.accountNumbers
+                  .map((value) => (value === undefined || value === null ? '' : String(value).trim()))
+                  .filter(Boolean)
+              )
+            )
+          : [];
+        const ownerLabels = Array.isArray(group.ownerLabels)
+          ? Array.from(
+              new Set(
+                group.ownerLabels
+                  .map((value) => (typeof value === 'string' ? value.trim() : ''))
+                  .filter(Boolean)
+              )
+            )
+          : [];
+        return {
+          id,
+          name,
+          memberCount: memberCount !== null ? memberCount : accountIds.length,
+          accountIds,
+          accountNumbers,
+          ownerLabels,
+        };
+      })
+      .filter((group) => {
+        if (!group) {
+          return false;
+        }
+        if (seenIds.has(group.id)) {
+          return false;
+        }
+        seenIds.add(group.id);
+        return true;
+      });
+  }, [data?.accountGroups]);
+  const accountGroupsById = useMemo(() => {
+    const map = new Map();
+    accountGroups.forEach((group) => {
+      map.set(group.id, group);
+    });
+    return map;
+  }, [accountGroups]);
   const rebalanceTodos = useMemo(() => {
     if (!accounts.length) {
       return [];
@@ -3643,9 +3727,22 @@ export default function App() {
     }
     return selectedAccountState;
   }, [activeAccountId, filteredAccountIds, selectedAccountState]);
+  const selectedAccountGroup = useMemo(() => {
+    if (!isAccountGroupSelection(selectedAccount)) {
+      return null;
+    }
+    return accountGroupsById.get(selectedAccount) || null;
+  }, [selectedAccount, accountGroupsById]);
+  const aggregateAccountLabel = useMemo(() => {
+    if (selectedAccount === 'all') {
+      return 'All accounts';
+    }
+    return selectedAccountGroup ? selectedAccountGroup.name : null;
+  }, [selectedAccount, selectedAccountGroup]);
+  const isAggregateSelection = isAggregateAccountSelection(selectedAccount);
 
   const selectedAccountInfo = useMemo(() => {
-    if (!selectedAccount || selectedAccount === 'all') {
+    if (!selectedAccount || isAggregateSelection) {
       return null;
     }
     return (
@@ -3658,15 +3755,15 @@ export default function App() {
         return accountId === selectedAccount || accountNumber === selectedAccount;
       }) || null
     );
-  }, [accounts, selectedAccount]);
+  }, [accounts, selectedAccount, isAggregateSelection]);
 
   const activePlanningContext = useMemo(() => {
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       return '';
     }
     const stored = selectedAccountInfo?.planningContext;
     return typeof stored === 'string' ? stored : '';
-  }, [selectedAccount, selectedAccountInfo]);
+  }, [isAggregateSelection, selectedAccountInfo]);
 
   useEffect(() => {
     if (activeAccountId !== 'default') {
@@ -3698,10 +3795,7 @@ export default function App() {
 
   const handleTodoSelect = useCallback(
     (item) => {
-      if (!item) {
-        return;
-      }
-      if (selectedAccount !== 'all') {
+      if (!item || !isAggregateSelection) {
         return;
       }
       const directId = typeof item.accountId === 'string' && item.accountId ? item.accountId : null;
@@ -3782,12 +3876,15 @@ export default function App() {
         }
       }
     },
-    [selectedAccount, accounts, setSelectedAccountState, setActiveAccountId, setSelectedRebalanceReminder]
+    [isAggregateSelection, accounts, setSelectedAccountState, setActiveAccountId, setSelectedRebalanceReminder]
   );
 
   const selectedAccountKey = useMemo(() => {
     if (selectedAccount === 'all') {
       return 'all';
+    }
+    if (isAccountGroupSelection(selectedAccount)) {
+      return selectedAccount;
     }
     if (!selectedAccountInfo) {
       return null;
@@ -3798,15 +3895,15 @@ export default function App() {
     if (selectedAccountInfo.number) {
       return String(selectedAccountInfo.number);
     }
-    if (selectedAccount && selectedAccount !== 'all') {
+    if (selectedAccount && !isAggregateSelection) {
       return String(selectedAccount);
     }
     return null;
-  }, [selectedAccountInfo, selectedAccount]);
+  }, [selectedAccountInfo, selectedAccount, isAggregateSelection]);
 
   const totalPnlDialogAccountLabel = useMemo(() => {
-    if (selectedAccount === 'all') {
-      return 'All accounts';
+    if (isAggregateSelection) {
+      return aggregateAccountLabel;
     }
     if (!selectedAccountInfo) {
       return null;
@@ -3819,13 +3916,13 @@ export default function App() {
       return String(selectedAccountInfo.number);
     }
     return null;
-  }, [selectedAccount, selectedAccountInfo]);
+  }, [isAggregateSelection, aggregateAccountLabel, selectedAccountInfo]);
 
   useEffect(() => {
     if (!selectedRebalanceReminder) {
       return;
     }
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       setSelectedRebalanceReminder(null);
       return;
     }
@@ -3842,7 +3939,7 @@ export default function App() {
     if (!matchesId && !matchesNumber) {
       setSelectedRebalanceReminder(null);
     }
-  }, [selectedAccount, selectedAccountInfo, selectedRebalanceReminder, setSelectedRebalanceReminder]);
+  }, [isAggregateSelection, selectedAccountInfo, selectedRebalanceReminder, setSelectedRebalanceReminder]);
 
   useEffect(() => {
     setShowTotalPnlDialog(false);
@@ -3850,7 +3947,7 @@ export default function App() {
   }, [selectedAccountKey]);
 
   const markRebalanceContext = useMemo(() => {
-    if (!selectedAccountInfo || selectedAccount === 'all') {
+    if (!selectedAccountInfo || isAggregateSelection) {
       return null;
     }
     const rawNumber = selectedAccountInfo.number ?? selectedAccountInfo.accountNumber;
@@ -3927,7 +4024,7 @@ export default function App() {
       };
     }
     return null;
-  }, [selectedAccountInfo, selectedAccount, selectedRebalanceReminder]);
+  }, [selectedAccountInfo, isAggregateSelection, selectedRebalanceReminder]);
   const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
   const rawOrders = useMemo(() => (Array.isArray(data?.orders) ? data.orders : []), [data?.orders]);
   const ordersFilterInputId = useId();
@@ -3946,7 +4043,7 @@ export default function App() {
       return [];
     }
 
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       if (!accountsInView.length) {
         return [];
       }
@@ -3968,7 +4065,7 @@ export default function App() {
       const orderAccountId = order && order.accountId ? String(order.accountId) : null;
       return orderAccountId === normalizedTarget;
     });
-  }, [rawOrders, selectedAccount, selectedAccountInfo, accountsInView]);
+  }, [rawOrders, isAggregateSelection, selectedAccountInfo, accountsInView]);
   const filteredOrdersForSelectedAccount = useMemo(() => {
     if (!ordersFilterQuery) {
       return ordersForSelectedAccount;
@@ -4030,83 +4127,134 @@ export default function App() {
   );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
   const selectedAccountFunding = useMemo(() => {
-    if (selectedAccount === 'all') {
-      const aggregateEntry = accountFunding.all;
-      if (aggregateEntry && typeof aggregateEntry === 'object') {
-        return aggregateEntry;
-      }
-
-      if (!filteredAccountIds.length) {
+    if (!isAggregateSelection) {
+      if (!selectedAccountInfo) {
         return null;
       }
-
-      let netDepositsTotal = 0;
-      let netDepositsCount = 0;
-      let totalPnlTotal = 0;
-      let totalPnlCount = 0;
-      let totalEquityTotal = 0;
-      let totalEquityCount = 0;
-
-      filteredAccountIds.forEach((accountId) => {
-        const entry = accountFunding[accountId];
-        if (!entry || typeof entry !== 'object') {
-          return;
-        }
-        const netDepositsCad = entry?.netDeposits?.combinedCad;
-        if (isFiniteNumber(netDepositsCad)) {
-          netDepositsTotal += netDepositsCad;
-          netDepositsCount += 1;
-        }
-        const totalPnlCad = entry?.totalPnl?.combinedCad;
-        if (isFiniteNumber(totalPnlCad)) {
-          totalPnlTotal += totalPnlCad;
-          totalPnlCount += 1;
-        }
-        const totalEquityCad = entry?.totalEquityCad;
-        if (isFiniteNumber(totalEquityCad)) {
-          totalEquityTotal += totalEquityCad;
-          totalEquityCount += 1;
-        }
-      });
-
-      if (netDepositsCount === 0 && totalPnlCount === 0 && totalEquityCount === 0) {
-        return null;
-      }
-
-      const aggregate = {};
-      if (netDepositsCount > 0) {
-        aggregate.netDeposits = { combinedCad: netDepositsTotal };
-      }
-      if (totalPnlCount > 0) {
-        aggregate.totalPnl = { combinedCad: totalPnlTotal };
-      } else if (netDepositsCount > 0 && totalEquityCount > 0) {
-        const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
-        if (isFiniteNumber(derivedTotalPnl)) {
-          aggregate.totalPnl = { combinedCad: derivedTotalPnl };
-        }
-      }
-      if (totalEquityCount > 0) {
-        aggregate.totalEquityCad = totalEquityTotal;
-      }
-
-      return Object.keys(aggregate).length > 0 ? aggregate : null;
+      const entry = accountFunding[selectedAccountInfo.id];
+      return entry && typeof entry === 'object' ? entry : null;
     }
 
-    if (!selectedAccountInfo) {
+    const aggregateKey = selectedAccount === 'all' ? 'all' : selectedAccount;
+    const directEntry = aggregateKey ? accountFunding[aggregateKey] : null;
+    if (directEntry && typeof directEntry === 'object') {
+      return directEntry;
+    }
+
+    const memberAccountIds = (() => {
+      if (selectedAccount === 'all') {
+        if (accountsInView.length) {
+          return accountsInView;
+        }
+        if (filteredAccountIds.length) {
+          return filteredAccountIds;
+        }
+        return Array.from(accountsById.keys());
+      }
+      if (selectedAccountGroup?.accountIds?.length) {
+        return selectedAccountGroup.accountIds;
+      }
+      if (accountsInView.length) {
+        return accountsInView;
+      }
+      return [];
+    })();
+
+    if (!memberAccountIds.length) {
       return null;
     }
 
-    const entry = accountFunding[selectedAccountInfo.id];
-    if (entry && typeof entry === 'object') {
-      return entry;
+    let netDepositsTotal = 0;
+    let netDepositsCount = 0;
+    let totalPnlTotal = 0;
+    let totalPnlCount = 0;
+    let totalEquityTotal = 0;
+    let totalEquityCount = 0;
+
+    memberAccountIds.forEach((accountId) => {
+      const key = accountId === undefined || accountId === null ? '' : String(accountId).trim();
+      if (!key) {
+        return;
+      }
+      const entry = accountFunding[key];
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const netDepositsCad = entry?.netDeposits?.combinedCad;
+      if (isFiniteNumber(netDepositsCad)) {
+        netDepositsTotal += netDepositsCad;
+        netDepositsCount += 1;
+      }
+      const totalPnlCad = entry?.totalPnl?.combinedCad;
+      if (isFiniteNumber(totalPnlCad)) {
+        totalPnlTotal += totalPnlCad;
+        totalPnlCount += 1;
+      }
+      const totalEquityCad = entry?.totalEquityCad;
+      if (isFiniteNumber(totalEquityCad)) {
+        totalEquityTotal += totalEquityCad;
+        totalEquityCount += 1;
+      }
+    });
+
+    if (netDepositsCount === 0 && totalPnlCount === 0 && totalEquityCount === 0) {
+      return null;
     }
-    return null;
-  }, [selectedAccount, accountFunding, filteredAccountIds, selectedAccountInfo]);
+
+    const aggregate = {};
+    if (netDepositsCount > 0) {
+      aggregate.netDeposits = { combinedCad: netDepositsTotal };
+    }
+    if (totalPnlCount > 0) {
+      aggregate.totalPnl = { combinedCad: totalPnlTotal };
+    } else if (netDepositsCount > 0 && totalEquityCount > 0) {
+      const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
+      if (isFiniteNumber(derivedTotalPnl)) {
+        aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+      }
+    }
+    if (totalEquityCount > 0) {
+      aggregate.totalEquityCad = totalEquityTotal;
+    }
+
+    return Object.keys(aggregate).length > 0 ? aggregate : null;
+  }, [
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountGroup,
+    accountFunding,
+    selectedAccountInfo,
+    accountsInView,
+    filteredAccountIds,
+    accountsById,
+  ]);
   const selectedAccountDividends = useMemo(() => {
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
+      const aggregateKey = selectedAccount === 'all' ? 'all' : selectedAccount;
+      const directEntry = aggregateKey ? accountDividends[aggregateKey] : null;
+      if (directEntry && typeof directEntry === 'object') {
+        const summary = resolveDividendSummaryForTimeframe(
+          directEntry,
+          normalizedDividendTimeframe
+        );
+        if (summary && typeof summary === 'object') {
+          return summary;
+        }
+      }
+
+      const aggregateAccountIds = (() => {
+        if (selectedAccount === 'all') {
+          return accountsInView.length ? accountsInView : filteredAccountIds;
+        }
+        if (selectedAccountGroup?.accountIds?.length) {
+          return selectedAccountGroup.accountIds;
+        }
+        return accountsInView;
+      })();
+
       return aggregateDividendSummaries(
         accountDividends,
-        filteredAccountIds,
+        aggregateAccountIds,
         normalizedDividendTimeframe
       );
     }
@@ -4126,9 +4274,12 @@ export default function App() {
     }
     return createEmptyDividendSummary();
   }, [
+    isAggregateSelection,
     selectedAccount,
+    selectedAccountGroup,
     selectedAccountInfo,
     accountDividends,
+    accountsInView,
     filteredAccountIds,
     normalizedDividendTimeframe,
   ]);
@@ -4201,11 +4352,11 @@ export default function App() {
   }, [data?.usdToCadRate, currencyRates]);
 
   const positions = useMemo(() => {
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       return aggregatePositionsBySymbol(rawPositions, { currencyRates, baseCurrency });
     }
     return rawPositions;
-  }, [rawPositions, selectedAccount, currencyRates, baseCurrency]);
+  }, [rawPositions, isAggregateSelection, currencyRates, baseCurrency]);
 
   const totalMarketValue = useMemo(() => {
     if (!positions.length) {
@@ -4275,8 +4426,13 @@ export default function App() {
   const newsStatus = portfolioNewsState.status === 'idle' ? 'loading' : portfolioNewsState.status;
 
   const newsAccountId = useMemo(() => {
-    if (selectedAccount === 'all') {
-      return 'all';
+    if (isAggregateSelection) {
+      if (selectedAccount === 'all') {
+        return 'all';
+      }
+      if (typeof selectedAccount === 'string' && selectedAccount.trim()) {
+        return selectedAccount.trim();
+      }
     }
     if (selectedAccountInfo && selectedAccountInfo.id !== undefined && selectedAccountInfo.id !== null) {
       return String(selectedAccountInfo.id);
@@ -4285,16 +4441,16 @@ export default function App() {
       return selectedAccount.trim();
     }
     return '';
-  }, [selectedAccount, selectedAccountInfo]);
+  }, [isAggregateSelection, selectedAccount, selectedAccountInfo]);
   const newsAccountLabel = useMemo(() => {
-    if (selectedAccount === 'all') {
-      return 'All accounts';
+    if (isAggregateSelection) {
+      return aggregateAccountLabel || '';
     }
     if (selectedAccountInfo) {
       return getAccountLabel(selectedAccountInfo) || '';
     }
     return '';
-  }, [selectedAccount, selectedAccountInfo]);
+  }, [isAggregateSelection, aggregateAccountLabel, selectedAccountInfo]);
   const newsCacheKey = useMemo(() => {
     const accountComponent = newsAccountId || newsAccountLabel || 'portfolio';
     return `${accountComponent}|${newsSymbols.join('|')}`;
@@ -4575,7 +4731,7 @@ export default function App() {
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
   const activeAccountIdsForDeployment = useMemo(() => {
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       if (!accountsInView.length) {
         return null;
       }
@@ -4598,7 +4754,7 @@ export default function App() {
         identifiers.add(normalizedId);
       }
     }
-    if (selectedAccount !== undefined && selectedAccount !== null && selectedAccount !== 'all') {
+    if (selectedAccount !== undefined && selectedAccount !== null && !isAggregateSelection) {
       const normalizedSelection = String(selectedAccount).trim();
       if (normalizedSelection) {
         identifiers.add(normalizedSelection);
@@ -4606,7 +4762,7 @@ export default function App() {
     }
 
     return identifiers.size ? identifiers : null;
-  }, [selectedAccount, selectedAccountInfo, accountsInView]);
+  }, [isAggregateSelection, selectedAccount, selectedAccountInfo, accountsInView]);
 
   const reservePositionsByCurrency = useMemo(() => {
     if (!Array.isArray(rawPositions) || rawPositions.length === 0) {
@@ -5116,16 +5272,25 @@ export default function App() {
     });
 
     const entries = [];
-    const includeAllOption = accountOrder.length > 1;
+    const shouldIncludeAggregateOption =
+      isAggregateSelection || accountOrder.length > 1;
 
-    if (includeAllOption) {
+    if (shouldIncludeAggregateOption) {
       const aggregated = aggregatePositionsBySymbol(rawPositions, { currencyRates, baseCurrency });
-      const preparedAll = preparePositionsForHeatmap(aggregated, currencyRates, baseCurrency);
+      const preparedAggregate = preparePositionsForHeatmap(aggregated, currencyRates, baseCurrency);
+      const aggregateValue = isAggregateSelection
+        ? selectedAccount === 'all'
+          ? 'all'
+          : String(selectedAccount)
+        : 'all';
+      const aggregateLabel = isAggregateSelection
+        ? aggregateAccountLabel || 'All accounts'
+        : 'All accounts';
       entries.push({
-        value: 'all',
-        label: 'All accounts',
-        positions: preparedAll.positions,
-        totalMarketValue: preparedAll.totalMarketValue,
+        value: aggregateValue,
+        label: aggregateLabel,
+        positions: preparedAggregate.positions,
+        totalMarketValue: preparedAggregate.totalMarketValue,
       });
     }
 
@@ -5164,6 +5329,9 @@ export default function App() {
     accountsById,
     currencyRates,
     baseCurrency,
+    isAggregateSelection,
+    selectedAccount,
+    aggregateAccountLabel,
   ]);
 
   const heatmapDefaultAccount = useMemo(() => {
@@ -5197,7 +5365,7 @@ export default function App() {
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
   const investmentModelsForView = useMemo(() => {
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       if (!accountsInView.length) {
         return [];
       }
@@ -5297,7 +5465,7 @@ export default function App() {
         : modelKey
         ? `${modelKey} Investment Model`
         : 'Investment Model';
-      const displayTitle = selectedAccount === 'all' && accountLabel ? `${accountLabel} — ${modelLabel}` : modelLabel;
+      const displayTitle = isAggregateSelection && accountLabel ? `${accountLabel} — ${modelLabel}` : modelLabel;
 
       return {
         ...model,
@@ -5317,7 +5485,7 @@ export default function App() {
       if (priorityDiff !== 0) {
         return priorityDiff;
       }
-      if (selectedAccount === 'all') {
+      if (isAggregateSelection) {
         const accountCompare = (sectionA.accountLabel || '').localeCompare(sectionB.accountLabel || '', undefined, {
           sensitivity: 'base',
         });
@@ -5335,6 +5503,7 @@ export default function App() {
     investmentModelCharts,
     selectedAccount,
     accountsById,
+    isAggregateSelection,
   ]);
   const shouldShowInvestmentModels = investmentModelSections.length > 0;
   const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
@@ -5425,13 +5594,13 @@ export default function App() {
     }
   }, [portfolioViewTab, hasDividendSummary, shouldShowInvestmentModels, setPortfolioViewTab]);
 
-  const showingAllAccounts = selectedAccount === 'all';
+  const showingAggregateAccounts = isAggregateSelection;
 
   useEffect(() => {
-    if (!showingAllAccounts && activeInvestmentModelDialog?.type === 'global') {
+    if (!showingAggregateAccounts && activeInvestmentModelDialog?.type === 'global') {
       setActiveInvestmentModelDialog(null);
     }
-  }, [showingAllAccounts, activeInvestmentModelDialog]);
+  }, [showingAggregateAccounts, activeInvestmentModelDialog]);
 
   useEffect(() => {
     if (activeInvestmentModelDialog?.type !== 'account-model') {
@@ -5472,7 +5641,7 @@ export default function App() {
     if (!cashBreakdownCurrency) {
       return;
     }
-    if (!cashBreakdownData || !showingAllAccounts) {
+    if (!cashBreakdownData || !showingAggregateAccounts) {
       setCashBreakdownCurrency(null);
       return;
     }
@@ -5486,13 +5655,13 @@ export default function App() {
   }, [
     cashBreakdownCurrency,
     cashBreakdownData,
-    showingAllAccounts,
+    showingAggregateAccounts,
     activeCurrency,
   ]);
 
   const handleShowCashBreakdown = useCallback(
     (currency) => {
-      if (!showingAllAccounts) {
+      if (!showingAggregateAccounts) {
         return;
       }
       const normalizedCurrency = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
@@ -5511,7 +5680,7 @@ export default function App() {
       setCashBreakdownCurrency(normalizedCurrency);
     },
     [
-      showingAllAccounts,
+      showingAggregateAccounts,
       resolvedCashAccountIds,
       accountsById,
       normalizedAccountBalances,
@@ -5534,7 +5703,7 @@ export default function App() {
   );
 
   const cashBreakdownAvailable =
-    showingAllAccounts &&
+    showingAggregateAccounts &&
     activeCurrency &&
     activeCurrency.scope === 'perCurrency' &&
     (activeCurrency.currency === 'CAD' || activeCurrency.currency === 'USD');
@@ -5654,7 +5823,7 @@ export default function App() {
   }, [qqqLoading]);
 
   useEffect(() => {
-    if (!shouldShowQqqDetails && !showingAllAccounts) {
+    if (!shouldShowQqqDetails && !showingAggregateAccounts) {
       return;
     }
     if (qqqData || qqqLoading || qqqError) {
@@ -5663,7 +5832,7 @@ export default function App() {
     fetchQqqTemperature();
   }, [
     shouldShowQqqDetails,
-    showingAllAccounts,
+    showingAggregateAccounts,
     qqqData,
     qqqLoading,
     qqqError,
@@ -5854,7 +6023,7 @@ export default function App() {
     if (!showContent) {
       return [];
     }
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       if (!accountsInView.length) {
         return [];
       }
@@ -5863,32 +6032,47 @@ export default function App() {
     if (selectedAccountInfo?.id) {
       return [String(selectedAccountInfo.id)];
     }
-    if (selectedAccount && selectedAccount !== 'all' && accountsById.has(selectedAccount)) {
+    if (selectedAccount && !isAggregateSelection && accountsById.has(selectedAccount)) {
       return [String(selectedAccount)];
     }
     return [];
-  }, [showContent, selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
+  }, [
+    showContent,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountInfo,
+    accountsInView,
+    accountsById,
+  ]);
 
   const todoScopeKey = useMemo(() => {
     if (!showContent) {
       return null;
     }
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       if (!accountsInView.length) {
         return null;
       }
       const sorted = [...accountsInView]
         .map((accountId) => String(accountId))
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-      return `all:${sorted.join(',')}`;
+      const scopeKeyPrefix = selectedAccount === 'all' ? 'all' : 'group';
+      return `${scopeKeyPrefix}:${sorted.join(',')}`;
     }
     const directAccountId =
       (selectedAccountInfo?.id && String(selectedAccountInfo.id)) ||
-      (selectedAccount && selectedAccount !== 'all' && accountsById.has(selectedAccount)
+      (selectedAccount && !isAggregateSelection && accountsById.has(selectedAccount)
         ? String(selectedAccount)
         : null);
     return directAccountId ? `account:${directAccountId}` : null;
-  }, [showContent, selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
+  }, [
+    showContent,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountInfo,
+    accountsInView,
+    accountsById,
+  ]);
 
   const computeTodos = useCallback(() => {
     if (!todoAccountIds.length) {
@@ -5921,7 +6105,7 @@ export default function App() {
       });
       return;
     }
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       const items = computeTodos();
       setTodoState((prev) => {
         if (prev.scopeKey === todoScopeKey && prev.checked && areTodoListsEqual(prev.items, items)) {
@@ -5944,7 +6128,7 @@ export default function App() {
       }
       return { ...prev, items };
     });
-  }, [showContent, selectedAccount, todoScopeKey, computeTodos]);
+  }, [showContent, isAggregateSelection, todoScopeKey, computeTodos]);
 
   const handleCheckTodos = useCallback(async () => {
     if (!todoScopeKey) {
@@ -6047,7 +6231,7 @@ export default function App() {
       const accountNumber = selectedAccountInfo?.number || null;
       const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
       const contextLabel =
-        accountName || accountNumber || (selectedAccount === 'all' ? 'All accounts' : null);
+        accountName || accountNumber || (isAggregateSelection ? aggregateAccountLabel : null);
 
       return {
         ...plan,
@@ -6057,7 +6241,7 @@ export default function App() {
         accountUrl: accountUrl || null,
       };
     },
-    [selectedAccountInfo, selectedAccount]
+    [selectedAccountInfo, isAggregateSelection, aggregateAccountLabel]
   );
 
   const handlePlanInvestEvenly = useCallback(async () => {
@@ -6370,14 +6554,13 @@ export default function App() {
     }
 
     const targetAccountId = pendingTodoAction.accountId ? String(pendingTodoAction.accountId) : null;
-    const selectedAccountId =
-      selectedAccount === 'all'
-        ? null
-        : selectedAccountInfo?.id
-        ? String(selectedAccountInfo.id)
-        : selectedAccount
-        ? String(selectedAccount)
-        : null;
+    const selectedAccountId = isAggregateSelection
+      ? null
+      : selectedAccountInfo?.id
+      ? String(selectedAccountInfo.id)
+      : selectedAccount
+      ? String(selectedAccount)
+      : null;
 
     if (targetAccountId && targetAccountId !== selectedAccountId) {
       const targetAccount = accountsById.get(targetAccountId);
@@ -6445,6 +6628,7 @@ export default function App() {
     pendingTodoAction,
     selectedAccount,
     selectedAccountInfo,
+    isAggregateSelection,
     accountsById,
     todoScopeKey,
     handleAccountChange,
@@ -6667,7 +6851,7 @@ export default function App() {
   );
 
   const handleSetPlanningContext = useCallback(() => {
-    if (selectedAccount === 'all' || !selectedAccountInfo) {
+    if (isAggregateSelection || !selectedAccountInfo) {
       return;
     }
 
@@ -6681,7 +6865,7 @@ export default function App() {
     });
   }, [
     activePlanningContext,
-    selectedAccount,
+    isAggregateSelection,
     selectedAccountInfo,
     setPlanningContextEditor,
   ]);
@@ -6721,10 +6905,10 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (selectedAccount === 'all') {
+    if (isAggregateSelection) {
       setPlanningContextEditor(null);
     }
-  }, [selectedAccount, setPlanningContextEditor]);
+  }, [isAggregateSelection, setPlanningContextEditor]);
 
   const handleEstimateFutureCagr = useCallback(async () => {
     openChatGpt();
@@ -6864,7 +7048,7 @@ export default function App() {
       return;
     }
     setRefreshKey((value) => value + 1);
-    if (showingAllAccounts || shouldShowQqqDetails) {
+    if (showingAggregateAccounts || shouldShowQqqDetails) {
       fetchQqqTemperature();
     }
   };
@@ -6984,6 +7168,7 @@ export default function App() {
         <header className="page-header">
           <AccountSelector
             accounts={accounts}
+            accountGroups={accountGroups}
             selected={selectedAccount}
             onChange={handleAccountChange}
             disabled={loading && !data}
@@ -7023,7 +7208,7 @@ export default function App() {
                       type="button"
                       className="todo-panel__button"
                       onClick={() => handleTodoSelect(todo)}
-                      disabled={selectedAccount !== 'all'}
+                      disabled={!isAggregateSelection}
                       data-status={todo.overdueDays > 0 ? 'overdue' : 'due'}
                     >
                       <span className="todo-panel__primary">{buttonLabel}</span>
@@ -7036,7 +7221,7 @@ export default function App() {
                 );
               })}
             </ul>
-            {selectedAccount === 'all' ? (
+            {isAggregateSelection ? (
               <p className="todo-panel__hint">Select an item to jump to that account.</p>
             ) : null}
           </section>
@@ -7083,14 +7268,16 @@ export default function App() {
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onCheckTodos={handleCheckTodos}
-            onSetPlanningContext={selectedAccount === 'all' ? null : handleSetPlanningContext}
+            onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
             onEditTargetProportions={
-              selectedAccount !== 'all' && selectedAccountInfo ? handleEditTargetProportions : null
+              !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
             }
             chatUrl={selectedAccountChatUrl}
-            showQqqTemperature={showingAllAccounts}
+            showQqqTemperature={showingAggregateAccounts}
             qqqSummary={qqqSummary}
-            onShowInvestmentModel={showingAllAccounts ? handleShowInvestmentModelDialog : null}
+            onShowInvestmentModel={
+              showingAggregateAccounts ? handleShowInvestmentModelDialog : null
+            }
             benchmarkComparison={benchmarkSummary}
             totalPnlRangeOptions={totalPnlRangeOptions}
             selectedTotalPnlRange={totalPnlRange}
@@ -7248,7 +7435,7 @@ export default function App() {
               <OrdersTable
                 orders={filteredOrdersForSelectedAccount}
                 accountsById={accountsById}
-                showAccountColumn={selectedAccount === 'all'}
+                showAccountColumn={isAggregateSelection}
                 emptyMessage={ordersEmptyMessage}
               />
             </div>
