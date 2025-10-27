@@ -933,6 +933,34 @@ function isLikelyAccountEntryObject(entry) {
   return Object.keys(entry).some((key) => ACCOUNT_ENTRY_HINT_KEYS.has(key));
 }
 
+function deriveChildContext(currentContext, source) {
+  if (!source || typeof source !== 'object') {
+    return currentContext || null;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(source, 'accountGroup')) {
+    return currentContext || null;
+  }
+
+  const normalized = normalizeAccountGroupName(source.accountGroup);
+  if (normalized !== null) {
+    if (
+      currentContext &&
+      currentContext.hasAccountGroup === true &&
+      currentContext.accountGroup === normalized
+    ) {
+      return currentContext;
+    }
+    return { accountGroup: normalized, hasAccountGroup: true };
+  }
+
+  if (currentContext && currentContext.hasAccountGroup === true && currentContext.accountGroup === null) {
+    return currentContext;
+  }
+
+  return { accountGroup: null, hasAccountGroup: true };
+}
+
 function resolvePortalCandidate(entry) {
   if (!entry || typeof entry !== 'object') {
     return null;
@@ -989,7 +1017,8 @@ function extractEntry(
   defaultTracker,
   entry,
   fallbackKey,
-  orderingTracker
+  orderingTracker,
+  context
 ) {
   if (entry === null || entry === undefined) {
     return;
@@ -1026,6 +1055,12 @@ function extractEntry(
       : isLikelyAccountKey(fallbackKey)
       ? fallbackKey
       : undefined;
+
+  const inheritedAccountGroup =
+    context && context.hasAccountGroup === true ? context.accountGroup : null;
+  const hasInheritedAccountGroup =
+    context && context.hasAccountGroup === true && typeof inheritedAccountGroup === 'string' && inheritedAccountGroup;
+  const hasExplicitAccountGroup = Object.prototype.hasOwnProperty.call(entry, 'accountGroup');
 
   if (candidateLabel !== undefined && resolvedKey !== undefined) {
     applyOverride(namesTarget, resolvedKey, candidateLabel);
@@ -1073,8 +1108,10 @@ function extractEntry(
     if (Object.prototype.hasOwnProperty.call(entry, 'planningContext')) {
       applyPlanningContextSetting(settingsTarget, resolvedKey, entry.planningContext);
     }
-    if (Object.prototype.hasOwnProperty.call(entry, 'accountGroup')) {
+    if (hasExplicitAccountGroup) {
       applyAccountGroupSetting(settingsTarget, resolvedKey, entry.accountGroup);
+    } else if (hasInheritedAccountGroup) {
+      applyAccountGroupSetting(settingsTarget, resolvedKey, inheritedAccountGroup);
     }
   }
 
@@ -1093,6 +1130,7 @@ function extractEntry(
   }
 
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
+  const childContext = deriveChildContext(context || null, entry);
   nestedKeys.forEach((key) => {
     if (entry[key]) {
       collectOverridesFromContainer(
@@ -1102,7 +1140,8 @@ function extractEntry(
         settingsTarget,
         defaultTracker,
         entry[key],
-        orderingTracker
+        orderingTracker,
+        childContext
       );
     }
   });
@@ -1115,13 +1154,28 @@ function collectOverridesFromContainer(
   settingsTarget,
   defaultTracker,
   container,
-  orderingTracker
+  orderingTracker,
+  context
 ) {
   if (!container) {
     return;
   }
   if (Array.isArray(container)) {
     container.forEach((entry) => {
+      if (entry && typeof entry === 'object' && !Array.isArray(entry) && !isLikelyAccountEntryObject(entry)) {
+        const nextContext = deriveChildContext(context || null, entry);
+        collectOverridesFromContainer(
+          namesTarget,
+          portalTarget,
+          chatTarget,
+          settingsTarget,
+          defaultTracker,
+          entry,
+          orderingTracker,
+          nextContext
+        );
+        return;
+      }
       extractEntry(
         namesTarget,
         portalTarget,
@@ -1130,7 +1184,8 @@ function collectOverridesFromContainer(
         defaultTracker,
         entry,
         undefined,
-        orderingTracker
+        orderingTracker,
+        context || null
       );
     });
     return;
@@ -1138,6 +1193,9 @@ function collectOverridesFromContainer(
   if (typeof container !== 'object') {
     return;
   }
+
+  const containerContext = deriveChildContext(context || null, container);
+
   Object.keys(container).forEach((key) => {
     const value = container[key];
     if (typeof value === 'string') {
@@ -1156,19 +1214,24 @@ function collectOverridesFromContainer(
         defaultTracker,
         value,
         key,
-        orderingTracker
+        orderingTracker,
+        containerContext
       );
       return;
     }
-    collectOverridesFromContainer(
-      namesTarget,
-      portalTarget,
-      chatTarget,
-      settingsTarget,
-      defaultTracker,
-      value,
-      orderingTracker
-    );
+    if (value && typeof value === 'object') {
+      const nextContext = deriveChildContext(containerContext, value);
+      collectOverridesFromContainer(
+        namesTarget,
+        portalTarget,
+        chatTarget,
+        settingsTarget,
+        defaultTracker,
+        value,
+        orderingTracker,
+        nextContext
+      );
+    }
   });
 }
 
@@ -1208,7 +1271,8 @@ function normalizeAccountOverrides(raw) {
       settings,
       defaultTracker,
       raw,
-      orderingTracker
+      orderingTracker,
+      null
     );
     return {
       overrides,
@@ -1220,6 +1284,7 @@ function normalizeAccountOverrides(raw) {
     };
   }
 
+  const rootContext = deriveChildContext(null, raw);
   collectOverridesFromContainer(
     overrides,
     portalOverrides,
@@ -1227,7 +1292,8 @@ function normalizeAccountOverrides(raw) {
     settings,
     defaultTracker,
     raw,
-    orderingTracker
+    orderingTracker,
+    rootContext
   );
 
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
@@ -1240,7 +1306,8 @@ function normalizeAccountOverrides(raw) {
         settings,
         defaultTracker,
         raw[key],
-        orderingTracker
+        orderingTracker,
+        rootContext
       );
     }
   });
