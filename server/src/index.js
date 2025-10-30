@@ -8,7 +8,32 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
-const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
+let undiciRequest;
+let UndiciAgent;
+let UndiciProxyAgent;
+
+try {
+  ({ request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('node:undici'));
+} catch (nodeUndiciError) {
+  try {
+    ({ request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici'));
+  } catch (npmUndiciError) {
+    const combinedError = new Error(
+      'Failed to load undici. Ensure you are running on Node.js v18+ or install the "undici" package.',
+    );
+    combinedError.details = {
+      nodeUndiciError: {
+        message: nodeUndiciError instanceof Error ? nodeUndiciError.message : String(nodeUndiciError),
+        code: nodeUndiciError && typeof nodeUndiciError === 'object' ? nodeUndiciError.code : undefined,
+      },
+      npmUndiciError: {
+        message: npmUndiciError instanceof Error ? npmUndiciError.message : String(npmUndiciError),
+        code: npmUndiciError && typeof npmUndiciError === 'object' ? npmUndiciError.code : undefined,
+      },
+    };
+    throw combinedError;
+  }
+}
 const { getProxyForUrl } = require('proxy-from-env');
 require('dotenv').config();
 const accountNamesModule = require('./accountNames');
