@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import {
   formatDateTime,
@@ -8,6 +8,9 @@ import {
   formatSignedPercent,
 } from '../utils/formatters';
 import { buildQuoteUrl, openQuote } from '../utils/quotes';
+import { copyTextToClipboard } from '../utils/clipboard';
+import { openChatGpt } from '../utils/chat';
+import { buildExplainMovementPrompt, derivePercentages, resolveTotalCost } from '../utils/positions';
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -15,20 +18,6 @@ function isFiniteNumber(value) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
-}
-
-function resolvePositionTotalCost(position) {
-  if (position && position.totalCost !== undefined && position.totalCost !== null) {
-    return position.totalCost;
-  }
-  if (
-    position &&
-    isFiniteNumber(position.averageEntryPrice) &&
-    isFiniteNumber(position.openQuantity)
-  ) {
-    return position.averageEntryPrice * position.openQuantity;
-  }
-  return null;
 }
 
 function computePercentChange(position, metricKey) {
@@ -45,7 +34,7 @@ function computePercentChange(position, metricKey) {
     return metricValue === 0 ? 0 : null;
   }
 
-  const totalCost = resolvePositionTotalCost(position);
+  const totalCost = resolveTotalCost(position);
   if (totalCost !== null && Math.abs(totalCost) > 1e-9) {
     return (metricValue / totalCost) * 100;
   }
@@ -300,7 +289,7 @@ function aggregatePositionsByMergedSymbol(positions) {
 
   entries.forEach((position, index) => {
     const { key, display, raw } = normalizeMergedSymbol(position, `__merged_${index}`);
-    const resolvedCost = resolvePositionTotalCost(position);
+    const resolvedCost = resolveTotalCost(position);
     const normalizedMarketValue = isFiniteNumber(position.normalizedMarketValue)
       ? position.normalizedMarketValue
       : 0;
@@ -328,6 +317,12 @@ function aggregatePositionsByMergedSymbol(positions) {
         : position.description ?? null;
     const currentPrice = isFiniteNumber(position.currentPrice) ? position.currentPrice : null;
     const openQuantity = isFiniteNumber(position.openQuantity) ? position.openQuantity : null;
+    const accountNumber =
+      typeof position.accountNumber === 'string' && position.accountNumber.trim()
+        ? position.accountNumber.trim()
+        : null;
+    const accountId =
+      position.accountId !== undefined && position.accountId !== null ? position.accountId : null;
 
     if (groups.has(key)) {
       const entry = groups.get(key);
@@ -353,6 +348,22 @@ function aggregatePositionsByMergedSymbol(positions) {
         } else {
           entry.openQuantity = null;
         }
+      }
+      if (entry.accountNumber) {
+        if (accountNumber && entry.accountNumber !== accountNumber) {
+          entry.accountNumber = null;
+        }
+      } else if (accountNumber) {
+        entry.accountNumber = accountNumber;
+      }
+      if (entry.accountId !== null && entry.accountId !== undefined) {
+        if (accountId !== null && accountId !== undefined) {
+          if (String(entry.accountId) !== String(accountId)) {
+            entry.accountId = null;
+          }
+        }
+      } else if (accountId !== null && accountId !== undefined) {
+        entry.accountId = accountId;
       }
       if (!entry.description && description) {
         entry.description = description;
@@ -387,6 +398,8 @@ function aggregatePositionsByMergedSymbol(positions) {
           ? position.averageEntryPrice
           : null,
         openQuantity,
+        accountNumber,
+        accountId,
         rawSymbols: new Set([raw]),
       });
     }
@@ -445,6 +458,7 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
         currentPrice: isFiniteNumber(position.currentPrice) ? position.currentPrice : null,
         metricValue,
         percentChange,
+        positionDetail: position,
       };
     })
     .filter(Boolean);
@@ -716,19 +730,178 @@ export default function PnlHeatmapDialog({
     () => buildHeatmapNodes(activePositions, metricKey, styleMode),
     [activePositions, metricKey, styleMode]
   );
-  const [colorMode, setColorMode] = useState('percent');
-  const handleTileClick = useCallback((event, symbol) => {
-    if (!symbol) {
-      return;
-    }
-    const provider = event.altKey ? 'yahoo' : 'google';
-    const url = buildQuoteUrl(symbol, provider);
-    if (!url) {
-      return;
-    }
-    event.stopPropagation();
-    openQuote(symbol, provider);
+  const menuRef = useRef(null);
+  const [contextMenuState, setContextMenuState] = useState({ open: false, x: 0, y: 0, node: null });
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenuState((state) => {
+      if (!state.open) {
+        return state;
+      }
+      return { open: false, x: 0, y: 0, node: null };
+    });
   }, []);
+  const [colorMode, setColorMode] = useState('percent');
+  const handleTileClick = useCallback(
+    (event, symbol) => {
+      closeContextMenu();
+      if (!symbol) {
+        return;
+      }
+      const provider = event.altKey ? 'yahoo' : 'google';
+      const url = buildQuoteUrl(symbol, provider);
+      if (!url) {
+        return;
+      }
+      event.stopPropagation();
+      openQuote(symbol, provider);
+    },
+    [closeContextMenu]
+  );
+
+  const handleTileContextMenu = useCallback((event, node) => {
+    if (!node) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenuState({ open: true, x: event.clientX, y: event.clientY, node });
+  }, []);
+
+  const handleExplainMovement = useCallback(async () => {
+    const targetNode = contextMenuState.node;
+    closeContextMenu();
+    if (!targetNode) {
+      return;
+    }
+
+    openChatGpt();
+
+    const basePosition = targetNode.positionDetail
+      ? {
+          ...targetNode.positionDetail,
+          symbol: targetNode.positionDetail.symbol || targetNode.symbol,
+          description: targetNode.positionDetail.description || targetNode.description,
+          currentMarketValue:
+            Number.isFinite(targetNode.positionDetail.currentMarketValue)
+              ? targetNode.positionDetail.currentMarketValue
+              : targetNode.marketValue,
+          currentPrice:
+            Number.isFinite(targetNode.positionDetail.currentPrice)
+              ? targetNode.positionDetail.currentPrice
+              : targetNode.currentPrice,
+          portfolioShare:
+            targetNode.positionDetail.portfolioShare ??
+            (Number.isFinite(targetNode.share) ? targetNode.share : null),
+        }
+      : {
+          symbol: targetNode.symbol,
+          description: targetNode.description,
+          dayPnl: Number.isFinite(targetNode.metricValue) ? targetNode.metricValue : null,
+          openPnl: Number.isFinite(targetNode.metricValue) ? targetNode.metricValue : null,
+          currentMarketValue: Number.isFinite(targetNode.marketValue) ? targetNode.marketValue : null,
+          currentPrice: Number.isFinite(targetNode.currentPrice) ? targetNode.currentPrice : null,
+          currency: targetNode.currency,
+          portfolioShare: Number.isFinite(targetNode.share) ? targetNode.share : null,
+        };
+
+    const percentages = derivePercentages(basePosition);
+    const promptSource = {
+      ...basePosition,
+      dayPnlPercent: percentages.dayPnlPercent,
+      openPnlPercent: percentages.openPnlPercent,
+    };
+
+    const prompt = buildExplainMovementPrompt(promptSource);
+    if (!prompt) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy explain movement prompt from heatmap', error);
+    }
+  }, [closeContextMenu, contextMenuState.node]);
+
+  useEffect(() => {
+    if (!contextMenuState.open) {
+      return undefined;
+    }
+
+    const handlePointer = (event) => {
+      if (!menuRef.current) {
+        closeContextMenu();
+        return;
+      }
+      if (menuRef.current.contains(event.target)) {
+        return;
+      }
+      closeContextMenu();
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeContextMenu();
+      }
+    };
+
+    const handleViewportChange = () => {
+      closeContextMenu();
+    };
+
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [closeContextMenu, contextMenuState.open]);
+
+  useEffect(() => {
+    if (!contextMenuState.open || !menuRef.current) {
+      return;
+    }
+
+    const { innerWidth, innerHeight } = window;
+    const rect = menuRef.current.getBoundingClientRect();
+    const padding = 12;
+    let nextX = contextMenuState.x;
+    let nextY = contextMenuState.y;
+
+    if (nextX + rect.width > innerWidth - padding) {
+      nextX = Math.max(padding, innerWidth - rect.width - padding);
+    }
+    if (nextY + rect.height > innerHeight - padding) {
+      nextY = Math.max(padding, innerHeight - rect.height - padding);
+    }
+
+    if (nextX !== contextMenuState.x || nextY !== contextMenuState.y) {
+      setContextMenuState((state) => {
+        if (!state.open) {
+          return state;
+        }
+        return { ...state, x: nextX, y: nextY };
+      });
+    }
+  }, [contextMenuState.open, contextMenuState.x, contextMenuState.y]);
+
+  useEffect(() => {
+    if (!contextMenuState.open || !menuRef.current) {
+      return;
+    }
+    const firstButton = menuRef.current.querySelector('button');
+    if (firstButton && typeof firstButton.focus === 'function') {
+      firstButton.focus({ preventScroll: true });
+    }
+  }, [contextMenuState.open]);
 
   const totals = useMemo(() => {
     if (!activePositions.length) {
@@ -786,6 +959,27 @@ export default function PnlHeatmapDialog({
       ? baseCurrency.trim().toUpperCase()
       : '';
   const currencyLabel = normalizedCurrency || fallbackCurrency || 'CAD';
+
+  const contextMenuElement = contextMenuState.open ? (
+    <div
+      className="positions-table__context-menu"
+      ref={menuRef}
+      style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
+    >
+      <ul className="positions-table__context-menu-list" role="menu">
+        <li role="none">
+          <button
+            type="button"
+            className="positions-table__context-menu-item"
+            role="menuitem"
+            onClick={handleExplainMovement}
+          >
+            Explain movement
+          </button>
+        </li>
+      </ul>
+    </div>
+  ) : null;
 
   return (
     <div className="pnl-heatmap-overlay" role="presentation">
@@ -1025,6 +1219,7 @@ export default function PnlHeatmapDialog({
                     }}
                     title={tooltipLines}
                     onClick={(event) => handleTileClick(event, node.symbol)}
+                    onContextMenu={(event) => handleTileContextMenu(event, node)}
                   >
                     <span
                       className="pnl-heatmap-board__symbol"
@@ -1047,6 +1242,7 @@ export default function PnlHeatmapDialog({
           )}
         </div>
       </div>
+      {contextMenuElement}
     </div>
   );
 }
