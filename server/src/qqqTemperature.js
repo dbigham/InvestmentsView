@@ -60,6 +60,14 @@ let summaryExpiresAt = 0;
 let pendingRefresh = null;
 let lastLoggedError = null;
 
+function daysBetweenUTC(a, b) {
+  const da = parseDate(a);
+  const db = parseDate(b);
+  if (!da || !db) return 0;
+  const ms = db.getTime() - da.getTime();
+  return Math.floor(ms / MS_PER_DAY);
+}
+
 function ensureYahooFinance() {
   if (!yahooFinance) {
     throw new MissingDependencyError(MISSING_DEPENDENCY_MESSAGE, yahooFinanceLoadError);
@@ -548,7 +556,17 @@ async function refreshSummary() {
 
 async function getQqqTemperatureSummary() {
   const now = Date.now();
-  if (cachedSummary && now < summaryExpiresAt) {
+  // If the cached summary predates today by at least one full day,
+  // bypass TTL so we always pull in yesterday's close first thing.
+  const todayStr = formatDate(new Date());
+  const isCacheStaleByDate = !!(
+    cachedSummary &&
+    cachedSummary.rangeEnd &&
+    todayStr &&
+    daysBetweenUTC(cachedSummary.rangeEnd, todayStr) >= 1
+  );
+
+  if (cachedSummary && now < summaryExpiresAt && !isCacheStaleByDate) {
     return cachedSummary;
   }
   if (pendingRefresh) {
