@@ -248,6 +248,7 @@ const STYLE_TWO_MIN_SHARE = 0.005;
 const HEATMAP_SYMBOL_LABELS = {
   SGOV: 'T-Bills',
   SPLG: 'S&P 500',
+  SPYM: 'S&P 500',
   TSLA: 'Tesla',
   NVDA: 'NVIDIA',
   VXUS: 'Non-US',
