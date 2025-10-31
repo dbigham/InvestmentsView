@@ -124,7 +124,13 @@ export default function TodoSummary({ items, onSelectItem }) {
                 <button
                   type="button"
                   className="todo-card__item-button"
-                  onClick={itemInteractive ? () => onSelectItem(item) : undefined}
+                  onClick={
+                    itemInteractive
+                      ? (event) => {
+                          onSelectItem(item, event);
+                        }
+                      : undefined
+                  }
                   disabled={!itemInteractive}
                 >
                   <span className="todo-card__item-title">{titleText}</span>

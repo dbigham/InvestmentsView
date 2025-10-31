@@ -36,7 +36,12 @@ import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl } from './utils/questrade';
-import { buildAccountViewUrl, readAccountIdFromLocation } from './utils/navigation';
+import {
+  buildAccountViewUrl,
+  readAccountIdFromLocation,
+  readTodoActionFromLocation,
+  readTodoReminderFromLocation,
+} from './utils/navigation';
 import './App.css';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
@@ -1411,6 +1416,18 @@ function normalizeSymbolKey(value) {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed.toUpperCase() : '';
+}
+
+function normalizeQueryValue(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (value !== undefined && value !== null) {
+    const stringValue = String(value).trim();
+    return stringValue ? stringValue : null;
+  }
+  return null;
 }
 
 function buildTodoItems({ accountIds, accountsById, accountBalances, investmentModelSections }) {
@@ -3492,6 +3509,20 @@ export default function App() {
     return readAccountIdFromLocation(window.location);
   }, []);
 
+  const initialTodoActionFromUrl = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    return readTodoActionFromLocation(window.location);
+  }, []);
+
+  const initialTodoReminderFromUrl = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    return readTodoReminderFromLocation(window.location);
+  }, []);
+
   const [selectedAccountState, setSelectedAccountState] = useState(() => {
     if (!initialAccountIdFromUrl || initialAccountIdFromUrl === 'default') {
       return 'all';
@@ -3524,8 +3555,41 @@ export default function App() {
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
-  const [pendingTodoAction, setPendingTodoAction] = useState(null);
-  const [selectedRebalanceReminder, setSelectedRebalanceReminder] = useState(null);
+  const [pendingTodoAction, setPendingTodoAction] = useState(() => {
+    if (!initialTodoActionFromUrl) {
+      return null;
+    }
+    const type = initialTodoActionFromUrl.type;
+    if (!type) {
+      return null;
+    }
+    const accountId = normalizeQueryValue(initialTodoActionFromUrl.accountId);
+    const model = normalizeQueryValue(initialTodoActionFromUrl.model);
+    const chartKey = normalizeQueryValue(initialTodoActionFromUrl.chartKey);
+    return {
+      type,
+      accountId,
+      model,
+      chartKey,
+    };
+  });
+  const [selectedRebalanceReminder, setSelectedRebalanceReminder] = useState(() => {
+    if (!initialTodoReminderFromUrl) {
+      return null;
+    }
+    const accountId = normalizeQueryValue(initialTodoReminderFromUrl.accountId);
+    const accountNumber = normalizeQueryValue(initialTodoReminderFromUrl.accountNumber);
+    const rawModelKey = normalizeQueryValue(initialTodoReminderFromUrl.modelKey);
+    const modelKey = rawModelKey ? rawModelKey.toUpperCase() : null;
+    if (!accountId && !accountNumber && !modelKey) {
+      return null;
+    }
+    return {
+      accountId,
+      accountNumber,
+      modelKey,
+    };
+  });
   const [activeInvestmentModelDialog, setActiveInvestmentModelDialog] = useState(null);
   const [qqqData, setQqqData] = useState(null);
   const [qqqLoading, setQqqLoading] = useState(false);
@@ -3561,7 +3625,12 @@ export default function App() {
     if (typeof window === 'undefined') {
       return;
     }
-    const nextUrl = buildAccountViewUrl(activeAccountId);
+    const nextUrl = buildAccountViewUrl(activeAccountId, undefined, {
+      todoAction: null,
+      todoModel: null,
+      todoChart: null,
+      todoAccountNumber: null,
+    });
     if (!nextUrl || nextUrl === window.location.href) {
       return;
     }
@@ -3865,10 +3934,13 @@ export default function App() {
   );
 
   const handleTodoSelect = useCallback(
-    (item) => {
+    (item, event) => {
       if (!item || !isAggregateSelection) {
         return;
       }
+      const shouldOpenInNewTab = Boolean(
+        event && (event.ctrlKey || event.metaKey || event.button === 1)
+      );
       const directId = typeof item.accountId === 'string' && item.accountId ? item.accountId : null;
       const normalizedAccountNumber =
         typeof item.accountNumber === 'string' && item.accountNumber.trim() ? item.accountNumber.trim() : null;
@@ -3917,6 +3989,26 @@ export default function App() {
         }
       }
 
+      const targetAccountIdentifier = resolvedAccountId || normalizedAccountNumber || null;
+      if (shouldOpenInNewTab && targetAccountIdentifier) {
+        event.preventDefault();
+        if (typeof event.stopPropagation === 'function') {
+          event.stopPropagation();
+        }
+        const reminderModelKey =
+          typeof item.modelKey === 'string' && item.modelKey.trim()
+            ? item.modelKey.trim().toUpperCase()
+            : null;
+        const targetUrl = buildAccountViewUrl(targetAccountIdentifier, undefined, {
+          todoModel: reminderModelKey,
+          todoAccountNumber: resolvedAccountNumber,
+        });
+        if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+          window.open(targetUrl, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
+
       setSelectedRebalanceReminder({
         accountId: resolvedAccountId,
         accountNumber: resolvedAccountNumber,
@@ -3947,7 +4039,14 @@ export default function App() {
         }
       }
     },
-    [isAggregateSelection, accounts, setSelectedAccountState, setActiveAccountId, setSelectedRebalanceReminder]
+    [
+      isAggregateSelection,
+      accounts,
+      setSelectedAccountState,
+      setActiveAccountId,
+      setSelectedRebalanceReminder,
+      buildAccountViewUrl,
+    ]
   );
 
   const selectedAccountKey = useMemo(() => {
@@ -6222,7 +6321,7 @@ export default function App() {
 
   const currentTodoItems = todoState.items || [];
 
-  const handleTodoItemSelect = useCallback((item) => {
+  const handleTodoItemSelect = useCallback((item, event) => {
     if (!item || typeof item !== 'object') {
       return;
     }
@@ -6234,6 +6333,32 @@ export default function App() {
 
     const accountId =
       item.accountId !== undefined && item.accountId !== null ? String(item.accountId) : null;
+
+    const shouldOpenInNewTab = Boolean(
+      event && (event.ctrlKey || event.metaKey || event.button === 1)
+    );
+
+    if (shouldOpenInNewTab && accountId) {
+      event.preventDefault();
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation();
+      }
+      const extraParams = {
+        todoAction: normalizedType,
+        todoModel:
+          normalizedType === 'rebalance' && item.model ? String(item.model) : null,
+        todoChart: normalizedType === 'rebalance' && item.chartKey ? String(item.chartKey) : null,
+        todoAccountNumber:
+          item.accountNumber !== undefined && item.accountNumber !== null
+            ? String(item.accountNumber).trim()
+            : null,
+      };
+      const targetUrl = buildAccountViewUrl(accountId, undefined, extraParams);
+      if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
 
     if (normalizedType === 'cash') {
       setPendingTodoAction({ type: 'cash', accountId });
@@ -6250,7 +6375,7 @@ export default function App() {
         chartKey: chartKey || null,
       });
     }
-  }, []);
+  }, [buildAccountViewUrl, setPendingTodoAction]);
 
   const handleMarkAccountAsRebalanced = useCallback(async () => {
     if (!markRebalanceContext) {
@@ -7276,7 +7401,7 @@ export default function App() {
                     <button
                       type="button"
                       className="todo-panel__button"
-                      onClick={() => handleTodoSelect(todo)}
+                      onClick={(event) => handleTodoSelect(todo, event)}
                       disabled={!isAggregateSelection}
                       data-status={todo.overdueDays > 0 ? 'overdue' : 'due'}
                     >
