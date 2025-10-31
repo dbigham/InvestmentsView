@@ -3408,8 +3408,8 @@ const DIVIDEND_SYMBOL_CANONICAL_ALIASES = new Map([
   ['MSFT', 'MSFT'],
   ['PSA', 'PSA'],
   ['PSA.TO', 'PSA'],
-  ['S022496', 'SPDR'],
-  ['SPDR', 'SPDR'],
+  ['S022496', 'SPYM'],
+  ['SPYM', 'SPYM'],
   ['T002234', 'TSM'],
   ['TSM', 'TSM'],
 ]);
@@ -3427,7 +3427,7 @@ const DIVIDEND_DESCRIPTION_HINTS = new Map(
     ['LLY', ['LLY', 'ELI LILLY']],
     ['MSFT', ['MSFT', 'MICROSOFT']],
     ['PSA', ['PSA', 'PUBLIC STORAGE']],
-    ['SPDR', ['SPDR']],
+    ['SPYM', ['SPYM']],
     ['TSM', ['TSM', 'TAIWAN SEMI']],
   ].map(function ([canonical, hints]) {
     const normalizedHints = Array.isArray(hints)
