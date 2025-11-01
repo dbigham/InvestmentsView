@@ -32,6 +32,7 @@ import TargetProportionsDialog from './components/TargetProportionsDialog';
 import PortfolioNews from './components/PortfolioNews';
 import SymbolNotesDialog from './components/SymbolNotesDialog';
 import PlanningContextDialog from './components/PlanningContextDialog';
+import NewsPromptDialog from './components/NewsPromptDialog';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -3621,8 +3622,25 @@ export default function App() {
     generatedAt: null,
     cacheKey: null,
     symbols: [],
+    prompt: null,
+    rawOutput: null,
+    usage: null,
+    pricing: null,
+    cost: null,
   });
   const [portfolioNewsRetryKey, setPortfolioNewsRetryKey] = useState(0);
+  const [showNewsPromptDialog, setShowNewsPromptDialog] = useState(false);
+  const [newsTabContextMenuState, setNewsTabContextMenuState] = useState({ open: false, x: 0, y: 0 });
+  const newsTabMenuRef = useRef(null);
+
+  const closeNewsTabContextMenu = useCallback(() => {
+    setNewsTabContextMenuState((state) => (state.open ? { ...state, open: false } : state));
+  }, []);
+
+  const handleNewsTabContextMenu = useCallback((event) => {
+    event.preventDefault();
+    setNewsTabContextMenuState({ open: true, x: event.clientX, y: event.clientY });
+  }, []);
   const quoteCacheRef = useRef(new Map());
   const [showTotalPnlDialog, setShowTotalPnlDialog] = useState(false);
   const [totalPnlDialogContext, setTotalPnlDialogContext] = useState({
@@ -4588,6 +4606,78 @@ export default function App() {
   }, [a1ReferenceAccount, investmentModelEvaluations]);
   const asOf = data?.asOf || null;
 
+  // Manage the News tab context menu lifecycle
+  useEffect(() => {
+    if (!newsTabContextMenuState.open) {
+      return undefined;
+    }
+
+    const handlePointer = (event) => {
+      if (!newsTabMenuRef.current) {
+        closeNewsTabContextMenu();
+        return;
+      }
+      if (newsTabMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeNewsTabContextMenu();
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeNewsTabContextMenu();
+      }
+    };
+
+    const handleViewportChange = () => {
+      closeNewsTabContextMenu();
+    };
+
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [closeNewsTabContextMenu, newsTabContextMenuState.open]);
+
+  useEffect(() => {
+    if (!newsTabContextMenuState.open || !newsTabMenuRef.current) {
+      return;
+    }
+    const { innerWidth, innerHeight } = window;
+    const rect = newsTabMenuRef.current.getBoundingClientRect();
+    const padding = 12;
+    let nextX = newsTabContextMenuState.x;
+    let nextY = newsTabContextMenuState.y;
+    if (nextX + rect.width > innerWidth - padding) {
+      nextX = Math.max(padding, innerWidth - rect.width - padding);
+    }
+    if (nextY + rect.height > innerHeight - padding) {
+      nextY = Math.max(padding, innerHeight - rect.height - padding);
+    }
+    if (nextX !== newsTabContextMenuState.x || nextY !== newsTabContextMenuState.y) {
+      setNewsTabContextMenuState((state) => (state.open ? { ...state, x: nextX, y: nextY } : state));
+    }
+  }, [newsTabContextMenuState.open, newsTabContextMenuState.x, newsTabContextMenuState.y]);
+
+  useEffect(() => {
+    if (!newsTabContextMenuState.open || !newsTabMenuRef.current) {
+      return;
+    }
+    const firstButton = newsTabMenuRef.current.querySelector('button');
+    if (firstButton && typeof firstButton.focus === 'function') {
+      firstButton.focus({ preventScroll: true });
+    }
+  }, [newsTabContextMenuState.open]);
+
   const baseCurrency = 'CAD';
   const currencyRates = useMemo(() => buildCurrencyRateMap(balances, baseCurrency), [balances]);
 
@@ -4743,6 +4833,11 @@ export default function App() {
           generatedAt: null,
           cacheKey: newsCacheKey,
           symbols: [],
+          prompt: null,
+          rawOutput: null,
+          usage: null,
+          pricing: null,
+          cost: null,
         };
       });
       return;
@@ -4772,6 +4867,11 @@ export default function App() {
         error: null,
         cacheKey: newsCacheKey,
         symbols: newsSymbols,
+        prompt: null,
+        rawOutput: null,
+        usage: null,
+        pricing: null,
+        cost: null,
       };
     });
 
@@ -4797,6 +4897,11 @@ export default function App() {
         const articles = Array.isArray(payload?.articles) ? payload.articles.filter(Boolean) : [];
         const disclaimer = typeof payload?.disclaimer === 'string' ? payload.disclaimer.trim() : '';
         const generatedAt = typeof payload?.generatedAt === 'string' ? payload.generatedAt : null;
+        const prompt = typeof payload?.prompt === 'string' ? payload.prompt : null;
+        const rawOutput = typeof payload?.rawOutput === 'string' ? payload.rawOutput : null;
+        const usage = payload?.usage && typeof payload.usage === 'object' ? payload.usage : null;
+        const pricing = payload?.pricing && typeof payload.pricing === 'object' ? payload.pricing : null;
+        const cost = payload?.cost && typeof payload.cost === 'object' ? payload.cost : null;
         const responseSymbols = Array.isArray(payload?.symbols)
           ? payload.symbols.map((symbol) => (typeof symbol === 'string' ? symbol.trim().toUpperCase() : '')).filter(Boolean)
           : null;
@@ -4808,6 +4913,11 @@ export default function App() {
           generatedAt,
           cacheKey: newsCacheKey,
           symbols: responseSymbols && responseSymbols.length ? responseSymbols : newsSymbols,
+          prompt,
+          rawOutput,
+          usage,
+          pricing,
+          cost,
         });
       })
       .catch((error) => {
@@ -4826,6 +4936,11 @@ export default function App() {
           generatedAt: null,
           cacheKey: newsCacheKey,
           symbols: newsSymbols,
+          prompt: null,
+          rawOutput: null,
+          usage: null,
+          pricing: null,
+          cost: null,
         });
       });
 
@@ -8116,6 +8231,7 @@ export default function App() {
                   aria-controls={newsPanelId}
                   className={portfolioViewTab === 'news' ? 'active' : ''}
                   onClick={() => setPortfolioViewTab('news')}
+                  onContextMenu={handleNewsTabContextMenu}
                 >
                   News
                 </button>
@@ -8275,12 +8391,39 @@ export default function App() {
                 symbols={resolvedNewsSymbols}
                 accountLabel={newsAccountLabel}
                 onRetry={handleRetryNews}
+                onSeePrompt={() => setShowNewsPromptDialog(true)}
+                prompt={portfolioNewsState.prompt}
               />
             </div>
           </section>
         )}
 
       </main>
+      {newsTabContextMenuState.open ? (
+        <div
+          ref={newsTabMenuRef}
+          className="positions-table__context-menu"
+          style={{ position: 'fixed', left: newsTabContextMenuState.x, top: newsTabContextMenuState.y }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <ul className="positions-table__context-menu-list" role="menu">
+            <li>
+              <button
+                type="button"
+                className="positions-table__context-menu-item"
+                onClick={() => {
+                  setShowNewsPromptDialog(true);
+                  closeNewsTabContextMenu();
+                }}
+                disabled={!portfolioNewsState.prompt}
+                role="menuitem"
+              >
+                See prompt
+              </button>
+            </li>
+          </ul>
+        </div>
+      ) : null}
       {showReturnBreakdown && fundingSummaryForDisplay?.returnBreakdown?.length > 0 && (
         <AnnualizedReturnDialog
           onClose={handleCloseAnnualizedReturnDetails}
@@ -8323,6 +8466,16 @@ export default function App() {
           title={investmentModelDialogTitle}
           onMarkRebalanced={investmentModelDialogOnMarkRebalanced}
           accountUrl={investmentModelDialogAccountUrl}
+        />
+      )}
+      {showNewsPromptDialog && (
+        <NewsPromptDialog
+          onClose={() => setShowNewsPromptDialog(false)}
+          prompt={portfolioNewsState.prompt}
+          rawOutput={portfolioNewsState.rawOutput}
+          usage={portfolioNewsState.usage}
+          pricing={portfolioNewsState.pricing}
+          cost={portfolioNewsState.cost}
         />
       )}
       {showTotalPnlDialog && (

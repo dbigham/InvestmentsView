@@ -30,3 +30,5 @@ temp_block.txt
 symbols/
 symbol_data/
 temperature_cache/
+server/.openai-news-response.json
+server/.news-test.log

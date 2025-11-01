@@ -72,7 +72,68 @@ const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
 
 const OPENAI_API_KEY = typeof process.env.OPENAI_API_KEY === 'string' ? process.env.OPENAI_API_KEY.trim() : '';
 // Default model for Responses API + web_search. Override via OPENAI_NEWS_MODEL.
-const OPENAI_NEWS_MODEL = process.env.OPENAI_NEWS_MODEL || 'gpt-4o-mini';
+const OPENAI_NEWS_MODEL = process.env.OPENAI_NEWS_MODEL || 'gpt-5';
+const OPENAI_NEWS_FALLBACK_MODEL = process.env.OPENAI_NEWS_FALLBACK_MODEL || 'gpt-4o-mini';
+// Pricing (USD per 1M tokens) for common models; can be overridden via env vars
+// OPENAI_NEWS_INPUT_PRICE_PER_MTOKEN and OPENAI_NEWS_OUTPUT_PRICE_PER_MTOKEN
+const MODEL_PRICING_PER_MTOK = {
+  'o4-mini': { input: 1.1, output: 4.4 },
+  'o3-mini': { input: 1.1, output: 4.4 },
+  'gpt-4o': { input: 5.0, output: 15.0 },
+  'gpt-4o-mini': { input: 0.15, output: 0.6 },
+  'gpt-4.1': { input: 5.0, output: 15.0 },
+  'gpt-4.1-mini': { input: 0.3, output: 1.2 },
+  // GPT‑5 family (from provided pricing screenshot). Override via env to customize.
+  'gpt-5': { input: 1.25, output: 10.0 },
+  'gpt-5-mini': { input: 0.25, output: 2.0 },
+  'gpt-5-nano': { input: 0.05, output: 0.4 },
+  'gpt-5-pro': { input: 15.0, output: 120.0 },
+};
+
+function getNewsModelPricing(modelName) {
+  // Highest priority: explicit env overrides
+  const envInput = Number(process.env.OPENAI_NEWS_INPUT_PRICE_PER_MTOKEN);
+  const envOutput = Number(process.env.OPENAI_NEWS_OUTPUT_PRICE_PER_MTOKEN);
+  if (Number.isFinite(envInput) && envInput > 0 && Number.isFinite(envOutput) && envOutput > 0) {
+    return { input: envInput, output: envOutput };
+  }
+
+  const normalized = String(modelName || '').trim().toLowerCase();
+  if (!normalized) {
+    // Fall back to configured default model pricing
+    return getNewsModelPricing(OPENAI_NEWS_MODEL);
+  }
+
+  // Exact match
+  if (MODEL_PRICING_PER_MTOK[normalized]) {
+    return MODEL_PRICING_PER_MTOK[normalized];
+  }
+
+  // Fuzzy match: handle versioned or suffixed model IDs (prefer most specific/longest key)
+  const fuzzyKeys = Object.keys(MODEL_PRICING_PER_MTOK).sort((a, b) => b.length - a.length);
+  for (const key of fuzzyKeys) {
+    if (normalized.startsWith(key) || normalized.includes(key)) {
+      return MODEL_PRICING_PER_MTOK[key];
+    }
+  }
+
+  // If still unknown, try the configured model mapping as a last resort
+  const fallback = String(OPENAI_NEWS_MODEL || '').trim().toLowerCase();
+  if (fallback) {
+    if (MODEL_PRICING_PER_MTOK[fallback]) {
+      return MODEL_PRICING_PER_MTOK[fallback];
+    }
+    const fallbackFuzzyKeys = Object.keys(MODEL_PRICING_PER_MTOK).sort((a, b) => b.length - a.length);
+    for (const key of fallbackFuzzyKeys) {
+      if (fallback.startsWith(key) || fallback.includes(key)) {
+        return MODEL_PRICING_PER_MTOK[key];
+      }
+    }
+  }
+
+  // Unknown model; pricing unavailable
+  return { input: null, output: null };
+}
 // Timezone used for date filtering in the News panel to match UI display
 const TORONTO_TIME_ZONE = 'America/Toronto';
 const torontoDateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -721,8 +782,42 @@ function extractOpenAiResponseText(response) {
         if (typeof contentEntry.text === 'string' && contentEntry.text.trim()) {
           return contentEntry.text;
         }
+        if (contentEntry.text && typeof contentEntry.text === 'object') {
+          const val = contentEntry.text.value || contentEntry.text.text || null;
+          if (typeof val === 'string' && val.trim()) {
+            return val;
+          }
+          try {
+            return JSON.stringify(contentEntry.text);
+          } catch {
+            // ignore
+          }
+        }
         if (typeof contentEntry.output_text === 'string' && contentEntry.output_text.trim()) {
           return contentEntry.output_text;
+        }
+        // Some Responses API variants return structured JSON content for json_schema
+        // formatted requests. Capture it and stringify so downstream JSON.parse works.
+        if (contentEntry.json && typeof contentEntry.json === 'object') {
+          try {
+            return JSON.stringify(contentEntry.json);
+          } catch {
+            // ignore stringify errors and continue
+          }
+        }
+        if (contentEntry.output_json && typeof contentEntry.output_json === 'object') {
+          try {
+            return JSON.stringify(contentEntry.output_json);
+          } catch {
+            // ignore
+          }
+        }
+        if (contentEntry.type === 'json' && contentEntry.value && typeof contentEntry.value === 'object') {
+          try {
+            return JSON.stringify(contentEntry.value);
+          } catch {
+            // ignore
+          }
         }
       }
     }
@@ -739,6 +834,84 @@ function extractOpenAiResponseText(response) {
           const part = message.content[index];
           if (part && typeof part.text === 'string' && part.text.trim()) {
             return part.text;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function extractOpenAiResponseJson(response) {
+  if (!response || typeof response !== 'object') {
+    return null;
+  }
+  // Walk the modern Responses API shape
+  if (Array.isArray(response.output)) {
+    for (let i = 0; i < response.output.length; i += 1) {
+      const outputEntry = response.output[i];
+      if (!outputEntry || typeof outputEntry !== 'object' || !Array.isArray(outputEntry.content)) {
+        continue;
+      }
+      for (let j = 0; j < outputEntry.content.length; j += 1) {
+        const contentEntry = outputEntry.content[j];
+        if (!contentEntry || typeof contentEntry !== 'object') {
+          continue;
+        }
+        // Structured JSON content entries
+        if (contentEntry.type === 'output_json' && contentEntry.json && typeof contentEntry.json === 'object') {
+          return contentEntry.json;
+        }
+        if (contentEntry.json && typeof contentEntry.json === 'object') {
+          return contentEntry.json;
+        }
+        if (contentEntry.output_json && typeof contentEntry.output_json === 'object') {
+          return contentEntry.output_json;
+        }
+        if (contentEntry.type === 'json' && contentEntry.value && typeof contentEntry.value === 'object') {
+          return contentEntry.value;
+        }
+        // Some SDKs wrap content under a message
+        if (contentEntry.message && typeof contentEntry.message === 'object') {
+          const msg = contentEntry.message;
+          if (msg.parsed && typeof msg.parsed === 'object') {
+            return msg.parsed;
+          }
+          if (Array.isArray(msg.content)) {
+            for (let k = 0; k < msg.content.length; k += 1) {
+              const part = msg.content[k];
+              if (part && typeof part === 'object') {
+                if (part.type === 'output_json' && part.json && typeof part.json === 'object') {
+                  return part.json;
+                }
+                if (part.json && typeof part.json === 'object') {
+                  return part.json;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  // Legacy chat-like choices
+  if (Array.isArray(response.choices) && response.choices.length) {
+    const first = response.choices[0];
+    const message = first && first.message;
+    if (message && typeof message === 'object') {
+      if (message.parsed && typeof message.parsed === 'object') {
+        return message.parsed;
+      }
+      if (Array.isArray(message.content)) {
+        for (let idx = 0; idx < message.content.length; idx += 1) {
+          const part = message.content[idx];
+          if (part && typeof part === 'object') {
+            if (part.type === 'output_json' && part.json && typeof part.json === 'object') {
+              return part.json;
+            }
+            if (part.json && typeof part.json === 'object') {
+              return part.json;
+            }
           }
         }
       }
@@ -941,8 +1114,8 @@ async function fetchPortfolioNewsFromOpenAi(params) {
 
   const baseRequest = {
     model: OPENAI_NEWS_MODEL,
+    reasoning: { effort: 'low' },
     max_output_tokens: 1100,
-    tools: [{ type: 'web_search' }],
     instructions:
       'You are a portfolio research assistant. Use the web_search tool when helpful to gather the most recent, reputable news articles or posts about the provided securities. Respond with concise JSON summaries. ' +
       'Return ONLY articles published on the current date in the America/Toronto timezone. If no qualifying articles exist, return an empty list. Ensure each article has title, direct URL, source, and publishedAt in ISO 8601.',
@@ -954,6 +1127,17 @@ async function fetchPortfolioNewsFromOpenAi(params) {
       'For each article provide the title, a direct URL, the publisher/source when available, the publication date (ISO 8601 preferred), and a concise summary under 60 words.',
     ].join('\n'),
   };
+
+  // Optional tools (e.g., web_search) via env: OPENAI_NEWS_TOOLS=web_search
+  let requestWithTools = baseRequest;
+  const toolsEnv = (process.env.OPENAI_NEWS_TOOLS || '').toLowerCase();
+  if (toolsEnv.includes('web_search')) {
+    requestWithTools = { ...baseRequest, tools: [{ type: 'web_search' }] };
+  }
+
+  // Capture the exact composed prompt text used for the OpenAI call.
+  // This mirrors the content sent via the `instructions` and `input` fields.
+  const composedPromptText = `${baseRequest.instructions}\n\n${baseRequest.input}`;
 
   function shouldRetryWithLegacyResponseFormat(requestError) {
     if (!requestError || typeof requestError !== 'object') {
@@ -1016,8 +1200,11 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   let response;
   try {
     response = await client.responses.create({
-      ...baseRequest,
-      text: { format: structuredTextFormat },
+      ...requestWithTools,
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: structuredTextFormat.name, schema: structuredTextFormat.schema },
+      },
     });
   } catch (error) {
     function shouldRetryWithoutTools(requestError) {
@@ -1039,46 +1226,140 @@ async function fetchPortfolioNewsFromOpenAi(params) {
       );
     }
 
-    if (shouldRetryWithLegacyResponseFormat(error)) {
+    function shouldRetryWithTextFormat(requestError) {
+      const msg = [
+        requestError?.message,
+        requestError?.error?.message,
+        requestError?.error?.param,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!msg) return false;
+      return (
+        msg.includes('response_format') &&
+        (msg.includes('unknown parameter') || msg.includes('not supported') || msg.includes('unrecognized') || msg.includes('unsupported') || msg.includes('moved to'))
+      );
+    }
+
+    if (shouldRetryWithoutTools(error)) {
       try {
         response = await client.responses.create({
           ...baseRequest,
+          tools: undefined,
           response_format: {
             type: 'json_schema',
             json_schema: { name: structuredTextFormat.name, schema: structuredTextFormat.schema },
           },
         });
-      } catch (legacyError) {
-        rethrowAsOpenAiError(legacyError);
-      }
-    } else if (shouldRetryWithoutTools(error)) {
-      try {
-        response = await client.responses.create({
-          ...baseRequest,
-          tools: undefined,
-          text: { format: structuredTextFormat },
-        });
       } catch (toolError) {
         rethrowAsOpenAiError(toolError);
+      }
+    } else if (shouldRetryWithTextFormat(error)) {
+      try {
+        response = await client.responses.create({
+          ...requestWithTools,
+          text: { format: structuredTextFormat },
+        });
+      } catch (textError) {
+        rethrowAsOpenAiError(textError);
       }
     } else {
       rethrowAsOpenAiError(error);
     }
   }
 
-  const outputText = extractOpenAiResponseText(response);
-  if (!outputText) {
-    throw new Error('OpenAI response did not contain any text output');
+  if (process.env.DEBUG_OPENAI_NEWS === '1') {
+    try {
+      const summary = {
+        model: response?.model,
+        usage: response?.usage,
+        output_text: typeof response?.output_text === 'string' ? response.output_text.slice(0, 200) : null,
+        output_first:
+          Array.isArray(response?.output) && response.output.length
+            ? response.output[0]
+            : null,
+        choices_first:
+          Array.isArray(response?.choices) && response.choices.length ? response.choices[0] : null,
+      };
+      console.log('[OpenAI][news][debug] response summary:', JSON.stringify(summary, null, 2));
+    } catch (e) {
+      console.warn('[OpenAI][news][debug] Failed to summarize response', e);
+    }
   }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(outputText);
-  } catch (parseError) {
-    const error = new Error('Failed to parse OpenAI news response as JSON');
-    error.cause = parseError instanceof Error ? parseError : new Error(String(parseError));
-    throw error;
+  // Prefer structured JSON extraction; fall back to parsing text output. If still empty, retry with a fallback model.
+  async function parseOrNull(resp) {
+    let structured = extractOpenAiResponseJson(resp);
+    if (structured) {
+      try {
+        return { parsed: structured, raw: JSON.stringify(structured) };
+      } catch {
+        return { parsed: structured, raw: null };
+      }
+    }
+    const rawText = extractOpenAiResponseText(resp);
+    if (!rawText) {
+      return null;
+    }
+    try {
+      const obj = JSON.parse(rawText);
+      return { parsed: obj, raw: rawText };
+    } catch {
+      const text = String(rawText);
+      const fenceMatch = /```(?:json)?\n([\s\S]*?)```/i.exec(text);
+      const candidate = fenceMatch ? fenceMatch[1] : text;
+      let start = candidate.indexOf('{');
+      if (start !== -1) {
+        let depth = 0;
+        for (let i = start; i < candidate.length; i += 1) {
+          const ch = candidate[i];
+          if (ch === '{') depth += 1;
+          else if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              const slice = candidate.slice(start, i + 1);
+              try {
+                const obj = JSON.parse(slice);
+                return { parsed: obj, raw: slice };
+              } catch {}
+            }
+          }
+        }
+      }
+      return null;
+    }
   }
+
+  let parsedPayload = await parseOrNull(response);
+  if (!parsedPayload) {
+    try {
+      const fallbackResponse = await client.responses.create({
+        ...requestWithTools,
+        model: OPENAI_NEWS_FALLBACK_MODEL,
+        text: { format: structuredTextFormat },
+      });
+      parsedPayload = await parseOrNull(fallbackResponse);
+      if (!parsedPayload) {
+        throw new Error('OpenAI response did not contain any text output');
+      }
+      response = fallbackResponse;
+    } catch (fallbackErr) {
+      if (process.env.DEBUG_OPENAI_NEWS === '1') {
+        try {
+          const fs = require('fs');
+          const path = require('path');
+          const outPath = path.join(__dirname, '..', '.openai-news-response.json');
+          fs.writeFileSync(outPath, JSON.stringify(response, null, 2), 'utf-8');
+          console.error('[OpenAI][news][debug] Fallback failed; wrote raw response to', outPath);
+        } catch {}
+      }
+      throw fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr));
+    }
+  }
+
+  const parsed = parsedPayload.parsed;
+  const outputText = parsedPayload.raw;
 
   const rawArticles = Array.isArray(parsed.articles) ? parsed.articles : [];
   const allArticles = rawArticles.map(normalizeNewsArticle).filter(Boolean);
@@ -1092,9 +1373,39 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   });
   const disclaimer = typeof parsed.disclaimer === 'string' ? parsed.disclaimer.trim() : '';
 
+  // Token usage and cost estimation
+  const usage = (response && typeof response === 'object' && response.usage) || null;
+  const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens);
+  const outputTokens = Number(usage?.output_tokens ?? usage?.completion_tokens);
+  const safeInputTokens = Number.isFinite(inputTokens) && inputTokens >= 0 ? inputTokens : null;
+  const safeOutputTokens = Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null;
+  const usedModel = (response && response.model) || OPENAI_NEWS_MODEL;
+  const pricing = getNewsModelPricing(usedModel);
+  const cost = { inputUsd: null, outputUsd: null, totalUsd: null };
+  if (
+    pricing && pricing.input !== null && pricing.output !== null &&
+    safeInputTokens !== null && safeOutputTokens !== null
+  ) {
+    const inputUsd = (safeInputTokens * pricing.input) / 1_000_000;
+    const outputUsd = (safeOutputTokens * pricing.output) / 1_000_000;
+    cost.inputUsd = Number(inputUsd.toFixed(6));
+    cost.outputUsd = Number(outputUsd.toFixed(6));
+    cost.totalUsd = Number((inputUsd + outputUsd).toFixed(6));
+  }
+
   return {
     articles,
     disclaimer: disclaimer || null,
+    prompt: composedPromptText,
+    rawOutput: outputText,
+    usage: {
+      inputTokens: safeInputTokens,
+      outputTokens: safeOutputTokens,
+      totalTokens:
+        safeInputTokens !== null && safeOutputTokens !== null ? safeInputTokens + safeOutputTokens : null,
+    },
+    pricing: { model: usedModel, inputPerMillionUsd: pricing.input, outputPerMillionUsd: pricing.output },
+    cost,
   };
 }
 
@@ -7990,6 +8301,11 @@ app.post('/api/news', async function (req, res) {
       articles: result.articles,
       symbols,
       generatedAt: new Date().toISOString(),
+      prompt: typeof result.prompt === 'string' ? result.prompt : null,
+      rawOutput: typeof result.rawOutput === 'string' ? result.rawOutput : null,
+      usage: result.usage || null,
+      pricing: result.pricing || null,
+      cost: result.cost || null,
     };
     if (accountLabel) {
       payload.accountLabel = accountLabel;
