@@ -6598,6 +6598,23 @@ export default function App() {
     setActiveInvestmentModelDialog({ type: 'global' });
   }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
 
+  const handleShowPnlBreakdown = (mode, accountKey = null) => {
+    if (!showContent || !orderedPositions.length) {
+      return;
+    }
+    if (mode !== 'day' && mode !== 'open') {
+      return;
+    }
+    const normalizedAccountKey =
+      accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
+    if (normalizedAccountKey) {
+      setPnlBreakdownInitialAccount(normalizedAccountKey);
+    } else {
+      setPnlBreakdownInitialAccount(null);
+    }
+    setPnlBreakdownMode(mode);
+  };
+
   const handleShowChildPnlBreakdown = useCallback(
     (accountKey, mode) => {
       if (!accountKey || (mode !== 'day' && mode !== 'open')) {
@@ -7786,23 +7803,6 @@ export default function App() {
     if (showingAggregateAccounts || shouldShowQqqDetails) {
       fetchQqqTemperature();
     }
-  };
-
-  const handleShowPnlBreakdown = (mode, accountKey = null) => {
-    if (!showContent || !orderedPositions.length) {
-      return;
-    }
-    if (mode !== 'day' && mode !== 'open') {
-      return;
-    }
-    const normalizedAccountKey =
-      accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
-    if (normalizedAccountKey) {
-      setPnlBreakdownInitialAccount(normalizedAccountKey);
-    } else {
-      setPnlBreakdownInitialAccount(null);
-    }
-    setPnlBreakdownMode(mode);
   };
 
   const handleClosePnlBreakdown = () => {
