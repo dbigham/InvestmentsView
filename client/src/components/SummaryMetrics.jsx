@@ -464,6 +464,8 @@ export default function SummaryMetrics({
   selectedTotalPnlRange,
   onTotalPnlRangeChange,
   onAdjustDeployment,
+  childAccounts,
+  onSelectAccount,
 }) {
   const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
@@ -771,6 +773,125 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  const normalizedChildAccounts = Array.isArray(childAccounts)
+    ? childAccounts
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const rawId =
+            entry.id !== undefined && entry.id !== null ? String(entry.id).trim() : '';
+          if (!rawId) {
+            return null;
+          }
+          const label =
+            typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : '';
+          if (!label) {
+            return null;
+          }
+          const accountNumber =
+            typeof entry.accountNumber === 'string' && entry.accountNumber.trim()
+              ? entry.accountNumber.trim()
+              : null;
+          const totalCandidate =
+            entry.totalEquityCad === undefined || entry.totalEquityCad === null
+              ? null
+              : Number(entry.totalEquityCad);
+          const totalEquityCad = Number.isFinite(totalCandidate) ? totalCandidate : null;
+          const dayCandidate =
+            entry.dayPnlCad === undefined || entry.dayPnlCad === null
+              ? null
+              : Number(entry.dayPnlCad);
+          const dayPnlCad = Number.isFinite(dayCandidate) ? dayCandidate : null;
+          const href =
+            typeof entry.href === 'string' && entry.href.trim() ? entry.href.trim() : null;
+          return {
+            id: rawId,
+            label,
+            accountNumber,
+            totalEquityCad,
+            dayPnlCad,
+            href,
+          };
+        })
+        .filter(Boolean)
+    : [];
+
+  const formatChildPnlPercent = (change, total) => {
+    if (!Number.isFinite(change)) {
+      if (change === 0) {
+        return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return null;
+    }
+    if (change === 0) {
+      return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    if (!Number.isFinite(change) || !Number.isFinite(total)) {
+      return null;
+    }
+    const baseValue = total - change;
+    if (!Number.isFinite(baseValue) || Math.abs(baseValue) < 1e-9) {
+      return null;
+    }
+    const percentValue = (change / baseValue) * 100;
+    if (!Number.isFinite(percentValue)) {
+      return null;
+    }
+    return formatSignedPercent(percentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const handleChildAccountClick = (event, accountId, href) => {
+    if (!accountId) {
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button === 1) {
+      return;
+    }
+    event.preventDefault();
+    if (typeof onSelectAccount === 'function') {
+      onSelectAccount(accountId);
+    } else if (href && typeof window !== 'undefined') {
+      window.location.href = href;
+    }
+  };
+
+  const childAccountList = normalizedChildAccounts.length ? (
+    <div className="equity-card__children" aria-live="polite">
+      <h3 className="equity-card__children-title">Child accounts</h3>
+      <ul className="equity-card__children-list">
+        {normalizedChildAccounts.map((child) => {
+          const href = child.href || `?accountId=${encodeURIComponent(child.id)}`;
+          const tone = Number.isFinite(child.dayPnlCad) ? classifyPnL(child.dayPnlCad) : 'neutral';
+          const percentLabel = formatChildPnlPercent(child.dayPnlCad, child.totalEquityCad);
+          return (
+            <li key={child.id} className="equity-card__children-item">
+              <a
+                href={href}
+                className="equity-card__children-link"
+                onClick={(event) => handleChildAccountClick(event, child.id, href)}
+              >
+                <span className="equity-card__children-name">
+                  {child.label}
+                  {child.accountNumber ? (
+                    <span className="equity-card__children-number">#{child.accountNumber}</span>
+                  ) : null}
+                </span>
+                <span className="equity-card__children-value">{formatMoney(child.totalEquityCad)}</span>
+                <span className={`equity-card__children-pnl equity-card__children-pnl--${tone}`}>
+                  {formatSignedMoney(child.dayPnlCad)}
+                  {percentLabel ? (
+                    <span className="equity-card__children-percent">{` (${percentLabel})`}</span>
+                  ) : null}
+                </span>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ) : null;
+
   return (
     <section className="equity-card">
       <header className="equity-card__header">
@@ -942,6 +1063,8 @@ export default function SummaryMetrics({
         </dl>
       </div>
 
+      {childAccountList}
+
     </section>
   );
 }
@@ -1074,6 +1197,17 @@ SummaryMetrics.propTypes = {
   selectedTotalPnlRange: PropTypes.string,
   onTotalPnlRangeChange: PropTypes.func,
   onAdjustDeployment: PropTypes.func,
+  childAccounts: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      label: PropTypes.string.isRequired,
+      accountNumber: PropTypes.string,
+      totalEquityCad: PropTypes.number,
+      dayPnlCad: PropTypes.number,
+      href: PropTypes.string,
+    })
+  ),
+  onSelectAccount: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -1109,4 +1243,6 @@ SummaryMetrics.defaultProps = {
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,
   onAdjustDeployment: null,
+  childAccounts: [],
+  onSelectAccount: null,
 };

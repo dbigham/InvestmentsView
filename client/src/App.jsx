@@ -171,6 +171,21 @@ function normalizePositiveInteger(value) {
   return null;
 }
 
+function normalizeAccountGroupKey(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const stringValue = typeof value === 'string' ? value : String(value);
+  if (!stringValue) {
+    return null;
+  }
+  const normalized = stringValue.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.toLowerCase();
+}
+
 function buildInvestmentModelChartKey(modelConfig) {
   if (!modelConfig || typeof modelConfig !== 'object') {
     return null;
@@ -3721,6 +3736,29 @@ export default function App() {
     });
     return normalized;
   }, [data?.groupRelations]);
+  const accountGroupChildrenMap = useMemo(() => {
+    const map = new Map();
+    Object.entries(groupRelations).forEach(([childName, parents]) => {
+      const childKey = normalizeAccountGroupKey(childName);
+      if (!childKey) {
+        return;
+      }
+      const parentList = Array.isArray(parents) ? parents : [parents];
+      parentList.forEach((parentName) => {
+        const parentKey = normalizeAccountGroupKey(parentName);
+        if (!parentKey) {
+          return;
+        }
+        let set = map.get(parentKey);
+        if (!set) {
+          set = new Set();
+          map.set(parentKey, set);
+        }
+        set.add(childKey);
+      });
+    });
+    return map;
+  }, [groupRelations]);
   const accountGroupsById = useMemo(() => {
     const map = new Map();
     accountGroups.forEach((group) => {
@@ -3830,6 +3868,23 @@ export default function App() {
       if (account && typeof account.id === 'string' && account.id) {
         map.set(account.id, account);
       }
+    });
+    return map;
+  }, [accounts]);
+  const accountsByGroupName = useMemo(() => {
+    const map = new Map();
+    accounts.forEach((account) => {
+      if (!account) {
+        return;
+      }
+      const groupKey = normalizeAccountGroupKey(account.accountGroup);
+      if (!groupKey) {
+        return;
+      }
+      if (!map.has(groupKey)) {
+        map.set(groupKey, []);
+      }
+      map.get(groupKey).push(account);
     });
     return map;
   }, [accounts]);
@@ -4792,6 +4847,163 @@ export default function App() {
 
     return totals;
   }, [rawPositions, currencyRates, baseCurrency]);
+  const childAccountSummaries = useMemo(() => {
+    if (!accounts.length) {
+      return [];
+    }
+
+    const parentKeys = new Set();
+
+    if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
+      const groupKey = normalizeAccountGroupKey(selectedAccountGroup.name);
+      if (groupKey) {
+        parentKeys.add(groupKey);
+      }
+    } else if (!isAggregateSelection && selectedAccountInfo) {
+      [
+        selectedAccountInfo.accountGroup,
+        selectedAccountInfo.displayName,
+        selectedAccountInfo.name,
+      ].forEach((value) => {
+        const key = normalizeAccountGroupKey(value);
+        if (key) {
+          parentKeys.add(key);
+        }
+      });
+    } else {
+      return [];
+    }
+
+    if (!parentKeys.size) {
+      return [];
+    }
+
+    const queue = Array.from(parentKeys);
+    const visitedGroups = new Set();
+    const targetGroupKeys = new Set();
+
+    while (queue.length) {
+      const currentKey = queue.shift();
+      if (!currentKey || visitedGroups.has(currentKey)) {
+        continue;
+      }
+      visitedGroups.add(currentKey);
+      targetGroupKeys.add(currentKey);
+      const children = accountGroupChildrenMap.get(currentKey);
+      if (children && children.size) {
+        children.forEach((childKey) => {
+          if (!visitedGroups.has(childKey)) {
+            queue.push(childKey);
+          }
+        });
+      }
+    }
+
+    if (!targetGroupKeys.size) {
+      return [];
+    }
+
+    const excludeAccountIds = new Set();
+    if (!isAccountGroupSelection(selectedAccount) && selectedAccountInfo?.id !== undefined && selectedAccountInfo?.id !== null) {
+      const parentId = String(selectedAccountInfo.id).trim();
+      if (parentId) {
+        excludeAccountIds.add(parentId);
+      }
+    }
+
+    const seenAccountIds = new Set();
+    const items = [];
+
+    targetGroupKeys.forEach((groupKey) => {
+      const members = accountsByGroupName.get(groupKey);
+      if (!members || !members.length) {
+        return;
+      }
+      members.forEach((account) => {
+        if (!account || account.id === undefined || account.id === null) {
+          return;
+        }
+        const accountId = String(account.id).trim();
+        if (!accountId || excludeAccountIds.has(accountId) || seenAccountIds.has(accountId)) {
+          return;
+        }
+        seenAccountIds.add(accountId);
+
+        const balanceSummary = normalizeAccountBalanceSummary(normalizedAccountBalances[accountId]);
+        let totalEquityCad = null;
+        if (balanceSummary) {
+          const total = resolveAccountTotalInBase(balanceSummary, currencyRates, baseCurrency);
+          if (Number.isFinite(total)) {
+            totalEquityCad = total;
+          }
+        }
+        if (totalEquityCad === null) {
+          const fallbackTotal = accountFunding[accountId]?.totalEquityCad;
+          if (Number.isFinite(fallbackTotal)) {
+            totalEquityCad = fallbackTotal;
+          }
+        }
+
+        let dayPnlCad = null;
+        const pnlEntry = accountPnlTotals.get(accountId);
+        if (pnlEntry && Number.isFinite(pnlEntry.dayPnl)) {
+          dayPnlCad = pnlEntry.dayPnl;
+        } else if (balanceSummary) {
+          const fallbackDay = resolveAccountPnlInBase(balanceSummary, 'dayPnl', currencyRates, baseCurrency);
+          if (Number.isFinite(fallbackDay)) {
+            dayPnlCad = fallbackDay;
+          }
+        }
+
+        const accountNumber =
+          account.number !== undefined && account.number !== null
+            ? String(account.number).trim()
+            : account.accountNumber !== undefined && account.accountNumber !== null
+              ? String(account.accountNumber).trim()
+              : null;
+
+        const href = buildAccountViewUrl(accountId) || null;
+
+        items.push({
+          id: accountId,
+          label: getAccountLabel(account) || accountId,
+          accountNumber: accountNumber && accountNumber.length ? accountNumber : null,
+          totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+          dayPnlCad: Number.isFinite(dayPnlCad) ? dayPnlCad : null,
+          href,
+        });
+      });
+    });
+
+    if (!items.length) {
+      return [];
+    }
+
+    items.sort((a, b) => {
+      const aValue = Number.isFinite(a.totalEquityCad) ? a.totalEquityCad : -Infinity;
+      const bValue = Number.isFinite(b.totalEquityCad) ? b.totalEquityCad : -Infinity;
+      if (aValue !== bValue) {
+        return bValue - aValue;
+      }
+      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    });
+
+    return items;
+  }, [
+    accounts,
+    accountsByGroupName,
+    accountGroupChildrenMap,
+    normalizedAccountBalances,
+    accountPnlTotals,
+    accountFunding,
+    currencyRates,
+    baseCurrency,
+    selectedAccount,
+    selectedAccountInfo,
+    selectedAccountGroup,
+    isAggregateSelection,
+    buildAccountViewUrl,
+  ]);
 
   const peopleSummary = useMemo(() => {
     if (!accounts.length) {
@@ -7477,6 +7689,8 @@ export default function App() {
             selectedTotalPnlRange={totalPnlRange}
             onTotalPnlRangeChange={handleTotalPnlRangeChange}
             onAdjustDeployment={handleOpenDeploymentAdjustment}
+            childAccounts={childAccountSummaries}
+            onSelectAccount={handleAccountChange}
           />
         )}
 
