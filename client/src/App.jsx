@@ -171,6 +171,21 @@ function normalizePositiveInteger(value) {
   return null;
 }
 
+function normalizeAccountGroupKey(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const stringValue = typeof value === 'string' ? value : String(value);
+  if (!stringValue) {
+    return null;
+  }
+  const normalized = stringValue.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.toLowerCase();
+}
+
 function buildInvestmentModelChartKey(modelConfig) {
   if (!modelConfig || typeof modelConfig !== 'object') {
     return null;
@@ -3552,6 +3567,7 @@ export default function App() {
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
+  const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
@@ -3609,6 +3625,12 @@ export default function App() {
   const [portfolioNewsRetryKey, setPortfolioNewsRetryKey] = useState(0);
   const quoteCacheRef = useRef(new Map());
   const [showTotalPnlDialog, setShowTotalPnlDialog] = useState(false);
+  const [totalPnlDialogContext, setTotalPnlDialogContext] = useState({
+    accountKey: null,
+    label: null,
+    supportsCagrToggle: false,
+    cagrStartDate: null,
+  });
   const [totalPnlSeriesState, setTotalPnlSeriesState] = useState({
     status: 'idle',
     data: null,
@@ -3721,6 +3743,66 @@ export default function App() {
     });
     return normalized;
   }, [data?.groupRelations]);
+  const accountGroupChildrenMap = useMemo(() => {
+    const map = new Map();
+    Object.entries(groupRelations).forEach(([childName, parents]) => {
+      const childKey = normalizeAccountGroupKey(childName);
+      if (!childKey) {
+        return;
+      }
+      const parentList = Array.isArray(parents) ? parents : [parents];
+      parentList.forEach((parentName) => {
+        const parentKey = normalizeAccountGroupKey(parentName);
+        if (!parentKey) {
+          return;
+        }
+        let set = map.get(parentKey);
+        if (!set) {
+          set = new Set();
+          map.set(parentKey, set);
+        }
+        set.add(childKey);
+      });
+    });
+    return map;
+  }, [groupRelations]);
+  const accountGroupNamesByKey = useMemo(() => {
+    const map = new Map();
+    accountGroups.forEach((group) => {
+      const key = normalizeAccountGroupKey(group?.name);
+      if (!key) {
+        return;
+      }
+      const displayName = typeof group.name === 'string' ? group.name.trim() : '';
+      if (displayName) {
+        map.set(key, displayName);
+      }
+    });
+    Object.keys(groupRelations).forEach((name) => {
+      const key = normalizeAccountGroupKey(name);
+      if (!key || map.has(key)) {
+        return;
+      }
+      const displayName = typeof name === 'string' ? name.trim() : '';
+      if (displayName) {
+        map.set(key, displayName);
+      }
+    });
+    return map;
+  }, [accountGroups, groupRelations]);
+  const accountGroupsByNormalizedName = useMemo(() => {
+    const map = new Map();
+    accountGroups.forEach((group) => {
+      const key = normalizeAccountGroupKey(group?.name);
+      if (!key) {
+        return;
+      }
+      if (!map.has(key)) {
+        map.set(key, group);
+      }
+    });
+    return map;
+  }, [accountGroups]);
   const accountGroupsById = useMemo(() => {
     const map = new Map();
     accountGroups.forEach((group) => {
@@ -3830,6 +3912,23 @@ export default function App() {
       if (account && typeof account.id === 'string' && account.id) {
         map.set(account.id, account);
       }
+    });
+    return map;
+  }, [accounts]);
+  const accountsByGroupName = useMemo(() => {
+    const map = new Map();
+    accounts.forEach((account) => {
+      if (!account) {
+        return;
+      }
+      const groupKey = normalizeAccountGroupKey(account.accountGroup);
+      if (!groupKey) {
+        return;
+      }
+      if (!map.has(groupKey)) {
+        map.set(groupKey, []);
+      }
+      map.get(groupKey).push(account);
     });
     return map;
   }, [accounts]);
@@ -4070,23 +4169,6 @@ export default function App() {
     }
     return null;
   }, [selectedAccountInfo, selectedAccount, isAggregateSelection]);
-
-  const totalPnlDialogAccountLabel = useMemo(() => {
-    if (isAggregateSelection) {
-      return aggregateAccountLabel;
-    }
-    if (!selectedAccountInfo) {
-      return null;
-    }
-    const label = getAccountLabel(selectedAccountInfo);
-    if (label) {
-      return label;
-    }
-    if (selectedAccountInfo.number) {
-      return String(selectedAccountInfo.number);
-    }
-    return null;
-  }, [isAggregateSelection, aggregateAccountLabel, selectedAccountInfo]);
 
   useEffect(() => {
     if (!selectedRebalanceReminder) {
@@ -4792,6 +4874,270 @@ export default function App() {
 
     return totals;
   }, [rawPositions, currencyRates, baseCurrency]);
+  const childAccountSummaryResult = useMemo(() => {
+    if (!accounts.length) {
+      return { items: [], parentTotal: null };
+    }
+
+    const parentKeys = new Set();
+
+    // Only show child accounts when a group is selected. For individual accounts,
+    // do not infer children from the parent group (avoids showing siblings as children).
+    if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
+      const groupKey = normalizeAccountGroupKey(selectedAccountGroup.name);
+      if (groupKey) {
+        parentKeys.add(groupKey);
+      }
+    } else {
+      return { items: [], parentTotal: null };
+    }
+
+    if (!parentKeys.size) {
+      return { items: [], parentTotal: null };
+    }
+
+    const excludeAccountIds = new Set();
+    if (
+      !isAccountGroupSelection(selectedAccount) &&
+      selectedAccountInfo?.id !== undefined &&
+      selectedAccountInfo?.id !== null
+    ) {
+      const parentId = String(selectedAccountInfo.id).trim();
+      if (parentId) {
+        excludeAccountIds.add(parentId);
+      }
+    }
+
+    const accountMetricsCache = new Map();
+    const resolveAccountMetrics = (accountId, account) => {
+      const cacheKey = accountId;
+      if (accountMetricsCache.has(cacheKey)) {
+        return accountMetricsCache.get(cacheKey);
+      }
+      const balanceSummary = normalizeAccountBalanceSummary(normalizedAccountBalances[accountId]);
+      let totalEquityCad = null;
+      if (balanceSummary) {
+        const total = resolveAccountTotalInBase(balanceSummary, currencyRates, baseCurrency);
+        if (Number.isFinite(total)) {
+          totalEquityCad = total;
+        }
+      }
+      if (totalEquityCad === null) {
+        const fallbackTotal = accountFunding[accountId]?.totalEquityCad;
+        if (Number.isFinite(fallbackTotal)) {
+          totalEquityCad = fallbackTotal;
+        }
+      }
+
+      let dayPnlCad = null;
+      const pnlEntry = accountPnlTotals.get(accountId);
+      if (pnlEntry && Number.isFinite(pnlEntry.dayPnl)) {
+        dayPnlCad = pnlEntry.dayPnl;
+      } else if (balanceSummary) {
+        const fallbackDay = resolveAccountPnlInBase(balanceSummary, 'dayPnl', currencyRates, baseCurrency);
+        if (Number.isFinite(fallbackDay)) {
+          dayPnlCad = fallbackDay;
+        }
+      }
+
+      const metrics = {
+        totalEquityCad: Number.isFinite(totalEquityCad) ? totalEquityCad : null,
+        dayPnlCad: Number.isFinite(dayPnlCad) ? dayPnlCad : null,
+        account,
+      };
+      accountMetricsCache.set(cacheKey, metrics);
+      return metrics;
+    };
+
+    const collectGroupAccountIds = (rootKey) => {
+      const result = new Set();
+      const queue = [rootKey];
+      const visited = new Set();
+      while (queue.length) {
+        const currentKey = queue.shift();
+        if (!currentKey || visited.has(currentKey)) {
+          continue;
+        }
+        visited.add(currentKey);
+        const members = accountsByGroupName.get(currentKey);
+        if (members && members.length) {
+          members.forEach((account) => {
+            if (!account || account.id === undefined || account.id === null) {
+              return;
+            }
+            const accountId = String(account.id).trim();
+            if (!accountId) {
+              return;
+            }
+            result.add(accountId);
+          });
+        }
+        const children = accountGroupChildrenMap.get(currentKey);
+        if (children && children.size) {
+          children.forEach((childKey) => {
+            if (childKey && !visited.has(childKey)) {
+              queue.push(childKey);
+            }
+          });
+        }
+      }
+      return result;
+    };
+
+    const items = [];
+    const seenAccountIds = new Set();
+
+    parentKeys.forEach((groupKey) => {
+      const members = accountsByGroupName.get(groupKey);
+      if (!members || !members.length) {
+        return;
+      }
+      members.forEach((account) => {
+        if (!account || account.id === undefined || account.id === null) {
+          return;
+        }
+        const accountId = String(account.id).trim();
+        if (!accountId || excludeAccountIds.has(accountId) || seenAccountIds.has(accountId)) {
+          return;
+        }
+        seenAccountIds.add(accountId);
+        const metrics = resolveAccountMetrics(accountId, account);
+        const href = buildAccountViewUrl(accountId) || null;
+        const cagrStart =
+          typeof accountFunding[accountId]?.cagrStartDate === 'string'
+            ? accountFunding[accountId].cagrStartDate.trim()
+            : '';
+        items.push({
+          id: accountId,
+          label: getAccountLabel(account) || accountId,
+          totalEquityCad: metrics.totalEquityCad,
+          dayPnlCad: metrics.dayPnlCad,
+          href,
+          kind: 'account',
+          cagrStartDate: cagrStart || null,
+          supportsCagrToggle: Boolean(cagrStart),
+        });
+      });
+    });
+
+    const childGroupKeys = new Set();
+    parentKeys.forEach((groupKey) => {
+      const children = accountGroupChildrenMap.get(groupKey);
+      if (!children || !children.size) {
+        return;
+      }
+      children.forEach((childKey) => {
+        if (childKey && childKey !== groupKey) {
+          childGroupKeys.add(childKey);
+        }
+      });
+    });
+
+    const seenGroupIds = new Set();
+    childGroupKeys.forEach((childKey) => {
+      const group = accountGroupsByNormalizedName.get(childKey) || null;
+      const groupId =
+        group && group.id !== undefined && group.id !== null ? String(group.id).trim() : null;
+      if (groupId && seenGroupIds.has(groupId)) {
+        return;
+      }
+      if (groupId) {
+        seenGroupIds.add(groupId);
+      }
+      const displayName = accountGroupNamesByKey.get(childKey) || groupId || childKey;
+      const accountIds = collectGroupAccountIds(childKey);
+      if (!accountIds.size) {
+        return;
+      }
+      let totalEquitySum = 0;
+      let hasTotalEquity = false;
+      let dayPnlSum = 0;
+      let hasDayPnl = false;
+      accountIds.forEach((accountId) => {
+        const account = accountsById.get(accountId);
+        if (!account) {
+          return;
+        }
+        const metrics = resolveAccountMetrics(accountId, account);
+        if (metrics.totalEquityCad !== null) {
+          totalEquitySum += metrics.totalEquityCad;
+          hasTotalEquity = true;
+        }
+        if (metrics.dayPnlCad !== null) {
+          dayPnlSum += metrics.dayPnlCad;
+          hasDayPnl = true;
+        }
+      });
+      if (!hasTotalEquity && !hasDayPnl) {
+        return;
+      }
+      const href = groupId ? buildAccountViewUrl(groupId) || null : null;
+      const cagrStart =
+        groupId && typeof accountFunding[groupId]?.cagrStartDate === 'string'
+          ? accountFunding[groupId].cagrStartDate.trim()
+          : '';
+      items.push({
+        id: groupId || childKey,
+        label: displayName,
+        totalEquityCad: hasTotalEquity ? totalEquitySum : null,
+        dayPnlCad: hasDayPnl ? dayPnlSum : null,
+        href,
+        kind: 'group',
+        cagrStartDate: cagrStart || null,
+        supportsCagrToggle: Boolean(groupId && cagrStart),
+      });
+    });
+
+    if (!items.length) {
+      return { items: [], parentTotal: null };
+    }
+
+    items.sort((a, b) => {
+      const aValue = Number.isFinite(a.totalEquityCad) ? a.totalEquityCad : -Infinity;
+      const bValue = Number.isFinite(b.totalEquityCad) ? b.totalEquityCad : -Infinity;
+      if (aValue !== bValue) {
+        return bValue - aValue;
+      }
+      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    });
+
+    let parentTotal = null;
+    if (isFiniteNumber(selectedAccountFunding?.totalEquityCad)) {
+      parentTotal = selectedAccountFunding.totalEquityCad;
+    } else {
+      const sum = items.reduce((accumulator, item) => {
+        if (Number.isFinite(item.totalEquityCad)) {
+          return accumulator + item.totalEquityCad;
+        }
+        return accumulator;
+      }, 0);
+      if (Number.isFinite(sum) && sum > 0) {
+        parentTotal = sum;
+      }
+    }
+
+    return { items, parentTotal };
+  }, [
+    accounts,
+    accountsById,
+    accountsByGroupName,
+    accountGroupChildrenMap,
+    accountGroupNamesByKey,
+    accountGroupsByNormalizedName,
+    normalizedAccountBalances,
+    accountPnlTotals,
+    accountFunding,
+    currencyRates,
+    baseCurrency,
+    selectedAccount,
+    selectedAccountInfo,
+    selectedAccountGroup,
+    isAggregateSelection,
+    selectedAccountFunding,
+    buildAccountViewUrl,
+  ]);
+  const childAccountSummaries = childAccountSummaryResult.items;
+  const childAccountParentTotal = childAccountSummaryResult.parentTotal;
 
   const peopleSummary = useMemo(() => {
     if (!accounts.length) {
@@ -5464,6 +5810,8 @@ export default function App() {
       });
     }
 
+    const seenValues = new Set(entries.map((entry) => entry.value));
+
     accountOrder.forEach((accountId) => {
       const account = accountsById.get(accountId);
       if (!account) {
@@ -5480,6 +5828,46 @@ export default function App() {
         positions: prepared.positions,
         totalMarketValue: prepared.totalMarketValue,
       });
+      seenValues.add(accountId);
+    });
+
+    accountGroups.forEach((group) => {
+      if (!group || group.id === undefined || group.id === null) {
+        return;
+      }
+      const groupId = String(group.id).trim();
+      if (!groupId || seenValues.has(groupId)) {
+        return;
+      }
+      const memberAccountIds = Array.isArray(group.accountIds)
+        ? group.accountIds
+            .map((value) => (value === undefined || value === null ? '' : String(value).trim()))
+            .filter(Boolean)
+        : [];
+      if (!memberAccountIds.length) {
+        return;
+      }
+      const memberSet = new Set(memberAccountIds);
+      const groupPositions = rawPositions.filter((position) => {
+        const rawAccountId = position?.accountId;
+        if (rawAccountId === undefined || rawAccountId === null) {
+          return false;
+        }
+        const normalized = String(rawAccountId);
+        return normalized && memberSet.has(normalized);
+      });
+      if (!groupPositions.length) {
+        return;
+      }
+      const prepared = preparePositionsForHeatmap(groupPositions, currencyRates, baseCurrency);
+      const name = typeof group.name === 'string' && group.name.trim() ? group.name.trim() : groupId;
+      entries.push({
+        value: groupId,
+        label: name,
+        positions: prepared.positions,
+        totalMarketValue: prepared.totalMarketValue,
+      });
+      seenValues.add(groupId);
     });
 
     if (!entries.length) {
@@ -5497,6 +5885,7 @@ export default function App() {
     rawPositions,
     accountsInView,
     accountsById,
+    accountGroups,
     currencyRates,
     baseCurrency,
     isAggregateSelection,
@@ -6039,53 +6428,158 @@ export default function App() {
     }
   }, []);
 
+  const resolveAccountLabelByKey = useCallback(
+    (accountKey) => {
+      if (!accountKey) {
+        return null;
+      }
+      if (accountKey === 'all') {
+        return aggregateAccountLabel || 'All accounts';
+      }
+      const account = accountsById.get(accountKey);
+      if (account) {
+        const label = getAccountLabel(account);
+        if (label) {
+          return label;
+        }
+        const rawNumber =
+          account.number !== undefined && account.number !== null
+            ? String(account.number).trim()
+            : account.accountNumber !== undefined && account.accountNumber !== null
+              ? String(account.accountNumber).trim()
+              : '';
+        if (rawNumber) {
+          return rawNumber;
+        }
+      }
+      const group = accountGroupsById.get(accountKey);
+      if (group) {
+        const name = typeof group.name === 'string' ? group.name.trim() : '';
+        if (name) {
+          return name;
+        }
+      }
+      return String(accountKey);
+    },
+    [accountsById, accountGroupsById, aggregateAccountLabel]
+  );
+
+  const resolveCagrStartDateForKey = useCallback(
+    (accountKey) => {
+      if (!accountKey) {
+        return null;
+      }
+      const entry = accountFunding[accountKey];
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const value =
+        typeof entry.cagrStartDate === 'string' && entry.cagrStartDate.trim()
+          ? entry.cagrStartDate.trim()
+          : null;
+      return value;
+    },
+    [accountFunding]
+  );
+
+  const openTotalPnlDialogForAccount = useCallback(
+    (accountKey, options = {}) => {
+      if (accountKey === undefined || accountKey === null) {
+        return;
+      }
+      const normalizedKey = String(accountKey).trim();
+      if (!normalizedKey) {
+        return;
+      }
+      const resolvedLabel = options.label ?? resolveAccountLabelByKey(normalizedKey) ?? normalizedKey;
+      const resolvedCagrStart =
+        options.cagrStartDate ?? resolveCagrStartDateForKey(normalizedKey) ?? null;
+      const supportsCagrToggle =
+        options.supportsCagrToggle ?? (normalizedKey !== 'all' && Boolean(resolvedCagrStart));
+      setTotalPnlDialogContext({
+        accountKey: normalizedKey,
+        label: resolvedLabel,
+        supportsCagrToggle,
+        cagrStartDate: resolvedCagrStart,
+      });
+      setShowTotalPnlDialog(true);
+      const desiredMode = supportsCagrToggle ? 'cagr' : 'all';
+      if (
+        totalPnlSeriesState.accountKey !== normalizedKey ||
+        totalPnlSeriesState.mode !== desiredMode ||
+        totalPnlSeriesState.status === 'error' ||
+        totalPnlSeriesState.status === 'idle'
+      ) {
+        fetchTotalPnlSeries(normalizedKey, { applyAccountCagrStartDate: supportsCagrToggle });
+      }
+    },
+    [
+      fetchTotalPnlSeries,
+      resolveAccountLabelByKey,
+      resolveCagrStartDateForKey,
+      totalPnlSeriesState,
+    ]
+  );
+
   const handleShowTotalPnlDialog = useCallback(() => {
     if (!selectedAccountKey) {
       return;
     }
-    setShowTotalPnlDialog(true);
-    if (
-      totalPnlSeriesState.accountKey !== selectedAccountKey ||
-      totalPnlSeriesState.mode !== 'cagr' ||
-      totalPnlSeriesState.status === 'error' ||
-      totalPnlSeriesState.status === 'idle'
-    ) {
-      fetchTotalPnlSeries(selectedAccountKey);
-    }
-  }, [selectedAccountKey, fetchTotalPnlSeries, totalPnlSeriesState]);
+    openTotalPnlDialogForAccount(selectedAccountKey);
+  }, [selectedAccountKey, openTotalPnlDialogForAccount]);
 
   const handleRetryTotalPnlSeries = useCallback(() => {
-    if (!selectedAccountKey) {
+    const targetKey = totalPnlDialogContext.accountKey || selectedAccountKey;
+    if (!targetKey) {
       return;
     }
     const applyCagr = totalPnlSeriesState.mode !== 'all';
-    fetchTotalPnlSeries(selectedAccountKey, { applyAccountCagrStartDate: applyCagr });
-  }, [fetchTotalPnlSeries, selectedAccountKey, totalPnlSeriesState.mode]);
+    fetchTotalPnlSeries(targetKey, { applyAccountCagrStartDate: applyCagr });
+  }, [
+    fetchTotalPnlSeries,
+    selectedAccountKey,
+    totalPnlDialogContext.accountKey,
+    totalPnlSeriesState.mode,
+  ]);
 
   const handleCloseTotalPnlDialog = useCallback(() => {
     setShowTotalPnlDialog(false);
-  }, []);
+    setTotalPnlDialogContext({
+      accountKey: null,
+      label: null,
+      supportsCagrToggle: false,
+      cagrStartDate: null,
+    });
+  }, [setTotalPnlDialogContext]);
 
   const handleChangeTotalPnlSeriesMode = useCallback(
     (mode) => {
-      if (!selectedAccountKey) {
+      const targetKey = totalPnlDialogContext.accountKey || selectedAccountKey;
+      if (!targetKey) {
         return;
       }
-      if (selectedAccountKey === 'all' && mode !== 'all') {
+      if (targetKey === 'all' && mode !== 'all') {
         return;
       }
       const normalizedMode = mode === 'all' ? 'all' : 'cagr';
       if (
-        totalPnlSeriesState.accountKey === selectedAccountKey &&
+        totalPnlSeriesState.accountKey === targetKey &&
         totalPnlSeriesState.mode === normalizedMode &&
         totalPnlSeriesState.status === 'success'
       ) {
         return;
       }
       const applyCagr = normalizedMode !== 'all';
-      fetchTotalPnlSeries(selectedAccountKey, { applyAccountCagrStartDate: applyCagr });
+      fetchTotalPnlSeries(targetKey, { applyAccountCagrStartDate: applyCagr });
     },
-    [selectedAccountKey, fetchTotalPnlSeries, totalPnlSeriesState]
+    [
+      totalPnlDialogContext.accountKey,
+      selectedAccountKey,
+      totalPnlSeriesState.accountKey,
+      totalPnlSeriesState.mode,
+      totalPnlSeriesState.status,
+      fetchTotalPnlSeries,
+    ]
   );
 
   const handleShowInvestmentModelDialog = useCallback(() => {
@@ -6094,6 +6588,61 @@ export default function App() {
     }
     setActiveInvestmentModelDialog({ type: 'global' });
   }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
+
+  const handleShowPnlBreakdown = (mode, accountKey = null) => {
+    if (!showContent || !orderedPositions.length) {
+      return;
+    }
+    if (mode !== 'day' && mode !== 'open') {
+      return;
+    }
+    const normalizedAccountKey =
+      accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
+    if (normalizedAccountKey) {
+      setPnlBreakdownInitialAccount(normalizedAccountKey);
+    } else {
+      setPnlBreakdownInitialAccount(null);
+    }
+    setPnlBreakdownMode(mode);
+  };
+
+  const handleShowChildPnlBreakdown = useCallback(
+    (accountKey, mode) => {
+      if (!accountKey || (mode !== 'day' && mode !== 'open')) {
+        return;
+      }
+      handleShowPnlBreakdown(mode, accountKey);
+    },
+    [handleShowPnlBreakdown]
+  );
+
+  const handleShowChildTotalPnl = useCallback(
+    (accountKey, child) => {
+      if (accountKey === undefined || accountKey === null) {
+        return;
+      }
+      const normalizedKey = String(accountKey).trim();
+      if (!normalizedKey) {
+        return;
+      }
+      const label = child?.label || resolveAccountLabelByKey(normalizedKey);
+      const cagrStart = child?.cagrStartDate || resolveCagrStartDateForKey(normalizedKey);
+      const supportsCagr =
+        typeof child?.supportsCagrToggle === 'boolean'
+          ? child.supportsCagrToggle
+          : normalizedKey !== 'all' && Boolean(cagrStart);
+      openTotalPnlDialogForAccount(normalizedKey, {
+        label,
+        cagrStartDate: cagrStart,
+        supportsCagrToggle: supportsCagr,
+      });
+    },
+    [
+      openTotalPnlDialogForAccount,
+      resolveAccountLabelByKey,
+      resolveCagrStartDateForKey,
+    ]
+  );
 
   const handleShowAccountInvestmentModel = useCallback(
     (modelSection) => {
@@ -7208,6 +7757,7 @@ export default function App() {
   useEffect(() => {
     if (!hasData && pnlBreakdownMode) {
       setPnlBreakdownMode(null);
+      setPnlBreakdownInitialAccount(null);
     }
   }, [hasData, pnlBreakdownMode]);
 
@@ -7246,18 +7796,9 @@ export default function App() {
     }
   };
 
-  const handleShowPnlBreakdown = (mode) => {
-    if (!showContent || !orderedPositions.length) {
-      return;
-    }
-    if (mode !== 'day' && mode !== 'open') {
-      return;
-    }
-    setPnlBreakdownMode(mode);
-  };
-
   const handleClosePnlBreakdown = () => {
     setPnlBreakdownMode(null);
+    setPnlBreakdownInitialAccount(null);
   };
 
   const handleShowAnnualizedReturnDetails = useCallback(() => {
@@ -7330,12 +7871,13 @@ export default function App() {
     showInvestmentModelDialog = false;
   }
 
+  const activeTotalPnlAccountKey = totalPnlDialogContext.accountKey || selectedAccountKey;
   const totalPnlDialogData =
-    totalPnlSeriesState.accountKey === selectedAccountKey ? totalPnlSeriesState.data : null;
+    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey ? totalPnlSeriesState.data : null;
   const totalPnlDialogLoading =
-    totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'loading';
+    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey && totalPnlSeriesState.status === 'loading';
   const totalPnlDialogError =
-    totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'error'
+    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey && totalPnlSeriesState.status === 'error'
       ? totalPnlSeriesState.error
       : null;
 
@@ -7477,6 +8019,11 @@ export default function App() {
             selectedTotalPnlRange={totalPnlRange}
             onTotalPnlRangeChange={handleTotalPnlRangeChange}
             onAdjustDeployment={handleOpenDeploymentAdjustment}
+            childAccounts={childAccountSummaries}
+            childAccountParentTotal={childAccountParentTotal}
+            onSelectAccount={handleAccountChange}
+            onShowChildPnlBreakdown={handleShowChildPnlBreakdown}
+            onShowChildTotalPnl={handleShowChildTotalPnl}
           />
         )}
 
@@ -7780,11 +8327,11 @@ export default function App() {
         loading={totalPnlDialogLoading}
         error={totalPnlDialogError}
         onRetry={handleRetryTotalPnlSeries}
-        accountLabel={totalPnlDialogAccountLabel}
-        supportsCagrToggle={selectedAccountKey !== 'all' && Boolean(cagrStartDate)}
+        accountLabel={totalPnlDialogContext.label}
+        supportsCagrToggle={Boolean(totalPnlDialogContext.supportsCagrToggle)}
         mode={totalPnlSeriesState.mode}
         onModeChange={handleChangeTotalPnlSeriesMode}
-        cagrStartDate={cagrStartDate}
+        cagrStartDate={totalPnlDialogContext.cagrStartDate}
       />
       )}
       {investEvenlyPlan && (
@@ -7837,7 +8384,7 @@ export default function App() {
           asOf={asOf}
           totalMarketValue={heatmapMarketValue}
           accountOptions={heatmapAccountOptions}
-          initialAccount={heatmapDefaultAccount}
+          initialAccount={pnlBreakdownInitialAccount ?? heatmapDefaultAccount}
         />
       )}
     </div>

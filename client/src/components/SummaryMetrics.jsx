@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import TimePill from './TimePill';
 import {
@@ -464,6 +464,11 @@ export default function SummaryMetrics({
   selectedTotalPnlRange,
   onTotalPnlRangeChange,
   onAdjustDeployment,
+  childAccounts,
+  onSelectAccount,
+  childAccountParentTotal,
+  onShowChildPnlBreakdown,
+  onShowChildTotalPnl,
 }) {
   const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
@@ -771,6 +776,307 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  const normalizedChildAccounts = Array.isArray(childAccounts)
+    ? childAccounts
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const rawId =
+            entry.id !== undefined && entry.id !== null ? String(entry.id).trim() : '';
+          if (!rawId) {
+            return null;
+          }
+          const label =
+            typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : '';
+          if (!label) {
+            return null;
+          }
+          const totalCandidate =
+            entry.totalEquityCad === undefined || entry.totalEquityCad === null
+              ? null
+              : Number(entry.totalEquityCad);
+          const totalEquityCad = Number.isFinite(totalCandidate) ? totalCandidate : null;
+          const dayCandidate =
+            entry.dayPnlCad === undefined || entry.dayPnlCad === null
+              ? null
+              : Number(entry.dayPnlCad);
+          const dayPnlCad = Number.isFinite(dayCandidate) ? dayCandidate : null;
+          const href =
+            typeof entry.href === 'string' && entry.href.trim() ? entry.href.trim() : null;
+          const kind = entry.kind === 'group' ? 'group' : 'account';
+          const cagrStartDate =
+            typeof entry.cagrStartDate === 'string' && entry.cagrStartDate.trim()
+              ? entry.cagrStartDate.trim()
+              : null;
+          const supportsCagrToggle = entry.supportsCagrToggle === true;
+          return {
+            id: rawId,
+            label,
+            totalEquityCad,
+            dayPnlCad,
+            href,
+            kind,
+            cagrStartDate,
+            supportsCagrToggle,
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const resolvedChildParentTotal = Number.isFinite(childAccountParentTotal)
+    ? childAccountParentTotal
+    : null;
+
+  const [childMenuState, setChildMenuState] = useState({ open: false, x: 0, y: 0, child: null });
+  const childMenuRef = useRef(null);
+
+  const closeChildMenu = useCallback(() => {
+    setChildMenuState((state) => (state.open ? { open: false, x: 0, y: 0, child: null } : state));
+  }, []);
+
+  const childMenuTarget = childMenuState.child;
+
+  useEffect(() => {
+    if (!childMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (childMenuRef.current && childMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeChildMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeChildMenu();
+      }
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('contextmenu', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('contextmenu', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [childMenuState.open, closeChildMenu]);
+
+  const openChildMenu = useCallback((x, y, child) => {
+    if (!child) {
+      return;
+    }
+    let targetX = x;
+    let targetY = y;
+    if (typeof window !== 'undefined') {
+      const padding = 12;
+      const estimatedWidth = 220;
+      const estimatedHeight = 140;
+      const viewportWidth = window.innerWidth || 0;
+      const viewportHeight = window.innerHeight || 0;
+      targetX = Math.min(Math.max(padding, targetX), Math.max(padding, viewportWidth - estimatedWidth));
+      targetY = Math.min(Math.max(padding, targetY), Math.max(padding, viewportHeight - estimatedHeight));
+    }
+    setChildMenuState({ open: true, x: targetX, y: targetY, child });
+  }, []);
+
+  const handleChildContextMenu = useCallback(
+    (event, child) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!child) {
+        return;
+      }
+      const x = event.clientX ?? 0;
+      const y = event.clientY ?? 0;
+      openChildMenu(x, y, child);
+    },
+    [openChildMenu]
+  );
+
+  const handleChildKeyDown = useCallback(
+    (event, child) => {
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget?.getBoundingClientRect();
+        let x = rect ? rect.left + rect.width / 2 : 0;
+        let y = rect ? rect.top + rect.height : 0;
+        if (!rect && typeof window !== 'undefined') {
+          x = window.innerWidth / 2;
+          y = window.innerHeight / 2;
+        }
+        openChildMenu(x, y, child);
+      }
+    },
+    [openChildMenu]
+  );
+
+  const handleChildMenuAction = useCallback(
+    (action) => {
+      if (!childMenuTarget) {
+        closeChildMenu();
+        return;
+      }
+      const child = childMenuTarget;
+      if ((action === 'day' || action === 'open') && typeof onShowChildPnlBreakdown === 'function') {
+        onShowChildPnlBreakdown(child.id, action);
+      } else if (action === 'total' && typeof onShowChildTotalPnl === 'function') {
+        onShowChildTotalPnl(child.id, child);
+      }
+      closeChildMenu();
+    },
+    [childMenuTarget, onShowChildPnlBreakdown, onShowChildTotalPnl, closeChildMenu]
+  );
+
+  const formatChildPnlPercent = (change, total) => {
+    if (!Number.isFinite(change)) {
+      if (change === 0) {
+        return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return null;
+    }
+    if (change === 0) {
+      return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    if (!Number.isFinite(change) || !Number.isFinite(total)) {
+      return null;
+    }
+    const baseValue = total - change;
+    if (!Number.isFinite(baseValue) || Math.abs(baseValue) < 1e-9) {
+      return null;
+    }
+    const percentValue = (change / baseValue) * 100;
+    if (!Number.isFinite(percentValue)) {
+      return null;
+    }
+    return formatSignedPercent(percentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const formatChildSharePercent = (value, parentTotal) => {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    if (!Number.isFinite(parentTotal) || Math.abs(parentTotal) < 1e-9) {
+      if (value === 0 && Number.isFinite(parentTotal)) {
+        return formatPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return null;
+    }
+    const percentValue = (value / parentTotal) * 100;
+    if (!Number.isFinite(percentValue)) {
+      return null;
+    }
+    return formatPercent(percentValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const handleChildAccountClick = (event, accountId, href) => {
+    if (!accountId) {
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button === 1) {
+      return;
+    }
+    event.preventDefault();
+    closeChildMenu();
+    if (typeof onSelectAccount === 'function') {
+      onSelectAccount(accountId);
+    } else if (href && typeof window !== 'undefined') {
+      window.location.href = href;
+    }
+  };
+
+  const childAccountList = normalizedChildAccounts.length ? (
+    <div className="equity-card__children" aria-live="polite">
+      <h3 className="equity-card__children-title">Child accounts</h3>
+      <ul className="equity-card__children-list">
+        {normalizedChildAccounts.map((child) => {
+          const href = child.href || `?accountId=${encodeURIComponent(child.id)}`;
+          const tone = Number.isFinite(child.dayPnlCad) ? classifyPnL(child.dayPnlCad) : 'neutral';
+          const pnlPercentLabel = formatChildPnlPercent(child.dayPnlCad, child.totalEquityCad);
+          const shareLabel = formatChildSharePercent(child.totalEquityCad, resolvedChildParentTotal);
+          return (
+            <li key={child.id} className="equity-card__children-item">
+              <a
+                href={href}
+                className="equity-card__children-link"
+                onClick={(event) => handleChildAccountClick(event, child.id, href)}
+                onContextMenu={(event) => handleChildContextMenu(event, child)}
+                onKeyDown={(event) => handleChildKeyDown(event, child)}
+                aria-haspopup="menu"
+                aria-expanded={
+                  childMenuState.open && childMenuTarget && childMenuTarget.id === child.id
+                    ? 'true'
+                    : 'false'
+                }
+              >
+                <span className="equity-card__children-name">{child.label}</span>
+                <div className="equity-card__children-meta">
+                  <span className="equity-card__children-value">
+                    {formatMoney(child.totalEquityCad)}
+                    {shareLabel ? (
+                      <span className="equity-card__children-share">{` · ${shareLabel}`}</span>
+                    ) : null}
+                  </span>
+                  <span
+                    className={`equity-card__children-pnl equity-card__children-pnl--${tone}`}
+                    data-kind={child.kind}
+                  >
+                    <span className="equity-card__children-pnl-label">Today:</span>
+                    <span className="equity-card__children-pnl-value">
+                      {formatSignedMoney(child.dayPnlCad)}
+                      {pnlPercentLabel ? (
+                        <span className="equity-card__children-percent">{` (${pnlPercentLabel})`}</span>
+                      ) : null}
+                    </span>
+                  </span>
+                </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ) : null;
+
+  const childContextMenu = childMenuState.open ? (
+    <div
+      ref={childMenuRef}
+      className="equity-card__children-menu"
+      style={{ top: `${childMenuState.y}px`, left: `${childMenuState.x}px` }}
+      role="menu"
+      aria-label={
+        childMenuTarget
+          ? `Actions for ${childMenuTarget.label}`
+          : 'Child account actions'
+      }
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        className="equity-card__children-menu-item"
+        onClick={() => handleChildMenuAction('day')}
+      >
+        Today's P&amp;L
+      </button>
+      <button
+        type="button"
+        className="equity-card__children-menu-item"
+        onClick={() => handleChildMenuAction('open')}
+      >
+        Open P&amp;L
+      </button>
+      <button
+        type="button"
+        className="equity-card__children-menu-item"
+        onClick={() => handleChildMenuAction('total')}
+      >
+        Total P&amp;L
+      </button>
+    </div>
+  ) : null;
+
   return (
     <section className="equity-card">
       <header className="equity-card__header">
@@ -942,6 +1248,9 @@ export default function SummaryMetrics({
         </dl>
       </div>
 
+      {childAccountList}
+      {childContextMenu}
+
     </section>
   );
 }
@@ -1074,6 +1383,22 @@ SummaryMetrics.propTypes = {
   selectedTotalPnlRange: PropTypes.string,
   onTotalPnlRangeChange: PropTypes.func,
   onAdjustDeployment: PropTypes.func,
+  childAccounts: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      label: PropTypes.string.isRequired,
+      totalEquityCad: PropTypes.number,
+      dayPnlCad: PropTypes.number,
+      href: PropTypes.string,
+      kind: PropTypes.oneOf(['account', 'group']),
+      cagrStartDate: PropTypes.string,
+      supportsCagrToggle: PropTypes.bool,
+    })
+  ),
+  onSelectAccount: PropTypes.func,
+  childAccountParentTotal: PropTypes.number,
+  onShowChildPnlBreakdown: PropTypes.func,
+  onShowChildTotalPnl: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -1109,4 +1434,9 @@ SummaryMetrics.defaultProps = {
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,
   onAdjustDeployment: null,
+  childAccounts: [],
+  onSelectAccount: null,
+  childAccountParentTotal: null,
+  onShowChildPnlBreakdown: null,
+  onShowChildTotalPnl: null,
 };
