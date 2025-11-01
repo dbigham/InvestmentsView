@@ -71,7 +71,26 @@ const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
 ]);
 
 const OPENAI_API_KEY = typeof process.env.OPENAI_API_KEY === 'string' ? process.env.OPENAI_API_KEY.trim() : '';
-const OPENAI_NEWS_MODEL = process.env.OPENAI_NEWS_MODEL || 'gpt-5.0';
+// Default model for Responses API + web_search. Override via OPENAI_NEWS_MODEL.
+const OPENAI_NEWS_MODEL = process.env.OPENAI_NEWS_MODEL || 'gpt-4o-mini';
+// Timezone used for date filtering in the News panel to match UI display
+const TORONTO_TIME_ZONE = 'America/Toronto';
+const torontoDateKeyFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: TORONTO_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+function getTorontoDateKey(input) {
+  if (!input) {
+    return null;
+  }
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return torontoDateKeyFormatter.format(date);
+}
 const MAX_NEWS_SYMBOLS = 24;
 let openAiClient = null;
 let openAiClientInitError = null;
@@ -754,6 +773,127 @@ function normalizeNewsArticle(article) {
   };
 }
 
+// Basic HTML entity decoding for titles/descriptions from RSS feeds.
+function decodeHtmlEntities(input) {
+  if (typeof input !== 'string' || !input) {
+    return '';
+  }
+  return input
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
+}
+
+function stripHtmlTags(input) {
+  if (typeof input !== 'string' || !input) {
+    return '';
+  }
+  return input.replace(/<[^>]*>/g, '');
+}
+
+function parseGoogleNewsRss(xml) {
+  const content = typeof xml === 'string' ? xml : '';
+  if (!content) {
+    return [];
+  }
+  const items = [];
+  const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
+  let match;
+  while ((match = itemRegex.exec(content)) !== null) {
+    const itemXml = match[1];
+    const titleMatch = /<title>([\s\S]*?)<\/title>/i.exec(itemXml);
+    const linkMatch = /<link>([\s\S]*?)<\/link>/i.exec(itemXml);
+    const pubDateMatch = /<pubDate>([\s\S]*?)<\/pubDate>/i.exec(itemXml);
+    const sourceMatch = /<source[^>]*>([\s\S]*?)<\/source>/i.exec(itemXml);
+
+    const rawTitle = titleMatch ? decodeHtmlEntities(stripHtmlTags(titleMatch[1]).trim()) : '';
+    const rawLink = linkMatch ? stripHtmlTags(linkMatch[1]).trim() : '';
+    const publishedAt = pubDateMatch ? stripHtmlTags(pubDateMatch[1]).trim() : '';
+    const source = sourceMatch ? decodeHtmlEntities(stripHtmlTags(sourceMatch[1]).trim()) : '';
+
+    if (!rawTitle || !rawLink) {
+      continue;
+    }
+
+    // Try to resolve the original URL if Google adds a redirect layer.
+    let url = rawLink;
+    try {
+      const urlObj = new URL(rawLink);
+      const real = urlObj.searchParams.get('url');
+      if (real) {
+        url = real;
+      }
+    } catch {
+      // Keep the raw link if URL parsing fails.
+    }
+
+    // Titles in Google News often end with " - Source"; prefer the explicit source element when present.
+    let title = rawTitle;
+    const dashIdx = title.lastIndexOf(' - ');
+    if (dashIdx > 0 && (!source || title.slice(dashIdx + 3).toLowerCase() === source.toLowerCase())) {
+      title = title.slice(0, dashIdx);
+    }
+
+    items.push({
+      title,
+      url,
+      summary: null,
+      source: source || null,
+      publishedAt: publishedAt || null,
+    });
+  }
+  return items;
+}
+
+async function fetchPortfolioNewsFromFeeds(params) {
+  const { symbols } = params || {};
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    return { articles: [], disclaimer: null };
+  }
+  // Build a single Google News RSS query to minimize requests.
+  const query = `${symbols.join(' OR ')} when:14d`;
+  const url = new URL('https://news.google.com/rss/search');
+  url.searchParams.set('q', query);
+  url.searchParams.set('hl', 'en-US');
+  url.searchParams.set('gl', 'US');
+  url.searchParams.set('ceid', 'US:en');
+
+  let response;
+  try {
+    response = await performUndiciApiRequest({ url: url.toString() });
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+
+  const xml = typeof response?.data === 'string' ? response.data : '';
+  const allArticles = parseGoogleNewsRss(xml);
+  // De-duplicate by URL/title and cap to 8 items, most recent first (feed is already ordered by time).
+  const seen = new Set();
+  const unique = [];
+  for (const article of allArticles) {
+    const key = (article.url || '') + '|' + (article.title || '');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(article);
+    if (unique.length >= 8) {
+      break;
+    }
+  }
+
+  return {
+    articles: unique,
+    disclaimer:
+      unique.length
+        ? 'Headlines via Google News RSS. Summaries not generated.'
+        : null,
+  };
+}
+
 async function fetchPortfolioNewsFromOpenAi(params) {
   const { accountLabel, symbols } = params || {};
   const client = params && params.client ? params.client : ensureOpenAiClient();
@@ -767,47 +907,50 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   }
 
   const trimmedLabel = typeof accountLabel === 'string' ? accountLabel.trim() : '';
-  const structuredOutputFormat = {
+  // Structured output format for Responses API using text.format
+  const structuredTextFormat = {
     type: 'json_schema',
     name: 'portfolio_news',
     schema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        articles: {
-          type: 'array',
-          maxItems: 8,
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          articles: {
+            type: 'array',
+            maxItems: 8,
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['title', 'url'],
+            required: ['title', 'url', 'summary', 'source', 'publishedAt'],
             properties: {
               title: { type: 'string' },
               url: { type: 'string' },
               summary: { type: 'string' },
               source: { type: 'string' },
-              published_at: { type: 'string' },
               publishedAt: { type: 'string' },
             },
           },
+          },
+          disclaimer: { type: 'string' },
         },
-        disclaimer: { type: 'string' },
+        required: ['articles', 'disclaimer'],
       },
-      required: ['articles'],
-    },
   };
+
+  const torontoTodayKey = getTorontoDateKey(new Date());
 
   const baseRequest = {
     model: OPENAI_NEWS_MODEL,
-    temperature: 0.3,
     max_output_tokens: 1100,
     tools: [{ type: 'web_search' }],
     instructions:
-      'You are a portfolio research assistant. Use the web_search tool when helpful to gather the most recent, reputable news articles or posts about the provided securities. Respond with concise JSON summaries.',
+      'You are a portfolio research assistant. Use the web_search tool when helpful to gather the most recent, reputable news articles or posts about the provided securities. Respond with concise JSON summaries. ' +
+      'Return ONLY articles published on the current date in the America/Toronto timezone. If no qualifying articles exist, return an empty list. Ensure each article has title, direct URL, source, and publishedAt in ISO 8601.',
     input: [
       `Account label: ${trimmedLabel || 'Portfolio'}`,
       `Stock symbols: ${symbols.join(', ')}`,
-      'Task: Find up to eight relevant and timely news articles or notable posts published within the past 14 days that mention these tickers. Prioritize reputable financial publications, company announcements, and influential analysis.',
+      `Today (America/Toronto): ${torontoTodayKey}`,
+      'Task: Find up to eight relevant and timely news articles or notable posts published TODAY (not older) that mention these tickers. Prioritize reputable financial publications, company announcements, and influential analysis.',
       'For each article provide the title, a direct URL, the publisher/source when available, the publication date (ISO 8601 preferred), and a concise summary under 60 words.',
     ].join('\n'),
   };
@@ -836,7 +979,21 @@ async function fetchPortfolioNewsFromOpenAi(params) {
       return false;
     }
     const normalizedMessage = messageParts.join(' ').toLowerCase();
-    return normalizedMessage.includes('text.format') || normalizedMessage.includes("text format") || normalizedMessage.includes("unknown parameter: 'text'");
+    // Only retry with legacy response_format if the API complains that
+    // the 'text' or 'text.format' parameter is unknown or invalid.
+    // Do NOT retry if the error mentions response_format (that implies
+    // we should be using text.format already).
+    if (normalizedMessage.includes('response_format')) {
+      return false;
+    }
+    return (
+      normalizedMessage.includes("unknown parameter: 'text'") ||
+      normalizedMessage.includes('unknown parameter: text') ||
+      normalizedMessage.includes('unrecognized parameter "text"') ||
+      normalizedMessage.includes('text.format is not supported') ||
+      normalizedMessage.includes('text.format unknown') ||
+      normalizedMessage.includes('text format unknown')
+    );
   }
 
   function rethrowAsOpenAiError(requestError) {
@@ -860,20 +1017,49 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   try {
     response = await client.responses.create({
       ...baseRequest,
-      text: { format: structuredOutputFormat },
+      text: { format: structuredTextFormat },
     });
   } catch (error) {
+    function shouldRetryWithoutTools(requestError) {
+      const msg = [
+        requestError?.message,
+        requestError?.error?.message,
+        requestError?.error?.param,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!msg) return false;
+      return (
+        msg.includes('web_search') ||
+        msg.includes('unknown tool') ||
+        msg.includes('tools are not supported') ||
+        msg.includes('invalid parameter: tools') ||
+        msg.includes('does not support tools')
+      );
+    }
+
     if (shouldRetryWithLegacyResponseFormat(error)) {
       try {
         response = await client.responses.create({
           ...baseRequest,
           response_format: {
             type: 'json_schema',
-            json_schema: structuredOutputFormat,
+            json_schema: { name: structuredTextFormat.name, schema: structuredTextFormat.schema },
           },
         });
       } catch (legacyError) {
         rethrowAsOpenAiError(legacyError);
+      }
+    } else if (shouldRetryWithoutTools(error)) {
+      try {
+        response = await client.responses.create({
+          ...baseRequest,
+          tools: undefined,
+          text: { format: structuredTextFormat },
+        });
+      } catch (toolError) {
+        rethrowAsOpenAiError(toolError);
       }
     } else {
       rethrowAsOpenAiError(error);
@@ -895,7 +1081,15 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   }
 
   const rawArticles = Array.isArray(parsed.articles) ? parsed.articles : [];
-  const articles = rawArticles.map(normalizeNewsArticle).filter(Boolean);
+  const allArticles = rawArticles.map(normalizeNewsArticle).filter(Boolean);
+  const todayKey = torontoTodayKey;
+  const articles = allArticles.filter((a) => {
+    if (!a || !a.publishedAt) {
+      return false;
+    }
+    const key = getTorontoDateKey(a.publishedAt);
+    return key === todayKey;
+  });
   const disclaimer = typeof parsed.disclaimer === 'string' ? parsed.disclaimer.trim() : '';
 
   return {
@@ -7775,19 +7969,14 @@ app.post('/api/news', async function (req, res) {
     return res.json(cached);
   }
 
-  let openAi;
+  // Initialize OpenAI and hard-require it for this endpoint.
+  let openAi = null;
   try {
     openAi = ensureOpenAiClient();
   } catch (error) {
     const message = error && error.message ? error.message : 'Failed to initialize OpenAI client';
     console.error('Failed to initialize OpenAI client for portfolio news:', message);
-    return res.status(500).json({ message: 'Failed to initialize portfolio news client', details: message });
-  }
-
-  if (!openAi) {
-    return res
-      .status(503)
-      .json({ message: 'Portfolio news is unavailable: OpenAI API key not configured' });
+    return res.status(503).json({ message: 'Portfolio news is unavailable', details: message });
   }
 
   try {
@@ -7813,14 +8002,10 @@ app.post('/api/news', async function (req, res) {
     return res.json(payload);
   } catch (error) {
     if (error && (error.code === 'OPENAI_NOT_CONFIGURED' || error.code === 'OPENAI_UNAUTHORIZED')) {
-      return res
-        .status(503)
-        .json({ message: 'Portfolio news is unavailable', details: error.message });
+      return res.status(503).json({ message: 'Portfolio news is unavailable', details: error.message });
     }
     if (error && error.code === 'OPENAI_RATE_LIMIT') {
-      return res
-        .status(503)
-        .json({ message: 'Portfolio news temporarily unavailable', details: error.message });
+      return res.status(503).json({ message: 'Portfolio news temporarily unavailable', details: error.message });
     }
     const message = error && error.message ? error.message : 'Unknown error';
     console.error('Failed to load portfolio news:', message);
