@@ -1,6 +1,7 @@
 import { useCallback, useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
-import { formatDate, formatNumber, formatPercent } from '../utils/formatters';
+import { formatDate, formatMoney, formatNumber, formatPercent } from '../utils/formatters';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 const CHART_WIDTH = 720;
 const CHART_HEIGHT = 260;
@@ -181,9 +182,11 @@ export default function QqqTemperatureSection({
   lastRebalance,
   evaluation,
   onMarkRebalanced,
+  accountUrl,
 }) {
   const [timeframe, setTimeframe] = useState('5Y');
   const [markingRebalanced, setMarkingRebalanced] = useState(false);
+  const [completedTrades, setCompletedTrades] = useState(() => new Set());
   const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
   const latestTemperature = Number(data?.latest?.temperature);
   const referenceTemperatures = useMemo(() => {
@@ -345,6 +348,18 @@ export default function QqqTemperatureSection({
     return { left: `${leftPercent}%`, top: `${topPercent}%` };
   }, [marker]);
 
+  const toggleTrade = useCallback((rowKey) => {
+    setCompletedTrades((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) {
+        next.delete(rowKey);
+      } else {
+        next.add(rowKey);
+      }
+      return next;
+    });
+  }, []);
+
   const evaluationStatus = evaluation?.status || null;
   const evaluationData = evaluationStatus === 'ok' && evaluation && typeof evaluation === 'object' ? evaluation.data || null : null;
   const evaluationDecision = evaluationData && typeof evaluationData === 'object' ? evaluationData.decision || null : null;
@@ -373,6 +388,12 @@ export default function QqqTemperatureSection({
         value: formatPercent(currentAllocation * 100, percentOptions),
       });
     }
+    const recentReasonToken = (() => {
+      const r = evaluationData?.recent_rebalance?.reason || '';
+      const l = evaluationData?.recent_rebalance?.reason_label || '';
+      return String(r || l).trim().toLowerCase();
+    })();
+
     const targetAllocation =
       (evaluationData.model && isFiniteNumber(evaluationData.model.target_allocation)
         ? evaluationData.model.target_allocation
@@ -380,7 +401,8 @@ export default function QqqTemperatureSection({
       (evaluationDecision && evaluationDecision.details && isFiniteNumber(evaluationDecision.details.target_p)
         ? evaluationDecision.details.target_p
         : null);
-    if (isFiniteNumber(targetAllocation)) {
+    const hideTargetForDerisk = recentReasonToken.includes('forced') && recentReasonToken.includes('derisk');
+    if (isFiniteNumber(targetAllocation) && !hideTargetForDerisk) {
       evaluationMetrics.push({
         label: 'Target allocation',
         value: formatPercent(targetAllocation * 100, percentOptions),
@@ -433,7 +455,19 @@ export default function QqqTemperatureSection({
   let evaluationContent = null;
   if (evaluationStatus === 'ok' && evaluationData) {
     const actionLabel = formatActionLabel(evaluationAction);
-    const recent = evaluationData.recent_rebalance || null;
+    const recent = (() => {
+      const ev = evaluationData.recent_rebalance || null;
+      if (!ev) return null;
+      const label = ev.reason_label || formatActionLabel(ev.reason);
+      let desc = ev.reason_description || '';
+      if (!desc) {
+        const token = (ev.reason || label || '').toString().toLowerCase();
+        if (token.includes('forced') && token.includes('derisk')) {
+          desc = 'Crash guard forced a cash move.';
+        }
+      }
+      return { ...ev, reason: [label, desc].filter(Boolean).join(': ') };
+    })();
     evaluationContent = (
       <>
         <div className="qqq-section__evaluation-summary">
@@ -451,6 +485,110 @@ export default function QqqTemperatureSection({
               </div>
             ))}
           </dl>
+        )}
+        {Array.isArray(evaluationData.trades) && evaluationData.trades.length > 0 && (
+          <>
+            {accountUrl && (
+              <div className="qqq-section__account-link">
+                <a
+                  className="invest-plan-dialog__account-link"
+                  href={accountUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open account in Questrade
+                </a>
+              </div>
+            )}
+            <div className="invest-plan-purchases-wrapper">
+              <table className="invest-plan-purchases">
+                <thead>
+                  <tr>
+                    <th scope="col" className="invest-plan-purchases__checkbox-header">Done</th>
+                    <th scope="col">Action</th>
+                    <th scope="col">Symbol</th>
+                    <th scope="col">Amount</th>
+                    <th scope="col">Shares</th>
+                    <th scope="col">Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {evaluationData.trades.map((t, idx) => {
+                    const key = `${t?.symbol || ''}|${t?.action || ''}|${idx}`;
+                    const side = (t?.action || '').toString().toUpperCase();
+                    const symbol = (t?.symbol || '').toString();
+                    const dollars = Number(t?.dollars);
+                    const shares = Number(t?.shares);
+                    const price = Number(t?.price);
+                    const amountCopy = Number.isFinite(dollars) ? Math.abs(dollars).toFixed(2) : null;
+                    const shareCopy = Number.isFinite(shares) ? Math.abs(shares).toString() : null;
+                    const amountLabel = Number.isFinite(dollars) ? formatMoney(Math.abs(dollars)) : '—';
+                    const shareLabel = Number.isFinite(shares)
+                      ? formatNumber(Math.abs(shares), { minimumFractionDigits: 0, maximumFractionDigits: 4 })
+                      : '—';
+                    const priceLabel = Number.isFinite(price)
+                      ? formatMoney(price, { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+                      : '—';
+                    const isCompleted = completedTrades.has(key);
+                    const rowClass = isCompleted
+                      ? 'invest-plan-purchases__row invest-plan-purchases__row--completed'
+                      : 'invest-plan-purchases__row';
+                    const actionClass = side === 'BUY' ? 'qqq-trade-action qqq-trade-action--buy' : 'qqq-trade-action qqq-trade-action--sell';
+                    return (
+                      <tr key={key} className={rowClass}>
+                        <td className="invest-plan-purchases__checkbox-cell">
+                          <input
+                            type="checkbox"
+                            className="invest-plan-purchases__checkbox"
+                            checked={isCompleted}
+                            onChange={() => toggleTrade(key)}
+                            aria-label={`Mark ${symbol} ${side.toLowerCase()} as ${isCompleted ? 'not completed' : 'completed'}`}
+                          />
+                        </td>
+                        <td><span className={actionClass}>{side}</span></td>
+                        <th scope="row">
+                          <div className="invest-plan-symbol">
+                            {symbol ? (
+                              <button
+                                type="button"
+                                className="invest-plan-symbol__ticker"
+                                onClick={() => copyTextToClipboard(symbol)}
+                                title="Copy symbol"
+                                aria-label={`Copy ${symbol} symbol`}
+                              >
+                                {symbol}
+                              </button>
+                            ) : (
+                              <span className="invest-plan-symbol__ticker">{symbol}</span>
+                            )}
+                          </div>
+                        </th>
+                        <td>
+                          {amountCopy ? (
+                            <button type="button" className="invest-plan-copy-button" onClick={() => copyTextToClipboard(amountCopy)}>
+                              {amountLabel}
+                            </button>
+                          ) : (
+                            <span className="invest-plan-copy-button invest-plan-copy-button--disabled">{amountLabel}</span>
+                          )}
+                        </td>
+                        <td>
+                          {shareCopy ? (
+                            <button type="button" className="invest-plan-copy-button" onClick={() => copyTextToClipboard(shareCopy)}>
+                              {shareLabel}
+                            </button>
+                          ) : (
+                            <span className="invest-plan-copy-button invest-plan-copy-button--disabled">{shareLabel}</span>
+                          )}
+                        </td>
+                        <td>{priceLabel}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
         {recent && recent.date && (
           <div className="qqq-section__evaluation-note">
@@ -690,6 +828,7 @@ QqqTemperatureSection.propTypes = {
     message: PropTypes.string,
   }),
   onMarkRebalanced: PropTypes.func,
+  accountUrl: PropTypes.string,
 };
 
 QqqTemperatureSection.defaultProps = {
@@ -702,4 +841,5 @@ QqqTemperatureSection.defaultProps = {
   lastRebalance: null,
   evaluation: null,
   onMarkRebalanced: null,
+  accountUrl: null,
 };

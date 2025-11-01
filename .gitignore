@@ -23,3 +23,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 Plan.md
+
+# Local run artifacts
+server-run-*.log
+temp_block.txt
+symbols/
+symbol_data/
+temperature_cache/
+server/.openai-news-response.json
+server/.news-test.log

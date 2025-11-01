@@ -1,4 +1,5 @@
 import PropTypes from 'prop-types';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatDate, formatDateTime } from '../utils/formatters';
 
 function normalizeArticles(articles) {
@@ -38,7 +39,12 @@ export default function PortfolioNews({
   generatedAt,
   symbols,
   accountLabel,
+  onSeePrompt,
+  prompt,
 }) {
+  const [contextMenuState, setContextMenuState] = useState({ open: false, x: 0, y: 0 });
+  const menuRef = useRef(null);
+
   const normalizedStatus = status === 'idle' ? 'loading' : status;
   const safeArticles = normalizeArticles(articles);
   const showRetry = typeof onRetry === 'function' && normalizedStatus === 'error';
@@ -56,10 +62,85 @@ export default function PortfolioNews({
     ? 'No recent articles matched the current holdings.'
     : 'Add holdings to this account to surface relevant news.';
 
+  const closeContextMenu = useCallback(() => {
+    setContextMenuState((state) => (state.open ? { ...state, open: false } : state));
+  }, []);
+
+  const handleTitleContextMenu = useCallback((event) => {
+    event.preventDefault();
+    setContextMenuState({ open: true, x: event.clientX, y: event.clientY });
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (!menuRef.current) {
+        closeContextMenu();
+        return;
+      }
+      if (menuRef.current.contains(event.target)) {
+        return;
+      }
+      closeContextMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeContextMenu();
+      }
+    };
+    const handleViewportChange = () => {
+      closeContextMenu();
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [closeContextMenu, contextMenuState.open]);
+
+  useEffect(() => {
+    if (!contextMenuState.open || !menuRef.current) {
+      return;
+    }
+    const { innerWidth, innerHeight } = window;
+    const rect = menuRef.current.getBoundingClientRect();
+    const padding = 12;
+    let nextX = contextMenuState.x;
+    let nextY = contextMenuState.y;
+    if (nextX + rect.width > innerWidth - padding) {
+      nextX = Math.max(padding, innerWidth - rect.width - padding);
+    }
+    if (nextY + rect.height > innerHeight - padding) {
+      nextY = Math.max(padding, innerHeight - rect.height - padding);
+    }
+    if (nextX !== contextMenuState.x || nextY !== contextMenuState.y) {
+      setContextMenuState((state) => (state.open ? { ...state, x: nextX, y: nextY } : state));
+    }
+  }, [contextMenuState.open, contextMenuState.x, contextMenuState.y]);
+
+  useEffect(() => {
+    if (!contextMenuState.open || !menuRef.current) {
+      return;
+    }
+    const firstButton = menuRef.current.querySelector('button');
+    if (firstButton && typeof firstButton.focus === 'function') {
+      firstButton.focus({ preventScroll: true });
+    }
+  }, [contextMenuState.open]);
+
   return (
     <section className="news-panel" aria-live={ariaLive}>
       <header className="news-panel__header">
-        <h3 className="news-panel__title">Latest news</h3>
+        <h3 className="news-panel__title" onContextMenu={handleTitleContextMenu}>Latest news</h3>
         {accountLabel ? <span className="news-panel__context">For {accountLabel}</span> : null}
         {symbolLabel ? <span className="news-panel__symbols">{symbolLabel}</span> : null}
         {timestampLabel ? <span className="news-panel__timestamp">Updated {timestampLabel}</span> : null}
@@ -115,6 +196,34 @@ export default function PortfolioNews({
       {showEmpty ? <p className="news-panel__empty">{emptyMessage}</p> : null}
 
       {disclaimer ? <p className="news-panel__disclaimer">{disclaimer}</p> : null}
+
+      {contextMenuState.open ? (
+        <div
+          ref={menuRef}
+          className="positions-table__context-menu"
+          style={{ position: 'fixed', left: contextMenuState.x, top: contextMenuState.y }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <ul className="positions-table__context-menu-list" role="menu">
+            <li>
+              <button
+                type="button"
+                className="positions-table__context-menu-item"
+                onClick={() => {
+                  closeContextMenu();
+                  if (typeof onSeePrompt === 'function') {
+                    onSeePrompt();
+                  }
+                }}
+                disabled={!prompt}
+                role="menuitem"
+              >
+                See prompt
+              </button>
+            </li>
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -136,6 +245,8 @@ PortfolioNews.propTypes = {
   generatedAt: PropTypes.string,
   symbols: PropTypes.arrayOf(PropTypes.string),
   accountLabel: PropTypes.string,
+  onSeePrompt: PropTypes.func,
+  prompt: PropTypes.string,
 };
 
 PortfolioNews.defaultProps = {
@@ -147,4 +258,6 @@ PortfolioNews.defaultProps = {
   generatedAt: null,
   symbols: [],
   accountLabel: '',
+  onSeePrompt: null,
+  prompt: null,
 };
