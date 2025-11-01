@@ -4179,6 +4179,9 @@ export default function App() {
       return;
     }
     if (!selectedAccountInfo) {
+      if (loading) {
+        return;
+      }
       setSelectedRebalanceReminder(null);
       return;
     }
@@ -4191,7 +4194,7 @@ export default function App() {
     if (!matchesId && !matchesNumber) {
       setSelectedRebalanceReminder(null);
     }
-  }, [isAggregateSelection, selectedAccountInfo, selectedRebalanceReminder, setSelectedRebalanceReminder]);
+  }, [isAggregateSelection, loading, selectedAccountInfo, selectedRebalanceReminder, setSelectedRebalanceReminder]);
 
   useEffect(() => {
     setShowTotalPnlDialog(false);
