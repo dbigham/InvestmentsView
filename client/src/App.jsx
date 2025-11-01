@@ -6036,6 +6036,7 @@ export default function App() {
         evaluationStatus,
         displayTitle,
         accountNumber: resolvedAccountNumber,
+        accountUrl: buildAccountSummaryUrl(accountInfo) || null,
       };
     });
 
@@ -7838,6 +7839,7 @@ export default function App() {
   let investmentModelDialogEvaluation = null;
   let investmentModelDialogTitle = 'Investment Model';
   let investmentModelDialogOnMarkRebalanced = null;
+  let investmentModelDialogAccountUrl = null;
 
   if (activeInvestmentModelDialog?.type === 'global') {
     investmentModelDialogData = qqqData;
@@ -7860,6 +7862,7 @@ export default function App() {
       activeAccountModelSection?.model || activeInvestmentModelDialog.model || null;
     investmentModelDialogLastRebalance = activeAccountModelSection?.lastRebalance || null;
     investmentModelDialogEvaluation = activeAccountModelSection?.evaluation || null;
+    investmentModelDialogAccountUrl = activeAccountModelSection?.accountUrl || null;
     investmentModelDialogTitle =
       activeAccountModelSection?.displayTitle ||
       activeAccountModelSection?.title ||
@@ -8209,6 +8212,7 @@ export default function App() {
                         modelName={modelKey || null}
                         lastRebalance={section.lastRebalance || null}
                         evaluation={section.evaluation || null}
+                        accountUrl={section.accountUrl || null}
                         onMarkRebalanced={
                           section.accountNumber && section.model
                             ? () => handleMarkModelAsRebalanced(section)
@@ -8318,6 +8322,7 @@ export default function App() {
           evaluation={investmentModelDialogEvaluation}
           title={investmentModelDialogTitle}
           onMarkRebalanced={investmentModelDialogOnMarkRebalanced}
+          accountUrl={investmentModelDialogAccountUrl}
         />
       )}
       {showTotalPnlDialog && (

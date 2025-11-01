@@ -3711,7 +3711,7 @@ button.time-pill:hover .time-pill__icon {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
-  padding: 20px 24px 8px;
+  padding: 20px 24px 24px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -4053,6 +4053,7 @@ button.time-pill:hover .time-pill__icon {
 .qqq-section__evaluation-note {
   font-size: 13px;
   color: var(--color-text-secondary);
+  margin-top: 18px;
 }
 
 .qqq-section__evaluation-note strong {
@@ -4063,6 +4064,36 @@ button.time-pill:hover .time-pill__icon {
   margin: 0;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+/* Link above the model trades table */
+.qqq-section__account-link {
+  margin: 4px 0 8px;
+}
+
+/* Buy/Sell color accents in model trades */
+.qqq-trade-action {
+  font-weight: 600;
+}
+.qqq-trade-action--buy {
+  color: var(--color-accent);
+}
+.qqq-trade-action--sell {
+  color: var(--color-negative);
+}
+
+/* Hide the trailing Account column in model trades table */
+
+
+/* Trades list for model rebalances */
+.qqq-section__trades {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+}
+.qqq-section__trade {
+  list-style: disc;
+  font-size: 13px;
 }
 
 
