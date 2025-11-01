@@ -1011,24 +1011,26 @@ export default function SummaryMetrics({
                 }
               >
                 <span className="equity-card__children-name">{child.label}</span>
-                <span className="equity-card__children-value">
-                  {formatMoney(child.totalEquityCad)}
-                  {shareLabel ? (
-                    <span className="equity-card__children-share">{` · ${shareLabel}`}</span>
-                  ) : null}
-                </span>
-                <span
-                  className={`equity-card__children-pnl equity-card__children-pnl--${tone}`}
-                  data-kind={child.kind}
-                >
-                  <span className="equity-card__children-pnl-label">Today's P&amp;L</span>
-                  <span className="equity-card__children-pnl-value">
-                    {formatSignedMoney(child.dayPnlCad)}
-                    {pnlPercentLabel ? (
-                      <span className="equity-card__children-percent">{` (${pnlPercentLabel})`}</span>
+                <div className="equity-card__children-meta">
+                  <span className="equity-card__children-value">
+                    {formatMoney(child.totalEquityCad)}
+                    {shareLabel ? (
+                      <span className="equity-card__children-share">{` · ${shareLabel}`}</span>
                     ) : null}
                   </span>
-                </span>
+                  <span
+                    className={`equity-card__children-pnl equity-card__children-pnl--${tone}`}
+                    data-kind={child.kind}
+                  >
+                    <span className="equity-card__children-pnl-label">Today:</span>
+                    <span className="equity-card__children-pnl-value">
+                      {formatSignedMoney(child.dayPnlCad)}
+                      {pnlPercentLabel ? (
+                        <span className="equity-card__children-percent">{` (${pnlPercentLabel})`}</span>
+                      ) : null}
+                    </span>
+                  </span>
+                </div>
               </a>
             </li>
           );

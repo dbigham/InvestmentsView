@@ -2392,7 +2392,7 @@ textarea {
 .equity-card__children-link {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-auto-rows: auto;
+  grid-template-rows: auto;
   align-items: center;
   column-gap: 12px;
   row-gap: 6px;
@@ -2418,10 +2418,22 @@ textarea {
 }
 
 .equity-card__children-name {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   color: var(--color-text-primary);
   min-width: 0;
+  grid-row: 1 / -1;
+  align-self: stretch; /* fill full tile height */
+  display: flex;       /* center text vertically within tile */
+  align-items: center;
+  padding-left: 8px;   /* extra left whitespace to balance top/bottom */
+}
+
+.equity-card__children-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
 }
 
 .equity-card__children-value {
@@ -2437,11 +2449,10 @@ textarea {
 }
 
 .equity-card__children-pnl {
-  grid-column: 1 / -1;
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 12px;
+  justify-content: flex-end;
+  gap: 4px 6px;
   flex-wrap: wrap;
   font-variant-numeric: tabular-nums;
 }
@@ -2459,11 +2470,12 @@ textarea {
 }
 
 .equity-card__children-pnl-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--color-text-muted);
+  opacity: 0.75;
 }
 
 .equity-card__children-pnl-value {
@@ -2508,7 +2520,7 @@ textarea {
 }
 
 .equity-card__children-menu-item + .equity-card__children-menu-item {
-  border-top: 1px solid var(--color-border);
+  border-top: none;
 }
 
 .equity-card__children-menu-item:hover,
@@ -2530,6 +2542,10 @@ textarea {
   gap: 16px;
   padding: 12px 0;
   border-bottom: 1px dotted var(--color-border-strong);
+}
+
+.equity-card__metric-row--compact-right {
+  justify-content: flex-end;
 }
 
 

@@ -4881,22 +4881,13 @@ export default function App() {
 
     const parentKeys = new Set();
 
+    // Only show child accounts when a group is selected. For individual accounts,
+    // do not infer children from the parent group (avoids showing siblings as children).
     if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
       const groupKey = normalizeAccountGroupKey(selectedAccountGroup.name);
       if (groupKey) {
         parentKeys.add(groupKey);
       }
-    } else if (!isAggregateSelection && selectedAccountInfo) {
-      [
-        selectedAccountInfo.accountGroup,
-        selectedAccountInfo.displayName,
-        selectedAccountInfo.name,
-      ].forEach((value) => {
-        const key = normalizeAccountGroupKey(value);
-        if (key) {
-          parentKeys.add(key);
-        }
-      });
     } else {
       return { items: [], parentTotal: null };
     }
