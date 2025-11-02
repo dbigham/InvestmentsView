@@ -2955,7 +2955,7 @@ function buildOrdersFromActivities(activityContext, context, cutoffDate) {
   const cutoffMs =
     cutoffDate instanceof Date && !Number.isNaN(cutoffDate.getTime()) ? cutoffDate.getTime() : null;
 
-  return activityContext.activities
+  const orders = activityContext.activities
     .map((activity, idx) => {
       const order = convertActivityToOrder(activity, context);
       if (order && order.source === 'activity') {
@@ -2976,6 +2976,247 @@ function buildOrdersFromActivities(activityContext, context, cutoffDate) {
       }
       return createdMs < cutoffMs;
     });
+
+  return aggregateActivityOrders(orders);
+}
+
+function aggregateActivityOrders(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) {
+    return [];
+  }
+
+  const aggregatedOrders = [];
+  const aggregationMeta = new Map();
+
+  orders.forEach((order) => {
+    if (!order || order.source !== 'activity') {
+      aggregatedOrders.push(order);
+      return;
+    }
+
+    const key = order.orderId || order.id;
+    if (!key) {
+      aggregatedOrders.push(order);
+      return;
+    }
+
+    const identifier = String(key);
+    let meta = aggregationMeta.get(identifier);
+    if (!meta) {
+      const cloned = Object.assign({}, order);
+      meta = initializeActivityAggregationMeta(cloned);
+      aggregationMeta.set(identifier, meta);
+      aggregatedOrders.push(cloned);
+      return;
+    }
+
+    updateActivityAggregationMeta(meta, order);
+  });
+
+  aggregationMeta.forEach((meta) => finalizeActivityAggregationMeta(meta));
+
+  return aggregatedOrders;
+}
+
+function initializeActivityAggregationMeta(order) {
+  const totalQuantity = toFiniteNumber(order.totalQuantity) || 0;
+  const filledQuantity = toFiniteNumber(order.filledQuantity) || 0;
+  const commission = toFiniteNumber(order.commission) || 0;
+  const commissionCharged = toFiniteNumber(order.commissionCharged) || 0;
+  const price = resolveAggregationPrice(order);
+  const executionMs = resolveAggregationExecutionMs(order);
+  const creationMs = resolveAggregationCreationMs(order);
+  const updateMs = resolveAggregationUpdateMs(order);
+  const activityIndex = Number.isFinite(Number(order.activityIndex)) ? Number(order.activityIndex) : null;
+
+  const initialQuantityForPrice = price !== null ? filledQuantity || totalQuantity || 0 : 0;
+
+  return {
+    order,
+    totalQuantity,
+    filledQuantity,
+    commission,
+    commissionCharged,
+    priceNotional: price !== null ? price * initialQuantityForPrice : 0,
+    priceQuantity: price !== null ? initialQuantityForPrice : 0,
+    latestExecMs: executionMs,
+    latestExecPrice: price,
+    earliestMs: creationMs,
+    latestMs: updateMs,
+    earliestIso: creationMs !== null ? new Date(creationMs).toISOString() : order.creationTime || null,
+    latestIso: updateMs !== null ? new Date(updateMs).toISOString() : order.updateTime || null,
+    minActivityIndex: activityIndex,
+  };
+}
+
+function updateActivityAggregationMeta(meta, addition) {
+  const quantity = toFiniteNumber(addition.totalQuantity) || 0;
+  const filled = toFiniteNumber(addition.filledQuantity) || 0;
+  const commission = toFiniteNumber(addition.commission);
+  const commissionCharged = toFiniteNumber(addition.commissionCharged);
+  const price = resolveAggregationPrice(addition);
+  const executionMs = resolveAggregationExecutionMs(addition);
+  const creationMs = resolveAggregationCreationMs(addition);
+  const updateMs = resolveAggregationUpdateMs(addition);
+  const activityIndex = Number.isFinite(Number(addition.activityIndex)) ? Number(addition.activityIndex) : null;
+
+  meta.totalQuantity += quantity;
+  meta.filledQuantity += filled;
+
+  if (commission !== null) {
+    meta.commission += commission;
+  }
+  if (commissionCharged !== null) {
+    meta.commissionCharged += commissionCharged;
+  }
+
+  if (price !== null) {
+    const quantityForPrice = filled || quantity;
+    if (Number.isFinite(quantityForPrice) && Math.abs(quantityForPrice) > 1e-8) {
+      meta.priceNotional += price * quantityForPrice;
+      meta.priceQuantity += quantityForPrice;
+    }
+  }
+
+  if (executionMs !== null) {
+    if (meta.latestExecMs === null || executionMs >= meta.latestExecMs) {
+      meta.latestExecMs = executionMs;
+      meta.latestExecPrice = price !== null ? price : meta.latestExecPrice;
+    }
+  }
+
+  if (creationMs !== null && (meta.earliestMs === null || creationMs < meta.earliestMs)) {
+    meta.earliestMs = creationMs;
+    meta.earliestIso = new Date(creationMs).toISOString();
+  }
+
+  if (updateMs !== null && (meta.latestMs === null || updateMs > meta.latestMs)) {
+    meta.latestMs = updateMs;
+    meta.latestIso = new Date(updateMs).toISOString();
+  }
+
+  if (activityIndex !== null) {
+    if (meta.minActivityIndex === null || activityIndex < meta.minActivityIndex) {
+      meta.minActivityIndex = activityIndex;
+    }
+  }
+}
+
+function finalizeActivityAggregationMeta(meta) {
+  if (!meta || !meta.order) {
+    return;
+  }
+
+  const order = meta.order;
+
+  if (meta.totalQuantity > 0) {
+    order.totalQuantity = meta.totalQuantity;
+  }
+  if (meta.filledQuantity > 0) {
+    order.filledQuantity = meta.filledQuantity;
+  }
+
+  const totalQty = toFiniteNumber(order.totalQuantity);
+  const filledQty = toFiniteNumber(order.filledQuantity);
+  if (totalQty !== null && filledQty !== null) {
+    const remaining = totalQty - filledQty;
+    if (Number.isFinite(remaining)) {
+      const normalizedRemaining = Math.max(remaining, 0);
+      order.openQuantity = normalizedRemaining;
+    }
+  }
+
+  if (meta.commission > 0) {
+    order.commission = meta.commission;
+  }
+  if (meta.commissionCharged > 0) {
+    order.commissionCharged = meta.commissionCharged;
+  }
+
+  if (meta.priceQuantity > 0 && Number.isFinite(meta.priceNotional)) {
+    const average = meta.priceNotional / meta.priceQuantity;
+    if (Number.isFinite(average)) {
+      order.avgExecPrice = average;
+    }
+  }
+
+  if (meta.latestExecPrice !== null && meta.latestExecPrice !== undefined) {
+    order.lastExecPrice = meta.latestExecPrice;
+  }
+
+  if (meta.earliestIso) {
+    order.creationTime = meta.earliestIso;
+  }
+
+  if (meta.latestIso) {
+    order.updateTime = meta.latestIso;
+  }
+
+  if (meta.minActivityIndex !== null && meta.minActivityIndex !== undefined) {
+    order.activityIndex = meta.minActivityIndex;
+  }
+}
+
+function toFiniteNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveAggregationPrice(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const fields = ['avgExecPrice', 'lastExecPrice', 'limitPrice'];
+  for (const field of fields) {
+    const value = toFiniteNumber(order[field]);
+    if (value !== null && Math.abs(value) > 1e-8) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function resolveAggregationExecutionMs(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const candidates = [order.updateTime, order.creationTime];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+    const parsed = Date.parse(candidate);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function resolveAggregationCreationMs(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  if (typeof order.creationTime === 'string') {
+    const parsed = Date.parse(order.creationTime);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return resolveAggregationExecutionMs(order);
+}
+
+function resolveAggregationUpdateMs(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  if (typeof order.updateTime === 'string') {
+    const parsed = Date.parse(order.updateTime);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return resolveAggregationExecutionMs(order);
 }
 
 function findEarliestOrderTimestamp(orders) {
