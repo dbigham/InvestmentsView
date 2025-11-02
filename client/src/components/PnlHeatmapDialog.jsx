@@ -1268,9 +1268,10 @@ export default function PnlHeatmapDialog({
                   (touchesLeftEdge ? 0 : halfTileGapPx) + (touchesRightEdge ? 0 : halfTileGapPx);
                 const heightAdjustmentPx =
                   (touchesTopEdge ? 0 : halfTileGapPx) + (touchesBottomEdge ? 0 : halfTileGapPx);
-                const pnlLine = percentDisplay
-                  ? `${metricLabel}: ${pnlDisplay} (${percentDisplay})`
-                  : `${metricLabel}: ${pnlDisplay}`;
+                const pnlLine =
+                  percentDisplay && metricKey !== 'totalPnl'
+                    ? `${metricLabel}: ${pnlDisplay} (${percentDisplay})`
+                    : `${metricLabel}: ${pnlDisplay}`;
                 const styleTwoLine = isStyleTwo
                   ? node.metricValue > 0 && styleTwoTotals.positive > 0
                     ? `Share of total gain: ${styleTwoDisplay}`
