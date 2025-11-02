@@ -8142,7 +8142,19 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
 
     const currency = normalizeCurrency(activity.currency);
     const netAmount = Number(activity.netAmount);
-    if (symbol && currency && Number.isFinite(netAmount) && Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10) {
+    // Only treat cash as P&L-affecting when it is trade-like (buy/sell/etc)
+    // or a dividend/distribution. Exclude journals/transfers and other
+    // bookkeeping entries that can be large and distort per-symbol totals.
+    const desc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
+    const isTradeCash = isOrderLikeActivity(activity);
+    const isDividendCash = DIVIDEND_ACTIVITY_REGEX.test(desc);
+    if (
+      symbol &&
+      currency &&
+      (isTradeCash || isDividendCash) &&
+      Number.isFinite(netAmount) &&
+      Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
+    ) {
       let amountCad = null;
       if (currency === 'CAD') {
         amountCad = netAmount;
