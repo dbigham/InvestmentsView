@@ -643,6 +643,12 @@ export default function PnlHeatmapDialog({
 
   const [styleMode, setStyleMode] = useState('style1');
   const autoSwitchedRef = useRef(false);
+  // In Total P&L mode, force Style 2 (category ranking by P&L magnitude)
+  useEffect(() => {
+    if (metricKey === 'totalPnl' && styleMode !== 'style2') {
+      setStyleMode('style2');
+    }
+  }, [metricKey, styleMode]);
   const normalizedAccountOptions = useMemo(() => {
     if (!Array.isArray(accountOptions) || accountOptions.length === 0) {
       return [];
@@ -1128,16 +1134,18 @@ export default function PnlHeatmapDialog({
                 )}
               </div>
               <div className="pnl-heatmap-dialog__controls" role="group" aria-label="Select heat map style">
-                <button
-                  type="button"
-                  className={`pnl-heatmap-dialog__control${
-                    styleMode === 'style1' ? ' pnl-heatmap-dialog__control--active' : ''
-                  }`}
-                  onClick={() => setStyleMode('style1')}
-                  aria-pressed={styleMode === 'style1'}
-                >
-                  Style 1
-                </button>
+                {metricKey !== 'totalPnl' && (
+                  <button
+                    type="button"
+                    className={`pnl-heatmap-dialog__control${
+                      styleMode === 'style1' ? ' pnl-heatmap-dialog__control--active' : ''
+                    }`}
+                    onClick={() => setStyleMode('style1')}
+                    aria-pressed={styleMode === 'style1'}
+                  >
+                    Style 1
+                  </button>
+                )}
                 <button
                   type="button"
                   className={`pnl-heatmap-dialog__control${

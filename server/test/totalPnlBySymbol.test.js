@@ -1,0 +1,114 @@
+// Node test for computeTotalPnlBySymbol
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+const mod = await import('../src/index.js');
+const {
+  computeTotalPnlBySymbol,
+} = mod;
+
+function makeContext(accountId, start, end, activities) {
+  return {
+    accountId,
+    accountNumber: accountId,
+    accountKey: accountId,
+    earliestFunding: new Date(start),
+    crawlStart: new Date(start),
+    activities,
+    now: new Date(end),
+    nowIsoString: new Date(end).toISOString(),
+    fingerprint: 'test',
+    fetchBookValueTransferPrice: async () => null,
+  };
+}
+
+function d(s) { return new Date(s).toISOString().slice(0,10); }
+
+test('journaling pair nets to ~0', async () => {
+  const account = { id: 'test:1', number: 'test:1', cagrStartDate: '2025-10-01' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'DLR.TO', quantity: 100, netAmount: -1000, currency: 'CAD', tradeDate: start },
+    { type: 'Transfers', action: 'Journal', symbol: 'DLR.TO', quantity: -100, netAmount: 0, currency: 'CAD', description: 'journal to DLR.U.TO', tradeDate: '2025-10-10' },
+    { type: 'Transfers', action: 'Journal', symbol: 'DLR.U.TO', quantity: 100, netAmount: 0, currency: 'CAD', description: 'journal from DLR.TO', tradeDate: '2025-10-10' },
+    { type: 'Trades', action: 'Sell', symbol: 'DLR.U.TO', quantity: -100, netAmount: 1000, currency: 'CAD', tradeDate: end },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['DLR.TO', new Map([[d('2025-10-01'), 10],[d('2025-10-10'),10],[d('2025-10-31'),10]])],
+    ['DLR.U.TO', new Map([[d('2025-10-01'), 10],[d('2025-10-10'),10],[d('2025-10-31'),10]])],
+  ]);
+  const endHoldings = new Map([['DLR', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const dlr = result.entries.find(e => e.symbol === 'DLR') || result.entries.find(e => e.symbol === 'DLR.TO');
+  assert.ok(dlr, 'DLR entry present');
+  assert.ok(Math.abs(dlr.totalPnlCad) < 1e-6, 'DLR journaling ~0 P&L');
+});
+
+test('transfer out after start nets ~0 for SGOV', async () => {
+  const account = { id: 'test:2', number: 'test:2', cagrStartDate: '2025-10-01' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const activities = [
+    // Pre-start buy to seed baseline
+    { type: 'Trades', action: 'Buy', symbol: 'SGOV', quantity: 100, netAmount: -10000, currency: 'USD', tradeDate: '2025-09-25' },
+    // After start: transfer out all shares
+    { type: 'Transfers', action: 'TFO', symbol: 'SGOV', quantity: -100, netAmount: 0, currency: 'USD', description: 'TRANSFER BOOK VALUE', tradeDate: '2025-10-10' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['SGOV', new Map([[d('2025-10-01'), 100],[d('2025-10-10'),100],[d('2025-10-31'),100]])],
+  ]);
+  const usdRates = new Map([[d('2025-10-01'), 1.3],[d('2025-10-10'),1.3],[d('2025-10-31'),1.3]]);
+  const endHoldings = new Map([['SGOV', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const sgov = result.entries.find(e => e.symbol === 'SGOV');
+  assert.ok(sgov, 'SGOV entry present');
+  assert.ok(Math.abs(sgov.totalPnlCad) < 1e-6, 'SGOV transfer out ~0 P&L');
+});
+
+test('UNH small gain since start', async () => {
+  const account = { id: 'test:3', number: 'test:3', cagrStartDate: '2025-10-01' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'UNH', quantity: 5, netAmount: -500, currency: 'USD', tradeDate: '2025-10-05' },
+    { type: 'Trades', action: 'Sell', symbol: 'UNH', quantity: -5, netAmount: 505, currency: 'USD', tradeDate: '2025-10-20' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['UNH', new Map([[d('2025-10-01'), 100],[d('2025-10-05'),100],[d('2025-10-20'),101],[d('2025-10-31'),101]])],
+  ]);
+  const usdRates = new Map([[d('2025-10-01'), 1.3],[d('2025-10-05'),1.3],[d('2025-10-20'),1.3],[d('2025-10-31'),1.3]]);
+  const endHoldings = new Map([['UNH', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const unh = result.entries.find(e => e.symbol === 'UNH');
+  assert.ok(unh, 'UNH present');
+  // 5 shares * $1 * 1.3 = 6.5 CAD approx
+  assert.ok(Math.abs(unh.totalPnlCad - 6.5) < 1e-6, 'UNH ~6.5 CAD');
+});
+

@@ -7532,6 +7532,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     });
   }
 
+  
+
   const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(
     activityContext,
     account,
@@ -8088,13 +8090,38 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     return { entries: [] };
   }
 
-  // Fetch price series per symbol
+  // Align per-symbol totals with display start when enabled (e.g. CAGR start)
+  const applyCagrStart =
+    Object.prototype.hasOwnProperty.call(options || {}, 'applyAccountCagrStartDate')
+      ? !!options.applyAccountCagrStartDate
+      : true;
+  const rawDisplayStart =
+    (typeof options.displayStartKey === 'string' && options.displayStartKey.trim())
+      ? options.displayStartKey.trim()
+      : (applyCagrStart && typeof account?.cagrStartDate === 'string' && account.cagrStartDate.trim()
+          ? account.cagrStartDate.trim()
+          : null);
+  const effectiveStartKey = rawDisplayStart
+    ? (function () {
+        for (const k of dateKeys) {
+          if (k >= rawDisplayStart) return k;
+        }
+        return dateKeys[0];
+      })()
+    : dateKeys[0];
+
+  // Fetch price series per symbol (allow test override)
   const symbols = Array.from(symbolMeta.keys());
   const priceSeriesMap = new Map();
+  const overrideSeries = options && options.priceSeriesBySymbol instanceof Map ? options.priceSeriesBySymbol : null;
   if (symbols.length) {
     const startKey = dateKeys[0];
     const endKey = dateKeys[dateKeys.length - 1];
     await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
+      if (overrideSeries && overrideSeries.has(symbol)) {
+        priceSeriesMap.set(symbol, new Map(overrideSeries.get(symbol)));
+        return;
+      }
       const cacheKey = getPriceHistoryCacheKey(symbol, startKey, endKey);
       let history = null;
       if (cacheKey) {
@@ -8128,9 +8155,13 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     });
   }
 
-  const cashCadBySymbol = new Map();
-  const investedOutflowCadBySymbol = new Map();
-  const holdings = new Map();
+  const cashCadBySymbol = new Map(); // since effective start
+  const investedOutflowCadBySymbol = new Map(); // since effective start
+  const holdings = new Map(); // trade deltas on/after effective start
+  const baselineHoldings = new Map(); // trade deltas before effective start
+  const nonTradeDeltaSinceStart = new Map(); // non-trade deltas on/after effective start
+  const qtyDeltaSinceStart = new Map(); // all quantity deltas on/after start (trade + non-trade)
+  const qtyDeltaBeforeStart = new Map(); // all quantity deltas before start
   const usdRateCache = new Map();
 
   for (const entry of processedActivities) {
@@ -8139,18 +8170,62 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     }
     const { activity, symbol, dateKey } = entry;
     const rawQty = Number(activity.quantity);
-    // For per-symbol totals, treat only order-like activities as affecting
-    // holdings. This avoids journals/transfers creating artificial closes
-    // with no cash and distorting P&L (e.g., SGOV).
+    // Only order-like activities affect holdings; split into baseline (before start)
+    // and current (on/after start) so we can derive starting MV correctly.
     if (isOrderLikeActivity(activity) && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
-      const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
+      const target = dateKey < effectiveStartKey ? baselineHoldings : holdings;
+      const current = target.has(symbol) ? target.get(symbol) : 0;
       const next = current + rawQty;
       const base = baseOf(symbol) || symbol;
       // Allow negatives for symbols that participate in journaling so sells
       // in one share-class can offset buys in another when merged.
       const allowNegative = journalBases.has(base);
       const adjusted = Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : allowNegative ? next : Math.max(0, next);
-      holdings.set(symbol, adjusted);
+      target.set(symbol, adjusted);
+    }
+
+    // Track non-trade quantity changes since start (journals/transfers)
+    if (
+      !isOrderLikeActivity(activity) &&
+      symbol &&
+      dateKey >= effectiveStartKey &&
+      Number.isFinite(rawQty) &&
+      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
+    ) {
+      const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
+      nonTradeDeltaSinceStart.set(symbol, cur + rawQty);
+    }
+
+    // Track total quantity deltas regardless of classification
+    if (symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+      const bucket = dateKey >= effectiveStartKey ? qtyDeltaSinceStart : qtyDeltaBeforeStart;
+      const cur = bucket.has(symbol) ? bucket.get(symbol) : 0;
+      bucket.set(symbol, cur + rawQty);
+    }
+
+    // Non-trade quantity before start contributes to baseline holdings
+    if (
+      !isOrderLikeActivity(activity) &&
+      symbol &&
+      dateKey < effectiveStartKey &&
+      Number.isFinite(rawQty) &&
+      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
+    ) {
+      const current = baselineHoldings.has(symbol) ? baselineHoldings.get(symbol) : 0;
+      const next = current + rawQty;
+      baselineHoldings.set(symbol, Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : next);
+    }
+
+    // Count non-trade quantity moves since start so we exclude them from start MV
+    if (
+      !isOrderLikeActivity(activity) &&
+      symbol &&
+      dateKey >= effectiveStartKey &&
+      Number.isFinite(rawQty) &&
+      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
+    ) {
+      const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
+      nonTradeDeltaSinceStart.set(symbol, cur + rawQty);
     }
 
     const currency = normalizeCurrency(activity.currency);
@@ -8165,6 +8240,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       symbol &&
       currency &&
       (isTradeCash || isDividendCash) &&
+      dateKey >= effectiveStartKey &&
       Number.isFinite(netAmount) &&
       Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
     ) {
@@ -8189,14 +8265,73 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   const endKey = dateKeys[dateKeys.length - 1];
   // Resolve FX rate for end day; if missing (e.g., weekend/holiday),
   // fall back to the most recent prior available rate so MV in CAD is not zero.
-  let endUsdRate = await resolveUsdRateForDate(endKey, accountKey, usdRateCache);
+  const usdRateOverride = options && options.usdRatesByDate instanceof Map ? options.usdRatesByDate : null;
+  async function lookupUsdRate(dateKey) {
+    if (usdRateOverride && usdRateOverride.has(dateKey)) {
+      const r = usdRateOverride.get(dateKey);
+      return Number.isFinite(r) && r > 0 ? r : null;
+    }
+    return resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+  }
+
+  let endUsdRate = await lookupUsdRate(endKey);
   if (!(Number.isFinite(endUsdRate) && endUsdRate > 0)) {
     for (let i = dateKeys.length - 2; i >= 0; i -= 1) {
-      const alt = await resolveUsdRateForDate(dateKeys[i], accountKey, usdRateCache);
+      const alt = await lookupUsdRate(dateKeys[i]);
       if (Number.isFinite(alt) && alt > 0) {
         endUsdRate = alt;
         break;
       }
+    }
+  }
+
+  // FX at start for USD holdings baseline
+  let startUsdRate = await lookupUsdRate(effectiveStartKey);
+  if (!(Number.isFinite(startUsdRate) && startUsdRate > 0)) {
+    for (let i = dateKeys.indexOf(effectiveStartKey) - 1; i >= 0; i -= 1) {
+      const alt = await lookupUsdRate(dateKeys[i]);
+      if (Number.isFinite(alt) && alt > 0) {
+        startUsdRate = alt;
+        break;
+      }
+    }
+  }
+
+  // Apply book-value cash for non-trade quantity movements since the display start
+  // so that transfers/journals do not create artificial P&L within this account.
+  if (processedActivities.length && priceSeriesMap.size) {
+    for (const entry of processedActivities) {
+      if (!entry || !entry.activity) {
+        continue;
+      }
+      const { activity, symbol, dateKey } = entry;
+      if (!symbol || !dateKey || dateKey < effectiveStartKey) {
+        continue;
+      }
+      const qty = Number(activity.quantity);
+      if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+        continue;
+      }
+      if (isOrderLikeActivity(activity)) {
+        continue;
+      }
+      const series = priceSeriesMap.get(symbol);
+      const price = series && series.size ? series.get(dateKey) : null;
+      if (!(Number.isFinite(price) && price > 0)) {
+        continue;
+      }
+      const meta = symbolMeta.get(symbol) || {};
+      let valueCad = qty * price;
+      if (meta.currency === 'USD') {
+        const r = await lookupUsdRate(dateKey);
+        if (!(Number.isFinite(r) && r > 0)) {
+          continue;
+        }
+        valueCad = qty * price * r;
+      }
+      const bookCashCad = -valueCad; // Transfer out (−qty) => inflow (+)
+      const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
+      cashCadBySymbol.set(symbol, current + bookCashCad);
     }
   }
 
@@ -8205,27 +8340,52 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     ...Array.from(symbolMeta.keys()),
     ...Array.from(cashCadBySymbol.keys()),
     ...Array.from(holdings.keys()),
+    ...Array.from(baselineHoldings.keys()),
   ]);
+  const providedEndHoldings = options && options.endHoldingsBySymbol instanceof Map ? options.endHoldingsBySymbol : null;
   for (const symbol of allSymbols.values()) {
-    const qty = holdings.has(symbol) ? holdings.get(symbol) : 0;
+    const changeQty = qtyDeltaSinceStart.has(symbol) ? qtyDeltaSinceStart.get(symbol) : 0; // total deltas since start
+    const normalizedKey = normalizeSymbol(symbol) || symbol;
+    const finalQtyOverride = providedEndHoldings && providedEndHoldings.has(normalizedKey)
+      ? Number(providedEndHoldings.get(normalizedKey))
+      : null;
+    let endQty = Number.isFinite(finalQtyOverride)
+      ? finalQtyOverride
+      : (qtyDeltaBeforeStart.get(symbol) || 0) + changeQty;
+    const baseForClamp = (typeof symbol === 'string' ? stripToSuffix(symbol.toUpperCase()) : '')
+      .replace(/\.U$/,'');
+    const allowNegativeEnd = journalBases.has(baseForClamp);
+    if (!allowNegativeEnd && Number.isFinite(endQty) && endQty < 0) {
+      endQty = 0;
+    }
+    let startQty = Number.isFinite(endQty) ? endQty - changeQty : 0;
+    if (Number.isFinite(startQty) && startQty < 0) {
+      startQty = 0;
+    }
     const series = priceSeriesMap.get(symbol);
     const price = series && series.size ? series.get(endKey) : null;
+    const startPrice = series && series.size ? series.get(effectiveStartKey) : null;
     const meta = symbolMeta.get(symbol) || {};
     const isUsd = meta.currency === 'USD';
     let marketValueCad = 0;
-    if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON && Number.isFinite(price) && price > 0) {
-      const rawValue = qty * price;
+    let marketValueStartCad = 0;
+    if (Number.isFinite(endQty) && Math.abs(endQty) >= LEDGER_QUANTITY_EPSILON && Number.isFinite(price) && price > 0) {
+      const rawValue = endQty * price;
       marketValueCad = isUsd && Number.isFinite(endUsdRate) && endUsdRate > 0 ? rawValue * endUsdRate : rawValue;
     }
+    if (Number.isFinite(startQty) && Math.abs(startQty) >= LEDGER_QUANTITY_EPSILON && Number.isFinite(startPrice) && startPrice > 0) {
+      const rawStart = startQty * startPrice;
+      marketValueStartCad = isUsd && Number.isFinite(startUsdRate) && startUsdRate > 0 ? rawStart * startUsdRate : rawStart;
+    }
     const cashCad = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
-    const totalPnlCad = marketValueCad + cashCad;
+    const totalPnlCad = (marketValueCad - marketValueStartCad) + cashCad;
     const investedCad = investedOutflowCadBySymbol.has(symbol) ? investedOutflowCadBySymbol.get(symbol) : 0;
     const entry = {
       symbol,
       symbolId: Number.isFinite(meta.symbolId) ? meta.symbolId : null,
       totalPnlCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
       investedCad: Number.isFinite(investedCad) ? investedCad : null,
-      openQuantity: Number.isFinite(qty) ? qty : null,
+      openQuantity: Number.isFinite(endQty) ? endQty : null,
       marketValueCad: Number.isFinite(marketValueCad) ? marketValueCad : null,
       currency: isUsd ? 'USD' : 'CAD',
     };
@@ -10165,8 +10325,26 @@ app.get('/api/summary', async function (req, res) {
 
       // Compute per-symbol Total P&L using the same activity/history context
       try {
+        // Build end-of-period holdings snapshot by symbol for this account (from positions)
+        const endHoldingsBySymbol = new Map();
+        flattenedPositions.forEach(function (p) {
+          if (!p || p.accountId !== context.account.id) return;
+          const sym = typeof p.symbol === 'string' ? p.symbol : null;
+          const qty = Number(p.openQuantity);
+          if (!sym || !Number.isFinite(qty)) return;
+          const key = normalizeSymbol(sym);
+          if (!key) return;
+          const current = endHoldingsBySymbol.has(key) ? endHoldingsBySymbol.get(key) : 0;
+          endHoldingsBySymbol.set(key, current + qty);
+        });
         const symbolTotals = await computeTotalPnlBySymbol(context.login, context.account, {
           activityContext: sharedActivityContext,
+          applyAccountCagrStartDate: true,
+          displayStartKey:
+            totalPnlSeries && typeof totalPnlSeries.displayStartDate === 'string'
+              ? totalPnlSeries.displayStartDate
+              : undefined,
+          endHoldingsBySymbol,
         });
         if (symbolTotals && Array.isArray(symbolTotals.entries)) {
           accountTotalPnlBySymbol[context.account.id] = {
@@ -10327,7 +10505,22 @@ app.get('/api/summary', async function (req, res) {
             console.warn('Failed to prepare activity history for account ' + context.account.id + ' (per-symbol):', activityMessage);
           }
           try {
-            const result = await computeTotalPnlBySymbol(context.login, context.account, { activityContext });
+            const endHoldingsBySymbol = new Map();
+            flattenedPositions.forEach(function (p) {
+              if (!p || p.accountId !== context.account.id) return;
+              const sym = typeof p.symbol === 'string' ? p.symbol : null;
+              const qty = Number(p.openQuantity);
+              if (!sym || !Number.isFinite(qty)) return;
+              const key = normalizeSymbol(sym);
+              if (!key) return;
+              const current = endHoldingsBySymbol.has(key) ? endHoldingsBySymbol.get(key) : 0;
+              endHoldingsBySymbol.set(key, current + qty);
+            });
+            const result = await computeTotalPnlBySymbol(context.login, context.account, {
+              activityContext,
+              applyAccountCagrStartDate: false,
+              endHoldingsBySymbol,
+            });
             return { context, result };
           } catch (symbolError) {
             const message = symbolError && symbolError.message ? symbolError.message : String(symbolError);
