@@ -8139,7 +8139,8 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     }
     const { activity, symbol, dateKey } = entry;
     const rawQty = Number(activity.quantity);
-    if (symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+    const isTradeQty = isOrderLikeActivity(activity);
+    if (isTradeQty && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
       adjustHolding(holdings, symbol, rawQty);
     }
 
@@ -8177,7 +8178,18 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   }
 
   const endKey = dateKeys[dateKeys.length - 1];
-  const endUsdRate = await resolveUsdRateForDate(endKey, accountKey, usdRateCache);
+  // Resolve FX rate for end day; if missing (e.g., weekend/holiday),
+  // fall back to the most recent prior available rate so MV in CAD is not zero.
+  let endUsdRate = await resolveUsdRateForDate(endKey, accountKey, usdRateCache);
+  if (!(Number.isFinite(endUsdRate) && endUsdRate > 0)) {
+    for (let i = dateKeys.length - 2; i >= 0; i -= 1) {
+      const alt = await resolveUsdRateForDate(dateKeys[i], accountKey, usdRateCache);
+      if (Number.isFinite(alt) && alt > 0) {
+        endUsdRate = alt;
+        break;
+      }
+    }
+  }
 
   let result = [];
   const allSymbols = new Set([

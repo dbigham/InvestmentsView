@@ -104,6 +104,7 @@ async function main() {
   };
 
   const activities = Array.isArray(activityContext?.activities) ? activityContext.activities : [];
+  const samples = [];
   for (const a of activities) {
     const actSym = typeof a.symbol === 'string' ? a.symbol.toUpperCase() : null;
     if (actSym !== symbol) continue;
@@ -120,6 +121,17 @@ async function main() {
     } else {
       breakdown.other += cadAmount;
     }
+    if (samples.length < 10) {
+      samples.push({
+        date: ts ? ts.toISOString().slice(0,10) : null,
+        type: a.type || null,
+        action: a.action || null,
+        qty: a.quantity || null,
+        net: a.netAmount || null,
+        currency: a.currency || null,
+        desc: a.description || null,
+      });
+    }
   }
 
   console.log('Symbol:', symbol);
@@ -134,10 +146,15 @@ async function main() {
   console.log('  tradeSells:', toTwo(breakdown.tradeSell));
   console.log('  income    :', toTwo(breakdown.income));
   console.log('  other     :', toTwo(breakdown.other));
+  if (samples.length) {
+    console.log('Sample activities:');
+    for (const s of samples) {
+      console.log(' ', s.date, '|', s.type, '|', s.action, '| qty=', s.qty, '| net=', s.net, s.currency, '|', s.desc);
+    }
+  }
 }
 
 main().catch((err) => {
   console.error('Error:', err?.message || String(err));
   process.exit(2);
 });
-
