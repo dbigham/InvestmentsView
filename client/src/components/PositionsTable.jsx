@@ -142,7 +142,7 @@ function compareRows(header, direction, accessorOverride) {
   };
 }
 
-function PnlBadge({ value, percent, mode, onToggle }) {
+function PnlBadge({ value, percent, mode, onToggle, extraTooltipLines }) {
   const tone = classifyPnL(value);
   const isPercentMode = mode === 'percent';
   const hasPercent = percent !== null && Number.isFinite(percent);
@@ -152,7 +152,20 @@ function PnlBadge({ value, percent, mode, onToggle }) {
   const formattedCurrency = sanitizeDisplayValue(formatSignedMoney(value));
   const sanitizedPercent = sanitizeDisplayValue(formattedPercent);
   const formatted = isPercentMode ? sanitizedPercent : formattedCurrency;
-  const tooltip = isPercentMode ? formattedCurrency : sanitizedPercent;
+  const tooltipLines = [];
+  const baseTooltip = isPercentMode ? formattedCurrency : sanitizedPercent;
+  if (baseTooltip) {
+    tooltipLines.push(baseTooltip);
+  }
+  if (Array.isArray(extraTooltipLines) && extraTooltipLines.length) {
+    extraTooltipLines.forEach((line) => {
+      const sanitizedLine = sanitizeDisplayValue(line);
+      if (sanitizedLine) {
+        tooltipLines.push(sanitizedLine);
+      }
+    });
+  }
+  const tooltip = tooltipLines.length ? tooltipLines.join('\n') : undefined;
 
   return (
     <button
@@ -172,11 +185,13 @@ PnlBadge.propTypes = {
   percent: PropTypes.number,
   mode: PropTypes.oneOf(['currency', 'percent']).isRequired,
   onToggle: PropTypes.func.isRequired,
+  extraTooltipLines: PropTypes.arrayOf(PropTypes.string),
 };
 
 PnlBadge.defaultProps = {
   value: 0,
   percent: null,
+  extraTooltipLines: undefined,
 };
 
 function isPnlColumn(columnKey) {
@@ -642,6 +657,15 @@ function PositionsTable({
             }
           }
           const modelButtonLabel = modelSection?.displayTitle || modelSection?.title || modelSection?.model || 'Investment model';
+          const isUsdPosition =
+            typeof position.currency === 'string' && position.currency.trim().toUpperCase() === 'USD';
+          const openPnlTooltipExtras = [];
+          if (isUsdPosition && Number.isFinite(position.normalizedOpenPnl)) {
+            const cadFormatted = formatSignedMoney(position.normalizedOpenPnl);
+            if (cadFormatted && cadFormatted !== '—') {
+              openPnlTooltipExtras.push(`${cadFormatted} CAD`);
+            }
+          }
 
           return (
             <div
@@ -704,6 +728,7 @@ function PositionsTable({
                   percent={position.openPnlPercent}
                   mode={pnlMode}
                   onToggle={handleTogglePnlMode}
+                  extraTooltipLines={openPnlTooltipExtras}
                 />
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
