@@ -4399,6 +4399,9 @@ function isFundingActivity(activity) {
 }
 
 const DIVIDEND_ACTIVITY_REGEX = /(dividend|distribution)/i;
+// For per-symbol Total P&L, some income (e.g., T-bill ETFs) is booked as
+// "interest" rather than dividend/distribution. Treat it as income here.
+const INCOME_ACTIVITY_REGEX = /(dividend|distribution|interest|coupon)/i;
 
 const DIVIDEND_SYMBOL_CANONICAL_ALIASES = new Map([
   ['N003056', 'NVDA'],
@@ -8147,7 +8150,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     // bookkeeping entries that can be large and distort per-symbol totals.
     const desc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
     const isTradeCash = isOrderLikeActivity(activity);
-    const isDividendCash = DIVIDEND_ACTIVITY_REGEX.test(desc);
+    const isDividendCash = INCOME_ACTIVITY_REGEX.test(desc);
     if (
       symbol &&
       currency &&
