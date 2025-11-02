@@ -8546,6 +8546,38 @@ export default function App() {
           totalMarketValue={heatmapMarketValue}
           accountOptions={heatmapAccountOptions}
           initialAccount={pnlBreakdownInitialAccount ?? heatmapDefaultAccount}
+          totalPnlBySymbol={(function resolveTotalPnlBySymbol() {
+            const map = data?.accountTotalPnlBySymbol || null;
+            if (!map || typeof map !== 'object') return [];
+            // Aggregate views: 'all' or group:<slug>
+            if (isAggregateSelection) {
+              const key = typeof selectedAccount === 'string' && selectedAccount.trim() ? selectedAccount.trim() : 'all';
+              const entry = map[key] || map['all'];
+              const list = Array.isArray(entry?.entries) ? entry.entries : [];
+              return list;
+            }
+            // Single account
+            const accountId = selectedAccountInfo?.id || null;
+            if (!accountId) return [];
+            const entry = map[accountId];
+            const list = Array.isArray(entry?.entries) ? entry.entries : [];
+            return list;
+          })()}
+          totalPnlAsOf={(function resolveTotalPnlAsOf() {
+            const map = data?.accountTotalPnlBySymbol || null;
+            if (!map || typeof map !== 'object') return null;
+            if (isAggregateSelection) {
+              const key = typeof selectedAccount === 'string' && selectedAccount.trim() ? selectedAccount.trim() : 'all';
+              const entry = map[key] || map['all'];
+              const asOfKey = typeof entry?.asOf === 'string' && entry.asOf.trim() ? entry.asOf.trim() : null;
+              return asOfKey;
+            }
+            const accountId = selectedAccountInfo?.id || null;
+            if (!accountId) return null;
+            const entry = map[accountId];
+            const asOfKey = typeof entry?.asOf === 'string' && entry.asOf.trim() ? entry.asOf.trim() : null;
+            return asOfKey;
+          })()}
         />
       )}
     </div>
