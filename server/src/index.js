@@ -3242,6 +3242,520 @@ async function fetchOrdersHistory(login, accountId, options = {}) {
   return Array.from(ordersMap.values()).filter(Boolean);
 }
 
+const TRADE_ACTIVITY_EXCLUDE_REGEX = /(dividend|distribution|interest|fee|commission|transfer|journal|tax|withholding)/i;
+const TRADE_ACTIVITY_KEYWORD_REGEX = /(buy|sell|short|cover|exercise|assign|assignment|option|trade)/i;
+
+function isOrderLikeActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+
+  const quantity = Number(activity.quantity);
+  if (!Number.isFinite(quantity) || Math.abs(quantity) <= 1e-8) {
+    return false;
+  }
+
+  const type = typeof activity.type === 'string' ? activity.type : '';
+  const action = typeof activity.action === 'string' ? activity.action : '';
+  const description = typeof activity.description === 'string' ? activity.description : '';
+  const combined = [type, action, description].join(' ');
+
+  if (TRADE_ACTIVITY_EXCLUDE_REGEX.test(combined)) {
+    return false;
+  }
+
+  return TRADE_ACTIVITY_KEYWORD_REGEX.test(combined);
+}
+
+function resolveActivityOrderAction(activity, rawQuantity) {
+  if (activity && typeof activity.action === 'string') {
+    const trimmed = activity.action.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  if (Number.isFinite(rawQuantity)) {
+    if (rawQuantity > 0) {
+      return 'Buy';
+    }
+    if (rawQuantity < 0) {
+      return 'Sell';
+    }
+  }
+  return 'Trade';
+}
+
+function resolveActivityOrderPrice(activity, rawQuantity) {
+  const price = Number(activity.price);
+  if (Number.isFinite(price) && Math.abs(price) > 1e-8) {
+    return Math.abs(price);
+  }
+
+  const grossAmount = Number(activity.grossAmount);
+  if (
+    Number.isFinite(grossAmount) &&
+    Number.isFinite(rawQuantity) &&
+    Math.abs(rawQuantity) > 1e-8
+  ) {
+    const derived = Math.abs(grossAmount / rawQuantity);
+    if (Number.isFinite(derived) && derived > 0) {
+      return derived;
+    }
+  }
+
+  const netAmount = Number(activity.netAmount);
+  if (
+    Number.isFinite(netAmount) &&
+    Number.isFinite(rawQuantity) &&
+    Math.abs(rawQuantity) > 1e-8
+  ) {
+    const derived = Math.abs(netAmount / rawQuantity);
+    if (Number.isFinite(derived) && derived > 0) {
+      return derived;
+    }
+  }
+
+  return null;
+}
+
+function resolveActivityOrderCommission(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const fields = ['commission', 'commissionUsd', 'commissionCad', 'commissionCdn', 'commissionCharged'];
+  for (const field of fields) {
+    const value = Number(activity[field]);
+    if (Number.isFinite(value) && Math.abs(value) > 1e-8) {
+      return Math.abs(value);
+    }
+  }
+  return null;
+}
+
+function buildActivityOrderIdentifierKey(accountKey, symbol, timestamp, action, quantity) {
+  const parts = [
+    accountKey ? String(accountKey).trim().toUpperCase() : '',
+    symbol ? String(symbol).trim().toUpperCase() : '',
+    timestamp instanceof Date && !Number.isNaN(timestamp.getTime()) ? timestamp.toISOString() : '',
+    action ? String(action).trim().toUpperCase() : '',
+    Number.isFinite(quantity) ? quantity.toFixed(8) : '',
+  ];
+  return crypto.createHash('sha1').update(parts.join('|')).digest('hex');
+}
+
+function convertActivityToOrder(activity, context) {
+  if (!context || !context.account || !context.login) {
+    return null;
+  }
+  if (!isOrderLikeActivity(activity)) {
+    return null;
+  }
+
+  const timestamp = resolveActivityTimestamp(activity);
+  if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+    return null;
+  }
+
+  const symbol = resolveActivitySymbol(activity);
+
+  const rawQuantity = Number(activity.quantity);
+  if (!Number.isFinite(rawQuantity) || Math.abs(rawQuantity) <= 1e-8) {
+    return null;
+  }
+
+  const identifierCandidates = [
+    activity.orderId,
+    activity.activityId,
+    activity.id,
+    activity.transactionId,
+    activity.tradeId,
+  ];
+  let identifier = null;
+  for (const candidate of identifierCandidates) {
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    const trimmed = String(candidate).trim();
+    if (trimmed) {
+      identifier = trimmed;
+      break;
+    }
+  }
+  if (!identifier) {
+    identifier = buildActivityOrderIdentifierKey(
+      context.account.id || context.account.number,
+      symbol,
+      timestamp,
+      resolveActivityOrderAction(activity, rawQuantity),
+      rawQuantity
+    );
+  }
+
+  const orderId = 'activity:' + identifier;
+  const quantity = Math.abs(rawQuantity);
+  const price = resolveActivityOrderPrice(activity, rawQuantity);
+  const action = resolveActivityOrderAction(activity, rawQuantity);
+  const commission = resolveActivityOrderCommission(activity);
+  const currency = normalizeCurrency(activity.currency) || null;
+  const symbolId = Number(activity.symbolId);
+  const accountId = context.account && context.account.id ? String(context.account.id) : null;
+  const accountNumber =
+    context.account && context.account.number
+      ? String(context.account.number)
+      : context.account && context.account.accountNumber
+        ? String(context.account.accountNumber)
+        : accountId;
+  const loginId = context.login && context.login.id ? String(context.login.id) : null;
+
+  return {
+    id: orderId,
+    orderId,
+    accountId,
+    accountNumber,
+    loginId,
+    symbol: symbol || null,
+    symbolId: Number.isFinite(symbolId) ? symbolId : null,
+    description: typeof activity.description === 'string' ? activity.description.trim() : null,
+    currency,
+    status: 'Executed',
+    action,
+    type:
+      typeof activity.orderType === 'string' && activity.orderType.trim()
+        ? activity.orderType.trim()
+        : null,
+    timeInForce: null,
+    totalQuantity: quantity,
+    openQuantity: 0,
+    filledQuantity: quantity,
+    limitPrice: price,
+    stopPrice: null,
+    avgExecPrice: price,
+    lastExecPrice: price,
+    commission,
+    commissionCharged: commission,
+    venue:
+      typeof activity.exchange === 'string' && activity.exchange.trim()
+        ? activity.exchange.trim()
+        : typeof activity.venue === 'string' && activity.venue.trim()
+          ? activity.venue.trim()
+          : null,
+    notes: typeof activity.notes === 'string' && activity.notes.trim() ? activity.notes.trim() : null,
+    source: 'activity',
+    creationTime: timestamp.toISOString(),
+    updateTime: timestamp.toISOString(),
+    gtdDate: null,
+  };
+}
+
+function buildOrdersFromActivities(activityContext, context, cutoffDate) {
+  if (
+    !activityContext ||
+    typeof activityContext !== 'object' ||
+    !Array.isArray(activityContext.activities) ||
+    !context
+  ) {
+    return [];
+  }
+
+  const cutoffMs =
+    cutoffDate instanceof Date && !Number.isNaN(cutoffDate.getTime()) ? cutoffDate.getTime() : null;
+
+  const orders = activityContext.activities
+    .map((activity, idx) => {
+      const order = convertActivityToOrder(activity, context);
+      if (order && order.source === 'activity') {
+        order.activityIndex = idx;
+      }
+      return order;
+    })
+    .filter((order) => {
+      if (!order) {
+        return false;
+      }
+      if (cutoffMs === null) {
+        return true;
+      }
+      const createdMs = Date.parse(order.creationTime || order.updateTime || '');
+      if (!Number.isFinite(createdMs)) {
+        return true;
+      }
+      return createdMs < cutoffMs;
+    });
+
+  return aggregateActivityOrders(orders);
+}
+
+function aggregateActivityOrders(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) {
+    return [];
+  }
+
+  const aggregatedOrders = [];
+  const aggregationMeta = new Map();
+
+  orders.forEach((order) => {
+    if (!order || order.source !== 'activity') {
+      aggregatedOrders.push(order);
+      return;
+    }
+
+    const key = order.orderId || order.id;
+    if (!key) {
+      aggregatedOrders.push(order);
+      return;
+    }
+
+    const identifier = String(key);
+    let meta = aggregationMeta.get(identifier);
+    if (!meta) {
+      const cloned = Object.assign({}, order);
+      meta = initializeActivityAggregationMeta(cloned);
+      aggregationMeta.set(identifier, meta);
+      aggregatedOrders.push(cloned);
+      return;
+    }
+
+    updateActivityAggregationMeta(meta, order);
+  });
+
+  aggregationMeta.forEach((meta) => finalizeActivityAggregationMeta(meta));
+
+  return aggregatedOrders;
+}
+
+function initializeActivityAggregationMeta(order) {
+  const totalQuantity = toFiniteNumber(order.totalQuantity) || 0;
+  const filledQuantity = toFiniteNumber(order.filledQuantity) || 0;
+  const commission = toFiniteNumber(order.commission) || 0;
+  const commissionCharged = toFiniteNumber(order.commissionCharged) || 0;
+  const price = resolveAggregationPrice(order);
+  const executionMs = resolveAggregationExecutionMs(order);
+  const creationMs = resolveAggregationCreationMs(order);
+  const updateMs = resolveAggregationUpdateMs(order);
+  const activityIndex = Number.isFinite(Number(order.activityIndex)) ? Number(order.activityIndex) : null;
+
+  const initialQuantityForPrice = price !== null ? filledQuantity || totalQuantity || 0 : 0;
+
+  return {
+    order,
+    totalQuantity,
+    filledQuantity,
+    commission,
+    commissionCharged,
+    priceNotional: price !== null ? price * initialQuantityForPrice : 0,
+    priceQuantity: price !== null ? initialQuantityForPrice : 0,
+    latestExecMs: executionMs,
+    latestExecPrice: price,
+    earliestMs: creationMs,
+    latestMs: updateMs,
+    earliestIso: creationMs !== null ? new Date(creationMs).toISOString() : order.creationTime || null,
+    latestIso: updateMs !== null ? new Date(updateMs).toISOString() : order.updateTime || null,
+    minActivityIndex: activityIndex,
+  };
+}
+
+function updateActivityAggregationMeta(meta, addition) {
+  const quantity = toFiniteNumber(addition.totalQuantity) || 0;
+  const filled = toFiniteNumber(addition.filledQuantity) || 0;
+  const commission = toFiniteNumber(addition.commission);
+  const commissionCharged = toFiniteNumber(addition.commissionCharged);
+  const price = resolveAggregationPrice(addition);
+  const executionMs = resolveAggregationExecutionMs(addition);
+  const creationMs = resolveAggregationCreationMs(addition);
+  const updateMs = resolveAggregationUpdateMs(addition);
+  const activityIndex = Number.isFinite(Number(addition.activityIndex)) ? Number(addition.activityIndex) : null;
+
+  meta.totalQuantity += quantity;
+  meta.filledQuantity += filled;
+
+  if (commission !== null) {
+    meta.commission += commission;
+  }
+  if (commissionCharged !== null) {
+    meta.commissionCharged += commissionCharged;
+  }
+
+  if (price !== null) {
+    const quantityForPrice = filled || quantity;
+    if (Number.isFinite(quantityForPrice) && Math.abs(quantityForPrice) > 1e-8) {
+      meta.priceNotional += price * quantityForPrice;
+      meta.priceQuantity += quantityForPrice;
+    }
+  }
+
+  if (executionMs !== null) {
+    if (meta.latestExecMs === null || executionMs >= meta.latestExecMs) {
+      meta.latestExecMs = executionMs;
+      meta.latestExecPrice = price !== null ? price : meta.latestExecPrice;
+    }
+  }
+
+  if (creationMs !== null && (meta.earliestMs === null || creationMs < meta.earliestMs)) {
+    meta.earliestMs = creationMs;
+    meta.earliestIso = new Date(creationMs).toISOString();
+  }
+
+  if (updateMs !== null && (meta.latestMs === null || updateMs > meta.latestMs)) {
+    meta.latestMs = updateMs;
+    meta.latestIso = new Date(updateMs).toISOString();
+  }
+
+  if (activityIndex !== null) {
+    if (meta.minActivityIndex === null || activityIndex < meta.minActivityIndex) {
+      meta.minActivityIndex = activityIndex;
+    }
+  }
+}
+
+function finalizeActivityAggregationMeta(meta) {
+  if (!meta || !meta.order) {
+    return;
+  }
+
+  const order = meta.order;
+
+  if (meta.totalQuantity > 0) {
+    order.totalQuantity = meta.totalQuantity;
+  }
+  if (meta.filledQuantity > 0) {
+    order.filledQuantity = meta.filledQuantity;
+  }
+
+  const totalQty = toFiniteNumber(order.totalQuantity);
+  const filledQty = toFiniteNumber(order.filledQuantity);
+  if (totalQty !== null && filledQty !== null) {
+    const remaining = totalQty - filledQty;
+    if (Number.isFinite(remaining)) {
+      const normalizedRemaining = Math.max(remaining, 0);
+      order.openQuantity = normalizedRemaining;
+    }
+  }
+
+  if (meta.commission > 0) {
+    order.commission = meta.commission;
+  }
+  if (meta.commissionCharged > 0) {
+    order.commissionCharged = meta.commissionCharged;
+  }
+
+  if (meta.priceQuantity > 0 && Number.isFinite(meta.priceNotional)) {
+    const average = meta.priceNotional / meta.priceQuantity;
+    if (Number.isFinite(average)) {
+      order.avgExecPrice = average;
+    }
+  }
+
+  if (meta.latestExecPrice !== null && meta.latestExecPrice !== undefined) {
+    order.lastExecPrice = meta.latestExecPrice;
+  }
+
+  if (meta.earliestIso) {
+    order.creationTime = meta.earliestIso;
+  }
+
+  if (meta.latestIso) {
+    order.updateTime = meta.latestIso;
+  }
+
+  if (meta.minActivityIndex !== null && meta.minActivityIndex !== undefined) {
+    order.activityIndex = meta.minActivityIndex;
+  }
+}
+
+function toFiniteNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveAggregationPrice(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const fields = ['avgExecPrice', 'lastExecPrice', 'limitPrice'];
+  for (const field of fields) {
+    const value = toFiniteNumber(order[field]);
+    if (value !== null && Math.abs(value) > 1e-8) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function resolveAggregationExecutionMs(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const candidates = [order.updateTime, order.creationTime];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+    const parsed = Date.parse(candidate);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function resolveAggregationCreationMs(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  if (typeof order.creationTime === 'string') {
+    const parsed = Date.parse(order.creationTime);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return resolveAggregationExecutionMs(order);
+}
+
+function resolveAggregationUpdateMs(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  if (typeof order.updateTime === 'string') {
+    const parsed = Date.parse(order.updateTime);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return resolveAggregationExecutionMs(order);
+}
+
+function findEarliestOrderTimestamp(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) {
+    return null;
+  }
+  let earliestMs = null;
+  orders.forEach((order) => {
+    if (!order || typeof order !== 'object') {
+      return;
+    }
+    const candidates = [];
+    if (typeof order.creationTime === 'string') {
+      candidates.push(order.creationTime);
+    }
+    if (typeof order.updateTime === 'string') {
+      candidates.push(order.updateTime);
+    }
+    candidates.forEach((value) => {
+      const parsed = Date.parse(value);
+      if (!Number.isFinite(parsed)) {
+        return;
+      }
+      if (earliestMs === null || parsed < earliestMs) {
+        earliestMs = parsed;
+      }
+    });
+  });
+  if (earliestMs === null) {
+    return null;
+  }
+  return new Date(earliestMs).toISOString();
+}
+
 function resolveOrderIdentifier(order) {
   if (!order || typeof order !== 'object') {
     return null;
@@ -8000,8 +8514,8 @@ function decorateOrders(orders, symbolsMap, accountsMap) {
       symbolId: order?.symbolId ?? symbolInfo?.symbolId ?? null,
       description: normalizeString(symbolInfo?.description),
       currency: normalizeString(order?.currency) || normalizeString(symbolInfo?.currency) || null,
-      status: normalizeString(order?.state) || null,
-      action: normalizeString(order?.side) || null,
+      status: normalizeString(order?.state) || normalizeString(order?.status) || null,
+      action: normalizeString(order?.side) || normalizeString(order?.action) || null,
       type: normalizeString(order?.type) || null,
       timeInForce: normalizeString(order?.timeInForce) || null,
       totalQuantity: toFiniteNumber(order?.totalQuantity),
@@ -8016,6 +8530,7 @@ function decorateOrders(orders, symbolsMap, accountsMap) {
       venue: normalizeString(order?.venue),
       notes: normalizeString(order?.notes),
       source: normalizeString(order?.source),
+      activityIndex: toFiniteNumber(order?.activityIndex),
       creationTime: normalizeString(order?.creationTime) || normalizeString(order?.createdTime) || null,
       updateTime: normalizeString(order?.updateTime) || normalizeString(order?.updatedTime) || null,
       gtdDate: normalizeString(order?.gtdDate) || null,
@@ -8955,32 +9470,14 @@ app.get('/api/summary', async function (req, res) {
             }
 
             const now = new Date();
-            let historyStart = null;
-            if (
-              activityContext &&
-              activityContext.crawlStart instanceof Date &&
-              !Number.isNaN(activityContext.crawlStart.getTime())
-            ) {
-              historyStart = activityContext.crawlStart;
-            } else if (
-              activityContext &&
-              activityContext.earliestFunding instanceof Date &&
-              !Number.isNaN(activityContext.earliestFunding.getTime())
-            ) {
-              historyStart = activityContext.earliestFunding;
-            }
-            if (!(historyStart instanceof Date) || Number.isNaN(historyStart.getTime())) {
-              historyStart = addMonths(now, -DEFAULT_ORDER_HISTORY_MONTHS);
-            }
-            if (!(historyStart instanceof Date) || Number.isNaN(historyStart.getTime())) {
-              historyStart = new Date(now.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS);
-            }
-            const normalizedStart = clampDate(historyStart, MIN_ACTIVITY_DATE) || historyStart || now;
+            const recentStartCandidate = new Date(now.getTime() - RECENT_ORDERS_LOOKBACK_DAYS * DAY_IN_MS);
+            const normalizedRecentStart =
+              clampDate(recentStartCandidate, MIN_ACTIVITY_DATE) || recentStartCandidate || now;
 
             let orders = [];
             try {
               orders = await fetchOrdersHistory(context.login, context.account.number, {
-                startDate: normalizedStart,
+                startDate: normalizedRecentStart,
                 endDate: now,
                 stateFilter: 'All',
                 maxPages: 200,
@@ -8994,12 +9491,34 @@ app.get('/api/summary', async function (req, res) {
               orders = [];
             }
 
+            // Prefer to include activity-derived orders up to the earliest real order
+            // so we can fill gaps when the /orders API returns a truncated window.
+            const earliestRealOrderIso = findEarliestOrderTimestamp(orders);
+            const earliestRealOrderDate =
+              typeof earliestRealOrderIso === 'string' && earliestRealOrderIso.trim()
+                ? new Date(earliestRealOrderIso)
+                : null;
+            const cutoffDate =
+              earliestRealOrderDate instanceof Date && !Number.isNaN(earliestRealOrderDate.getTime())
+                ? earliestRealOrderDate
+                : now; // if no real orders returned, include all activity orders before now
+
+            const activityOrders = buildOrdersFromActivities(activityContext, context, cutoffDate);
+            const startCandidates = [];
+            if (normalizedRecentStart instanceof Date && !Number.isNaN(normalizedRecentStart.getTime())) {
+              startCandidates.push(normalizedRecentStart.toISOString());
+            }
+            const activityStart = findEarliestOrderTimestamp(activityOrders);
+            if (activityStart) {
+              startCandidates.push(activityStart);
+            }
+            const startIso = startCandidates.length ? startCandidates.sort()[0] : null;
+
             return {
               context,
               orders,
-              start: normalizedStart instanceof Date && !Number.isNaN(normalizedStart.getTime())
-                ? normalizedStart.toISOString()
-                : null,
+              activityOrders,
+              start: startIso,
               end: now.toISOString(),
             };
           }
@@ -9008,17 +9527,40 @@ app.get('/api/summary', async function (req, res) {
 
     const flattenedOrders = orderFetchResults
       .map(function (result) {
-        if (!result || !result.context || !Array.isArray(result.orders)) {
+        if (!result || !result.context) {
           return [];
         }
-        const { context, orders } = result;
-        return orders.map(function (order) {
-          return Object.assign({}, order, {
-            accountId: context.account.id,
-            accountNumber: context.account.number,
-            loginId: context.login.id,
+        const { context, orders, activityOrders } = result;
+        const combined = [];
+        if (Array.isArray(orders)) {
+          orders.forEach(function (order) {
+            if (!order || typeof order !== 'object') {
+              return;
+            }
+            combined.push(
+              Object.assign({}, order, {
+                accountId: context.account.id,
+                accountNumber: context.account.number,
+                loginId: context.login.id,
+              })
+            );
           });
-        });
+        }
+        if (Array.isArray(activityOrders)) {
+          activityOrders.forEach(function (order) {
+            if (!order || typeof order !== 'object') {
+              return;
+            }
+            combined.push(
+              Object.assign({}, order, {
+                accountId: order.accountId || context.account.id,
+                accountNumber: order.accountNumber || context.account.number,
+                loginId: order.loginId || context.login.id,
+              })
+            );
+          });
+        }
+        return combined;
       })
       .flat();
 

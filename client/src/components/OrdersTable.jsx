@@ -178,23 +178,116 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
     if (!Array.isArray(orders)) {
       return [];
     }
-    return orders
+    const prepared = orders
       .filter((order) => order && (order.creationTime || order.updateTime || order.symbol))
-      .slice()
-      .sort((a, b) => {
-        const timeA = Date.parse(a.creationTime || a.updateTime || 0);
-        const timeB = Date.parse(b.creationTime || b.updateTime || 0);
-        if (Number.isNaN(timeA) && Number.isNaN(timeB)) {
-          return String(b.symbol || '').localeCompare(String(a.symbol || ''));
+      .map((order, __index) => ({ order, __index }));
+
+    const getTime = (o) => Date.parse(o.creationTime || o.updateTime || 0);
+    const getDayKey = (o) => {
+      const ts = (o.creationTime || o.updateTime || '').toString();
+      return ts ? ts.slice(0, 10) : '';
+    };
+    const isActivity = (o) => (typeof o.source === 'string' && o.source.toLowerCase() === 'activity');
+    const normalizeSymbol = (s) => (typeof s === 'string' ? s.trim().toUpperCase() : '');
+    const resolveActivityIndex = (wrap) => {
+      const o = wrap.order;
+      return Number.isFinite(o.activityIndex) ? o.activityIndex : wrap.__index;
+    };
+
+    prepared.sort((a, b) => {
+      const ao = a.order;
+      const bo = b.order;
+      const timeA = getTime(ao);
+      const timeB = getTime(bo);
+
+      const aTimeValid = !Number.isNaN(timeA);
+      const bTimeValid = !Number.isNaN(timeB);
+
+      if (aTimeValid && bTimeValid) {
+        if (timeB !== timeA) {
+          // Descending by time
+          return timeB - timeA;
         }
-        if (Number.isNaN(timeA)) {
-          return 1;
+        // Tie on timestamp: if both are activity-derived on the same day, preserve original order
+        const bothActivity = isActivity(ao) && isActivity(bo);
+        if (bothActivity) {
+          const dayA = getDayKey(ao);
+          const dayB = getDayKey(bo);
+          if (dayA && dayB && dayA === dayB) {
+            const aIdx = Number.isFinite(ao.activityIndex) ? ao.activityIndex : a.__index;
+            const bIdx = Number.isFinite(bo.activityIndex) ? bo.activityIndex : b.__index;
+            // Match Questrade UI order: descending within day
+            return bIdx - aIdx;
+          }
         }
-        if (Number.isNaN(timeB)) {
-          return -1;
+        // Otherwise, fall back to symbol
+        return String(bo.symbol || '').localeCompare(String(ao.symbol || ''));
+      }
+
+      if (!aTimeValid && !bTimeValid) {
+        // No times: if both activity with same day, preserve original order
+        const bothActivity = isActivity(ao) && isActivity(bo);
+        if (bothActivity) {
+          const dayA = getDayKey(ao);
+          const dayB = getDayKey(bo);
+          if (dayA && dayB && dayA === dayB) {
+            const aIdx = Number.isFinite(ao.activityIndex) ? ao.activityIndex : a.__index;
+            const bIdx = Number.isFinite(bo.activityIndex) ? bo.activityIndex : b.__index;
+            return bIdx - aIdx;
+          }
         }
-        return timeB - timeA;
+        return String(bo.symbol || '').localeCompare(String(ao.symbol || ''));
+      }
+      // Put unknown times last
+      if (!aTimeValid) return 1;
+      if (!bTimeValid) return -1;
+      return 0;
+    });
+
+    // After baseline sort, regroup contiguous runs of same-day activity rows by symbol.
+    const rebuilt = [];
+    for (let i = 0; i < prepared.length;) {
+      const wrap = prepared[i];
+      const o = wrap.order;
+      const day = getDayKey(o);
+      if (!day || !isActivity(o)) {
+        rebuilt.push(wrap);
+        i += 1;
+        continue;
+      }
+      let j = i;
+      while (j < prepared.length) {
+        const next = prepared[j].order;
+        if (isActivity(next) && getDayKey(next) === day) {
+          j += 1;
+        } else {
+          break;
+        }
+      }
+      const run = prepared.slice(i, j);
+      // Build symbol buckets for this day-run
+      const buckets = new Map(); // sym -> Array<wrap>
+      for (const w of run) {
+        const sym = normalizeSymbol(w.order.symbol) || '#NOSYM#';
+        const arr = buckets.get(sym) || [];
+        arr.push(w);
+        buckets.set(sym, arr);
+      }
+      // Compute earliest (minimum) activity index per symbol, and sort symbols by that desc
+      const symbolEntries = Array.from(buckets.entries()).map(([sym, arr]) => {
+        const earliest = Math.min(...arr.map((w) => resolveActivityIndex(w)));
+        // Within each symbol, keep latest-first (desc) for a consistent look
+        const wraps = arr.slice().sort((a, b) => resolveActivityIndex(b) - resolveActivityIndex(a));
+        return { sym, wraps, earliest };
       });
+      symbolEntries.sort((a, b) => b.earliest - a.earliest);
+      for (const entry of symbolEntries) {
+        rebuilt.push(...entry.wraps);
+      }
+      i = j;
+    }
+
+    return rebuilt.map((p) => p.order);
   }, [orders]);
 
   const hasOrders = sortedOrders.length > 0;
@@ -241,9 +334,10 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
                 <th scope="col">Symbol</th>
                 <th scope="col">Status</th>
                 <th scope="col">Action</th>
-                <th scope="col">Price</th>
-                <th scope="col">Duration</th>
+                <th scope="col" className="orders-table__head--numeric">Price</th>
                 <th scope="col" className="orders-table__head--numeric">Qty</th>
+                <th scope="col" className="orders-table__head--numeric">Total Amount</th>
+                <th scope="col">Duration</th>
                 <th scope="col">Time placed</th>
               </tr>
             </thead>
@@ -275,6 +369,10 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
                 const descriptionTitle = order.description ? String(order.description) : undefined;
                 const descriptionLabel = order.description ? truncateDescription(order.description) : null;
                 const timeInForceDisplay = formatTimeInForce(order.timeInForce);
+                const totalAmount = isFiniteNumber(priceSource) && isFiniteNumber(quantityValue)
+                  ? priceSource * quantityValue
+                  : null;
+                const totalLabel = formatPrice(totalAmount, order.currency || null);
                 const quantityTitleParts = [];
                 if (isFiniteNumber(order.filledQuantity)) {
                   quantityTitleParts.push(`Filled ${formatQuantity(order.filledQuantity)}`);
@@ -311,15 +409,18 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
                     <td className="orders-table__cell orders-table__cell--numeric" title={priceTitle}>
                       {priceLabel}
                     </td>
+                    <td className="orders-table__cell orders-table__cell--numeric" title={quantityTitle}>
+                      {quantityLabel}
+                    </td>
+                    <td className="orders-table__cell orders-table__cell--numeric">
+                      {totalLabel}
+                    </td>
                     <td className="orders-table__cell">
                       {timeInForceDisplay.title ? (
                         <span title={timeInForceDisplay.title}>{timeInForceDisplay.label}</span>
                       ) : (
                         timeInForceDisplay.label
                       )}
-                    </td>
-                    <td className="orders-table__cell orders-table__cell--numeric" title={quantityTitle}>
-                      {quantityLabel}
                     </td>
                     <td className="orders-table__cell">{timeLabel}</td>
                   </tr>

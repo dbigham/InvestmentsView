@@ -3236,7 +3236,7 @@ textarea {
   white-space: nowrap;
 }
 
-.orders-table__head--numeric {
+.orders-table thead th.orders-table__head--numeric {
   text-align: right;
 }
 
