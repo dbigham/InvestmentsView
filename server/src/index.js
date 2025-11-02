@@ -8139,9 +8139,14 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     }
     const { activity, symbol, dateKey } = entry;
     const rawQty = Number(activity.quantity);
-    const isTradeQty = isOrderLikeActivity(activity);
-    if (isTradeQty && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
-      adjustHolding(holdings, symbol, rawQty);
+    // For per-symbol totals, treat only order-like activities as affecting
+    // holdings. This avoids journals/transfers creating artificial closes
+    // with no cash and distorting P&L (e.g., SGOV).
+    if (isOrderLikeActivity(activity) && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+      const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
+      const next = current + rawQty;
+      // Clamp to zero to avoid negative open quantity in accounts that never short
+      holdings.set(symbol, Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : Math.max(0, next));
     }
 
     const currency = normalizeCurrency(activity.currency);
