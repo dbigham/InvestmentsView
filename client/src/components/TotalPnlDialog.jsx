@@ -176,6 +176,7 @@ export default function TotalPnlDialog({
   mode,
   onModeChange,
   cagrStartDate,
+  onShowBreakdown,
 }) {
   const headingId = useId();
   const [timeframe, setTimeframe] = useState('ALL');
@@ -244,6 +245,7 @@ export default function TotalPnlDialog({
     [filteredSeries, useDisplayStartDelta]
   );
   const hasChart = Boolean(chartMetrics && chartMetrics.points.length);
+  const canShowBreakdown = typeof onShowBreakdown === 'function';
   const pathD = useMemo(() => {
     if (!hasChart) {
       return null;
@@ -458,6 +460,14 @@ export default function TotalPnlDialog({
                     </span>
                   </div>
                 </div>
+
+                {canShowBreakdown ? (
+                  <div className="pnl-dialog__actions">
+                    <button type="button" className="pnl-dialog__link-button" onClick={onShowBreakdown}>
+                      See breakdown
+                    </button>
+                  </div>
+                ) : null}
 
                 <div className="pnl-dialog__controls">
                   <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
@@ -676,6 +686,7 @@ TotalPnlDialog.propTypes = {
   mode: PropTypes.oneOf(['cagr', 'all']),
   onModeChange: PropTypes.func,
   cagrStartDate: PropTypes.string,
+  onShowBreakdown: PropTypes.func,
 };
 
 TotalPnlDialog.defaultProps = {
@@ -688,4 +699,5 @@ TotalPnlDialog.defaultProps = {
   mode: 'cagr',
   onModeChange: null,
   cagrStartDate: null,
+  onShowBreakdown: null,
 };

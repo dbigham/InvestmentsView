@@ -6708,22 +6708,25 @@ export default function App() {
     setActiveInvestmentModelDialog({ type: 'global' });
   }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
 
-  const handleShowPnlBreakdown = (mode, accountKey = null) => {
-    if (!showContent || !orderedPositions.length) {
-      return;
-    }
-    if (mode !== 'day' && mode !== 'open') {
-      return;
-    }
-    const normalizedAccountKey =
-      accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
-    if (normalizedAccountKey) {
-      setPnlBreakdownInitialAccount(normalizedAccountKey);
-    } else {
-      setPnlBreakdownInitialAccount(null);
-    }
-    setPnlBreakdownMode(mode);
-  };
+  const handleShowPnlBreakdown = useCallback(
+    (mode, accountKey = null) => {
+      if (!showContent || !orderedPositions.length) {
+        return;
+      }
+      if (mode !== 'day' && mode !== 'open' && mode !== 'total') {
+        return;
+      }
+      const normalizedAccountKey =
+        accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
+      if (normalizedAccountKey) {
+        setPnlBreakdownInitialAccount(normalizedAccountKey);
+      } else {
+        setPnlBreakdownInitialAccount(null);
+      }
+      setPnlBreakdownMode(mode);
+    },
+    [showContent, orderedPositions.length]
+  );
 
   const handleShowChildPnlBreakdown = useCallback(
     (accountKey, mode) => {
@@ -6762,6 +6765,20 @@ export default function App() {
       resolveCagrStartDateForKey,
     ]
   );
+
+  const handleShowTotalPnlBreakdownFromDialog = useCallback(() => {
+    const accountKey = totalPnlDialogContext.accountKey || selectedAccountKey;
+    if (!accountKey) {
+      return;
+    }
+    handleCloseTotalPnlDialog();
+    handleShowPnlBreakdown('total', accountKey);
+  }, [
+    totalPnlDialogContext.accountKey,
+    selectedAccountKey,
+    handleCloseTotalPnlDialog,
+    handleShowPnlBreakdown,
+  ]);
 
   const handleShowAccountInvestmentModel = useCallback(
     (modelSection) => {
@@ -8482,18 +8499,21 @@ export default function App() {
         />
       )}
       {showTotalPnlDialog && (
-      <TotalPnlDialog
-        onClose={handleCloseTotalPnlDialog}
-        data={totalPnlDialogData}
-        loading={totalPnlDialogLoading}
-        error={totalPnlDialogError}
-        onRetry={handleRetryTotalPnlSeries}
-        accountLabel={totalPnlDialogContext.label}
-        supportsCagrToggle={Boolean(totalPnlDialogContext.supportsCagrToggle)}
-        mode={totalPnlSeriesState.mode}
-        onModeChange={handleChangeTotalPnlSeriesMode}
-        cagrStartDate={totalPnlDialogContext.cagrStartDate}
-      />
+        <TotalPnlDialog
+          onClose={handleCloseTotalPnlDialog}
+          data={totalPnlDialogData}
+          loading={totalPnlDialogLoading}
+          error={totalPnlDialogError}
+          onRetry={handleRetryTotalPnlSeries}
+          accountLabel={totalPnlDialogContext.label}
+          supportsCagrToggle={Boolean(totalPnlDialogContext.supportsCagrToggle)}
+          mode={totalPnlSeriesState.mode}
+          onModeChange={handleChangeTotalPnlSeriesMode}
+          cagrStartDate={totalPnlDialogContext.cagrStartDate}
+          onShowBreakdown={
+            showContent && orderedPositions.length ? handleShowTotalPnlBreakdownFromDialog : null
+          }
+        />
       )}
       {investEvenlyPlan && (
         <InvestEvenlyDialog

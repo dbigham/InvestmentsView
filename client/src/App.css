@@ -824,6 +824,39 @@ textarea {
   color: var(--color-text-primary);
 }
 
+.pnl-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.pnl-dialog__link-button {
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--color-focus-outline);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  border-radius: 4px;
+}
+
+.pnl-dialog__link-button:hover,
+.pnl-dialog__link-button:focus-visible {
+  text-decoration: none;
+}
+
+.pnl-dialog__link-button:focus-visible {
+  outline: 2px solid var(--color-focus-outline);
+  outline-offset: 2px;
+}
+
+.pnl-dialog__link-button:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
 
 .pnl-dialog__controls {
   display: flex;
