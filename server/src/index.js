@@ -2852,9 +2852,6 @@ function convertActivityToOrder(activity, context) {
   }
 
   const symbol = resolveActivitySymbol(activity);
-  if (!symbol) {
-    return null;
-  }
 
   const rawQuantity = Number(activity.quantity);
   if (!Number.isFinite(rawQuantity) || Math.abs(rawQuantity) <= 1e-8) {
@@ -2911,7 +2908,7 @@ function convertActivityToOrder(activity, context) {
     accountId,
     accountNumber,
     loginId,
-    symbol,
+    symbol: symbol || null,
     symbolId: Number.isFinite(symbolId) ? symbolId : null,
     description: typeof activity.description === 'string' ? activity.description.trim() : null,
     currency,
@@ -2959,7 +2956,13 @@ function buildOrdersFromActivities(activityContext, context, cutoffDate) {
     cutoffDate instanceof Date && !Number.isNaN(cutoffDate.getTime()) ? cutoffDate.getTime() : null;
 
   return activityContext.activities
-    .map((activity) => convertActivityToOrder(activity, context))
+    .map((activity, idx) => {
+      const order = convertActivityToOrder(activity, context);
+      if (order && order.source === 'activity') {
+        order.activityIndex = idx;
+      }
+      return order;
+    })
     .filter((order) => {
       if (!order) {
         return false;
@@ -7765,8 +7768,8 @@ function decorateOrders(orders, symbolsMap, accountsMap) {
       symbolId: order?.symbolId ?? symbolInfo?.symbolId ?? null,
       description: normalizeString(symbolInfo?.description),
       currency: normalizeString(order?.currency) || normalizeString(symbolInfo?.currency) || null,
-      status: normalizeString(order?.state) || null,
-      action: normalizeString(order?.side) || null,
+      status: normalizeString(order?.state) || normalizeString(order?.status) || null,
+      action: normalizeString(order?.side) || normalizeString(order?.action) || null,
       type: normalizeString(order?.type) || null,
       timeInForce: normalizeString(order?.timeInForce) || null,
       totalQuantity: toFiniteNumber(order?.totalQuantity),
@@ -7781,6 +7784,7 @@ function decorateOrders(orders, symbolsMap, accountsMap) {
       venue: normalizeString(order?.venue),
       notes: normalizeString(order?.notes),
       source: normalizeString(order?.source),
+      activityIndex: toFiniteNumber(order?.activityIndex),
       creationTime: normalizeString(order?.creationTime) || normalizeString(order?.createdTime) || null,
       updateTime: normalizeString(order?.updateTime) || normalizeString(order?.updatedTime) || null,
       gtdDate: normalizeString(order?.gtdDate) || null,
@@ -8745,11 +8749,19 @@ app.get('/api/summary', async function (req, res) {
               orders = [];
             }
 
-            const activityOrders = buildOrdersFromActivities(
-              activityContext,
-              context,
-              normalizedRecentStart
-            );
+            // Prefer to include activity-derived orders up to the earliest real order
+            // so we can fill gaps when the /orders API returns a truncated window.
+            const earliestRealOrderIso = findEarliestOrderTimestamp(orders);
+            const earliestRealOrderDate =
+              typeof earliestRealOrderIso === 'string' && earliestRealOrderIso.trim()
+                ? new Date(earliestRealOrderIso)
+                : null;
+            const cutoffDate =
+              earliestRealOrderDate instanceof Date && !Number.isNaN(earliestRealOrderDate.getTime())
+                ? earliestRealOrderDate
+                : now; // if no real orders returned, include all activity orders before now
+
+            const activityOrders = buildOrdersFromActivities(activityContext, context, cutoffDate);
             const startCandidates = [];
             if (normalizedRecentStart instanceof Date && !Number.isNaN(normalizedRecentStart.getTime())) {
               startCandidates.push(normalizedRecentStart.toISOString());
