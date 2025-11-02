@@ -8145,8 +8145,12 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     if (isOrderLikeActivity(activity) && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
       const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
       const next = current + rawQty;
-      // Clamp to zero to avoid negative open quantity in accounts that never short
-      holdings.set(symbol, Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : Math.max(0, next));
+      const base = baseOf(symbol) || symbol;
+      // Allow negatives for symbols that participate in journaling so sells
+      // in one share-class can offset buys in another when merged.
+      const allowNegative = journalBases.has(base);
+      const adjusted = Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : allowNegative ? next : Math.max(0, next);
+      holdings.set(symbol, adjusted);
     }
 
     const currency = normalizeCurrency(activity.currency);
