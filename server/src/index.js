@@ -3258,12 +3258,16 @@ function isOrderLikeActivity(activity) {
   const type = typeof activity.type === 'string' ? activity.type : '';
   const action = typeof activity.action === 'string' ? activity.action : '';
   const description = typeof activity.description === 'string' ? activity.description : '';
-  const combined = [type, action, description].join(' ');
 
-  if (TRADE_ACTIVITY_EXCLUDE_REGEX.test(combined)) {
+  // Only apply the exclude regex to the structured fields (type/action).
+  // Some trade descriptions contain the word "INTEREST" (e.g., PSA fund name),
+  // which should not disqualify bona fide Buy/Sell trades.
+  const excludeSource = [type, action].join(' ');
+  if (TRADE_ACTIVITY_EXCLUDE_REGEX.test(excludeSource)) {
     return false;
   }
 
+  const combined = [type, action, description].join(' ');
   return TRADE_ACTIVITY_KEYWORD_REGEX.test(combined);
 }
 
@@ -8248,7 +8252,13 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       if (currency === 'CAD') {
         amountCad = netAmount;
       } else if (currency === 'USD') {
-        const usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+        const overrideMap = options && options.usdRatesByDate instanceof Map ? options.usdRatesByDate : null;
+        let usdRate = null;
+        if (overrideMap && overrideMap.has(dateKey)) {
+          usdRate = overrideMap.get(dateKey);
+        } else {
+          usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+        }
         amountCad = Number.isFinite(usdRate) && usdRate > 0 ? netAmount * usdRate : null;
       }
       if (Number.isFinite(amountCad)) {
@@ -8321,8 +8331,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         continue;
       }
       const meta = symbolMeta.get(symbol) || {};
+      const bookCurrency = normalizeCurrency(activity.currency) || meta.activityCurrency || meta.currency || 'CAD';
       let valueCad = qty * price;
-      if (meta.currency === 'USD') {
+      if (bookCurrency === 'USD') {
         const r = await lookupUsdRate(dateKey);
         if (!(Number.isFinite(r) && r > 0)) {
           continue;
@@ -8389,11 +8400,15 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       marketValueCad: Number.isFinite(marketValueCad) ? marketValueCad : null,
       currency: isUsd ? 'USD' : 'CAD',
     };
-    // Include if we have any signal (P&L, market value, or invested)
+    // Include if we have any signal (P&L, market value, or invested),
+    // or if there was a non-trade quantity movement since start (e.g., book-value transfer out).
+    const nonTradeDelta = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
+    const hadNonTradeMove = Number.isFinite(nonTradeDelta) && Math.abs(nonTradeDelta) >= LEDGER_QUANTITY_EPSILON;
     if (
       (Number.isFinite(entry.totalPnlCad) && Math.abs(entry.totalPnlCad) >= CASH_FLOW_EPSILON / 10) ||
       (Number.isFinite(entry.marketValueCad) && Math.abs(entry.marketValueCad) >= 0.01) ||
-      (Number.isFinite(entry.investedCad) && Math.abs(entry.investedCad) >= 0.01)
+      (Number.isFinite(entry.investedCad) && Math.abs(entry.investedCad) >= 0.01) ||
+      hadNonTradeMove
     ) {
       result.push(entry);
     }

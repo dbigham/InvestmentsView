@@ -112,3 +112,40 @@ test('UNH small gain since start', async () => {
   assert.ok(Math.abs(unh.totalPnlCad - 6.5) < 1e-6, 'UNH ~6.5 CAD');
 });
 
+test('PSA trade with "INTEREST" in description is treated as trade (not income)', async () => {
+  const account = { id: 'test:4', number: 'test:4', cagrStartDate: '2025-10-01' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const activities = [
+    {
+      type: 'Trades',
+      action: 'Buy',
+      symbol: 'PSA.TO',
+      quantity: 36,
+      netAmount: -1803.6,
+      currency: 'CAD',
+      description: 'PURPOSE HIGH INTEREST SAVINGS FUND UNITS WE ACTED AS AGENT',
+      tradeDate: '2025-10-05',
+    },
+    { type: 'Dividends', symbol: 'PSA.TO', netAmount: 3.77, currency: 'CAD', tradeDate: '2025-10-03' },
+    { type: 'Dividends', symbol: 'PSA.TO', netAmount: 3.68, currency: 'CAD', tradeDate: '2025-10-25' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  // Keep price flat so MV contribution is neutral beyond quantity*price
+  const priceSeries = new Map([
+    ['PSA.TO', new Map([[d('2025-10-01'), 50],[d('2025-10-05'),50],[d('2025-10-31'),50]])],
+  ]);
+  const endHoldings = new Map([['PSA.TO', 36]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const psa = result.entries.find((e) => e.symbol === 'PSA.TO') || result.entries.find((e) => e.symbol === 'PSA');
+  assert.ok(psa, 'PSA entry present');
+  // MV (36*50=1800) - buy 1803.6 + dividends (7.45) = ~4. - rounding
+  assert.ok(Math.abs(psa.totalPnlCad - 3.85) < 0.75, 'PSA ~small positive P&L');
+});
