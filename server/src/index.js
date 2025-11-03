@@ -3243,6 +3243,7 @@ async function fetchOrdersHistory(login, accountId, options = {}) {
 }
 
 const TRADE_ACTIVITY_EXCLUDE_REGEX = /(dividend|distribution|interest|fee|commission|transfer|journal|tax|withholding)/i;
+const SPLIT_ACTIVITY_REGEX = /(split|consolidat)/i; // match stock splits and consolidations
 const TRADE_ACTIVITY_KEYWORD_REGEX = /(buy|sell|short|cover|exercise|assign|assignment|option|trade)/i;
 
 function isOrderLikeActivity(activity) {
@@ -3269,6 +3270,17 @@ function isOrderLikeActivity(activity) {
 
   const combined = [type, action, description].join(' ');
   return TRADE_ACTIVITY_KEYWORD_REGEX.test(combined);
+}
+
+function isSplitLikeActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+  const type = typeof activity.type === 'string' ? activity.type : '';
+  const action = typeof activity.action === 'string' ? activity.action : '';
+  const description = typeof activity.description === 'string' ? activity.description : '';
+  const combined = [type, action, description].join(' ');
+  return SPLIT_ACTIVITY_REGEX.test(combined);
 }
 
 function resolveActivityOrderAction(activity, rawQuantity) {
@@ -8322,7 +8334,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
         continue;
       }
-      if (isOrderLikeActivity(activity)) {
+      // Skip trades and stock splits/consolidations; splits should not
+      // create artificial cash adjustments in per-symbol P&L.
+      if (isOrderLikeActivity(activity) || isSplitLikeActivity(activity)) {
         continue;
       }
       const series = priceSeriesMap.get(symbol);
