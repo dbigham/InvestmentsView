@@ -7312,6 +7312,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
     const symbolId = Number(activity.symbolId);
     const activityCurrency = normalizeCurrency(activity.currency) || null;
+    const isTrade = isOrderLikeActivity(activity);
+    const activityDesc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
+    const isIncome = INCOME_ACTIVITY_REGEX.test(activityDesc);
+    const preferredFromActivity = (isTrade || isIncome) ? activityCurrency : null;
 
     if (Number.isFinite(symbolId) && symbolId > 0) {
       symbolIds.add(symbolId);
@@ -7324,7 +7328,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!symbolMeta.has(resolvedSymbol)) {
       symbolMeta.set(resolvedSymbol, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
-        currency: inferSymbolCurrency(resolvedSymbol) || null,
+        currency: preferredFromActivity || inferSymbolCurrency(resolvedSymbol) || null,
         activityCurrency,
       });
     } else {
@@ -7333,8 +7337,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
           meta.symbolId = symbolId;
         }
-        if (!meta.currency) {
-          meta.currency = inferSymbolCurrency(resolvedSymbol) || activityCurrency || null;
+        if (preferredFromActivity && meta.currency !== preferredFromActivity) {
+          meta.currency = preferredFromActivity;
+        } else if (!meta.currency) {
+          meta.currency = inferSymbolCurrency(resolvedSymbol) || null;
         }
         if (!meta.activityCurrency && activityCurrency) {
           meta.activityCurrency = activityCurrency;
@@ -7370,12 +7376,17 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         continue;
       }
       entry.symbol = normalized;
+      const activityCurrencyForEntry = normalizeCurrency(entry.activity && entry.activity.currency) || null;
+      const entryIsTrade = isOrderLikeActivity(entry.activity);
+      const entryDesc = [entry.activity?.type || '', entry.activity?.action || '', entry.activity?.description || ''].join(' ');
+      const entryIsIncome = INCOME_ACTIVITY_REGEX.test(entryDesc);
+      const preferredFromActivity = (entryIsTrade || entryIsIncome) ? activityCurrencyForEntry : null;
       if (!symbolMeta.has(normalized)) {
         symbolMeta.set(normalized, {
           symbolId: id,
           currency:
-            (detail && normalizeCurrency(detail.currency)) || inferSymbolCurrency(normalized) || null,
-          activityCurrency: normalizeCurrency(entry.activity && entry.activity.currency) || null,
+            (detail && normalizeCurrency(detail.currency)) || preferredFromActivity || inferSymbolCurrency(normalized) || null,
+          activityCurrency: activityCurrencyForEntry,
         });
       } else {
         const meta = symbolMeta.get(normalized);
@@ -7383,11 +7394,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           if ((!meta.symbolId || meta.symbolId <= 0)) {
             meta.symbolId = id;
           }
-          if (!meta.currency && detail && detail.currency) {
-            meta.currency = normalizeCurrency(detail.currency) || meta.currency || null;
+          const detailCurrency = (detail && normalizeCurrency(detail.currency)) || null;
+          if (detailCurrency && meta.currency !== detailCurrency) {
+            meta.currency = detailCurrency;
+          } else if (preferredFromActivity && meta.currency !== preferredFromActivity) {
+            meta.currency = preferredFromActivity;
           }
-          if (!meta.activityCurrency && entry.activity && entry.activity.currency) {
-            meta.activityCurrency = normalizeCurrency(entry.activity.currency);
+          if (!meta.activityCurrency && activityCurrencyForEntry) {
+            meta.activityCurrency = activityCurrencyForEntry;
           }
         }
       }
@@ -10317,6 +10331,7 @@ app.get('/api/summary', async function (req, res) {
     const accountFundingSummaries = {};
     const accountDividendSummaries = {};
     const accountTotalPnlBySymbol = {};
+    const accountTotalPnlBySymbolAll = {};
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
       let sharedActivityContext = null;
@@ -10422,19 +10437,27 @@ app.get('/api/summary', async function (req, res) {
           const current = endHoldingsBySymbol.has(key) ? endHoldingsBySymbol.get(key) : 0;
           endHoldingsBySymbol.set(key, current + qty);
         });
+        // Align with CLI: rely on activity history only. Do not override final
+        // quantities with positions here, as that can distort closed symbols' P&L
+        // when history already captures the round trip accurately.
         const symbolTotals = await computeTotalPnlBySymbol(context.login, context.account, {
           activityContext: sharedActivityContext,
-          applyAccountCagrStartDate: true,
-          displayStartKey:
-            totalPnlSeries && typeof totalPnlSeries.displayStartDate === 'string'
-              ? totalPnlSeries.displayStartDate
-              : undefined,
-          endHoldingsBySymbol,
         });
         if (symbolTotals && Array.isArray(symbolTotals.entries)) {
           accountTotalPnlBySymbol[context.account.id] = {
             entries: symbolTotals.entries,
             asOf: symbolTotals.endDate || null,
+          };
+        }
+        // Also compute a from-start variant (ignore account CAGR start)
+        const symbolTotalsAll = await computeTotalPnlBySymbol(context.login, context.account, {
+          activityContext: sharedActivityContext,
+          applyAccountCagrStartDate: false,
+        });
+        if (symbolTotalsAll && Array.isArray(symbolTotalsAll.entries)) {
+          accountTotalPnlBySymbolAll[context.account.id] = {
+            entries: symbolTotalsAll.entries,
+            asOf: symbolTotalsAll.endDate || null,
           };
         }
       } catch (pnlBySymbolError) {
@@ -10590,72 +10613,100 @@ app.get('/api/summary', async function (req, res) {
             console.warn('Failed to prepare activity history for account ' + context.account.id + ' (per-symbol):', activityMessage);
           }
           try {
-            const endHoldingsBySymbol = new Map();
-            flattenedPositions.forEach(function (p) {
-              if (!p || p.accountId !== context.account.id) return;
-              const sym = typeof p.symbol === 'string' ? p.symbol : null;
-              const qty = Number(p.openQuantity);
-              if (!sym || !Number.isFinite(qty)) return;
-              const key = normalizeSymbol(sym);
-              if (!key) return;
-              const current = endHoldingsBySymbol.has(key) ? endHoldingsBySymbol.get(key) : 0;
-              endHoldingsBySymbol.set(key, current + qty);
+            // Compute both variants for aggregation
+            const resultCagr = await computeTotalPnlBySymbol(context.login, context.account, {
+              activityContext,
             });
-            const result = await computeTotalPnlBySymbol(context.login, context.account, {
+            const resultAll = await computeTotalPnlBySymbol(context.login, context.account, {
               activityContext,
               applyAccountCagrStartDate: false,
-              endHoldingsBySymbol,
             });
-            return { context, result };
+            return { context, result: resultCagr, resultAll };
           } catch (symbolError) {
             const message = symbolError && symbolError.message ? symbolError.message : String(symbolError);
             console.warn('Failed to compute per-symbol Total P&L for account ' + context.account.id + ' in aggregate view:', message);
-            return { context, result: null };
+            return { context, result: null, resultAll: null };
           }
         }
       );
 
       const symbolAggregateMap = new Map();
+      const symbolAggregateMapAll = new Map();
       let aggregateAsOf = null;
+      let aggregateAsOfAll = null;
       perAccountSymbolTotals.forEach(function (entry) {
         if (!entry || !entry.result || !Array.isArray(entry.result.entries)) {
-          return;
+          // keep going; maybe resultAll is present
+        } else {
+          if (typeof entry.result.endDate === 'string' && entry.result.endDate) {
+            if (!aggregateAsOf || entry.result.endDate > aggregateAsOf) {
+              aggregateAsOf = entry.result.endDate;
+            }
+          }
+          entry.result.entries.forEach(function (symbolEntry) {
+            const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
+            if (!key) return;
+            const existing = symbolAggregateMap.get(key) || {
+              symbol: symbolEntry.symbol,
+              symbolId: symbolEntry.symbolId || null,
+              totalPnlCad: 0,
+              investedCad: 0,
+              openQuantity: 0,
+              marketValueCad: 0,
+              currency: symbolEntry.currency || null,
+            };
+            const add = (v) => (Number.isFinite(v) ? v : 0);
+            existing.totalPnlCad += add(symbolEntry.totalPnlCad);
+            existing.investedCad += add(symbolEntry.investedCad);
+            existing.openQuantity += add(symbolEntry.openQuantity);
+            existing.marketValueCad += add(symbolEntry.marketValueCad);
+            if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
+              existing.symbolId = symbolEntry.symbolId;
+            }
+            if (!existing.currency && symbolEntry.currency) {
+              existing.currency = symbolEntry.currency;
+            }
+            symbolAggregateMap.set(key, existing);
+          });
         }
-        if (typeof entry.result.endDate === 'string' && entry.result.endDate) {
-          if (!aggregateAsOf || entry.result.endDate > aggregateAsOf) {
-            aggregateAsOf = entry.result.endDate;
+        if (entry && entry.resultAll && Array.isArray(entry.resultAll.entries)) {
+          if (typeof entry.resultAll.endDate === 'string' && entry.resultAll.endDate) {
+            if (!aggregateAsOfAll || entry.resultAll.endDate > aggregateAsOfAll) {
+              aggregateAsOfAll = entry.resultAll.endDate;
+            }
           }
+          entry.resultAll.entries.forEach(function (symbolEntry) {
+            const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
+            if (!key) return;
+            const existing = symbolAggregateMapAll.get(key) || {
+              symbol: symbolEntry.symbol,
+              symbolId: symbolEntry.symbolId || null,
+              totalPnlCad: 0,
+              investedCad: 0,
+              openQuantity: 0,
+              marketValueCad: 0,
+              currency: symbolEntry.currency || null,
+            };
+            const add = (v) => (Number.isFinite(v) ? v : 0);
+            existing.totalPnlCad += add(symbolEntry.totalPnlCad);
+            existing.investedCad += add(symbolEntry.investedCad);
+            existing.openQuantity += add(symbolEntry.openQuantity);
+            existing.marketValueCad += add(symbolEntry.marketValueCad);
+            if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
+              existing.symbolId = symbolEntry.symbolId;
+            }
+            if (!existing.currency && symbolEntry.currency) {
+              existing.currency = symbolEntry.currency;
+            }
+            symbolAggregateMapAll.set(key, existing);
+          });
         }
-        entry.result.entries.forEach(function (symbolEntry) {
-          const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
-          if (!key) {
-            return;
-          }
-          const existing = symbolAggregateMap.get(key) || {
-            symbol: symbolEntry.symbol,
-            symbolId: symbolEntry.symbolId || null,
-            totalPnlCad: 0,
-            investedCad: 0,
-            openQuantity: 0,
-            marketValueCad: 0,
-            currency: symbolEntry.currency || null,
-          };
-          const add = (v) => (Number.isFinite(v) ? v : 0);
-          existing.totalPnlCad += add(symbolEntry.totalPnlCad);
-          existing.investedCad += add(symbolEntry.investedCad);
-          existing.openQuantity += add(symbolEntry.openQuantity);
-          existing.marketValueCad += add(symbolEntry.marketValueCad);
-          if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
-            existing.symbolId = symbolEntry.symbolId;
-          }
-          if (!existing.currency && symbolEntry.currency) {
-            existing.currency = symbolEntry.currency;
-          }
-          symbolAggregateMap.set(key, existing);
-        });
       });
 
       const aggregateEntries = Array.from(symbolAggregateMap.values())
+        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
+        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+      const aggregateEntriesAll = Array.from(symbolAggregateMapAll.values())
         .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
         .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
 
@@ -10664,10 +10715,18 @@ app.get('/api/summary', async function (req, res) {
           entries: aggregateEntries,
           asOf: aggregateAsOf || null,
         };
+        accountTotalPnlBySymbolAll[selectedAccountGroup.id] = {
+          entries: aggregateEntriesAll,
+          asOf: aggregateAsOfAll || aggregateAsOf || null,
+        };
       } else {
         accountTotalPnlBySymbol['all'] = {
           entries: aggregateEntries,
           asOf: aggregateAsOf || null,
+        };
+        accountTotalPnlBySymbolAll['all'] = {
+          entries: aggregateEntriesAll,
+          asOf: aggregateAsOfAll || aggregateAsOf || null,
         };
       }
 
@@ -10999,6 +11058,7 @@ app.get('/api/summary', async function (req, res) {
       accountFunding: accountFundingSummaries,
       accountDividends: accountDividendSummaries,
       accountTotalPnlBySymbol,
+      accountTotalPnlBySymbolAll,
       asOf: new Date().toISOString(),
       usdToCadRate: latestUsdToCadRate,
     });

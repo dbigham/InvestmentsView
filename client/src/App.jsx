@@ -3659,6 +3659,9 @@ export default function App() {
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
+  // Capture the Total P&L dialog's range choice when launching the breakdown
+  // so it applies even after the dialog closes.
+  const [pnlBreakdownUseAllOverride, setPnlBreakdownUseAllOverride] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
@@ -5809,6 +5812,8 @@ export default function App() {
       if (normalized === 'cagr' && !cagrStartDate) {
         return;
       }
+      // When the user changes the main-page range, clear any dialog override.
+      setPnlBreakdownUseAllOverride(null);
       setTotalPnlRange((current) => (current === normalized ? current : normalized));
     },
     [cagrStartDate]
@@ -6901,12 +6906,17 @@ export default function App() {
   const showContent = hasData;
 
   const handleShowPnlBreakdown = useCallback(
-    (mode, accountKey = null) => {
+    (mode, accountKey = null, options = {}) => {
       if (!showContent || !orderedPositions.length) {
         return;
       }
       if (mode !== 'day' && mode !== 'open' && mode !== 'total') {
         return;
+      }
+      // Clear any dialog-based override unless the caller asks to preserve it
+      const preserveOverride = Boolean(options && options.preserveOverride);
+      if (!preserveOverride) {
+        setPnlBreakdownUseAllOverride(null);
       }
       const normalizedAccountKey =
         accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
@@ -6963,13 +6973,17 @@ export default function App() {
     if (!accountKey) {
       return;
     }
+    // Capture the dialog's current mode before closing it so the
+    // breakdown reflects that exact choice.
+    setPnlBreakdownUseAllOverride(totalPnlSeriesState.mode === 'all');
     handleCloseTotalPnlDialog();
-    handleShowPnlBreakdown('total', accountKey);
+    handleShowPnlBreakdown('total', accountKey, { preserveOverride: true });
   }, [
     totalPnlDialogContext.accountKey,
     selectedAccountKey,
     handleCloseTotalPnlDialog,
     handleShowPnlBreakdown,
+    totalPnlSeriesState.mode,
   ]);
 
   const todoAccountIds = useMemo(() => {
@@ -8049,6 +8063,7 @@ export default function App() {
   const handleClosePnlBreakdown = () => {
     setPnlBreakdownMode(null);
     setPnlBreakdownInitialAccount(null);
+    setPnlBreakdownUseAllOverride(null);
   };
 
   const handleShowAnnualizedReturnDetails = useCallback(() => {
@@ -8681,7 +8696,24 @@ export default function App() {
           accountOptions={heatmapAccountOptions}
           initialAccount={pnlBreakdownInitialAccount ?? heatmapDefaultAccount}
           totalPnlBySymbol={(function resolveTotalPnlBySymbol() {
-            const map = data?.accountTotalPnlBySymbol || null;
+            const useAll = (function decideVariant() {
+              if (isAggregateSelection && selectedAccount === 'all') {
+                return true; // All accounts: always from start
+              }
+              // If launching from the dialog, honor the captured override.
+              if (pnlBreakdownUseAllOverride !== null) {
+                return !!pnlBreakdownUseAllOverride;
+              }
+              // Only honor the dialog's mode while the dialog is open.
+              if (showTotalPnlDialog && totalPnlSeriesState.mode === 'all') {
+                return true;
+              }
+              // Otherwise use the main page selection.
+              return fundingSummaryForDisplay?.mode === 'all';
+            })();
+            const map = useAll
+              ? (data?.accountTotalPnlBySymbolAll || data?.accountTotalPnlBySymbol || null)
+              : (data?.accountTotalPnlBySymbol || null);
             if (!map || typeof map !== 'object') return [];
             // Aggregate views: 'all' or group:<slug>
             if (isAggregateSelection) {
@@ -8698,7 +8730,21 @@ export default function App() {
             return list;
           })()}
           totalPnlAsOf={(function resolveTotalPnlAsOf() {
-            const map = data?.accountTotalPnlBySymbol || null;
+            const useAll = (function decideVariant() {
+              if (isAggregateSelection && selectedAccount === 'all') {
+                return true;
+              }
+              if (pnlBreakdownUseAllOverride !== null) {
+                return !!pnlBreakdownUseAllOverride;
+              }
+              if (showTotalPnlDialog && totalPnlSeriesState.mode === 'all') {
+                return true;
+              }
+              return fundingSummaryForDisplay?.mode === 'all';
+            })();
+            const map = useAll
+              ? (data?.accountTotalPnlBySymbolAll || data?.accountTotalPnlBySymbol || null)
+              : (data?.accountTotalPnlBySymbol || null);
             if (!map || typeof map !== 'object') return null;
             if (isAggregateSelection) {
               const key = typeof selectedAccount === 'string' && selectedAccount.trim() ? selectedAccount.trim() : 'all';
