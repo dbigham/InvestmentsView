@@ -6708,78 +6708,6 @@ export default function App() {
     setActiveInvestmentModelDialog({ type: 'global' });
   }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
 
-  const handleShowPnlBreakdown = useCallback(
-    (mode, accountKey = null) => {
-      if (!showContent || !orderedPositions.length) {
-        return;
-      }
-      if (mode !== 'day' && mode !== 'open' && mode !== 'total') {
-        return;
-      }
-      const normalizedAccountKey =
-        accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
-      if (normalizedAccountKey) {
-        setPnlBreakdownInitialAccount(normalizedAccountKey);
-      } else {
-        setPnlBreakdownInitialAccount(null);
-      }
-      setPnlBreakdownMode(mode);
-    },
-    [showContent, orderedPositions.length]
-  );
-
-  const handleShowChildPnlBreakdown = useCallback(
-    (accountKey, mode) => {
-      if (!accountKey || (mode !== 'day' && mode !== 'open')) {
-        return;
-      }
-      handleShowPnlBreakdown(mode, accountKey);
-    },
-    [handleShowPnlBreakdown]
-  );
-
-  const handleShowChildTotalPnl = useCallback(
-    (accountKey, child) => {
-      if (accountKey === undefined || accountKey === null) {
-        return;
-      }
-      const normalizedKey = String(accountKey).trim();
-      if (!normalizedKey) {
-        return;
-      }
-      const label = child?.label || resolveAccountLabelByKey(normalizedKey);
-      const cagrStart = child?.cagrStartDate || resolveCagrStartDateForKey(normalizedKey);
-      const supportsCagr =
-        typeof child?.supportsCagrToggle === 'boolean'
-          ? child.supportsCagrToggle
-          : normalizedKey !== 'all' && Boolean(cagrStart);
-      openTotalPnlDialogForAccount(normalizedKey, {
-        label,
-        cagrStartDate: cagrStart,
-        supportsCagrToggle: supportsCagr,
-      });
-    },
-    [
-      openTotalPnlDialogForAccount,
-      resolveAccountLabelByKey,
-      resolveCagrStartDateForKey,
-    ]
-  );
-
-  const handleShowTotalPnlBreakdownFromDialog = useCallback(() => {
-    const accountKey = totalPnlDialogContext.accountKey || selectedAccountKey;
-    if (!accountKey) {
-      return;
-    }
-    handleCloseTotalPnlDialog();
-    handleShowPnlBreakdown('total', accountKey);
-  }, [
-    totalPnlDialogContext.accountKey,
-    selectedAccountKey,
-    handleCloseTotalPnlDialog,
-    handleShowPnlBreakdown,
-  ]);
-
   const handleShowAccountInvestmentModel = useCallback(
     (modelSection) => {
       if (!modelSection || typeof modelSection !== 'object') {
@@ -6873,6 +6801,78 @@ export default function App() {
   const hasData = Boolean(data);
   const isRefreshing = loading && hasData;
   const showContent = hasData;
+
+  const handleShowPnlBreakdown = useCallback(
+    (mode, accountKey = null) => {
+      if (!showContent || !orderedPositions.length) {
+        return;
+      }
+      if (mode !== 'day' && mode !== 'open' && mode !== 'total') {
+        return;
+      }
+      const normalizedAccountKey =
+        accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
+      if (normalizedAccountKey) {
+        setPnlBreakdownInitialAccount(normalizedAccountKey);
+      } else {
+        setPnlBreakdownInitialAccount(null);
+      }
+      setPnlBreakdownMode(mode);
+    },
+    [showContent, orderedPositions.length]
+  );
+
+  const handleShowChildPnlBreakdown = useCallback(
+    (accountKey, mode) => {
+      if (!accountKey || (mode !== 'day' && mode !== 'open')) {
+        return;
+      }
+      handleShowPnlBreakdown(mode, accountKey);
+    },
+    [handleShowPnlBreakdown]
+  );
+
+  const handleShowChildTotalPnl = useCallback(
+    (accountKey, child) => {
+      if (accountKey === undefined || accountKey === null) {
+        return;
+      }
+      const normalizedKey = String(accountKey).trim();
+      if (!normalizedKey) {
+        return;
+      }
+      const label = child?.label || resolveAccountLabelByKey(normalizedKey);
+      const cagrStart = child?.cagrStartDate || resolveCagrStartDateForKey(normalizedKey);
+      const supportsCagr =
+        typeof child?.supportsCagrToggle === 'boolean'
+          ? child.supportsCagrToggle
+          : normalizedKey !== 'all' && Boolean(cagrStart);
+      openTotalPnlDialogForAccount(normalizedKey, {
+        label,
+        cagrStartDate: cagrStart,
+        supportsCagrToggle: supportsCagr,
+      });
+    },
+    [
+      openTotalPnlDialogForAccount,
+      resolveAccountLabelByKey,
+      resolveCagrStartDateForKey,
+    ]
+  );
+
+  const handleShowTotalPnlBreakdownFromDialog = useCallback(() => {
+    const accountKey = totalPnlDialogContext.accountKey || selectedAccountKey;
+    if (!accountKey) {
+      return;
+    }
+    handleCloseTotalPnlDialog();
+    handleShowPnlBreakdown('total', accountKey);
+  }, [
+    totalPnlDialogContext.accountKey,
+    selectedAccountKey,
+    handleCloseTotalPnlDialog,
+    handleShowPnlBreakdown,
+  ]);
 
   const todoAccountIds = useMemo(() => {
     if (!showContent) {
