@@ -60,6 +60,42 @@ function parseDate(value) {
   return parsed;
 }
 
+function toUtcDateOnly(date) {
+  if (!(date instanceof Date)) {
+    return null;
+  }
+  // Normalize to a UTC date-only timestamp for consistent day math
+  const iso = date.toISOString().slice(0, 10);
+  const normalized = new Date(`${iso}T00:00:00Z`);
+  return Number.isNaN(normalized.getTime()) ? null : normalized;
+}
+
+function countBusinessDaysSince(dateString) {
+  const start = parseDate(dateString);
+  if (!start) {
+    return null;
+  }
+  const today = toUtcDateOnly(new Date());
+  const startDay = toUtcDateOnly(start);
+  if (!today || !startDay) {
+    return null;
+  }
+  if (today <= startDay) {
+    return 0;
+  }
+  let count = 0;
+  const cursor = new Date(startDay.getTime());
+  cursor.setUTCDate(cursor.getUTCDate() + 1);
+  while (cursor <= today) {
+    const day = cursor.getUTCDay();
+    if (day !== 0 && day !== 6) {
+      count += 1;
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return count;
+}
+
 function subtractInterval(date, option) {
   if (!(date instanceof Date)) {
     return null;
@@ -437,15 +473,20 @@ export default function QqqTemperatureSection({
         }
       }
     }
-    const daysSince =
+    // Prefer manual lastRebalance (accounts.json) for days-since metric to avoid
+    // implying a rebalance occurred due to a recent model event.
+    const manualDaysSince = lastRebalance != null ? countBusinessDaysSince(lastRebalance) : null;
+    const modelDaysSince =
       (evaluationData.model && Number.isFinite(evaluationData.model.days_since_last_rebalance)
         ? evaluationData.model.days_since_last_rebalance
         : null) ??
       (evaluationDecision && evaluationDecision.details && Number.isFinite(evaluationDecision.details.days_since_last_rebalance)
         ? evaluationDecision.details.days_since_last_rebalance
         : null);
-    if (Number.isFinite(daysSince)) {
-      const roundedDaysSince = Math.round(daysSince);
+    const daysSinceResolved =
+      Number.isFinite(manualDaysSince) ? manualDaysSince : Number.isFinite(modelDaysSince) ? modelDaysSince : null;
+    if (Number.isFinite(daysSinceResolved)) {
+      const roundedDaysSince = Math.round(daysSinceResolved);
       if (roundedDaysSince !== 0) {
         evaluationMetrics.push({ label: 'Days since rebalance', value: roundedDaysSince.toString() });
       }

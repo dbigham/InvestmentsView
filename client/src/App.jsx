@@ -52,6 +52,12 @@ const MAX_NEWS_SYMBOLS = 24;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+function buildRebalanceOverrideKey(accountNumber, model) {
+  const acct = typeof accountNumber === 'string' ? accountNumber.trim() : accountNumber != null ? String(accountNumber).trim() : '';
+  const mod = typeof model === 'string' ? model.trim().toUpperCase() : '';
+  return `${acct}|${mod}`;
+}
+
 const DIVIDEND_TIMEFRAME_OPTIONS = [
   { value: 'all', label: 'All' },
   { value: '1y', label: 'Last year' },
@@ -3631,6 +3637,7 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState(() => initialAccountIdFromUrl || 'default');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [lastRebalanceOverrides, setLastRebalanceOverrides] = useState(() => new Map());
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
@@ -6146,8 +6153,11 @@ export default function App() {
               ? String(account.accountNumber).trim()
               : '';
         models.forEach((model) => {
+          const overrideKey = buildRebalanceOverrideKey(rawAccountNumber || null, model.model);
+          const overrideLast = lastRebalanceOverrides.get(overrideKey);
           accumulator.push({
             ...model,
+            lastRebalance: overrideLast || model.lastRebalance,
             accountId,
             accountLabel,
             accountNumber: rawAccountNumber || null,
@@ -6168,13 +6178,18 @@ export default function App() {
         : selectedAccountInfo?.accountNumber !== undefined && selectedAccountInfo?.accountNumber !== null
           ? String(selectedAccountInfo.accountNumber).trim()
           : '';
-    return resolveAccountModelsForDisplay(selectedAccountInfo).map((model) => ({
-      ...model,
-      accountId: selectedAccountInfo.id,
-      accountLabel,
-      accountNumber: rawAccountNumber || null,
-    }));
-  }, [selectedAccount, selectedAccountInfo, accountsInView, accountsById]);
+    return resolveAccountModelsForDisplay(selectedAccountInfo).map((model) => {
+      const overrideKey = buildRebalanceOverrideKey(rawAccountNumber || null, model.model);
+      const overrideLast = lastRebalanceOverrides.get(overrideKey);
+      return {
+        ...model,
+        lastRebalance: overrideLast || model.lastRebalance,
+        accountId: selectedAccountInfo.id,
+        accountLabel,
+        accountNumber: rawAccountNumber || null,
+      };
+    });
+  }, [selectedAccount, selectedAccountInfo, accountsInView, accountsById, lastRebalanceOverrides]);
   const investmentModelSections = useMemo(() => {
     if (!investmentModelsForView.length) {
       return [];
@@ -7153,6 +7168,14 @@ export default function App() {
       await markAccountRebalanced(markRebalanceContext.accountNumber, {
         model: markRebalanceContext.model,
       });
+      // Optimistically update the UI immediately
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const key = buildRebalanceOverrideKey(markRebalanceContext.accountNumber, markRebalanceContext.model);
+      setLastRebalanceOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(key, todayIso);
+        return next;
+      });
       setRefreshKey((value) => value + 1);
     } catch (error) {
       console.error('Failed to update rebalance date', error);
@@ -7174,6 +7197,14 @@ export default function App() {
       }
       try {
         await markAccountRebalanced(rawAccountNumber, { model: modelName });
+        // Optimistically update the UI immediately
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const key = buildRebalanceOverrideKey(rawAccountNumber, modelName);
+        setLastRebalanceOverrides((prev) => {
+          const next = new Map(prev);
+          next.set(key, todayIso);
+          return next;
+        });
         setRefreshKey((value) => value + 1);
       } catch (error) {
         console.error('Failed to update investment model rebalance date', error);
