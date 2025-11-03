@@ -824,17 +824,11 @@ textarea {
   color: var(--color-text-primary);
 }
 
-.pnl-dialog__actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
 .pnl-dialog__link-button {
   padding: 2px 4px;
   border: none;
   background: none;
-  color: var(--color-focus-outline);
+  color: var(--color-accent);
   font: inherit;
   cursor: pointer;
   text-decoration: underline;
@@ -847,7 +841,7 @@ textarea {
 }
 
 .pnl-dialog__link-button:focus-visible {
-  outline: 2px solid var(--color-focus-outline);
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
 
@@ -855,6 +849,13 @@ textarea {
   color: var(--color-text-muted);
   cursor: not-allowed;
   text-decoration: none;
+}
+
+.pnl-dialog__footer {
+  margin-top: auto;
+  padding-top: 8px;
+  display: flex;
+  justify-content: flex-start;
 }
 
 

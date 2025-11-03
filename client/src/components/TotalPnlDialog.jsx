@@ -461,14 +461,6 @@ export default function TotalPnlDialog({
                   </div>
                 </div>
 
-                {canShowBreakdown ? (
-                  <div className="pnl-dialog__actions">
-                    <button type="button" className="pnl-dialog__link-button" onClick={onShowBreakdown}>
-                      See breakdown
-                    </button>
-                  </div>
-                ) : null}
-
                 <div className="pnl-dialog__controls">
                   <label className="pnl-dialog__control-label" htmlFor="total-pnl-timeframe">
                     Show
@@ -633,6 +625,14 @@ export default function TotalPnlDialog({
                     </ul>
                   </div>
                 )}
+
+                {canShowBreakdown ? (
+                  <div className="pnl-dialog__footer">
+                    <button type="button" className="pnl-dialog__link-button" onClick={onShowBreakdown}>
+                      See breakdown
+                    </button>
+                  </div>
+                ) : null}
               </>
             )}
           </section>

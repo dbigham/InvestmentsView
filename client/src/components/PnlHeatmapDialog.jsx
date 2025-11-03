@@ -625,7 +625,7 @@ export default function PnlHeatmapDialog({
   totalPnlBySymbol,
   totalPnlAsOf,
 }) {
-  const initialMetric = mode === 'open' ? 'open' : 'day';
+  const initialMetric = mode === 'total' ? 'total' : mode === 'open' ? 'open' : 'day';
   const [metricMode, setMetricMode] = useState(initialMetric);
   useEffect(() => {
     setMetricMode(initialMetric);
