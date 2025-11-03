@@ -851,10 +851,16 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
           aggregateEntry.lastTimestamp = entryTimestamp;
         }
         const computedDateKey = entryDateKey || (entryTimestamp ? entryTimestamp.toISOString().slice(0, 10) : null);
+        const shouldResetTotals =
+          !computedDateKey ||
+          !(aggregateEntry.lastDateTotals instanceof Map) ||
+          aggregateEntry.lastDateKey !== computedDateKey;
         aggregateEntry.lastDateKey = computedDateKey;
         aggregateEntry.lastAmount = hasNormalizedAmount ? normalizedLastAmount : null;
         aggregateEntry.lastCurrency = normalizedLastCurrency || null;
-        aggregateEntry.lastDateTotals = new Map();
+        if (shouldResetTotals) {
+          aggregateEntry.lastDateTotals = new Map();
+        }
       } else if (!aggregateEntry.lastTimestamp && entryTimestamp) {
         aggregateEntry.lastTimestamp = entryTimestamp;
       }
