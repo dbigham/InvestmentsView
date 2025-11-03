@@ -763,6 +763,8 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
           lastTimestamp: null,
           lastAmount: null,
           lastCurrency: null,
+          lastDateKey: null,
+          lastDateTotals: new Map(),
         };
         entryMap.set(entryKey, aggregateEntry);
       } else {
@@ -823,14 +825,59 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
       }
 
       const entryTimestamp = parseDateLike(entry.lastTimestamp || entry.lastDate || entry.endDate);
-      if (entryTimestamp && (!aggregateEntry.lastTimestamp || entryTimestamp > aggregateEntry.lastTimestamp)) {
+      const entryDateKey = entryTimestamp
+        ? entryTimestamp.toISOString().slice(0, 10)
+        : typeof entry.lastDate === 'string' && entry.lastDate.trim()
+        ? entry.lastDate.trim().slice(0, 10)
+        : null;
+      const normalizedLastAmount = Number(entry.lastAmount);
+      const hasNormalizedAmount = Number.isFinite(normalizedLastAmount);
+      const normalizedLastCurrency =
+        typeof entry.lastCurrency === 'string' && entry.lastCurrency.trim()
+          ? entry.lastCurrency.trim().toUpperCase()
+          : null;
+
+      const isLaterTimestamp =
+        entryTimestamp && (!aggregateEntry.lastTimestamp || entryTimestamp > aggregateEntry.lastTimestamp);
+      const isLaterDateKey =
+        !entryTimestamp &&
+        entryDateKey &&
+        (!aggregateEntry.lastDateKey || entryDateKey > aggregateEntry.lastDateKey);
+
+      if (isLaterTimestamp || isLaterDateKey) {
+        if (isLaterTimestamp) {
+          aggregateEntry.lastTimestamp = entryTimestamp;
+        } else if (!aggregateEntry.lastTimestamp && entryTimestamp) {
+          aggregateEntry.lastTimestamp = entryTimestamp;
+        }
+        const computedDateKey = entryDateKey || (entryTimestamp ? entryTimestamp.toISOString().slice(0, 10) : null);
+        const shouldResetTotals =
+          !computedDateKey ||
+          !(aggregateEntry.lastDateTotals instanceof Map) ||
+          aggregateEntry.lastDateKey !== computedDateKey;
+        aggregateEntry.lastDateKey = computedDateKey;
+        aggregateEntry.lastAmount = hasNormalizedAmount ? normalizedLastAmount : null;
+        aggregateEntry.lastCurrency = normalizedLastCurrency || null;
+        if (shouldResetTotals) {
+          aggregateEntry.lastDateTotals = new Map();
+        }
+      } else if (!aggregateEntry.lastTimestamp && entryTimestamp) {
         aggregateEntry.lastTimestamp = entryTimestamp;
-        const lastAmount = Number(entry.lastAmount);
-        aggregateEntry.lastAmount = Number.isFinite(lastAmount) ? lastAmount : null;
-        aggregateEntry.lastCurrency =
-          typeof entry.lastCurrency === 'string' && entry.lastCurrency.trim()
-            ? entry.lastCurrency.trim().toUpperCase()
-            : null;
+      }
+
+      if (entryDateKey && aggregateEntry.lastDateKey === entryDateKey && hasNormalizedAmount) {
+        if (!(aggregateEntry.lastDateTotals instanceof Map)) {
+          aggregateEntry.lastDateTotals = new Map();
+        }
+        const currencyKey = normalizedLastCurrency || '';
+        const current = aggregateEntry.lastDateTotals.get(currencyKey) || 0;
+        aggregateEntry.lastDateTotals.set(currencyKey, current + normalizedLastAmount);
+        if (!aggregateEntry.lastCurrency && normalizedLastCurrency) {
+          aggregateEntry.lastCurrency = normalizedLastCurrency;
+        }
+        if (!Number.isFinite(aggregateEntry.lastAmount) || aggregateEntry.lastAmount === null) {
+          aggregateEntry.lastAmount = normalizedLastAmount;
+        }
       }
     });
   });
@@ -862,6 +909,42 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
         ? Math.abs(cadAmount)
         : Array.from(entry.currencyTotals.values()).reduce((sum, value) => sum + Math.abs(value), 0);
 
+    const lastDateTotalsMap =
+      entry.lastDateKey && entry.lastDateTotals instanceof Map ? entry.lastDateTotals : null;
+    let lastAmount = Number.isFinite(entry.lastAmount) ? entry.lastAmount : null;
+    let lastCurrency = entry.lastCurrency || null;
+    if (lastDateTotalsMap && lastDateTotalsMap.size > 0) {
+      const preferredKey = lastCurrency || '';
+      if (preferredKey && lastDateTotalsMap.has(preferredKey)) {
+        const summed = lastDateTotalsMap.get(preferredKey);
+        if (Number.isFinite(summed)) {
+          lastAmount = summed;
+        }
+      } else if (!preferredKey && lastDateTotalsMap.has('')) {
+        const summed = lastDateTotalsMap.get('');
+        if (Number.isFinite(summed)) {
+          lastAmount = summed;
+        }
+      } else if (lastDateTotalsMap.size === 1) {
+        const [currencyKey, summed] = lastDateTotalsMap.entries().next().value;
+        if (Number.isFinite(summed)) {
+          lastAmount = summed;
+          lastCurrency = currencyKey || null;
+        }
+      } else {
+        const firstValid = Array.from(lastDateTotalsMap.entries()).find(([, value]) =>
+          Number.isFinite(value)
+        );
+        if (firstValid) {
+          const [currencyKey, summed] = firstValid;
+          lastAmount = summed;
+          if (currencyKey) {
+            lastCurrency = currencyKey;
+          }
+        }
+      }
+    }
+
     return {
       symbol: entry.symbol || null,
       displaySymbol:
@@ -875,8 +958,8 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
       firstDate: entry.firstDate ? entry.firstDate.toISOString().slice(0, 10) : null,
       lastDate: entry.lastDate ? entry.lastDate.toISOString().slice(0, 10) : null,
       lastTimestamp: entry.lastTimestamp ? entry.lastTimestamp.toISOString() : null,
-      lastAmount: Number.isFinite(entry.lastAmount) ? entry.lastAmount : null,
-      lastCurrency: entry.lastCurrency || null,
+      lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
+      lastCurrency: lastCurrency || null,
       _magnitude: magnitude,
     };
   });

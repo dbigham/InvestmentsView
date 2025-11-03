@@ -6553,6 +6553,8 @@ async function computeDividendBreakdown(login, account, options = {}) {
         latestTimestamp: null,
         latestAmount: null,
         latestCurrency: null,
+        latestDateKey: null,
+        totalsByDate: new Map(),
       };
       totalsBySymbol.set(entryKey, entry);
     }
@@ -6584,6 +6586,14 @@ async function computeDividendBreakdown(login, account, options = {}) {
     totalsByCurrency.set(currency, totalsByCurrency.get(currency) + amount);
 
     if (timestamp) {
+      const dateKey = formatDateOnly(timestamp);
+      if (dateKey) {
+        if (!entry.totalsByDate.has(dateKey)) {
+          entry.totalsByDate.set(dateKey, new Map());
+        }
+        const dateTotals = entry.totalsByDate.get(dateKey);
+        dateTotals.set(currency, (dateTotals.get(currency) || 0) + amount);
+      }
       if (!entry.earliestTimestamp || timestamp < entry.earliestTimestamp) {
         entry.earliestTimestamp = timestamp;
       }
@@ -6591,6 +6601,7 @@ async function computeDividendBreakdown(login, account, options = {}) {
         entry.latestTimestamp = timestamp;
         entry.latestAmount = amount;
         entry.latestCurrency = currency;
+        entry.latestDateKey = dateKey || null;
       }
       if (!earliest || timestamp < earliest) {
         earliest = timestamp;
@@ -6643,6 +6654,35 @@ async function computeDividendBreakdown(login, account, options = {}) {
     const rawSymbols = Array.from(entry.rawSymbols);
     const displaySymbol = entry.display || entry.canonical || (rawSymbols.length ? rawSymbols[0] : null);
     const cadAmount = Number.isFinite(entry.cadAmount) ? entry.cadAmount : 0;
+    const latestDateTotals =
+      entry.latestDateKey && entry.totalsByDate instanceof Map
+        ? entry.totalsByDate.get(entry.latestDateKey)
+        : null;
+    let latestCurrency = entry.latestCurrency || null;
+    let latestAmount = Number.isFinite(entry.latestAmount) ? entry.latestAmount : null;
+    if (latestDateTotals && latestDateTotals.size > 0) {
+      if (latestCurrency && latestDateTotals.has(latestCurrency)) {
+        const summed = latestDateTotals.get(latestCurrency);
+        if (Number.isFinite(summed)) {
+          latestAmount = summed;
+        }
+      } else if (latestDateTotals.size === 1) {
+        const [currencyKey, summed] = latestDateTotals.entries().next().value;
+        if (Number.isFinite(summed)) {
+          latestAmount = summed;
+          latestCurrency = currencyKey || null;
+        }
+      } else {
+        const firstValid = Array.from(latestDateTotals.entries()).find(([, value]) =>
+          Number.isFinite(value)
+        );
+        if (firstValid) {
+          const [currencyKey, summed] = firstValid;
+          latestAmount = summed;
+          latestCurrency = currencyKey || latestCurrency;
+        }
+      }
+    }
     return {
       symbol: entry.canonical || null,
       displaySymbol: displaySymbol || null,
@@ -6655,8 +6695,8 @@ async function computeDividendBreakdown(login, account, options = {}) {
       firstDate: entry.earliestTimestamp ? formatDateOnly(entry.earliestTimestamp) : null,
       lastDate: entry.latestTimestamp ? formatDateOnly(entry.latestTimestamp) : null,
       lastTimestamp: entry.latestTimestamp ? entry.latestTimestamp.toISOString() : null,
-      lastAmount: Number.isFinite(entry.latestAmount) ? entry.latestAmount : null,
-      lastCurrency: entry.latestCurrency || null,
+      lastAmount: Number.isFinite(latestAmount) ? latestAmount : null,
+      lastCurrency: latestCurrency || null,
       _magnitude: computeMagnitude({
         cadAmount,
         currencyTotals,
