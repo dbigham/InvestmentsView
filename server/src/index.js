@@ -50,6 +50,16 @@ const DEFAULT_TEMPERATURE_CHART_START_DATE = '1980-01-01';
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const DEBUG_QUESTRADE_API = process.env.DEBUG_QUESTRADE_API === 'true';
+// Shorter HTTP timeouts so requests fail fast instead of hanging for minutes.
+// Adjustable via env if needed.
+const HTTP_HEADERS_TIMEOUT_MS = (() => {
+  const v = Number(process.env.HTTP_HEADERS_TIMEOUT_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 15_000; // default 15s
+})();
+const HTTP_BODY_TIMEOUT_MS = (() => {
+  const v = Number(process.env.HTTP_BODY_TIMEOUT_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 60_000; // default 60s
+})();
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
@@ -2699,6 +2709,9 @@ async function refreshAccessToken(login) {
           method: 'GET',
           headers,
           dispatcher,
+          // Ensure refresh attempts don't hang indefinitely
+          headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
+          bodyTimeout: HTTP_BODY_TIMEOUT_MS,
         });
       } catch (error) {
         console.error('[Questrade][refresh] Network error during refresh', {
@@ -2936,6 +2949,9 @@ async function performUndiciApiRequest(config) {
         headers,
         body,
         dispatcher,
+        // Fail fast on slow or stalled responses to avoid UI spinner hang
+        headersTimeout: HTTP_HEADERS_TIMEOUT_MS,
+        bodyTimeout: HTTP_BODY_TIMEOUT_MS,
       });
     } catch (error) {
       const networkError = error instanceof Error ? error : new Error(String(error));
