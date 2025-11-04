@@ -13,7 +13,7 @@ export function buildQuoteUrl(symbol, provider) {
   if (provider === 'yahoo') {
     return `https://ca.finance.yahoo.com/quote/${encoded}/`;
   }
-  return `https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=${encoded}%20chart`;
+  return `https://www.perplexity.ai/finance/${encoded}`;
 }
 
 export function openQuote(symbol, provider) {
