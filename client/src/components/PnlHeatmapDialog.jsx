@@ -478,6 +478,58 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
     return 2;
   };
 
+  const resolvePercentChange = (item) =>
+    Number.isFinite(item?.percentChange) ? item.percentChange : null;
+
+  const compareNumbers = (a, b) => {
+    if (a === null && b === null) {
+      return 0;
+    }
+    if (a === null) {
+      return 1;
+    }
+    if (b === null) {
+      return -1;
+    }
+    if (a < b) {
+      return -1;
+    }
+    if (a > b) {
+      return 1;
+    }
+    return 0;
+  };
+
+  const comparePositive = (a, b) => {
+    const aPercent = resolvePercentChange(a);
+    const bPercent = resolvePercentChange(b);
+    const percentDiff = compareNumbers(bPercent, aPercent);
+    if (percentDiff !== 0) {
+      return percentDiff;
+    }
+    const valueDiff = compareNumbers(Math.abs(b.metricValue), Math.abs(a.metricValue));
+    if (valueDiff !== 0) {
+      return valueDiff;
+    }
+    return compareNumbers(b.weight, a.weight);
+  };
+
+  const compareNegative = (a, b) => {
+    const aPercent = resolvePercentChange(a);
+    const bPercent = resolvePercentChange(b);
+    const aIntensity = aPercent === null ? null : Math.abs(aPercent);
+    const bIntensity = bPercent === null ? null : Math.abs(bPercent);
+    const percentDiff = compareNumbers(aIntensity, bIntensity);
+    if (percentDiff !== 0) {
+      return percentDiff;
+    }
+    const magnitudeDiff = compareNumbers(Math.abs(a.metricValue), Math.abs(b.metricValue));
+    if (magnitudeDiff !== 0) {
+      return magnitudeDiff;
+    }
+    return compareNumbers(a.weight, b.weight);
+  };
+
   if (styleMode === 'style2') {
     const withMetricWeight = prepared
       .map((item) => ({
@@ -498,25 +550,20 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
     const filtered = withMetricWeight.filter((item) => item.weight / totalAbs >= STYLE_TWO_MIN_SHARE);
     const pool = filtered.length ? filtered : withMetricWeight.slice(0, 1);
 
-    const sorted = pool
-      .slice()
-      .sort((a, b) => {
-        const aScore = score(a.metricValue);
-        const bScore = score(b.metricValue);
-        if (aScore !== bScore) {
-          return aScore - bScore;
-        }
-        if (aScore === 0) {
-          return b.weight - a.weight;
-        }
-        if (aScore === 2) {
-          if (a.weight !== b.weight) {
-            return a.weight - b.weight;
-          }
-          return Math.abs(a.metricValue) - Math.abs(b.metricValue);
-        }
-        return b.weight - a.weight;
-      });
+    const sorted = pool.slice().sort((a, b) => {
+      const aScore = score(a.metricValue);
+      const bScore = score(b.metricValue);
+      if (aScore !== bScore) {
+        return aScore - bScore;
+      }
+      if (aScore === 0) {
+        return comparePositive(a, b);
+      }
+      if (aScore === 2) {
+        return compareNegative(a, b);
+      }
+      return compareNumbers(b.weight, a.weight);
+    });
 
     const layout = buildTreemapLayout(sorted);
     return layout.map((item) => ({
@@ -535,25 +582,20 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
     share: item.portfolioShare !== null ? item.portfolioShare : (item.weight / totalWeight) * 100,
   }));
 
-  const sorted = normalized
-    .slice()
-    .sort((a, b) => {
-      const aScore = score(a.metricValue);
-      const bScore = score(b.metricValue);
-      if (aScore !== bScore) {
-        return aScore - bScore;
-      }
-      if (aScore === 0) {
-        return b.weight - a.weight;
-      }
-      if (aScore === 2) {
-        if (a.weight !== b.weight) {
-          return a.weight - b.weight;
-        }
-        return Math.abs(a.metricValue) - Math.abs(b.metricValue);
-      }
-      return b.weight - a.weight;
-    });
+  const sorted = normalized.slice().sort((a, b) => {
+    const aScore = score(a.metricValue);
+    const bScore = score(b.metricValue);
+    if (aScore !== bScore) {
+      return aScore - bScore;
+    }
+    if (aScore === 0) {
+      return comparePositive(a, b);
+    }
+    if (aScore === 2) {
+      return compareNegative(a, b);
+    }
+    return compareNumbers(b.weight, a.weight);
+  });
 
   const layout = buildTreemapLayout(sorted);
   const gutter = 0;
