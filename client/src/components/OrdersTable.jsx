@@ -313,7 +313,7 @@ function OrdersTable({ orders, accountsById, showAccountColumn, emptyMessage }) 
       return;
     }
 
-    const provider = event.altKey ? 'yahoo' : 'google';
+    const provider = event.altKey ? 'yahoo' : 'perplexity';
     const url = buildQuoteUrl(symbol, provider);
     if (!url) {
       return;
