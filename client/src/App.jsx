@@ -6478,11 +6478,13 @@ export default function App() {
       setCashBreakdownCurrency(null);
       return;
     }
-    if (
-      !activeCurrency ||
-      activeCurrency.scope !== 'perCurrency' ||
-      activeCurrency.currency !== cashBreakdownCurrency
-    ) {
+
+    const activeCurrencyCode =
+      typeof activeCurrency?.currency === 'string'
+        ? activeCurrency.currency.trim().toUpperCase()
+        : null;
+
+    if (!activeCurrencyCode || activeCurrencyCode !== cashBreakdownCurrency) {
       setCashBreakdownCurrency(null);
     }
   }, [
@@ -6535,11 +6537,15 @@ export default function App() {
     [handleAccountChange]
   );
 
+  const activeCurrencyCode =
+    typeof activeCurrency?.currency === 'string'
+      ? activeCurrency.currency.trim().toUpperCase()
+      : null;
+
   const cashBreakdownAvailable =
     showingAggregateAccounts &&
-    activeCurrency &&
-    activeCurrency.scope === 'perCurrency' &&
-    (activeCurrency.currency === 'CAD' || activeCurrency.currency === 'USD');
+    activeCurrencyCode &&
+    (activeCurrencyCode === 'CAD' || activeCurrencyCode === 'USD');
 
   useEffect(() => {
     investmentModelChartsRef.current = investmentModelCharts;
@@ -8309,8 +8315,8 @@ export default function App() {
             onShowPeople={handleOpenPeople}
             peopleDisabled={peopleDisabled}
             onShowCashBreakdown={
-              cashBreakdownAvailable && activeCurrency
-                ? () => handleShowCashBreakdown(activeCurrency.currency)
+              cashBreakdownAvailable && activeCurrencyCode
+                ? () => handleShowCashBreakdown(activeCurrencyCode)
                 : null
             }
             onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
