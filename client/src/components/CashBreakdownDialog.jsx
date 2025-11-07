@@ -37,11 +37,11 @@ export default function CashBreakdownDialog({ currency, total, entries, onClose,
     return entries.slice();
   }, [entries]);
 
-  const handleAccountClick = (accountId) => {
+  const handleAccountClick = (accountId, event) => {
     if (!onSelectAccount) {
       return;
     }
-    onSelectAccount(accountId);
+    onSelectAccount(accountId, event);
   };
 
   return (
@@ -79,7 +79,7 @@ export default function CashBreakdownDialog({ currency, total, entries, onClose,
                   <button
                     type="button"
                     className="cash-breakdown-list__entry"
-                    onClick={() => handleAccountClick(entry.accountId)}
+                    onClick={(event) => handleAccountClick(entry.accountId, event)}
                   >
                     <div className="cash-breakdown-list__info">
                       <span className="cash-breakdown-list__name">{entry.name}</span>
