@@ -22,6 +22,14 @@ export default function AccountMetadataDialog({
   const DEFAULT_INFLATION_PERCENT = 2.5; // 2.5% per year default
   const MS_PER_YEAR = 365.2425 * 24 * 60 * 60 * 1000;
 
+  // Resolve an inflation percent from user input, falling back to default
+  const resolveInflationPercent = (raw) => {
+    const s = (raw === undefined || raw === null) ? '' : String(raw).trim();
+    if (s === '') return DEFAULT_INFLATION_PERCENT;
+    const n = Number(s);
+    return Number.isFinite(n) && n >= 0 ? n : DEFAULT_INFLATION_PERCENT;
+  };
+
   const parseDateOnly = (value) => {
     if (!value || typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -61,9 +69,13 @@ export default function AccountMetadataDialog({
           : '',
       retirementBirthDate: normalizeString(initial?.retirementBirthDate || ''),
       retirementInflationPercent:
-        initial?.retirementInflationPercent !== undefined && initial?.retirementInflationPercent !== null
-          ? String(initial.retirementInflationPercent)
-          : '',
+        (function () {
+          if (initial?.retirementInflationPercent === undefined || initial?.retirementInflationPercent === null) {
+            return String(DEFAULT_INFLATION_PERCENT);
+          }
+          const trimmed = String(initial.retirementInflationPercent).trim();
+          return trimmed === '' ? String(DEFAULT_INFLATION_PERCENT) : trimmed;
+        })(),
     };
   }, [initial]);
 
@@ -77,10 +89,7 @@ export default function AccountMetadataDialog({
     const ageNum = Number(draft.retirementAge);
     const income = Number(draft.retirementIncome);
     const expenses = Number(draft.retirementLivingExpenses);
-    const inflationPercent = (function () {
-      const n = Number(draft.retirementInflationPercent);
-      return Number.isFinite(n) && n >= 0 ? n : DEFAULT_INFLATION_PERCENT;
-    })();
+    const inflationPercent = resolveInflationPercent(draft.retirementInflationPercent);
     const inflationRate = inflationPercent / 100;
     if (!birth || !Number.isFinite(ageNum) || ageNum <= 0) {
       return { yearsUntil: null, incomeToday: null, expensesToday: null };
@@ -377,7 +386,7 @@ export default function AccountMetadataDialog({
                       {Number.isFinite(presentValueInfo.incomeToday) && (
                         <p className="account-metadata-dialog__hint">
                           ≈ {formatMoney(presentValueInfo.incomeToday)} in today's dollars (using
-                          {' '}{formatNumber((Number(draft.retirementInflationPercent) || DEFAULT_INFLATION_PERCENT), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
+                          {' '}{formatNumber(resolveInflationPercent(draft.retirementInflationPercent), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
                         </p>
                       )}
                     </div>
@@ -399,7 +408,7 @@ export default function AccountMetadataDialog({
                       {Number.isFinite(presentValueInfo.expensesToday) && (
                         <p className="account-metadata-dialog__hint">
                           ≈ {formatMoney(presentValueInfo.expensesToday)} in today's dollars (using
-                          {' '}{formatNumber((Number(draft.retirementInflationPercent) || DEFAULT_INFLATION_PERCENT), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
+                          {' '}{formatNumber(resolveInflationPercent(draft.retirementInflationPercent), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
                         </p>
                       )}
                     </div>
