@@ -11456,6 +11456,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       }
 
       const groupRelations = getAccountGroupRelations();
+      const groupMetadata = getAccountGroupMetadata();
       const { accountGroupsById } = assignAccountGroups(
         contexts.map((context) => context.account),
         { groupRelations, groupMetadata }
