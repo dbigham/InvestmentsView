@@ -947,6 +947,126 @@ textarea {
   stroke-width: 2;
 }
 
+.pnl-dialog__selection-rect {
+  fill: rgba(56, 155, 60, 0.16);
+  stroke: var(--color-accent);
+  stroke-width: 1.25;
+}
+
+.pnl-dialog__selection-rect--active {
+  fill: rgba(56, 155, 60, 0.22);
+}
+
+.pnl-dialog__selection-summary {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.18);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  max-width: 280px;
+  pointer-events: none;
+}
+
+.pnl-dialog__selection-summary--active {
+  opacity: 0.92;
+}
+
+.pnl-dialog__selection-summary--positive {
+  border-color: rgba(56, 155, 60, 0.45);
+}
+
+.pnl-dialog__selection-summary--negative {
+  border-color: rgba(225, 29, 72, 0.45);
+}
+
+.pnl-dialog__selection-summary--neutral {
+  border-color: rgba(136, 149, 167, 0.45);
+}
+
+.pnl-dialog__selection-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pnl-dialog__selection-metrics {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.pnl-dialog__selection-percent {
+  font-weight: 600;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.pnl-dialog__selection-percent--positive {
+  color: var(--color-accent);
+}
+
+.pnl-dialog__selection-percent--negative {
+  color: var(--color-negative);
+}
+
+.pnl-dialog__selection-percent--neutral {
+  color: var(--color-text-primary);
+}
+
+.pnl-dialog__selection-change {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pnl-dialog__selection-clear {
+  pointer-events: auto;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.pnl-dialog__selection-clear:hover,
+.pnl-dialog__selection-clear:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.pnl-dialog__selection-dates {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  pointer-events: none;
+}
+
+.pnl-dialog__selection-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 .pnl-dialog__axis-label {
   fill: var(--color-text-muted);
   font-size: 0.66rem;

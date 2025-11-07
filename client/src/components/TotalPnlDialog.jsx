@@ -1,6 +1,12 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
-import { classifyPnL, formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
+import {
+  classifyPnL,
+  formatDate,
+  formatMoney,
+  formatSignedMoney,
+  formatSignedPercent,
+} from '../utils/formatters';
 import {
   TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
   buildTotalPnlDisplaySeries,
@@ -12,6 +18,13 @@ const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
 const AXIS_TARGET_INTERVALS = 4;
+
+function clampChartX(value) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(PADDING.left, Math.min(CHART_WIDTH - PADDING.right, value));
+}
 
 function niceNumber(value, round) {
   if (!Number.isFinite(value) || value === 0) {
@@ -245,7 +258,44 @@ export default function TotalPnlDialog({
   const headingId = useId();
   const [timeframe, setTimeframe] = useState('ALL');
   const [hover, setHover] = useState(null);
+  const [selectionState, setSelectionState] = useState({
+    anchorX: null,
+    currentX: null,
+    startX: null,
+    endX: null,
+    active: false,
+  });
   const selectRef = useRef(null);
+  const chartRef = useRef(null);
+  const resetSelection = useCallback(
+    () =>
+      setSelectionState({
+        anchorX: null,
+        currentX: null,
+        startX: null,
+        endX: null,
+        active: false,
+      }),
+    []
+  );
+  const getRelativePoint = useCallback(
+    (clientX, clientY) => {
+      if (!chartRef.current) {
+        return null;
+      }
+      const rect = chartRef.current.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return null;
+      }
+      const scaleX = CHART_WIDTH / rect.width;
+      const scaleY = CHART_HEIGHT / rect.height;
+      return {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY,
+      };
+    },
+    []
+  );
   const isCagrMode = mode !== 'all';
   const formattedCagrStart = cagrStartDate ? formatDate(cagrStartDate) : null;
   const cagrToggleLabel = formattedCagrStart ? `From ${formattedCagrStart.replace(',', '')}` : null;
@@ -264,7 +314,8 @@ export default function TotalPnlDialog({
 
   useEffect(() => {
     setTimeframe('ALL');
-  }, [data?.accountId, mode]);
+    resetSelection();
+  }, [data?.accountId, mode, resetSelection]);
 
   useEffect(() => {
     function handleDocumentClick(event) {
@@ -278,6 +329,10 @@ export default function TotalPnlDialog({
     document.addEventListener('mousedown', handleDocumentClick);
     return () => document.removeEventListener('mousedown', handleDocumentClick);
   }, []);
+
+  useEffect(() => {
+    resetSelection();
+  }, [timeframe, resetSelection]);
 
   const handleRangeToggle = (event) => {
     if (typeof onModeChange !== 'function') {
@@ -297,6 +352,56 @@ export default function TotalPnlDialog({
       }),
     [data?.points, timeframe, data?.displayStartDate, data?.summary?.displayStartTotals]
   );
+  useEffect(() => {
+    resetSelection();
+  }, [filteredSeries, resetSelection]);
+
+  useEffect(() => {
+    if (!selectionState.active) {
+      return;
+    }
+    const handleMouseUp = () => {
+      setSelectionState((state) => {
+        if (!state.active) {
+          return state;
+        }
+        const anchor = clampChartX(state.anchorX);
+        const current = clampChartX(state.currentX ?? state.anchorX);
+        if (!Number.isFinite(anchor) || !Number.isFinite(current)) {
+          return {
+            anchorX: null,
+            currentX: null,
+            startX: null,
+            endX: null,
+            active: false,
+          };
+        }
+        const delta = Math.abs(current - anchor);
+        if (!(delta >= 3)) {
+          return {
+            anchorX: null,
+            currentX: null,
+            startX: null,
+            endX: null,
+            active: false,
+          };
+        }
+        const startX = Math.min(anchor, current);
+        const endX = Math.max(anchor, current);
+        return {
+          anchorX: null,
+          currentX: null,
+          startX,
+          endX,
+          active: false,
+        };
+      });
+    };
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [selectionState.active]);
   const seriesHasDisplayDelta = useMemo(
     () => filteredSeries.some((entry) => Number.isFinite(entry?.totalPnlDelta)),
     [filteredSeries]
@@ -362,6 +467,66 @@ export default function TotalPnlDialog({
     [filteredSeries, useDisplayStartDelta, chartRangeStart, chartRangeEnd]
   );
   const hasChart = Boolean(chartMetrics && chartMetrics.points.length);
+  const resolvePointAtX = useCallback(
+    (x) => {
+      if (!hasChart || !chartMetrics?.innerWidth || !Number.isFinite(x)) {
+        return null;
+      }
+      const clampedX = clampChartX(x);
+      if (!Number.isFinite(clampedX)) {
+        return null;
+      }
+      const ratio = (clampedX - PADDING.left) / chartMetrics.innerWidth;
+      if (!Number.isFinite(ratio)) {
+        return null;
+      }
+      const targetIndex = ratio * (chartMetrics.points.length - 1);
+      const lowerIndex = Math.max(0, Math.floor(targetIndex));
+      const upperIndex = Math.min(chartMetrics.points.length - 1, lowerIndex + 1);
+      const t = Math.max(0, Math.min(1, targetIndex - lowerIndex));
+      const lower = chartMetrics.points[lowerIndex];
+      const upper = chartMetrics.points[upperIndex];
+      const base = lower || upper;
+      if (!lower || !upper || !base) {
+        return base || null;
+      }
+      const interpolate = (lowerValue, upperValue) => {
+        const lowerFinite = Number.isFinite(lowerValue);
+        const upperFinite = Number.isFinite(upperValue);
+        if (lowerFinite && upperFinite) {
+          return lowerValue + (upperValue - lowerValue) * t;
+        }
+        if (lowerFinite) {
+          return lowerValue;
+        }
+        if (upperFinite) {
+          return upperValue;
+        }
+        return undefined;
+      };
+      const interpolatedX = clampChartX(lower.x + (upper.x - lower.x) * t);
+      const resolvedX = Number.isFinite(interpolatedX) ? interpolatedX : clampedX;
+      const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
+      const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
+      return {
+        date: t < 0.5 ? lower.date : upper.date,
+        totalPnl: interpolatedTotalPnl,
+        chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
+        equity: interpolate(lower.equity, upper.equity),
+        netDeposits: interpolate(lower.netDeposits, upper.netDeposits),
+        totalPnlDelta: interpolate(lower.totalPnlDelta, upper.totalPnlDelta),
+        equityDelta: interpolate(lower.equityDelta, upper.equityDelta),
+        netDepositsDelta: interpolate(lower.netDepositsDelta, upper.netDepositsDelta),
+        x: resolvedX,
+        y: lower.y + (upper.y - lower.y) * t,
+        trend:
+          Number.isFinite(upper.chartValue) && Number.isFinite(lower.chartValue)
+            ? upper.chartValue - lower.chartValue
+            : interpolate(lower.trend, upper.trend),
+      };
+    },
+    [chartMetrics, hasChart]
+  );
   const canShowBreakdown = typeof onShowBreakdown === 'function';
   const pathD = useMemo(() => {
     if (!hasChart) {
@@ -390,56 +555,11 @@ export default function TotalPnlDialog({
   }, [chartMetrics, hasChart]);
 
   const hoverPoint = useMemo(() => {
-    if (!hover || !hasChart || !chartMetrics.innerWidth) {
+    if (!hover) {
       return null;
     }
-    const clampedX = Math.max(PADDING.left, Math.min(CHART_WIDTH - PADDING.right, hover.x));
-    const ratio = (clampedX - PADDING.left) / chartMetrics.innerWidth;
-    const targetIndex = ratio * (chartMetrics.points.length - 1);
-    const lowerIndex = Math.max(0, Math.floor(targetIndex));
-    const upperIndex = Math.min(chartMetrics.points.length - 1, lowerIndex + 1);
-    const t = targetIndex - lowerIndex;
-    const lower = chartMetrics.points[lowerIndex];
-    const upper = chartMetrics.points[upperIndex];
-    const base = lower || upper;
-    if (!lower || !upper || !base) {
-      return base || null;
-    }
-    const interpX = lower.x + (upper.x - lower.x) * t;
-    const clampedInterpX = Math.max(PADDING.left, Math.min(CHART_WIDTH - PADDING.right, interpX));
-    const interpolate = (lowerValue, upperValue) => {
-      const lowerFinite = Number.isFinite(lowerValue);
-      const upperFinite = Number.isFinite(upperValue);
-      if (lowerFinite && upperFinite) {
-        return lowerValue + (upperValue - lowerValue) * t;
-      }
-      if (lowerFinite) {
-        return lowerValue;
-      }
-      if (upperFinite) {
-        return upperValue;
-      }
-      return undefined;
-    };
-    const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
-    const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
-    return {
-      date: t < 0.5 ? lower.date : upper.date,
-      totalPnl: interpolatedTotalPnl,
-      chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
-      equity: lower.equity + (upper.equity - lower.equity) * t,
-      netDeposits: lower.netDeposits + (upper.netDeposits - lower.netDeposits) * t,
-      totalPnlDelta: interpolate(lower.totalPnlDelta, upper.totalPnlDelta),
-      equityDelta: interpolate(lower.equityDelta, upper.equityDelta),
-      netDepositsDelta: interpolate(lower.netDepositsDelta, upper.netDepositsDelta),
-      x: clampedInterpX,
-      y: lower.y + (upper.y - lower.y) * t,
-      trend:
-        Number.isFinite(upper.chartValue) && Number.isFinite(lower.chartValue)
-          ? upper.chartValue - lower.chartValue
-          : interpolate(lower.trend, upper.trend),
-    };
-  }, [hover, chartMetrics, hasChart]);
+    return resolvePointAtX(hover.x);
+  }, [hover, resolvePointAtX]);
 
   const marker = hasChart ? chartMetrics.points[chartMetrics.points.length - 1] : null;
   const markerValue =
@@ -473,6 +593,115 @@ export default function TotalPnlDialog({
       }
     : null;
 
+  const selectionRange = useMemo(() => {
+    if (selectionState.active) {
+      const anchor = clampChartX(selectionState.anchorX);
+      const current = clampChartX(selectionState.currentX ?? selectionState.anchorX);
+      if (!Number.isFinite(anchor) || !Number.isFinite(current)) {
+        return null;
+      }
+      const startX = Math.min(anchor, current);
+      const endX = Math.max(anchor, current);
+      const width = Math.max(0, endX - startX);
+      if (!(width >= 1)) {
+        return null;
+      }
+      return { startX, endX, width, isActive: true };
+    }
+    if (Number.isFinite(selectionState.startX) && Number.isFinite(selectionState.endX)) {
+      const start = clampChartX(selectionState.startX);
+      const end = clampChartX(selectionState.endX);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        return null;
+      }
+      const startX = Math.min(start, end);
+      const endX = Math.max(start, end);
+      const width = Math.max(0, endX - startX);
+      if (!(width >= 1)) {
+        return null;
+      }
+      return { startX, endX, width, isActive: false };
+    }
+    return null;
+  }, [selectionState]);
+
+  const selectionSummary = useMemo(() => {
+    if (!selectionRange) {
+      return null;
+    }
+    const startPoint = resolvePointAtX(selectionRange.startX);
+    const endPoint = resolvePointAtX(selectionRange.endX);
+    if (!startPoint || !endPoint) {
+      return null;
+    }
+    const resolveValue = (point) => {
+      if (Number.isFinite(point?.chartValue)) {
+        return point.chartValue;
+      }
+      if (Number.isFinite(point?.totalPnl)) {
+        return point.totalPnl;
+      }
+      return null;
+    };
+    const startValue = resolveValue(startPoint);
+    const endValue = resolveValue(endPoint);
+    const deltaValue =
+      Number.isFinite(startValue) && Number.isFinite(endValue) ? endValue - startValue : null;
+    const percentChange =
+      Number.isFinite(startValue) &&
+      Math.abs(startValue) > 1e-9 &&
+      Number.isFinite(endValue)
+        ? ((endValue - startValue) / Math.abs(startValue)) * 100
+        : null;
+    return {
+      ...selectionRange,
+      startPoint,
+      endPoint,
+      startValue,
+      endValue,
+      deltaValue,
+      percentChange,
+    };
+  }, [selectionRange, resolvePointAtX]);
+
+  const selectionTone = Number.isFinite(selectionSummary?.deltaValue)
+    ? classifyPnL(selectionSummary.deltaValue)
+    : null;
+  const formattedSelectionPercent = Number.isFinite(selectionSummary?.percentChange)
+    ? formatSignedPercent(selectionSummary.percentChange, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : null;
+  const formattedSelectionChange = Number.isFinite(selectionSummary?.deltaValue)
+    ? formatSignedMoney(selectionSummary.deltaValue)
+    : null;
+  const selectionLabelStyle = useMemo(() => {
+    if (!selectionSummary) {
+      return null;
+    }
+    const center = selectionSummary.startX + selectionSummary.width / 2;
+    const margin = 70;
+    const clampedCenter = Math.max(margin, Math.min(CHART_WIDTH - margin, center));
+    const leftPercent = (clampedCenter / CHART_WIDTH) * 100;
+    return { left: `${leftPercent}%`, top: '12px', transform: 'translate(-50%, 0)' };
+  }, [selectionSummary]);
+  const selectionStartDateLabel = selectionSummary ? formatDate(selectionSummary.startPoint.date) : null;
+  const selectionEndDateLabel = selectionSummary ? formatDate(selectionSummary.endPoint.date) : null;
+  const selectionStartValueLabel = selectionSummary ? formatMoney(selectionSummary.startValue) : null;
+  const selectionEndValueLabel = selectionSummary ? formatMoney(selectionSummary.endValue) : null;
+  const selectionSummaryClassNames = ['pnl-dialog__selection-summary'];
+  if (selectionSummary?.isActive) {
+    selectionSummaryClassNames.push('pnl-dialog__selection-summary--active');
+  }
+  if (selectionTone) {
+    selectionSummaryClassNames.push(`pnl-dialog__selection-summary--${selectionTone}`);
+  }
+  const selectionPercentClassNames = ['pnl-dialog__selection-percent'];
+  if (selectionTone) {
+    selectionPercentClassNames.push(`pnl-dialog__selection-percent--${selectionTone}`);
+  }
+  const selectionRect = selectionRange ? selectionRange : null;
+  const showHoverMarker = Boolean(hoverPoint && !selectionRange?.isActive);
+  const shouldShowChartLabel = Boolean((hoverLabel || markerLabel) && !selectionSummary);
+
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
       return [];
@@ -481,20 +710,34 @@ export default function TotalPnlDialog({
   }, [chartMetrics, hasChart]);
 
   const handleMouseMove = (event) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    if (!rect.width || !rect.height) {
+    const point = getRelativePoint(event.clientX, event.clientY);
+    if (!point) {
       return;
     }
-    const scaleX = CHART_WIDTH / rect.width;
-    const scaleY = CHART_HEIGHT / rect.height;
-    const x = (event.clientX - rect.left) * scaleX;
-    const y = (event.clientY - rect.top) * scaleY;
-    setHover({ x, y });
+    setHover(point);
+    setSelectionState((state) => (state.active ? { ...state, currentX: point.x } : state));
+  };
+
+  const handleMouseDown = (event) => {
+    if (!hasChart) {
+      return;
+    }
+    const point = getRelativePoint(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+    event.preventDefault();
+    setHover(point);
+    setSelectionState({ anchorX: point.x, currentX: point.x, startX: null, endX: null, active: true });
   };
 
   const handleMouseLeave = () => {
     setHover(null);
   };
+
+  const clearSelection = useCallback(() => {
+    resetSelection();
+  }, [resetSelection]);
 
   const summary = data?.summary || {};
   const totalPnlAllTime = Number.isFinite(summary.totalPnlAllTimeCad)
@@ -654,10 +897,12 @@ export default function TotalPnlDialog({
                 {!error && hasChart && (
                   <div className="qqq-section__chart-container">
                     <svg
+                      ref={chartRef}
                       className="qqq-section__chart pnl-dialog__chart"
                       viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
                       role="img"
                       aria-hidden="true"
+                      onMouseDown={handleMouseDown}
                       onMouseMove={handleMouseMove}
                       onMouseLeave={handleMouseLeave}
                     >
@@ -698,9 +943,23 @@ export default function TotalPnlDialog({
                           />
                         </g>
                       ))}
+                      {selectionRect && (
+                        <rect
+                          className={
+                            selectionRect.isActive
+                              ? 'pnl-dialog__selection-rect pnl-dialog__selection-rect--active'
+                              : 'pnl-dialog__selection-rect'
+                          }
+                          x={selectionRect.startX}
+                          y={PADDING.top}
+                          width={selectionRect.width}
+                          height={chartMetrics.innerHeight}
+                          pointerEvents="none"
+                        />
+                      )}
                       {pathD && <path className="qqq-section__series-path" d={pathD} />}
                       {marker && <circle className="qqq-section__marker" cx={marker.x} cy={marker.y} r="5" />}
-                      {hoverPoint && (
+                      {showHoverMarker && (
                         <>
                           <line
                             className="pnl-dialog__hover-line"
@@ -713,7 +972,40 @@ export default function TotalPnlDialog({
                         </>
                       )}
                     </svg>
-                    {(hoverLabel || markerLabel) && (
+                    {selectionSummary && selectionLabelStyle && (
+                      <div className={selectionSummaryClassNames.join(' ')} style={selectionLabelStyle}>
+                        <div className="pnl-dialog__selection-header">
+                          <div className="pnl-dialog__selection-metrics">
+                            {formattedSelectionPercent && (
+                              <span className={selectionPercentClassNames.join(' ')}>
+                                {formattedSelectionPercent}
+                              </span>
+                            )}
+                            {formattedSelectionChange && (
+                              <span className="pnl-dialog__selection-change">{formattedSelectionChange}</span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="pnl-dialog__selection-clear"
+                            onClick={clearSelection}
+                            aria-label="Clear selection"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="pnl-dialog__selection-dates">
+                          {selectionStartDateLabel && selectionEndDateLabel
+                            ? `${selectionStartDateLabel} – ${selectionEndDateLabel}`
+                            : selectionStartDateLabel || selectionEndDateLabel}
+                        </div>
+                        <div className="pnl-dialog__selection-values">
+                          <span>Start {selectionStartValueLabel}</span>
+                          <span>End {selectionEndValueLabel}</span>
+                        </div>
+                      </div>
+                    )}
+                    {shouldShowChartLabel && (
                       <div className="qqq-section__chart-label" style={labelPosition}>
                         <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
                         <span className="pnl-dialog__label-date">
