@@ -25,6 +25,7 @@ const {
   updateAccountPlanningContext,
   extractSymbolSettingsFromOverride,
   getAccountGroupRelations,
+  getAccountGroupMetadata,
   updateAccountMetadata,
 } = require('./accountNames');
 const { assignAccountGroups } = require('./grouping');
@@ -2494,6 +2495,52 @@ function applyAccountSettingsOverrideToAccount(target, override) {
       target.accountGroup = normalizedGroup;
     } else if (Object.prototype.hasOwnProperty.call(target, 'accountGroup')) {
       delete target.accountGroup;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'mainRetirementAccount')) {
+    if (typeof override.mainRetirementAccount === 'boolean') {
+      target.mainRetirementAccount = override.mainRetirementAccount;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'mainRetirementAccount')) {
+      delete target.mainRetirementAccount;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'retirementAge')) {
+    const age = Number(override.retirementAge);
+    if (Number.isFinite(age) && age > 0) {
+      target.retirementAge = Math.round(age);
+    } else if (Object.prototype.hasOwnProperty.call(target, 'retirementAge')) {
+      delete target.retirementAge;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'retirementIncome')) {
+    const income = Number(override.retirementIncome);
+    if (Number.isFinite(income) && income >= 0) {
+      target.retirementIncome = Math.round(income * 100) / 100;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'retirementIncome')) {
+      delete target.retirementIncome;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'retirementLivingExpenses')) {
+    const expenses = Number(override.retirementLivingExpenses);
+    if (Number.isFinite(expenses) && expenses >= 0) {
+      target.retirementLivingExpenses = Math.round(expenses * 100) / 100;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'retirementLivingExpenses')) {
+      delete target.retirementLivingExpenses;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'retirementBirthDate')) {
+    const raw = override.retirementBirthDate;
+    const normalized =
+      typeof raw === 'string' && raw.trim() ? raw.trim() : normalizeDateOnly(override.retirementBirthDate) || null;
+    if (normalized) {
+      target.retirementBirthDate = normalized;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'retirementBirthDate')) {
+      delete target.retirementBirthDate;
     }
   }
 
@@ -10030,8 +10077,10 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const groupRelations = getAccountGroupRelations();
+    const groupMetadata = getAccountGroupMetadata();
     const { accountGroups, accountGroupsById } = assignAccountGroups(allAccounts, {
       groupRelations,
+      groupMetadata,
     });
 
     if (Array.isArray(configuredOrdering) && configuredOrdering.length) {
@@ -11208,6 +11257,23 @@ app.get('/api/summary', async function (req, res) {
         })(),
         accountGroup: account.accountGroup || null,
         accountGroupId: account.accountGroupId || null,
+        mainRetirementAccount: account.mainRetirementAccount === true,
+        retirementAge:
+          Number.isFinite(account.retirementAge) && account.retirementAge > 0
+            ? Math.round(account.retirementAge)
+            : null,
+        retirementIncome:
+          Number.isFinite(account.retirementIncome) && account.retirementIncome >= 0
+            ? Math.round(account.retirementIncome * 100) / 100
+            : null,
+        retirementLivingExpenses:
+          Number.isFinite(account.retirementLivingExpenses) && account.retirementLivingExpenses >= 0
+            ? Math.round(account.retirementLivingExpenses * 100) / 100
+            : null,
+        retirementBirthDate:
+          typeof account.retirementBirthDate === 'string' && account.retirementBirthDate.trim()
+            ? account.retirementBirthDate.trim()
+            : null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });
@@ -11234,6 +11300,22 @@ app.get('/api/summary', async function (req, res) {
             .filter(Boolean);
       const uniqueAccountNumbers = Array.from(new Set(accountNumbers));
       const uniqueOwnerLabels = Array.from(new Set(ownerLabels));
+      const retirementAge =
+        Number.isFinite(group.retirementAge) && group.retirementAge > 0
+          ? Math.round(group.retirementAge)
+          : null;
+      const retirementIncome =
+        Number.isFinite(group.retirementIncome) && group.retirementIncome >= 0
+          ? Math.round(group.retirementIncome * 100) / 100
+          : null;
+      const retirementLivingExpenses =
+        Number.isFinite(group.retirementLivingExpenses) && group.retirementLivingExpenses >= 0
+          ? Math.round(group.retirementLivingExpenses * 100) / 100
+          : null;
+      const retirementBirthDate =
+        typeof group.retirementBirthDate === 'string' && group.retirementBirthDate
+          ? group.retirementBirthDate
+          : null;
       return {
         id: group.id,
         name: group.name,
@@ -11241,6 +11323,11 @@ app.get('/api/summary', async function (req, res) {
         accountIds,
         accountNumbers: uniqueAccountNumbers,
         ownerLabels: uniqueOwnerLabels,
+        mainRetirementAccount: group.mainRetirementAccount === true,
+        retirementAge,
+        retirementIncome,
+        retirementLivingExpenses,
+        retirementBirthDate,
       };
     });
 
@@ -11361,7 +11448,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       const groupRelations = getAccountGroupRelations();
       const { accountGroupsById } = assignAccountGroups(
         contexts.map((context) => context.account),
-        { groupRelations }
+        { groupRelations, groupMetadata }
       );
 
       let targetContexts = contexts;

@@ -7,6 +7,38 @@ function normalizeAccountGroupName(value) {
   return normalized || null;
 }
 
+function normalizeDateOnly(value) {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    if (Number.isNaN(time)) {
+      return null;
+    }
+    return new Date(time).toISOString().slice(0, 10);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const derived = new Date(value);
+    if (Number.isNaN(derived.getTime())) {
+      return null;
+    }
+    return derived.toISOString().slice(0, 10);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(`${trimmed}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+    return parsed.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
 function slugifyAccountGroupKey(name) {
   if (!name) {
     return null;
@@ -28,6 +60,66 @@ function slugifyAccountGroupKey(name) {
 function assignAccountGroups(accounts, options) {
   const opts = options || {};
   const groupRelationsRaw = opts.groupRelations || null; // { childName: [parentName, ...] }
+  const metadataByKey = new Map();
+  if (opts.groupMetadata && typeof opts.groupMetadata === 'object') {
+    Object.entries(opts.groupMetadata).forEach(([rawKey, value]) => {
+      if (!rawKey || !value || typeof value !== 'object') {
+        return;
+      }
+      const normalized = normalizeAccountGroupName(rawKey);
+      if (!normalized) {
+        return;
+      }
+      const key = normalized.toLowerCase();
+      if (!key) {
+        return;
+      }
+      metadataByKey.set(key, value);
+    });
+  }
+
+  const decorateGroupWithMetadata = (group) => {
+    if (!group || typeof group !== 'object') {
+      return;
+    }
+    const normalizedName = normalizeAccountGroupName(group.name);
+    if (!normalizedName) {
+      return;
+    }
+    const key = normalizedName.toLowerCase();
+    const meta = metadataByKey.get(key);
+    if (!meta || typeof meta !== 'object') {
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'mainRetirementAccount')) {
+      group.mainRetirementAccount = meta.mainRetirementAccount === true;
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementAge')) {
+      const age = Number(meta.retirementAge);
+      if (Number.isFinite(age) && age > 0) {
+        group.retirementAge = Math.round(age);
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementIncome')) {
+      const income = Number(meta.retirementIncome);
+      if (Number.isFinite(income) && income >= 0) {
+        group.retirementIncome = Math.round(income * 100) / 100;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementLivingExpenses')) {
+      const expenses = Number(meta.retirementLivingExpenses);
+      if (Number.isFinite(expenses) && expenses >= 0) {
+        group.retirementLivingExpenses = Math.round(expenses * 100) / 100;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementBirthDate')) {
+      const normalized = normalizeDateOnly(meta.retirementBirthDate);
+      if (normalized) {
+        group.retirementBirthDate = normalized;
+      }
+    }
+  };
+
   const groupsByKey = new Map();
   const groupsById = new Map();
   const usedSlugs = new Set();
@@ -60,6 +152,7 @@ function assignAccountGroups(accounts, options) {
       groupsByKey.set(key, group);
       groupsById.set(id, group);
       displayNameByKey.set(key, groupName);
+      decorateGroupWithMetadata(group);
     }
 
     group.accounts.push(account);
@@ -152,6 +245,7 @@ function assignAccountGroups(accounts, options) {
         groupsByKey.set(parentKey, parentGroup);
         groupsById.set(id, parentGroup);
         displayNameByKey.set(parentKey, parentName);
+        decorateGroupWithMetadata(parentGroup);
       }
 
       const accountsSet = new Map(); // id -> account
@@ -187,6 +281,7 @@ function assignAccountGroups(accounts, options) {
   }
 
   const accountGroups = Array.from(groupsById.values()).map((group) => {
+    decorateGroupWithMetadata(group);
     const ownerLabels = new Set();
     const accountNumbers = new Set();
     group.accounts.forEach((account) => {
@@ -214,6 +309,23 @@ function assignAccountGroups(accounts, options) {
       accountIds: group.accounts.map((account) => account.id),
       accountNumbers: Array.from(accountNumbers),
       ownerLabels: Array.from(ownerLabels),
+      mainRetirementAccount: group.mainRetirementAccount === true,
+      retirementAge:
+        Number.isFinite(group.retirementAge) && group.retirementAge > 0
+          ? Math.round(group.retirementAge)
+          : null,
+      retirementIncome:
+        Number.isFinite(group.retirementIncome) && group.retirementIncome >= 0
+          ? Math.round(group.retirementIncome * 100) / 100
+          : null,
+      retirementLivingExpenses:
+        Number.isFinite(group.retirementLivingExpenses) && group.retirementLivingExpenses >= 0
+          ? Math.round(group.retirementLivingExpenses * 100) / 100
+          : null,
+      retirementBirthDate:
+        typeof group.retirementBirthDate === 'string' && group.retirementBirthDate
+          ? group.retirementBirthDate
+          : null,
     };
   });
 
@@ -227,4 +339,3 @@ module.exports = {
   normalizeAccountGroupName,
   slugifyAccountGroupKey,
 };
-

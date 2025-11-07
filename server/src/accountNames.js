@@ -44,6 +44,7 @@ let cachedSettings = {};
 let cachedOrdering = [];
 let cachedDefaultAccount = null;
 let cachedGroupRelations = {};
+let cachedGroupMetadata = {};
 let cachedMarker = null;
 let hasLoggedError = false;
 
@@ -379,6 +380,192 @@ function applyProjectionGrowthPercentSetting(target, key, value) {
   if (Number.isFinite(rounded)) {
     container.projectionGrowthPercent = rounded;
   }
+}
+
+function normalizeRetirementAge(value) {
+  const numeric = normalizeNumberLike(value);
+  if (numeric === null || Number.isNaN(numeric)) {
+    return null;
+  }
+  const rounded = Math.round(Number(numeric));
+  if (!Number.isFinite(rounded) || rounded <= 0) {
+    return null;
+  }
+  return rounded;
+}
+
+function normalizeRetirementAmount(value) {
+  const numeric = normalizeNumberLike(value);
+  if (numeric === null || Number.isNaN(numeric)) {
+    return null;
+  }
+  const rounded = Math.round(Number(numeric) * 100) / 100;
+  if (!Number.isFinite(rounded) || rounded < 0) {
+    return null;
+  }
+  return rounded;
+}
+
+function applyRetirementAgeSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeRetirementAge(value);
+  if (normalized === null) {
+    delete container.retirementAge;
+    return;
+  }
+  container.retirementAge = normalized;
+}
+
+function applyRetirementIncomeSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeRetirementAmount(value);
+  if (normalized === null) {
+    delete container.retirementIncome;
+    return;
+  }
+  container.retirementIncome = normalized;
+}
+
+function applyRetirementLivingExpensesSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeRetirementAmount(value);
+  if (normalized === null) {
+    delete container.retirementLivingExpenses;
+    return;
+  }
+  container.retirementLivingExpenses = normalized;
+}
+
+function applyMainRetirementAccountSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = coerceBoolean(value);
+  if (normalized === null) {
+    delete container.mainRetirementAccount;
+    return;
+  }
+  container.mainRetirementAccount = normalized;
+}
+
+function recordGroupMetadataEntry(target, label, entry) {
+  if (!target || !entry) {
+    return;
+  }
+  const normalizedName = normalizeAccountGroupName(label);
+  if (!normalizedName) {
+    return;
+  }
+  const key = normalizedName.toLowerCase();
+  if (!key) {
+    return;
+  }
+  const existing = target.get(key) || { name: normalizedName };
+  const metadata = Object.assign({ name: normalizedName }, existing);
+  let changed = false;
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'mainRetirementAccount')) {
+    const normalized = coerceBoolean(entry.mainRetirementAccount);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'mainRetirementAccount')) {
+        delete metadata.mainRetirementAccount;
+        changed = true;
+      }
+    } else if (metadata.mainRetirementAccount !== normalized) {
+      metadata.mainRetirementAccount = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementAge')) {
+    const normalized = normalizeRetirementAge(entry.retirementAge);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'retirementAge')) {
+        delete metadata.retirementAge;
+        changed = true;
+      }
+    } else if (metadata.retirementAge !== normalized) {
+      metadata.retirementAge = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementIncome')) {
+    const normalized = normalizeRetirementAmount(entry.retirementIncome);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'retirementIncome')) {
+        delete metadata.retirementIncome;
+        changed = true;
+      }
+    } else if (metadata.retirementIncome !== normalized) {
+      metadata.retirementIncome = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementLivingExpenses')) {
+    const normalized = normalizeRetirementAmount(entry.retirementLivingExpenses);
+    if (normalized === null) {
+      if (
+        Object.prototype.hasOwnProperty.call(metadata, 'retirementLivingExpenses')
+      ) {
+        delete metadata.retirementLivingExpenses;
+        changed = true;
+      }
+    } else if (metadata.retirementLivingExpenses !== normalized) {
+      metadata.retirementLivingExpenses = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementBirthDate')) {
+    const normalized = normalizeDateOnly(entry.retirementBirthDate);
+    if (normalized) {
+      if (metadata.retirementBirthDate !== normalized) {
+        metadata.retirementBirthDate = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(metadata, 'retirementBirthDate')) {
+      delete metadata.retirementBirthDate;
+      changed = true;
+    }
+  }
+
+  if (!changed && target.has(key)) {
+    return;
+  }
+
+  const keys = Object.keys(metadata);
+  if (keys.length === 1 && keys[0] === 'name') {
+    target.delete(key);
+    return;
+  }
+
+  target.set(key, metadata);
+}
+
+function serializeGroupMetadataMap(map) {
+  if (!map || typeof map.forEach !== 'function') {
+    return {};
+  }
+  const result = {};
+  map.forEach((value, key) => {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    result[key] = Object.assign({}, value);
+  });
+  return result;
 }
 
 function normalizeTargetSymbol(value) {
@@ -1107,7 +1294,8 @@ function extractEntry(
   orderingTracker,
   context,
   explicitAccountGroupKeys,
-  groupRelations
+  groupRelations,
+  groupMetadataTarget
 ) {
   if (entry === null || entry === undefined) {
     return;
@@ -1244,6 +1432,10 @@ function extractEntry(
     }
   }
 
+  if (groupMetadataTarget && resolvedKey === undefined && candidateLabel !== undefined) {
+    recordGroupMetadataEntry(groupMetadataTarget, candidateLabel, entry);
+  }
+
   if (resolvedKey !== undefined) {
     recordOrdering(orderingTracker, resolvedKey);
   }
@@ -1262,7 +1454,8 @@ function extractEntry(
         orderingTracker,
         childContext,
         explicitAccountGroupKeys,
-        groupRelations
+        groupRelations,
+        groupMetadataTarget
       );
     }
   });
@@ -1278,7 +1471,8 @@ function collectOverridesFromContainer(
   orderingTracker,
   context,
   explicitAccountGroupKeys,
-  groupRelations
+  groupRelations,
+  groupMetadataTarget
 ) {
   if (!container) {
     return;
@@ -1288,21 +1482,22 @@ function collectOverridesFromContainer(
       if (entry && typeof entry === 'object' && !Array.isArray(entry) && !isLikelyAccountEntryObject(entry)) {
         const nextContext = deriveChildContext(context || null, entry);
         collectOverridesFromContainer(
-          namesTarget,
-          portalTarget,
-          chatTarget,
-          settingsTarget,
-          defaultTracker,
-          entry,
-          orderingTracker,
-          nextContext,
-          explicitAccountGroupKeys,
-          groupRelations
-        );
-        return;
-      }
-      extractEntry(
         namesTarget,
+        portalTarget,
+        chatTarget,
+        settingsTarget,
+        defaultTracker,
+        entry,
+        orderingTracker,
+        nextContext,
+        explicitAccountGroupKeys,
+        groupRelations,
+        groupMetadataTarget
+      );
+      return;
+    }
+    extractEntry(
+      namesTarget,
         portalTarget,
         chatTarget,
         settingsTarget,
@@ -1312,7 +1507,8 @@ function collectOverridesFromContainer(
         orderingTracker,
         context || null,
         explicitAccountGroupKeys,
-        groupRelations
+        groupRelations,
+        groupMetadataTarget
       );
     });
     return;
@@ -1344,7 +1540,8 @@ function collectOverridesFromContainer(
         orderingTracker,
         containerContext,
         explicitAccountGroupKeys,
-        groupRelations
+        groupRelations,
+        groupMetadataTarget
       );
       return;
     }
@@ -1360,7 +1557,8 @@ function collectOverridesFromContainer(
         orderingTracker,
         nextContext,
         explicitAccountGroupKeys,
-        groupRelations
+        groupRelations,
+        groupMetadataTarget
       );
     }
   });
@@ -1375,6 +1573,7 @@ function normalizeAccountOverrides(raw) {
   const defaultTracker = { value: null };
   const explicitAccountGroupKeys = new Set();
   const groupRelations = new Map();
+  const groupMetadata = new Map();
   // Pre-scan raw config to pick up group->parent declarations robustly
   try {
     collectGroupRelationsRaw(raw, groupRelations);
@@ -1392,6 +1591,7 @@ function normalizeAccountOverrides(raw) {
       ordering: orderingTracker.list,
       defaultAccount: null,
       groupRelations: {},
+      groupMetadata: {},
     };
   }
   if (typeof raw !== 'object') {
@@ -1403,6 +1603,7 @@ function normalizeAccountOverrides(raw) {
       ordering: orderingTracker.list,
       defaultAccount: null,
       groupRelations: {},
+      groupMetadata: {},
     };
   }
 
@@ -1417,7 +1618,8 @@ function normalizeAccountOverrides(raw) {
       orderingTracker,
       null,
       explicitAccountGroupKeys,
-      groupRelations
+      groupRelations,
+      groupMetadata
     );
     const serializedRelations = {};
     groupRelations.forEach((parents, child) => {
@@ -1431,6 +1633,7 @@ function normalizeAccountOverrides(raw) {
       ordering: orderingTracker.list,
       defaultAccount: defaultTracker.value,
       groupRelations: serializedRelations,
+      groupMetadata: serializeGroupMetadataMap(groupMetadata),
     };
   }
 
@@ -1445,7 +1648,8 @@ function normalizeAccountOverrides(raw) {
     orderingTracker,
     rootContext,
     explicitAccountGroupKeys,
-    groupRelations
+    groupRelations,
+    groupMetadata
   );
 
   const nestedKeys = ['accounts', 'numbers', 'overrides', 'items', 'entries'];
@@ -1461,7 +1665,8 @@ function normalizeAccountOverrides(raw) {
         orderingTracker,
         rootContext,
         explicitAccountGroupKeys,
-        groupRelations
+        groupRelations,
+        groupMetadata
       );
     }
   });
@@ -1479,6 +1684,7 @@ function normalizeAccountOverrides(raw) {
     ordering: orderingTracker.list,
     defaultAccount: defaultTracker.value,
     groupRelations: serializedRelations,
+    groupMetadata: serializeGroupMetadataMap(groupMetadata),
   };
 }
 
@@ -1495,6 +1701,7 @@ function loadAccountOverrides() {
     cachedSettings = {};
     cachedOrdering = [];
     cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     cachedMarker = null;
     cachedDefaultAccount = null;
     hasLoggedError = false;
@@ -1505,6 +1712,7 @@ function loadAccountOverrides() {
       settings: cachedSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
+      groupMetadata: cachedGroupMetadata,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1515,6 +1723,7 @@ function loadAccountOverrides() {
     cachedSettings = {};
     cachedOrdering = [];
     cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     cachedMarker = null;
     cachedDefaultAccount = null;
     hasLoggedError = false;
@@ -1525,6 +1734,7 @@ function loadAccountOverrides() {
       settings: cachedSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
+      groupMetadata: cachedGroupMetadata,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1538,6 +1748,7 @@ function loadAccountOverrides() {
       settings: cachedSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
+      groupMetadata: cachedGroupMetadata,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1549,6 +1760,7 @@ function loadAccountOverrides() {
     cachedSettings = {};
     cachedOrdering = [];
     cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     cachedMarker = marker;
     cachedDefaultAccount = null;
     hasLoggedError = false;
@@ -1559,6 +1771,7 @@ function loadAccountOverrides() {
       settings: cachedSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
+      groupMetadata: cachedGroupMetadata,
       defaultAccount: cachedDefaultAccount,
     };
   }
@@ -1570,6 +1783,7 @@ function loadAccountOverrides() {
   cachedSettings = normalized.settings || {};
   cachedOrdering = normalized.ordering || [];
   cachedGroupRelations = normalized.groupRelations || {};
+  cachedGroupMetadata = normalized.groupMetadata || {};
   cachedMarker = marker;
   cachedDefaultAccount = normalized.defaultAccount || null;
   hasLoggedError = false;
@@ -1580,6 +1794,7 @@ function loadAccountOverrides() {
     settings: cachedSettings,
     ordering: cachedOrdering,
     groupRelations: cachedGroupRelations,
+    groupMetadata: cachedGroupMetadata,
     defaultAccount: cachedDefaultAccount,
   };
 }
@@ -1668,6 +1883,18 @@ function getAccountGroupRelations() {
   }
 }
 
+function getAccountGroupMetadata() {
+  try {
+    return loadAccountOverrides().groupMetadata || {};
+  } catch (error) {
+    if (!hasLoggedError) {
+      console.warn('Failed to load account overrides from ' + resolvedFilePath + ':', error.message);
+      hasLoggedError = true;
+    }
+    return cachedGroupMetadata || {};
+  }
+}
+
 function buildAccountKeySet(raw) {
   const normalized = raw == null ? '' : String(raw).trim();
   if (!normalized) {
@@ -1748,6 +1975,8 @@ function traverseAndUpdate(container, keySet, newDate, modelKey) {
       entry.accountId,
       entry.id,
       entry.key,
+      entry.name,
+      entry.displayName,
       fallbackKey,
     ];
     if (candidates.some((candidate) => matchesAccountKey(keySet, candidate))) {
@@ -2172,6 +2401,71 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'mainRetirementAccount')) {
+    const normalized = coerceBoolean(updates.mainRetirementAccount);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'mainRetirementAccount')) {
+        delete entry.mainRetirementAccount;
+        changed = true;
+      }
+    } else if (entry.mainRetirementAccount !== normalized) {
+      entry.mainRetirementAccount = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementAge')) {
+    const normalized = normalizeRetirementAge(updates.retirementAge);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'retirementAge')) {
+        delete entry.retirementAge;
+        changed = true;
+      }
+    } else if (entry.retirementAge !== normalized) {
+      entry.retirementAge = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementIncome')) {
+    const normalized = normalizeRetirementAmount(updates.retirementIncome);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'retirementIncome')) {
+        delete entry.retirementIncome;
+        changed = true;
+      }
+    } else if (entry.retirementIncome !== normalized) {
+      entry.retirementIncome = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementLivingExpenses')) {
+    const normalized = normalizeRetirementAmount(updates.retirementLivingExpenses);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'retirementLivingExpenses')) {
+        delete entry.retirementLivingExpenses;
+        changed = true;
+      }
+    } else if (entry.retirementLivingExpenses !== normalized) {
+      entry.retirementLivingExpenses = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementBirthDate')) {
+    const normalized = normalizeDateOnly(updates.retirementBirthDate);
+    if (normalized) {
+      if (entry.retirementBirthDate !== normalized) {
+        entry.retirementBirthDate = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'retirementBirthDate')) {
+      delete entry.retirementBirthDate;
+      changed = true;
+    }
+  }
+
   return changed;
 }
 
@@ -2194,6 +2488,8 @@ function traverseAndUpdateMetadata(container, keySet, updates) {
       entry.accountId,
       entry.id,
       entry.key,
+      entry.name,
+      entry.displayName,
       fallbackKey,
     ];
     if (candidates.some((candidate) => matchesAccountKey(keySet, candidate))) {
@@ -2298,6 +2594,8 @@ function updateAccountMetadata(accountKey, updates) {
     cachedSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
+    cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     hasLoggedError = false;
     loadAccountOverrides();
   }
@@ -2325,6 +2623,14 @@ function updateAccountMetadata(accountKey, updates) {
         return Number.isFinite(rounded) ? rounded : null;
       })(),
       accountGroup: normalizeAccountGroupName(updates?.accountGroup) || null,
+      mainRetirementAccount: (function () {
+        const normalized = coerceBoolean(updates?.mainRetirementAccount);
+        return normalized === null ? null : normalized;
+      })(),
+      retirementAge: normalizeRetirementAge(updates?.retirementAge),
+      retirementIncome: normalizeRetirementAmount(updates?.retirementIncome),
+      retirementLivingExpenses: normalizeRetirementAmount(updates?.retirementLivingExpenses),
+      retirementBirthDate: normalizeDateOnly(updates?.retirementBirthDate),
     },
   };
 }
@@ -2502,6 +2808,8 @@ function updateAccountLastRebalance(accountKey, options = {}) {
   cachedSettings = {};
   cachedOrdering = [];
   cachedDefaultAccount = null;
+  cachedGroupRelations = {};
+  cachedGroupMetadata = {};
   hasLoggedError = false;
   loadAccountOverrides();
 
@@ -2573,6 +2881,8 @@ function updateAccountTargetProportions(accountKey, rawProportions) {
     cachedSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
+    cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     hasLoggedError = false;
     loadAccountOverrides();
   }
@@ -2651,6 +2961,8 @@ function updateAccountSymbolNote(accountKey, symbolKey, noteValue) {
     cachedSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
+    cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     hasLoggedError = false;
     loadAccountOverrides();
   }
@@ -2721,6 +3033,8 @@ function updateAccountPlanningContext(accountKey, contextValue) {
     cachedSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
+    cachedGroupRelations = {};
+    cachedGroupMetadata = {};
     hasLoggedError = false;
     loadAccountOverrides();
   }
@@ -2746,6 +3060,7 @@ module.exports = {
   updateAccountMetadata,
   extractSymbolSettingsFromOverride,
   getAccountGroupRelations,
+  getAccountGroupMetadata,
   get accountNamesFilePath() {
     return resolvedFilePath;
   },

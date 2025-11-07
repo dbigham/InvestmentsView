@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
+import { formatMoney, formatNumber } from '../utils/formatters';
 
 function normalizeString(value) {
   if (value === null || value === undefined) return '';
@@ -13,9 +14,21 @@ export default function AccountMetadataDialog({
   models,
   onClose,
   onSave,
+  targetType,
 }) {
   const titleId = useId();
   const fieldBaseId = useId();
+  const isGroupTarget = targetType === 'group';
+  const INFLATION_RATE = 0.02; // 2% per year
+  const MS_PER_YEAR = 365.2425 * 24 * 60 * 60 * 1000;
+
+  const parseDateOnly = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const d = new Date(`${trimmed}T00:00:00Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
 
   const initialState = useMemo(() => {
     return {
@@ -32,17 +45,51 @@ export default function AccountMetadataDialog({
         initial?.ignoreSittingCash !== undefined && initial?.ignoreSittingCash !== null
           ? String(initial.ignoreSittingCash)
           : '',
+      mainRetirementAccount: initial?.mainRetirementAccount === true,
+      retirementAge:
+        initial?.retirementAge !== undefined && initial?.retirementAge !== null
+          ? String(initial.retirementAge)
+          : '',
+      retirementIncome:
+        initial?.retirementIncome !== undefined && initial?.retirementIncome !== null
+          ? String(initial.retirementIncome)
+          : '',
+      retirementLivingExpenses:
+        initial?.retirementLivingExpenses !== undefined &&
+        initial?.retirementLivingExpenses !== null
+          ? String(initial.retirementLivingExpenses)
+          : '',
+      retirementBirthDate: normalizeString(initial?.retirementBirthDate || ''),
     };
   }, [initial]);
 
   const [draft, setDraft] = useState(initialState);
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [showRetirementInfo, setShowRetirementInfo] = useState(false);
+
+  const presentValueInfo = useMemo(() => {
+    const birth = parseDateOnly(draft.retirementBirthDate);
+    const ageNum = Number(draft.retirementAge);
+    const income = Number(draft.retirementIncome);
+    const expenses = Number(draft.retirementLivingExpenses);
+    if (!birth || !Number.isFinite(ageNum) || ageNum <= 0) {
+      return { yearsUntil: null, incomeToday: null, expensesToday: null };
+    }
+    const start = new Date(Date.UTC(birth.getUTCFullYear() + Math.round(ageNum), birth.getUTCMonth(), birth.getUTCDate()));
+    const now = new Date();
+    const yearsUntil = Math.max(0, (start.getTime() - now.getTime()) / MS_PER_YEAR);
+    const disc = Math.pow(1 + INFLATION_RATE, yearsUntil);
+    const incomeToday = Number.isFinite(income) ? income / (disc || 1) : null;
+    const expensesToday = Number.isFinite(expenses) ? expenses / (disc || 1) : null;
+    return { yearsUntil, incomeToday, expensesToday };
+  }, [draft.retirementBirthDate, draft.retirementAge, draft.retirementIncome, draft.retirementLivingExpenses]);
 
   useEffect(() => {
     setDraft(initialState);
     setBusy(false);
     setErrorMessage(null);
+    setShowRetirementInfo(false);
   }, [initialState]);
 
   useEffect(() => {
@@ -81,6 +128,15 @@ export default function AccountMetadataDialog({
       if (busy) return;
       setErrorMessage(null);
 
+      const parseNumberOrEmpty = (value) => {
+        const trimmed = String(value ?? '').trim();
+        if (!trimmed) {
+          return '';
+        }
+        const numeric = Number(trimmed);
+        return Number.isFinite(numeric) ? numeric : '';
+      };
+
       const payload = {};
       Object.keys(initialState).forEach((key) => {
         const original = initialState[key];
@@ -89,6 +145,20 @@ export default function AccountMetadataDialog({
           payload[key] = current;
         }
       });
+
+      if (Object.prototype.hasOwnProperty.call(payload, 'retirementAge')) {
+        payload.retirementAge = parseNumberOrEmpty(payload.retirementAge);
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'retirementIncome')) {
+        payload.retirementIncome = parseNumberOrEmpty(payload.retirementIncome);
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'retirementLivingExpenses')) {
+        payload.retirementLivingExpenses = parseNumberOrEmpty(payload.retirementLivingExpenses);
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, 'retirementBirthDate')) {
+        const trimmed = String(payload.retirementBirthDate ?? '').trim();
+        payload.retirementBirthDate = trimmed;
+      }
 
       try {
         setBusy(true);
@@ -130,99 +200,216 @@ export default function AccountMetadataDialog({
               </div>
             )}
 
-            <div className="account-metadata-dialog__grid">
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-name`}>Display name</label>
-                <input
-                  id={`${fieldBaseId}-name`}
-                  type="text"
-                  className="account-metadata-dialog__input"
-                  value={draft.displayName}
-                  onChange={(e) => handleChange('displayName', e.target.value)}
-                  disabled={busy}
-                />
-                <p className="account-metadata-dialog__hint">Leave blank to use the default label.</p>
-              </div>
+            {!isGroupTarget && (
+              <div className="account-metadata-dialog__grid">
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-name`}>Display name</label>
+                  <input
+                    id={`${fieldBaseId}-name`}
+                    type="text"
+                    className="account-metadata-dialog__input"
+                    value={draft.displayName}
+                    onChange={(e) => handleChange('displayName', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">Leave blank to use the default label.</p>
+                </div>
 
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-group`}>Account group</label>
-                <input
-                  id={`${fieldBaseId}-group`}
-                  type="text"
-                  className="account-metadata-dialog__input"
-                  value={draft.accountGroup}
-                  onChange={(e) => handleChange('accountGroup', e.target.value)}
-                  disabled={busy}
-                />
-                <p className="account-metadata-dialog__hint">Account groups are like accounts; they aggregate other accounts.</p>
-              </div>
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-group`}>Account group</label>
+                  <input
+                    id={`${fieldBaseId}-group`}
+                    type="text"
+                    className="account-metadata-dialog__input"
+                    value={draft.accountGroup}
+                    onChange={(e) => handleChange('accountGroup', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">
+                    Account groups are like accounts; they aggregate other accounts.
+                  </p>
+                </div>
 
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-portal`}>Questrade account UUID</label>
-                <input
-                  id={`${fieldBaseId}-portal`}
-                  type="text"
-                  className="account-metadata-dialog__input"
-                  value={draft.portalAccountId}
-                  onChange={(e) => handleChange('portalAccountId', e.target.value)}
-                  disabled={busy}
-                />
-                <p className="account-metadata-dialog__hint">Optional: Used for linking to the Questrade's UI.</p>
-              </div>
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-portal`}>Questrade account UUID</label>
+                  <input
+                    id={`${fieldBaseId}-portal`}
+                    type="text"
+                    className="account-metadata-dialog__input"
+                    value={draft.portalAccountId}
+                    onChange={(e) => handleChange('portalAccountId', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">Optional: Used for linking to Questrade's UI.</p>
+                </div>
 
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-chat`}>Chat URL</label>
-                <input
-                  id={`${fieldBaseId}-chat`}
-                  type="url"
-                  className="account-metadata-dialog__input"
-                  value={draft.chatURL}
-                  onChange={(e) => handleChange('chatURL', e.target.value)}
-                  disabled={busy}
-                />
-                <p className="account-metadata-dialog__hint">Optional: e.g., a ChatGPT link for this account.</p>
-              </div>
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-chat`}>Chat URL</label>
+                  <input
+                    id={`${fieldBaseId}-chat`}
+                    type="url"
+                    className="account-metadata-dialog__input"
+                    value={draft.chatURL}
+                    onChange={(e) => handleChange('chatURL', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">Optional: e.g., a ChatGPT link for this account.</p>
+                </div>
 
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-cagr`}>CAGR start date</label>
-                <input
-                  id={`${fieldBaseId}-cagr`}
-                  type="date"
-                  className="account-metadata-dialog__input"
-                  value={draft.cagrStartDate}
-                  onChange={(e) => handleChange('cagrStartDate', e.target.value)}
-                  disabled={busy}
-                />
-                <p className="account-metadata-dialog__hint">Optional: Overrides the start used for CAGR.</p>
-              </div>
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-cagr`}>CAGR start date</label>
+                  <input
+                    id={`${fieldBaseId}-cagr`}
+                    type="date"
+                    className="account-metadata-dialog__input"
+                    value={draft.cagrStartDate}
+                    onChange={(e) => handleChange('cagrStartDate', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">Optional: Overrides the start used for CAGR.</p>
+                </div>
 
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-rebalance`}>Rebalance period (days)</label>
-                <input
-                  id={`${fieldBaseId}-rebalance`}
-                  type="number"
-                  min="1"
-                  className="account-metadata-dialog__input"
-                  value={draft.rebalancePeriod}
-                  onChange={(e) => handleChange('rebalancePeriod', e.target.value)}
-                  disabled={busy}
-                />
-                <p className="account-metadata-dialog__hint">Optional: Default cadence for rebalance reminders.</p>
-              </div>
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-rebalance`}>Rebalance period (days)</label>
+                  <input
+                    id={`${fieldBaseId}-rebalance`}
+                    type="number"
+                    min="1"
+                    className="account-metadata-dialog__input"
+                    value={draft.rebalancePeriod}
+                    onChange={(e) => handleChange('rebalancePeriod', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">Optional: Default cadence for rebalance reminders.</p>
+                </div>
 
-              <div className="account-metadata-dialog__field">
-                <label htmlFor={`${fieldBaseId}-ignorecash`}>Ignore cash ≤ (CAD)</label>
+                <div className="account-metadata-dialog__field">
+                  <label htmlFor={`${fieldBaseId}-ignorecash`}>Ignore cash ≤ (CAD)</label>
+                  <input
+                    id={`${fieldBaseId}-ignorecash`}
+                    type="number"
+                    min="0"
+                    className="account-metadata-dialog__input"
+                    value={draft.ignoreSittingCash}
+                    onChange={(e) => handleChange('ignoreSittingCash', e.target.value)}
+                    disabled={busy}
+                  />
+                  <p className="account-metadata-dialog__hint">Optional: Threshold to suppress small cash todos.</p>
+                </div>
+              </div>
+            )}
+
+            <div className="account-metadata-dialog__section">
+              <label className="account-metadata-dialog__toggle" htmlFor={`${fieldBaseId}-retirement-toggle`}>
                 <input
-                  id={`${fieldBaseId}-ignorecash`}
-                  type="number"
-                  min="0"
-                  className="account-metadata-dialog__input"
-                  value={draft.ignoreSittingCash}
-                  onChange={(e) => handleChange('ignoreSittingCash', e.target.value)}
+                  id={`${fieldBaseId}-retirement-toggle`}
+                  type="checkbox"
+                  checked={draft.mainRetirementAccount}
+                  onChange={(e) => handleChange('mainRetirementAccount', e.target.checked)}
                   disabled={busy}
                 />
-                <p className="account-metadata-dialog__hint">Optional: Threshold to suppress small cash todos.</p>
-              </div>
+                <span>Main retirement account</span>
+              </label>
+              <p className="account-metadata-dialog__hint">
+                Enable this to include retirement income (CPP, OAS, pensions, etc.) and living costs in projections.
+              </p>
+                  {draft.mainRetirementAccount && (
+                    <>
+                      <div className="account-metadata-dialog__retirement-grid">
+                        <div className="account-metadata-dialog__field">
+                          <label htmlFor={`${fieldBaseId}-retirement-birthdate`}>Birth date</label>
+                          <input
+                            id={`${fieldBaseId}-retirement-birthdate`}
+                            type="date"
+                            className="account-metadata-dialog__input"
+                            value={draft.retirementBirthDate}
+                            onChange={(e) => handleChange('retirementBirthDate', e.target.value)}
+                            disabled={busy}
+                          />
+                          <p className="account-metadata-dialog__hint">Used with retirement age to compute the retirement year.</p>
+                        </div>
+                        <div className="account-metadata-dialog__field">
+                          <label htmlFor={`${fieldBaseId}-retirement-age`}>Retirement age</label>
+                      <input
+                        id={`${fieldBaseId}-retirement-age`}
+                        type="number"
+                        min="1"
+                        className="account-metadata-dialog__input"
+                        value={draft.retirementAge}
+                        onChange={(e) => handleChange('retirementAge', e.target.value)}
+                        disabled={busy}
+                      />
+                      <p className="account-metadata-dialog__hint">Age when retirement income/expenses should start.</p>
+                    </div>
+                    <div className="account-metadata-dialog__field">
+                      <label htmlFor={`${fieldBaseId}-retirement-income`}>Retirement income (annual CAD)</label>
+                      <input
+                        id={`${fieldBaseId}-retirement-income`}
+                        type="number"
+                        min="0"
+                        step="1000"
+                        className="account-metadata-dialog__input"
+                        value={draft.retirementIncome}
+                        onChange={(e) => handleChange('retirementIncome', e.target.value)}
+                        disabled={busy}
+                      />
+                      <p className="account-metadata-dialog__hint">
+                        Include CPP, OAS, pensions, or any other yearly income in retirement-year dollars.
+                      </p>
+                      {Number.isFinite(presentValueInfo.incomeToday) && (
+                        <p className="account-metadata-dialog__hint">
+                          ≈ {formatMoney(presentValueInfo.incomeToday)} in today's dollars (using
+                          {' '}{formatNumber(INFLATION_RATE * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
+                        </p>
+                      )}
+                    </div>
+                    <div className="account-metadata-dialog__field">
+                      <label htmlFor={`${fieldBaseId}-retirement-expenses`}>Living expenses (annual CAD)</label>
+                      <input
+                        id={`${fieldBaseId}-retirement-expenses`}
+                        type="number"
+                        min="0"
+                        step="1000"
+                        className="account-metadata-dialog__input"
+                        value={draft.retirementLivingExpenses}
+                        onChange={(e) => handleChange('retirementLivingExpenses', e.target.value)}
+                        disabled={busy}
+                      />
+                      <p className="account-metadata-dialog__hint">
+                        Annual spending target, inflated to the year of retirement.
+                      </p>
+                      {Number.isFinite(presentValueInfo.expensesToday) && (
+                        <p className="account-metadata-dialog__hint">
+                          ≈ {formatMoney(presentValueInfo.expensesToday)} in today's dollars (using
+                          {' '}{formatNumber(INFLATION_RATE * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="account-metadata-dialog__info-trigger"
+                    onClick={() => setShowRetirementInfo((value) => !value)}
+                    disabled={busy}
+                  >
+                    {showRetirementInfo ? 'Hide details' : 'More info'}
+                  </button>
+                  {showRetirementInfo && (
+                    <div className="account-metadata-dialog__info-panel">
+                      <p>
+                        Retirement income should include predictable sources such as CPP, OAS, pensions, rental income, or
+                        other cash flows. Enter the amount in dollars of the year you retire (inflate CPP/OAS amounts
+                        accordingly).
+                      </p>
+                      <p>
+                        Living expenses should also be expressed in retirement-year dollars. The projections will
+                        automatically increase living expenses each year after retirement using the configured inflation
+                        assumption.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             {Array.isArray(models) && models.length > 0 ? (
@@ -288,15 +475,21 @@ AccountMetadataDialog.propTypes = {
     cagrStartDate: PropTypes.string,
     rebalancePeriod: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     ignoreSittingCash: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    mainRetirementAccount: PropTypes.bool,
+    retirementAge: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementIncome: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementLivingExpenses: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementBirthDate: PropTypes.string,
   }),
   models: PropTypes.arrayOf(modelShape),
   onClose: PropTypes.func.isRequired,
   onSave: PropTypes.func.isRequired,
+  targetType: PropTypes.oneOf(['account', 'group']),
 };
 
 AccountMetadataDialog.defaultProps = {
   accountLabel: null,
   initial: {},
   models: [],
+  targetType: 'account',
 };
-

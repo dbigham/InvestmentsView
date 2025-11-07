@@ -466,6 +466,11 @@ export async function setAccountMetadata(accountKey, metadata) {
       'ignoreSittingCash',
       'accountGroup',
       'projectionGrowthPercent',
+      'mainRetirementAccount',
+      'retirementAge',
+      'retirementIncome',
+      'retirementLivingExpenses',
+      'retirementBirthDate',
     ].forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(metadata, key)) {
         payload[key] = metadata[key];

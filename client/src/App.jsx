@@ -315,6 +315,34 @@ function isAggregateAccountSelection(value) {
   return value === 'all' || isAccountGroupSelection(value);
 }
 
+function resolveAccountMetadataKey(account) {
+  if (!account || typeof account !== 'object') {
+    return null;
+  }
+  const number =
+    account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+  if (number) {
+    return number;
+  }
+  const id = account.id !== undefined && account.id !== null ? String(account.id).trim() : '';
+  if (id) {
+    return id;
+  }
+  return null;
+}
+
+function resolveGroupMetadataKey(group) {
+  if (!group || typeof group !== 'object') {
+    return null;
+  }
+  const name = typeof group.name === 'string' ? group.name.trim() : '';
+  if (name) {
+    return name;
+  }
+  const id = typeof group.id === 'string' ? group.id.trim() : '';
+  return id || null;
+}
+
 function extractSymbolsForNews(positions) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return [];
@@ -3661,6 +3689,7 @@ export default function App() {
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [accountMetadataEditor, setAccountMetadataEditor] = useState(null);
+  const [pendingMetadataOverrides, setPendingMetadataOverrides] = useState(() => new Map());
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
   // Capture the Total P&L dialog's range choice when launching the breakdown
@@ -3773,6 +3802,13 @@ export default function App() {
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
 
   useEffect(() => {
+    if (!pendingMetadataOverrides.size) {
+      return;
+    }
+    setPendingMetadataOverrides(new Map());
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
@@ -3835,6 +3871,24 @@ export default function App() {
               )
             )
           : [];
+
+        const normalizedRetirementAge =
+          Number.isFinite(group.retirementAge) && group.retirementAge > 0
+            ? Math.round(group.retirementAge)
+            : null;
+        const normalizedRetirementIncome =
+          Number.isFinite(group.retirementIncome) && group.retirementIncome >= 0
+            ? Math.round(group.retirementIncome * 100) / 100
+            : null;
+        const normalizedRetirementLivingExpenses =
+          Number.isFinite(group.retirementLivingExpenses) && group.retirementLivingExpenses >= 0
+            ? Math.round(group.retirementLivingExpenses * 100) / 100
+            : null;
+        const normalizedRetirementBirthDate =
+          typeof group.retirementBirthDate === 'string' && group.retirementBirthDate.trim()
+            ? group.retirementBirthDate.trim()
+            : null;
+
         return {
           id,
           name,
@@ -3842,6 +3896,11 @@ export default function App() {
           accountIds,
           accountNumbers,
           ownerLabels,
+          mainRetirementAccount: group.mainRetirementAccount === true,
+          retirementAge: normalizedRetirementAge,
+          retirementIncome: normalizedRetirementIncome,
+          retirementLivingExpenses: normalizedRetirementLivingExpenses,
+          retirementBirthDate: normalizedRetirementBirthDate,
         };
       })
       .filter((group) => {
@@ -4140,6 +4199,42 @@ export default function App() {
       }) || null
     );
   }, [accounts, selectedAccount, isAggregateSelection]);
+
+  const canEditAccountDetails =
+    Boolean(selectedAccountInfo) ||
+    (isAccountGroupSelection(selectedAccount) && Boolean(selectedAccountGroup));
+  const selectedRetirementSettings = useMemo(() => {
+    const normalizeMoneyValue = (value) => {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    };
+    const buildSettings = (source) => {
+      if (!source || source.mainRetirementAccount !== true) {
+        return null;
+      }
+      const age = normalizePositiveInteger(source.retirementAge);
+      return {
+        mainRetirementAccount: true,
+        retirementAge: age,
+        retirementIncome: normalizeMoneyValue(source.retirementIncome),
+        retirementLivingExpenses: normalizeMoneyValue(source.retirementLivingExpenses),
+        retirementBirthDate:
+          typeof source.retirementBirthDate === 'string' && source.retirementBirthDate
+            ? source.retirementBirthDate
+            : null,
+      };
+    };
+    return (
+      buildSettings(selectedAccountInfo) ||
+      buildSettings(selectedAccountGroup) || {
+        mainRetirementAccount: false,
+        retirementAge: null,
+        retirementIncome: null,
+        retirementLivingExpenses: null,
+        retirementBirthDate: null,
+      }
+    );
+  }, [selectedAccountInfo, selectedAccountGroup]);
 
   const selectedAccountTargetProportions = useMemo(() => {
     if (!selectedAccountInfo) {
@@ -8105,18 +8200,12 @@ export default function App() {
   );
 
   const handleOpenAccountMetadata = useCallback(() => {
-    if (!selectedAccountInfo) {
-      return;
-    }
-    const accountLabel = getAccountLabel(selectedAccountInfo) || 'Selected account';
-    const models = resolveAccountModelsForDisplay(selectedAccountInfo);
-    setAccountMetadataEditor({
-      accountKey:
-        (selectedAccountInfo.number && String(selectedAccountInfo.number).trim()) ||
-        (selectedAccountInfo.id && String(selectedAccountInfo.id).trim()) ||
-        null,
-      accountLabel,
-      initial: {
+    if (selectedAccountInfo) {
+      const accountLabel = getAccountLabel(selectedAccountInfo) || 'Selected account';
+      const models = resolveAccountModelsForDisplay(selectedAccountInfo);
+      const accountKey = resolveAccountMetadataKey(selectedAccountInfo);
+      const pendingOverride = accountKey ? pendingMetadataOverrides.get(accountKey) : null;
+      const initialBase = {
         displayName:
           (selectedAccountInfo.displayName && selectedAccountInfo.displayName.trim()) ||
           (selectedAccountInfo.name && selectedAccountInfo.name.trim()) ||
@@ -8133,10 +8222,72 @@ export default function App() {
           selectedAccountInfo.ignoreSittingCash !== undefined && selectedAccountInfo.ignoreSittingCash !== null
             ? selectedAccountInfo.ignoreSittingCash
             : '',
-      },
-      models,
-    });
-  }, [selectedAccountInfo]);
+        mainRetirementAccount: selectedAccountInfo.mainRetirementAccount === true,
+        retirementAge:
+          selectedAccountInfo.retirementAge !== undefined && selectedAccountInfo.retirementAge !== null
+            ? selectedAccountInfo.retirementAge
+            : '',
+        retirementIncome:
+          selectedAccountInfo.retirementIncome !== undefined && selectedAccountInfo.retirementIncome !== null
+            ? selectedAccountInfo.retirementIncome
+            : '',
+        retirementLivingExpenses:
+          selectedAccountInfo.retirementLivingExpenses !== undefined && selectedAccountInfo.retirementLivingExpenses !== null
+            ? selectedAccountInfo.retirementLivingExpenses
+            : '',
+        retirementBirthDate:
+          (selectedAccountInfo.retirementBirthDate && selectedAccountInfo.retirementBirthDate) || '',
+      };
+      const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
+      setAccountMetadataEditor({
+        accountKey,
+        accountLabel,
+        targetType: 'account',
+        initial,
+        models,
+      });
+      return;
+    }
+    if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
+      const groupLabel = selectedAccountGroup.name || 'Selected group';
+      const accountKey = resolveGroupMetadataKey(selectedAccountGroup);
+      const pendingOverride = accountKey ? pendingMetadataOverrides.get(accountKey) : null;
+      const initialBase = {
+        displayName: groupLabel,
+        accountGroup: '',
+        portalAccountId: '',
+        chatURL: '',
+        cagrStartDate: '',
+        rebalancePeriod: '',
+        ignoreSittingCash: '',
+        mainRetirementAccount: selectedAccountGroup.mainRetirementAccount === true,
+        retirementAge:
+          selectedAccountGroup.retirementAge !== undefined && selectedAccountGroup.retirementAge !== null
+            ? selectedAccountGroup.retirementAge
+            : '',
+        retirementIncome:
+          selectedAccountGroup.retirementIncome !== undefined && selectedAccountGroup.retirementIncome !== null
+            ? selectedAccountGroup.retirementIncome
+            : '',
+        retirementLivingExpenses:
+          selectedAccountGroup.retirementLivingExpenses !== undefined &&
+          selectedAccountGroup.retirementLivingExpenses !== null
+            ? selectedAccountGroup.retirementLivingExpenses
+            : '',
+        retirementBirthDate:
+          (selectedAccountGroup.retirementBirthDate && selectedAccountGroup.retirementBirthDate) || '',
+      };
+      const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
+      setAccountMetadataEditor({
+        accountKey,
+        accountLabel: groupLabel,
+        targetType: 'group',
+        initial,
+        models: [],
+      });
+    }
+  }, [selectedAccountInfo, selectedAccountGroup, isAccountGroupSelection, pendingMetadataOverrides]);
+
 
   const handleCloseAccountMetadata = useCallback(() => {
     setAccountMetadataEditor(null);
@@ -8154,10 +8305,37 @@ export default function App() {
         const message = error instanceof Error && error.message ? error.message : 'Failed to save account details.';
         throw new Error(message);
       }
+      // Optimistically reflect latest edits when reopening the dialog before the refresh completes
+      setPendingMetadataOverrides((prev) => {
+        const next = new Map(prev);
+        const key = String(accountMetadataEditor.accountKey);
+        // Only keep fields that the editor can show; this prevents unexpected values from leaking in
+        const safe = {};
+        [
+          'displayName',
+          'accountGroup',
+          'portalAccountId',
+          'chatURL',
+          'cagrStartDate',
+          'rebalancePeriod',
+          'ignoreSittingCash',
+          'mainRetirementAccount',
+          'retirementAge',
+          'retirementIncome',
+          'retirementLivingExpenses',
+          'retirementBirthDate',
+        ].forEach((k) => {
+          if (Object.prototype.hasOwnProperty.call(payload, k)) {
+            safe[k] = payload[k];
+          }
+        });
+        next.set(key, safe);
+        return next;
+      });
       setAccountMetadataEditor(null);
       setRefreshKey((value) => value + 1);
     },
-    [accountMetadataEditor, setRefreshKey]
+    [accountMetadataEditor, setRefreshKey, setPendingMetadataOverrides]
   );
 
   useEffect(() => {
@@ -8606,7 +8784,7 @@ export default function App() {
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onCheckTodos={handleCheckTodos}
           onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
-          onEditAccountDetails={!isAggregateSelection && selectedAccountInfo ? handleOpenAccountMetadata : null}
+          onEditAccountDetails={canEditAccountDetails ? handleOpenAccountMetadata : null}
           onEditTargetProportions={
             !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
           }
@@ -8999,6 +9177,7 @@ export default function App() {
           parentAccountId={projectionContext.parentAccountId}
           initialGrowthPercent={selectedAccountInfo?.projectionGrowthPercent ?? null}
           isGroupView={isAggregateSelection && selectedAccount !== 'all'}
+          retirementSettings={selectedRetirementSettings}
           groupProjectionAccounts={(function buildGroupProj() {
             if (!(isAggregateSelection && selectedAccount !== 'all')) return [];
             const group = accountGroupsById.get(selectedAccount) || null;
@@ -9072,6 +9251,7 @@ export default function App() {
           accountLabel={accountMetadataEditor.accountLabel}
           initial={accountMetadataEditor.initial}
           models={accountMetadataEditor.models}
+          targetType={accountMetadataEditor.targetType || 'account'}
           onClose={handleCloseAccountMetadata}
           onSave={handleSaveAccountMetadata}
         />

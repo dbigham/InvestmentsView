@@ -8,8 +8,7 @@ const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
 const AXIS_TARGET_INTERVALS = 4;
 const MS_PER_YEAR_APPROX = 365.2425 * 24 * 60 * 60 * 1000;
-// Daniel's birthday: Nov 20, 1980 (UTC date-only)
-const DANIEL_BIRTHDATE = new Date(Date.UTC(1980, 10, 20));
+const DEFAULT_OWNER_BIRTHDATE = new Date(Date.UTC(1980, 10, 20));
 
 const PROJECTION_TIMEFRAME_OPTIONS = [
   { value: 1, label: '1 year' },
@@ -21,6 +20,7 @@ const PROJECTION_TIMEFRAME_OPTIONS = [
   { value: 40, label: '40 years' },
   { value: 50, label: '50 years' },
 ];
+const RETIREMENT_LIVING_COST_INFLATION = 0.02;
 
 function niceNumber(value, round) {
   if (!Number.isFinite(value) || value === 0) {
@@ -148,7 +148,7 @@ function buildMilestones(years) {
   return Array.from(points).sort((a, b) => a - b);
 }
 
-function computeProjectionSeries({ startDate, startValue, annualRate, years }) {
+function computeProjectionSeries({ startDate, startValue, annualRate, years, cashFlowResolver }) {
   if (!Number.isFinite(startValue) || !Number.isFinite(annualRate) || !Number.isFinite(years)) {
     return [];
   }
@@ -156,11 +156,19 @@ function computeProjectionSeries({ startDate, startValue, annualRate, years }) {
   const monthlyRate = Math.pow(1 + annualRate, 1 / 12) - 1;
   const points = [];
   const base = toDateOnly(startDate);
+  let currentValue = startValue;
   for (let i = 0; i <= totalMonths; i += 1) {
     const date = addMonths(base, i);
-    const monthsElapsed = i;
-    const value = startValue * Math.pow(1 + monthlyRate, monthsElapsed);
-    points.push({ date: toPlainDateString(date), value });
+    if (i > 0) {
+      currentValue *= 1 + monthlyRate;
+      if (typeof cashFlowResolver === 'function') {
+        const flow = cashFlowResolver({ date, monthIndex: i, value: currentValue });
+        if (Number.isFinite(flow) && flow !== 0) {
+          currentValue += flow;
+        }
+      }
+    }
+    points.push({ date: toPlainDateString(date), value: currentValue });
   }
   return points;
 }
@@ -239,6 +247,7 @@ export default function ProjectionDialog({
   initialGrowthPercent,
   isGroupView,
   groupProjectionAccounts,
+  retirementSettings,
 }) {
   const toNumberOrNaN = (val) => {
     if (typeof val === 'number') return val;
@@ -260,6 +269,9 @@ export default function ProjectionDialog({
   const [mode, setMode] = useState('today'); // 'today' | 'start'
   const [seriesState, setSeriesState] = useState({ status: 'idle', data: null, error: null });
   const [hoverPoint, setHoverPoint] = useState(null);
+  const [includeRetirementFlows, setIncludeRetirementFlows] = useState(
+    Boolean(retirementSettings?.mainRetirementAccount)
+  );
 
   const normalizedRate = useMemo(() => {
     const trimmed = String(rateInput ?? '').replace(/[^0-9.\-]/g, '').trim();
@@ -296,6 +308,10 @@ export default function ProjectionDialog({
   }, [accountKey]);
 
   useEffect(() => {
+    setIncludeRetirementFlows(Boolean(retirementSettings?.mainRetirementAccount));
+  }, [retirementSettings?.mainRetirementAccount]);
+
+  useEffect(() => {
     function handleDocumentClick(event) {
       if (!selectRef.current) return;
       if (!selectRef.current.contains(event.target)) {
@@ -330,6 +346,62 @@ export default function ProjectionDialog({
     }, 600);
     return () => clearTimeout(timer);
   }, [accountKey, rateInput, didEdit]);
+
+  useEffect(() => {
+    setIncludeRetirementFlows(Boolean(retirementSettings?.mainRetirementAccount));
+  }, [retirementSettings?.mainRetirementAccount]);
+
+  const ownerBirthDate = useMemo(
+    () => parseDateOnly(retirementSettings?.retirementBirthDate) || DEFAULT_OWNER_BIRTHDATE,
+    [retirementSettings?.retirementBirthDate]
+  );
+
+  const retirementModel = useMemo(() => {
+    const supported = Boolean(retirementSettings?.mainRetirementAccount);
+    if (!supported) {
+      return {
+        supported: false,
+        enabled: false,
+        startDate: null,
+        incomeMonthly: 0,
+        livingExpensesAnnual: 0,
+        inflationRate: RETIREMENT_LIVING_COST_INFLATION,
+      };
+    }
+    const rawAge = Number(retirementSettings?.retirementAge);
+    const normalizedAge = Number.isFinite(rawAge) && rawAge > 0 ? Math.round(rawAge) : null;
+    const startDate = normalizedAge ? toDateOnly(addMonths(ownerBirthDate, normalizedAge * 12)) : null;
+    const income = Number(retirementSettings?.retirementIncome);
+    const living = Number(retirementSettings?.retirementLivingExpenses);
+    return {
+      supported: true,
+      enabled: Boolean(includeRetirementFlows && startDate),
+      startDate,
+      incomeMonthly: Number.isFinite(income) && income >= 0 ? income / 12 : 0,
+      livingExpensesAnnual: Number.isFinite(living) && living >= 0 ? living : 0,
+      inflationRate: RETIREMENT_LIVING_COST_INFLATION,
+    };
+  }, [retirementSettings, includeRetirementFlows, ownerBirthDate]);
+
+  const computeRetirementFlow = useCallback(
+    (date) => {
+      if (!retirementModel.enabled || !retirementModel.startDate) {
+        return 0;
+      }
+      const comparisonDate = toDateOnly(date);
+      if (!comparisonDate || comparisonDate < retirementModel.startDate) {
+        return 0;
+      }
+      const elapsedYears = yearsBetween(retirementModel.startDate, comparisonDate);
+      const expenseMultiplier =
+        Number.isFinite(elapsedYears) && elapsedYears > 0
+          ? Math.pow(1 + retirementModel.inflationRate, elapsedYears)
+          : 1;
+      const monthlyExpenses = (retirementModel.livingExpensesAnnual * expenseMultiplier) / 12;
+      return retirementModel.incomeMonthly - monthlyExpenses;
+    },
+    [retirementModel]
+  );
 
   const startOverlayAvailable = Boolean(cagrStartDate) || true; // fallback to series start if needed
 
@@ -408,22 +480,75 @@ export default function ProjectionDialog({
       const totalMonths = Math.max(1, Math.round(timeframeYears * 12));
       const base = toDateOnly(projectionStartDate);
       const points = [];
+      const childStates = (function buildChildStates() {
+        if (groupChildren.length) {
+          return groupChildren.map((child) => {
+            const annual = Number(child?.rate) || 0;
+            const monthlyRate = Math.pow(1 + annual, 1 / 12) - 1;
+            return {
+              monthlyRate,
+              value: Number(child?.equity) || 0,
+            };
+          });
+        }
+        const fallbackRate = Number.isFinite(normalizedRate) ? normalizedRate : 0;
+        return [
+          {
+            monthlyRate: Math.pow(1 + fallbackRate, 1 / 12) - 1,
+            value: projectionStartValue,
+          },
+        ];
+      })();
       for (let i = 0; i <= totalMonths; i += 1) {
         const date = addMonths(base, i);
-        let sum = 0;
-        for (const child of groupChildren) {
-          const monthlyRate = Math.pow(1 + child.rate, 1 / 12) - 1;
-          sum += child.equity * Math.pow(1 + monthlyRate, i);
+        if (i > 0) {
+          childStates.forEach((state) => {
+            state.value *= 1 + state.monthlyRate;
+          });
+          if (retirementModel.enabled) {
+            const flow = computeRetirementFlow(date);
+            if (Number.isFinite(flow) && flow !== 0) {
+              let aggregate = childStates.reduce((sum, state) => sum + state.value, 0);
+              if (aggregate <= 0) {
+                childStates[0].value += flow;
+              } else {
+                childStates.forEach((state) => {
+                  const share = state.value / aggregate;
+                  state.value += share * flow;
+                });
+              }
+            }
+          }
         }
-        points.push({ date: toPlainDateString(date), value: sum });
+        const totalValue = childStates.reduce((sum, state) => sum + state.value, 0);
+        points.push({ date: toPlainDateString(date), value: totalValue });
       }
       return points;
     }
     if (!Number.isFinite(normalizedRate)) {
       return [];
     }
-    return computeProjectionSeries({ startDate: projectionStartDate, startValue: projectionStartValue, annualRate: normalizedRate, years: timeframeYears });
-  }, [projectionStartDate, projectionStartValue, normalizedRate, timeframeYears, isGroupView, groupChildren]);
+    const cashFlowResolver =
+      retirementModel.enabled && typeof computeRetirementFlow === 'function'
+        ? ({ date }) => computeRetirementFlow(date)
+        : null;
+    return computeProjectionSeries({
+      startDate: projectionStartDate,
+      startValue: projectionStartValue,
+      annualRate: normalizedRate,
+      years: timeframeYears,
+      cashFlowResolver,
+    });
+  }, [
+    projectionStartDate,
+    projectionStartValue,
+    normalizedRate,
+    timeframeYears,
+    isGroupView,
+    groupChildren,
+    retirementModel,
+    computeRetirementFlow,
+  ]);
 
   const chartRange = useMemo(() => {
     if (!projectionSeries.length) return { start: null, end: null };
@@ -488,11 +613,11 @@ export default function ProjectionDialog({
       const anchorY = Math.min(maxY, Math.max(minY, nearest.y - offset));
       const topPercent = Math.max(0, Math.min(100, (anchorY / CHART_HEIGHT) * 100));
       // Compute age at milestone date
-      const ageYears = yearsBetween(DANIEL_BIRTHDATE, d);
+      const ageYears = yearsBetween(ownerBirthDate, d);
       const ageLabel = Number.isFinite(ageYears) ? `${formatNumber(ageYears, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}` : '—';
       return { x: nearest.x, y: nearest.y, leftPercent, topPercent, label: formatMoneyCompact(nearest.value), date: ds, ageLabel };
     });
-  }, [metrics, milestones, projectionSeries]);
+  }, [metrics, milestones, projectionSeries, ownerBirthDate]);
 
   const finalProjectedValue = useMemo(() => {
     if (!projectionSeries.length) return null;
@@ -640,6 +765,19 @@ export default function ProjectionDialog({
               </div>
             )}
 
+            {retirementModel.supported && (
+              <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
+                <label className="pnl-dialog__range-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeRetirementFlows}
+                    onChange={(e) => setIncludeRetirementFlows(e.target.checked)}
+                  />
+                  <span>Include retirement income and expenses</span>
+                </label>
+              </div>
+            )}
+
             <div
               className="qqq-section__chart-container"
               aria-live="polite"
@@ -676,7 +814,7 @@ export default function ProjectionDialog({
                 const yearsLabel = Number.isFinite(diffYears)
                   ? `${formatNumber(diffYears, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} years`
                   : '—';
-                const ageYears = yearsBetween(DANIEL_BIRTHDATE, hoveredDate);
+                const ageYears = yearsBetween(ownerBirthDate, hoveredDate);
                 const ageLabel = Number.isFinite(ageYears)
                   ? `${formatNumber(ageYears, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
                   : '—';
@@ -837,6 +975,13 @@ ProjectionDialog.propTypes = {
   groupProjectionAccounts: PropTypes.arrayOf(
     PropTypes.shape({ equity: PropTypes.number, rate: PropTypes.number })
   ),
+  retirementSettings: PropTypes.shape({
+    mainRetirementAccount: PropTypes.bool,
+    retirementAge: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementIncome: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementLivingExpenses: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementBirthDate: PropTypes.string,
+  }),
 };
 
 ProjectionDialog.defaultProps = {
@@ -852,4 +997,5 @@ ProjectionDialog.defaultProps = {
   parentAccountId: null,
   isGroupView: false,
   groupProjectionAccounts: [],
+  retirementSettings: null,
 };
