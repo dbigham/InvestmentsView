@@ -564,6 +564,7 @@ export default function SummaryMetrics({
   onTotalPnlRangeChange,
   onAdjustDeployment,
   childAccounts,
+  parentGroups,
   onSelectAccount,
   childAccountParentTotal,
   onShowChildPnlBreakdown,
@@ -922,6 +923,32 @@ export default function SummaryMetrics({
         })
         .filter(Boolean)
     : [];
+  const normalizedParentGroups = Array.isArray(parentGroups)
+    ? parentGroups
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const rawId =
+            entry.id !== undefined && entry.id !== null ? String(entry.id).trim() : '';
+          if (!rawId) {
+            return null;
+          }
+          const label =
+            typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : '';
+          if (!label) {
+            return null;
+          }
+          const href =
+            typeof entry.href === 'string' && entry.href.trim() ? entry.href.trim() : null;
+          return {
+            id: rawId,
+            label,
+            href,
+          };
+        })
+        .filter(Boolean)
+    : [];
   const resolvedChildParentTotal = Number.isFinite(childAccountParentTotal)
     ? childAccountParentTotal
     : null;
@@ -1165,6 +1192,22 @@ export default function SummaryMetrics({
     }
   };
 
+  const handleParentGroupClick = (event, accountId, href) => {
+    if (!accountId) {
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button === 1) {
+      return;
+    }
+    event.preventDefault();
+    closeChildMenu();
+    if (typeof onSelectAccount === 'function') {
+      onSelectAccount(accountId);
+    } else if (href && typeof window !== 'undefined') {
+      window.location.href = href;
+    }
+  };
+
   const childAccountList = normalizedChildAccounts.length ? (
     <div className="equity-card__children" aria-live="polite">
       <h3 className="equity-card__children-title">Child accounts</h3>
@@ -1210,6 +1253,28 @@ export default function SummaryMetrics({
                     </span>
                   </span>
                 </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ) : null;
+
+  const parentGroupList = normalizedParentGroups.length ? (
+    <div className="equity-card__parents" aria-live="polite">
+      <h3 className="equity-card__children-title">Parent groups</h3>
+      <ul className="equity-card__parents-list">
+        {normalizedParentGroups.map((group) => {
+          const href = group.href || `?accountId=${encodeURIComponent(group.id)}`;
+          return (
+            <li key={group.id} className="equity-card__parents-item">
+              <a
+                href={href}
+                className="equity-card__parents-link"
+                onClick={(event) => handleParentGroupClick(event, group.id, href)}
+              >
+                <span className="equity-card__parents-name">{group.label}</span>
               </a>
             </li>
           );
@@ -1464,6 +1529,7 @@ export default function SummaryMetrics({
         </dl>
       </div>
 
+      {parentGroupList}
       {childAccountList}
       {childContextMenu}
       {totalContextMenu}
@@ -1614,6 +1680,13 @@ SummaryMetrics.propTypes = {
       supportsCagrToggle: PropTypes.bool,
     })
   ),
+  parentGroups: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      label: PropTypes.string.isRequired,
+      href: PropTypes.string,
+    })
+  ),
   onSelectAccount: PropTypes.func,
   childAccountParentTotal: PropTypes.number,
   onShowChildPnlBreakdown: PropTypes.func,
@@ -1656,6 +1729,7 @@ SummaryMetrics.defaultProps = {
   onTotalPnlRangeChange: null,
   onAdjustDeployment: null,
   childAccounts: [],
+  parentGroups: [],
   onSelectAccount: null,
   childAccountParentTotal: null,
   onShowChildPnlBreakdown: null,
