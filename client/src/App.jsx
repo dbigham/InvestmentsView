@@ -6530,14 +6530,30 @@ export default function App() {
   }, []);
 
   const handleSelectAccountFromBreakdown = useCallback(
-    (accountId) => {
+    (accountId, event) => {
       if (!accountId) {
         return;
+      }
+      const shouldOpenInNewTab = Boolean(
+        event && (event.ctrlKey || event.metaKey || event.button === 1)
+      );
+      if (shouldOpenInNewTab) {
+        const targetUrl = buildAccountViewUrl(accountId);
+        if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+          if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+          }
+          if (event && typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+          }
+          window.open(targetUrl, '_blank', 'noopener,noreferrer');
+          return;
+        }
       }
       setCashBreakdownCurrency(null);
       handleAccountChange(accountId);
     },
-    [handleAccountChange]
+    [handleAccountChange, buildAccountViewUrl]
   );
 
   const activeCurrencyCode =
