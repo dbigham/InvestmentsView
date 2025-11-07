@@ -3824,7 +3824,26 @@ export default function App() {
     window.history.replaceState(null, '', nextUrl);
   }, [activeAccountId]);
 
-  const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const rawAccounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const accounts = useMemo(() => {
+    if (!pendingMetadataOverrides.size) {
+      return rawAccounts;
+    }
+    return rawAccounts.map((account) => {
+      if (!account || typeof account !== 'object') {
+        return account;
+      }
+      const key = resolveAccountMetadataKey(account);
+      if (!key) {
+        return account;
+      }
+      const override = pendingMetadataOverrides.get(String(key));
+      if (!override) {
+        return account;
+      }
+      return { ...account, ...override };
+    });
+  }, [rawAccounts, pendingMetadataOverrides]);
   const accountGroups = useMemo(() => {
     const rawGroups = data?.accountGroups;
     if (!Array.isArray(rawGroups)) {
@@ -8333,6 +8352,7 @@ export default function App() {
           'cagrStartDate',
           'rebalancePeriod',
           'ignoreSittingCash',
+          'projectionGrowthPercent',
           'mainRetirementAccount',
           'retirementAge',
           'retirementIncome',
@@ -8358,6 +8378,57 @@ export default function App() {
       setPlanningContextEditor(null);
     }
   }, [isAggregateSelection, setPlanningContextEditor]);
+
+  const handleProjectionGrowthPersisted = useCallback(
+    (accountKey, percent) => {
+      const rawKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+      if (!rawKey) {
+        return;
+      }
+
+      let canonicalKey = rawKey;
+      if (accountsById.has(rawKey)) {
+        const account = accountsById.get(rawKey);
+        const resolved = resolveAccountMetadataKey(account);
+        if (resolved) {
+          canonicalKey = resolved;
+        }
+      } else {
+        for (const account of accountsById.values()) {
+          if (!account || typeof account !== 'object') {
+            continue;
+          }
+          const number =
+            account.number !== undefined && account.number !== null
+              ? String(account.number).trim()
+              : '';
+          if (number && number === rawKey) {
+            const resolved = resolveAccountMetadataKey(account);
+            if (resolved) {
+              canonicalKey = resolved;
+            }
+            break;
+          }
+        }
+      }
+
+      const normalizedKey = canonicalKey.trim();
+      if (!normalizedKey) {
+        return;
+      }
+
+      const normalizedPercent = Number.isFinite(percent) ? Number(percent) : null;
+
+      setPendingMetadataOverrides((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(normalizedKey) || {};
+        const updated = { ...existing, projectionGrowthPercent: normalizedPercent };
+        next.set(normalizedKey, updated);
+        return next;
+      });
+    },
+    [accountsById, setPendingMetadataOverrides]
+  );
 
   const handleEstimateFutureCagr = useCallback(async () => {
     openChatGpt();
@@ -8385,7 +8456,6 @@ export default function App() {
     const label = resolveAccountLabelByKey(selectedAccountKey) || 'Account';
     const cagrStart = cagrStartDate || null;
     let parentAccountId = null;
-    let groupProjectionAccounts = [];
     // If current selection is a leaf account, try to resolve its parent group id
     if (selectedAccountInfo && typeof selectedAccountInfo.accountGroup === 'string') {
       const key = selectedAccountInfo.accountGroup.trim().toLowerCase();
@@ -8396,64 +8466,14 @@ export default function App() {
         }
       }
     }
-    // If this is a group view, build a flattened list of descendant accounts
-    if (isAggregateSelection && selectedAccount !== 'all') {
-      const group = accountGroupsById.get(selectedAccount) || null;
-      const gKey = group ? normalizeAccountGroupKey(group.name) : null;
-      if (gKey) {
-        // BFS to collect all nested group keys
-        const members = new Set();
-        const queue = [gKey];
-        const visited = new Set();
-        while (queue.length) {
-          const cur = queue.shift();
-          if (!cur || visited.has(cur)) continue;
-          visited.add(cur);
-          const accountsForGroup = accountsByGroupName.get(cur) || [];
-          accountsForGroup.forEach((acc) => {
-            if (acc && acc.id) {
-              members.add(String(acc.id));
-            }
-          });
-          const children = accountGroupChildrenMap.get(cur);
-          if (children && children.size) {
-            children.forEach((child) => {
-              if (child && !visited.has(child)) queue.push(child);
-            });
-          }
-        }
-        // Build projection accounts with equity + rate
-        const proj = [];
-        members.forEach((accountId) => {
-          const fund = accountFunding[accountId] || null;
-          const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
-          const acc = accountsById.get(accountId) || null;
-          const rate = Number.isFinite(acc?.projectionGrowthPercent) ? acc.projectionGrowthPercent / 100 : 0;
-          if (equity > 0) {
-            proj.push({ equity, rate });
-          }
-        });
-        groupProjectionAccounts = proj;
-      }
-    }
     setProjectionContext({ accountKey: selectedAccountKey, label, cagrStartDate: cagrStart, parentAccountId });
     setShowProjectionDialog(true);
-    // Attach computed projection accounts into a ref-like field on the context we pass to the dialog render
-    // by storing it on a stable object below via props.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     selectedAccountKey,
     selectedAccountInfo,
     resolveAccountLabelByKey,
     cagrStartDate,
     accountGroupsByNormalizedName,
-    isAggregateSelection,
-    selectedAccount,
-    accountGroupsById,
-    accountsByGroupName,
-    accountGroupChildrenMap,
-    accountFunding,
-    accountsById,
   ]);
 
   const handleCloseProjections = useCallback(() => {
@@ -9278,6 +9298,7 @@ export default function App() {
 
             return buildGroupNode(rootKey);
           })()}
+          onPersistGrowthPercent={handleProjectionGrowthPersisted}
         />
       )}
       {investEvenlyPlan && (
