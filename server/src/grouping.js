@@ -118,6 +118,12 @@ function assignAccountGroups(accounts, options) {
         group.retirementBirthDate = normalized;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementInflationPercent')) {
+      const n = Number(meta.retirementInflationPercent);
+      if (Number.isFinite(n) && n >= 0) {
+        group.retirementInflationPercent = Math.round(n * 100) / 100;
+      }
+    }
   };
 
   const groupsByKey = new Map();

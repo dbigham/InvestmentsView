@@ -19,7 +19,7 @@ export default function AccountMetadataDialog({
   const titleId = useId();
   const fieldBaseId = useId();
   const isGroupTarget = targetType === 'group';
-  const INFLATION_RATE = 0.02; // 2% per year
+  const DEFAULT_INFLATION_PERCENT = 2.5; // 2.5% per year default
   const MS_PER_YEAR = 365.2425 * 24 * 60 * 60 * 1000;
 
   const parseDateOnly = (value) => {
@@ -60,6 +60,10 @@ export default function AccountMetadataDialog({
           ? String(initial.retirementLivingExpenses)
           : '',
       retirementBirthDate: normalizeString(initial?.retirementBirthDate || ''),
+      retirementInflationPercent:
+        initial?.retirementInflationPercent !== undefined && initial?.retirementInflationPercent !== null
+          ? String(initial.retirementInflationPercent)
+          : '',
     };
   }, [initial]);
 
@@ -73,17 +77,22 @@ export default function AccountMetadataDialog({
     const ageNum = Number(draft.retirementAge);
     const income = Number(draft.retirementIncome);
     const expenses = Number(draft.retirementLivingExpenses);
+    const inflationPercent = (function () {
+      const n = Number(draft.retirementInflationPercent);
+      return Number.isFinite(n) && n >= 0 ? n : DEFAULT_INFLATION_PERCENT;
+    })();
+    const inflationRate = inflationPercent / 100;
     if (!birth || !Number.isFinite(ageNum) || ageNum <= 0) {
       return { yearsUntil: null, incomeToday: null, expensesToday: null };
     }
     const start = new Date(Date.UTC(birth.getUTCFullYear() + Math.round(ageNum), birth.getUTCMonth(), birth.getUTCDate()));
     const now = new Date();
     const yearsUntil = Math.max(0, (start.getTime() - now.getTime()) / MS_PER_YEAR);
-    const disc = Math.pow(1 + INFLATION_RATE, yearsUntil);
+    const disc = Math.pow(1 + inflationRate, yearsUntil);
     const incomeToday = Number.isFinite(income) ? income / (disc || 1) : null;
     const expensesToday = Number.isFinite(expenses) ? expenses / (disc || 1) : null;
     return { yearsUntil, incomeToday, expensesToday };
-  }, [draft.retirementBirthDate, draft.retirementAge, draft.retirementIncome, draft.retirementLivingExpenses]);
+  }, [draft.retirementBirthDate, draft.retirementAge, draft.retirementIncome, draft.retirementLivingExpenses, draft.retirementInflationPercent]);
 
   useEffect(() => {
     setDraft(initialState);
@@ -103,7 +112,7 @@ export default function AccountMetadataDialog({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [busy, onClose]);
 
-  const handleOverlayClick = useCallback(
+  const handleOverlayMouseDown = useCallback(
     (event) => {
       if (event.target === event.currentTarget && !busy) {
         onClose();
@@ -159,6 +168,15 @@ export default function AccountMetadataDialog({
         const trimmed = String(payload.retirementBirthDate ?? '').trim();
         payload.retirementBirthDate = trimmed;
       }
+      if (Object.prototype.hasOwnProperty.call(payload, 'retirementInflationPercent')) {
+        const trimmed = String(payload.retirementInflationPercent ?? '').trim();
+        if (!trimmed) {
+          payload.retirementInflationPercent = '';
+        } else {
+          const numeric = Number(trimmed);
+          payload.retirementInflationPercent = Number.isFinite(numeric) ? numeric : '';
+        }
+      }
 
       try {
         setBusy(true);
@@ -175,7 +193,7 @@ export default function AccountMetadataDialog({
   );
 
   return (
-    <div className="account-metadata-overlay" role="presentation" onClick={handleOverlayClick}>
+    <div className="account-metadata-overlay" role="presentation" onMouseDown={handleOverlayMouseDown}>
       <div className="account-metadata-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="account-metadata-dialog__header">
           <div className="account-metadata-dialog__heading">
@@ -359,7 +377,7 @@ export default function AccountMetadataDialog({
                       {Number.isFinite(presentValueInfo.incomeToday) && (
                         <p className="account-metadata-dialog__hint">
                           ≈ {formatMoney(presentValueInfo.incomeToday)} in today's dollars (using
-                          {' '}{formatNumber(INFLATION_RATE * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
+                          {' '}{formatNumber((Number(draft.retirementInflationPercent) || DEFAULT_INFLATION_PERCENT), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
                         </p>
                       )}
                     </div>
@@ -381,9 +399,23 @@ export default function AccountMetadataDialog({
                       {Number.isFinite(presentValueInfo.expensesToday) && (
                         <p className="account-metadata-dialog__hint">
                           ≈ {formatMoney(presentValueInfo.expensesToday)} in today's dollars (using
-                          {' '}{formatNumber(INFLATION_RATE * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
+                          {' '}{formatNumber((Number(draft.retirementInflationPercent) || DEFAULT_INFLATION_PERCENT), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% inflation)
                         </p>
                       )}
+                    </div>
+                    <div className="account-metadata-dialog__field">
+                      <label htmlFor={`${fieldBaseId}-retirement-inflation`}>Inflation rate (%)</label>
+                      <input
+                        id={`${fieldBaseId}-retirement-inflation`}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className="account-metadata-dialog__input"
+                        value={draft.retirementInflationPercent}
+                        onChange={(e) => handleChange('retirementInflationPercent', e.target.value)}
+                        disabled={busy}
+                      />
+                      <p className="account-metadata-dialog__hint">Default is {DEFAULT_INFLATION_PERCENT}% if left blank.</p>
                     </div>
                   </div>
                   <button
@@ -480,6 +512,7 @@ AccountMetadataDialog.propTypes = {
     retirementIncome: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     retirementLivingExpenses: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     retirementBirthDate: PropTypes.string,
+    retirementInflationPercent: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
   }),
   models: PropTypes.arrayOf(modelShape),
   onClose: PropTypes.func.isRequired,

@@ -382,6 +382,25 @@ function applyProjectionGrowthPercentSetting(target, key, value) {
   }
 }
 
+function applyRetirementInflationPercentSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const numeric = normalizeNumberLike(value);
+  if (numeric === null || Number.isNaN(numeric)) {
+    if (Object.prototype.hasOwnProperty.call(container, 'retirementInflationPercent')) {
+      delete container.retirementInflationPercent;
+    }
+    return;
+  }
+  const bounded = Math.max(0, Math.min(Number(numeric), 1000));
+  const rounded = Math.round(bounded * 100) / 100; // keep two decimals
+  if (Number.isFinite(rounded)) {
+    container.retirementInflationPercent = rounded;
+  }
+}
+
 function normalizeRetirementAge(value) {
   const numeric = normalizeNumberLike(value);
   if (numeric === null || Number.isNaN(numeric)) {
@@ -538,6 +557,23 @@ function recordGroupMetadataEntry(target, label, entry) {
     } else if (Object.prototype.hasOwnProperty.call(metadata, 'retirementBirthDate')) {
       delete metadata.retirementBirthDate;
       changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementInflationPercent')) {
+    const numeric = normalizeNumberLike(entry.retirementInflationPercent);
+    if (numeric === null || Number.isNaN(numeric)) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'retirementInflationPercent')) {
+        delete metadata.retirementInflationPercent;
+        changed = true;
+      }
+    } else {
+      const bounded = Math.max(0, Math.min(Number(numeric), 1000));
+      const rounded = Math.round(bounded * 100) / 100;
+      if (metadata.retirementInflationPercent !== rounded) {
+        metadata.retirementInflationPercent = rounded;
+        changed = true;
+      }
     }
   }
 
@@ -1382,6 +1418,9 @@ function extractEntry(
         resolvedKey,
         entry.projectionGrowthPercent
       );
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'retirementInflationPercent')) {
+      applyRetirementInflationPercentSetting(settingsTarget, resolvedKey, entry.retirementInflationPercent);
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
       applyTargetProportionsSetting(settingsTarget, resolvedKey, entry.targetProportions);
@@ -2466,6 +2505,23 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementInflationPercent')) {
+    const numeric = normalizeNumberLike(updates.retirementInflationPercent);
+    if (numeric === null || Number.isNaN(numeric)) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'retirementInflationPercent')) {
+        delete entry.retirementInflationPercent;
+        changed = true;
+      }
+    } else {
+      const bounded = Math.max(0, Math.min(Number(numeric), 1000));
+      const rounded = Math.round(bounded * 100) / 100;
+      if (entry.retirementInflationPercent !== rounded) {
+        entry.retirementInflationPercent = rounded;
+        changed = true;
+      }
+    }
+  }
+
   return changed;
 }
 
@@ -2631,6 +2687,13 @@ function updateAccountMetadata(accountKey, updates) {
       retirementIncome: normalizeRetirementAmount(updates?.retirementIncome),
       retirementLivingExpenses: normalizeRetirementAmount(updates?.retirementLivingExpenses),
       retirementBirthDate: normalizeDateOnly(updates?.retirementBirthDate),
+      retirementInflationPercent: (function () {
+        const numeric = normalizeNumberLike(updates?.retirementInflationPercent);
+        if (numeric === null || Number.isNaN(numeric)) return null;
+        const bounded = Math.max(0, Math.min(Number(numeric), 1000));
+        const rounded = Math.round(bounded * 100) / 100;
+        return Number.isFinite(rounded) ? rounded : null;
+      })(),
     },
   };
 }

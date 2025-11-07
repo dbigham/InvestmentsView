@@ -2544,6 +2544,16 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'retirementInflationPercent')) {
+    const raw = override.retirementInflationPercent;
+    const num = typeof raw === 'string' ? Number(raw.trim()) : raw;
+    if (Number.isFinite(num)) {
+      target.retirementInflationPercent = num;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'retirementInflationPercent')) {
+      delete target.retirementInflationPercent;
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(override, 'projectionGrowthPercent')) {
     const raw = override.projectionGrowthPercent;
     const num = typeof raw === 'string' ? Number(raw.trim()) : raw;

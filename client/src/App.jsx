@@ -4213,6 +4213,8 @@ export default function App() {
         return null;
       }
       const age = normalizePositiveInteger(source.retirementAge);
+      const inflNum = Number(source.retirementInflationPercent);
+      const inflationPercent = Number.isFinite(inflNum) && inflNum >= 0 ? Math.round(inflNum * 100) / 100 : null;
       return {
         mainRetirementAccount: true,
         retirementAge: age,
@@ -4222,18 +4224,19 @@ export default function App() {
           typeof source.retirementBirthDate === 'string' && source.retirementBirthDate
             ? source.retirementBirthDate
             : null,
+        retirementInflationPercent: inflationPercent,
       };
     };
-    return (
-      buildSettings(selectedAccountInfo) ||
-      buildSettings(selectedAccountGroup) || {
-        mainRetirementAccount: false,
-        retirementAge: null,
-        retirementIncome: null,
-        retirementLivingExpenses: null,
-        retirementBirthDate: null,
-      }
-    );
+    const resolved = buildSettings(selectedAccountInfo) || buildSettings(selectedAccountGroup);
+    if (resolved) return resolved;
+    return {
+      mainRetirementAccount: false,
+      retirementAge: null,
+      retirementIncome: null,
+      retirementLivingExpenses: null,
+      retirementBirthDate: null,
+      retirementInflationPercent: null,
+    };
   }, [selectedAccountInfo, selectedAccountGroup]);
 
   const selectedAccountTargetProportions = useMemo(() => {
@@ -4250,6 +4253,8 @@ export default function App() {
     const stored = selectedAccountInfo?.planningContext;
     return typeof stored === 'string' ? stored : '';
   }, [isAggregateSelection, selectedAccountInfo]);
+
+  // (Note: Selected retirement settings already include inflation above.)
 
   useEffect(() => {
     if (activeAccountId !== 'default') {
@@ -8237,6 +8242,10 @@ export default function App() {
             : '',
         retirementBirthDate:
           (selectedAccountInfo.retirementBirthDate && selectedAccountInfo.retirementBirthDate) || '',
+        retirementInflationPercent:
+          selectedAccountInfo.retirementInflationPercent !== undefined && selectedAccountInfo.retirementInflationPercent !== null
+            ? selectedAccountInfo.retirementInflationPercent
+            : '',
       };
       const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
       setAccountMetadataEditor({
@@ -8276,6 +8285,11 @@ export default function App() {
             : '',
         retirementBirthDate:
           (selectedAccountGroup.retirementBirthDate && selectedAccountGroup.retirementBirthDate) || '',
+        retirementInflationPercent:
+          selectedAccountGroup.retirementInflationPercent !== undefined &&
+          selectedAccountGroup.retirementInflationPercent !== null
+            ? selectedAccountGroup.retirementInflationPercent
+            : '',
       };
       const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
       setAccountMetadataEditor({
@@ -8324,6 +8338,7 @@ export default function App() {
           'retirementIncome',
           'retirementLivingExpenses',
           'retirementBirthDate',
+          'retirementInflationPercent',
         ].forEach((k) => {
           if (Object.prototype.hasOwnProperty.call(payload, k)) {
             safe[k] = payload[k];

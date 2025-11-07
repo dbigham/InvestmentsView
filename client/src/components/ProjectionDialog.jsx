@@ -20,7 +20,7 @@ const PROJECTION_TIMEFRAME_OPTIONS = [
   { value: 40, label: '40 years' },
   { value: 50, label: '50 years' },
 ];
-const RETIREMENT_LIVING_COST_INFLATION = 0.02;
+const DEFAULT_RETIREMENT_INFLATION_PERCENT = 2.5; // default when not configured
 
 function niceNumber(value, round) {
   if (!Number.isFinite(value) || value === 0) {
@@ -260,7 +260,7 @@ export default function ProjectionDialog({
   const headingId = useId();
   const selectRef = useRef(null);
   const chartContainerRef = useRef(null);
-  const [timeframeYears, setTimeframeYears] = useState(20);
+  const [timeframeYears, setTimeframeYears] = useState(50);
   const [rateInput, setRateInput] = useState(() => {
     const v = toNumberOrNaN(initialGrowthPercent);
     return Number.isFinite(v) ? String(v) : '';
@@ -356,6 +356,14 @@ export default function ProjectionDialog({
     [retirementSettings?.retirementBirthDate]
   );
 
+  const configuredInflationRate = useMemo(() => {
+    const raw = Number(retirementSettings?.retirementInflationPercent);
+    if (Number.isFinite(raw) && raw >= 0) {
+      return raw / 100;
+    }
+    return DEFAULT_RETIREMENT_INFLATION_PERCENT / 100;
+  }, [retirementSettings?.retirementInflationPercent]);
+
   const retirementModel = useMemo(() => {
     const supported = Boolean(retirementSettings?.mainRetirementAccount);
     if (!supported) {
@@ -365,7 +373,7 @@ export default function ProjectionDialog({
         startDate: null,
         incomeMonthly: 0,
         livingExpensesAnnual: 0,
-        inflationRate: RETIREMENT_LIVING_COST_INFLATION,
+        inflationRate: configuredInflationRate,
       };
     }
     const rawAge = Number(retirementSettings?.retirementAge);
@@ -379,9 +387,9 @@ export default function ProjectionDialog({
       startDate,
       incomeMonthly: Number.isFinite(income) && income >= 0 ? income / 12 : 0,
       livingExpensesAnnual: Number.isFinite(living) && living >= 0 ? living : 0,
-      inflationRate: RETIREMENT_LIVING_COST_INFLATION,
+      inflationRate: configuredInflationRate,
     };
-  }, [retirementSettings, includeRetirementFlows, ownerBirthDate]);
+  }, [retirementSettings, includeRetirementFlows, ownerBirthDate, configuredInflationRate]);
 
   const computeRetirementFlow = useCallback(
     (date) => {
@@ -403,7 +411,8 @@ export default function ProjectionDialog({
     [retirementModel]
   );
 
-  const startOverlayAvailable = Boolean(cagrStartDate) || true; // fallback to series start if needed
+  // Temporarily hide the overlay compare-from-start toggle
+  const startOverlayAvailable = false;
 
   const loadSeriesForStart = useCallback(async () => {
     if (!accountKey) return;
