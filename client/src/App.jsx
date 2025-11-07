@@ -3725,15 +3725,22 @@ export default function App() {
   const [showNewsPromptDialog, setShowNewsPromptDialog] = useState(false);
   const [newsTabContextMenuState, setNewsTabContextMenuState] = useState({ open: false, x: 0, y: 0 });
   const newsTabMenuRef = useRef(null);
+  const isNewsFeatureEnabled = false;
 
   const closeNewsTabContextMenu = useCallback(() => {
     setNewsTabContextMenuState((state) => (state.open ? { ...state, open: false } : state));
   }, []);
 
-  const handleNewsTabContextMenu = useCallback((event) => {
-    event.preventDefault();
-    setNewsTabContextMenuState({ open: true, x: event.clientX, y: event.clientY });
-  }, []);
+  const handleNewsTabContextMenu = useCallback(
+    (event) => {
+      if (!isNewsFeatureEnabled) {
+        return;
+      }
+      event.preventDefault();
+      setNewsTabContextMenuState({ open: true, x: event.clientX, y: event.clientY });
+    },
+    [isNewsFeatureEnabled]
+  );
   const quoteCacheRef = useRef(new Map());
   const [showTotalPnlDialog, setShowTotalPnlDialog] = useState(false);
   const [totalPnlDialogContext, setTotalPnlDialogContext] = useState({
@@ -4652,7 +4659,7 @@ export default function App() {
   const hasDividendSummary = Boolean(selectedAccountDividends);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
   const showOrdersPanel = portfolioViewTab === 'orders';
-  const showNewsPanel = portfolioViewTab === 'news';
+  const showNewsPanel = isNewsFeatureEnabled && portfolioViewTab === 'news';
   
   const positionsTabId = 'portfolio-tab-positions';
   const ordersTabId = 'portfolio-tab-orders';
@@ -4702,8 +4709,18 @@ export default function App() {
   }, [a1ReferenceAccount, investmentModelEvaluations]);
   const asOf = data?.asOf || null;
 
+  useEffect(() => {
+    if (!isNewsFeatureEnabled) {
+      closeNewsTabContextMenu();
+      setShowNewsPromptDialog((value) => (value ? false : value));
+    }
+  }, [closeNewsTabContextMenu, isNewsFeatureEnabled]);
+
   // Manage the News tab context menu lifecycle
   useEffect(() => {
+    if (!isNewsFeatureEnabled) {
+      return undefined;
+    }
     if (!newsTabContextMenuState.open) {
       return undefined;
     }
@@ -4742,9 +4759,12 @@ export default function App() {
       window.removeEventListener('resize', handleViewportChange);
       window.removeEventListener('scroll', handleViewportChange, true);
     };
-  }, [closeNewsTabContextMenu, newsTabContextMenuState.open]);
+  }, [closeNewsTabContextMenu, isNewsFeatureEnabled, newsTabContextMenuState.open]);
 
   useEffect(() => {
+    if (!isNewsFeatureEnabled) {
+      return;
+    }
     if (!newsTabContextMenuState.open || !newsTabMenuRef.current) {
       return;
     }
@@ -4762,9 +4782,17 @@ export default function App() {
     if (nextX !== newsTabContextMenuState.x || nextY !== newsTabContextMenuState.y) {
       setNewsTabContextMenuState((state) => (state.open ? { ...state, x: nextX, y: nextY } : state));
     }
-  }, [newsTabContextMenuState.open, newsTabContextMenuState.x, newsTabContextMenuState.y]);
+  }, [
+    isNewsFeatureEnabled,
+    newsTabContextMenuState.open,
+    newsTabContextMenuState.x,
+    newsTabContextMenuState.y,
+  ]);
 
   useEffect(() => {
+    if (!isNewsFeatureEnabled) {
+      return;
+    }
     if (!newsTabContextMenuState.open || !newsTabMenuRef.current) {
       return;
     }
@@ -4772,7 +4800,7 @@ export default function App() {
     if (firstButton && typeof firstButton.focus === 'function') {
       firstButton.focus({ preventScroll: true });
     }
-  }, [newsTabContextMenuState.open]);
+  }, [isNewsFeatureEnabled, newsTabContextMenuState.open]);
 
   const baseCurrency = 'CAD';
   const currencyRates = useMemo(() => buildCurrencyRateMap(balances, baseCurrency), [balances]);
@@ -4907,6 +4935,9 @@ export default function App() {
   }, [currencyOptions, currencyView]);
 
   useEffect(() => {
+    if (!isNewsFeatureEnabled) {
+      return;
+    }
     if (portfolioViewTab !== 'news') {
       return;
     }
@@ -5044,7 +5075,15 @@ export default function App() {
       cancelled = true;
       controller.abort();
     };
-  }, [portfolioViewTab, newsSymbols, newsAccountId, newsAccountLabel, newsCacheKey, portfolioNewsRetryKey]);
+  }, [
+    isNewsFeatureEnabled,
+    portfolioViewTab,
+    newsSymbols,
+    newsAccountId,
+    newsAccountLabel,
+    newsCacheKey,
+    portfolioNewsRetryKey,
+  ]);
 
   const balancePnlSummaries = useMemo(() => buildBalancePnlMap(balances), [balances]);
   const positionPnlSummaries = useMemo(() => buildPnlSummaries(positions), [positions]);
@@ -6356,13 +6395,17 @@ export default function App() {
   }, [activeInvestmentModelDialog, investmentModelSections]);
 
   useEffect(() => {
-    if (
-      portfolioViewTab !== 'positions' &&
-      portfolioViewTab !== 'orders' &&
-      portfolioViewTab !== 'dividends' &&
-      portfolioViewTab !== 'models' &&
-      portfolioViewTab !== 'news'
-    ) {
+    const allowedTabs = ['positions', 'orders'];
+    if (hasDividendSummary) {
+      allowedTabs.push('dividends');
+    }
+    if (shouldShowInvestmentModels) {
+      allowedTabs.push('models');
+    }
+    if (isNewsFeatureEnabled) {
+      allowedTabs.push('news');
+    }
+    if (!allowedTabs.includes(portfolioViewTab)) {
       setPortfolioViewTab('positions');
       return;
     }
@@ -6373,7 +6416,16 @@ export default function App() {
     if (portfolioViewTab === 'models' && !shouldShowInvestmentModels) {
       setPortfolioViewTab(hasDividendSummary ? 'dividends' : 'positions');
     }
-  }, [portfolioViewTab, hasDividendSummary, shouldShowInvestmentModels, setPortfolioViewTab]);
+    if (portfolioViewTab === 'news' && !isNewsFeatureEnabled) {
+      setPortfolioViewTab('positions');
+    }
+  }, [
+    hasDividendSummary,
+    isNewsFeatureEnabled,
+    portfolioViewTab,
+    setPortfolioViewTab,
+    shouldShowInvestmentModels,
+  ]);
 
   const showingAggregateAccounts = isAggregateSelection;
 
@@ -8372,18 +8424,20 @@ export default function App() {
                     Dividends
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  id={newsTabId}
-                  role="tab"
-                  aria-selected={portfolioViewTab === 'news'}
-                  aria-controls={newsPanelId}
-                  className={portfolioViewTab === 'news' ? 'active' : ''}
-                  onClick={() => setPortfolioViewTab('news')}
-                  onContextMenu={handleNewsTabContextMenu}
-                >
-                  News
-                </button>
+                {isNewsFeatureEnabled ? (
+                  <button
+                    type="button"
+                    id={newsTabId}
+                    role="tab"
+                    aria-selected={portfolioViewTab === 'news'}
+                    aria-controls={newsPanelId}
+                    className={portfolioViewTab === 'news' ? 'active' : ''}
+                    onClick={() => setPortfolioViewTab('news')}
+                    onContextMenu={handleNewsTabContextMenu}
+                  >
+                    News
+                  </button>
+                ) : null}
               </div>
             </header>
 
@@ -8525,30 +8579,32 @@ export default function App() {
                 <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
               </div>
             ) : null}
-            <div
-              id={newsPanelId}
-              role="tabpanel"
-              aria-labelledby={newsTabId}
-              hidden={!showNewsPanel}
-            >
-              <PortfolioNews
-                status={newsStatus}
-                articles={portfolioNewsState.articles}
-                error={portfolioNewsState.error}
-                disclaimer={portfolioNewsState.disclaimer}
-                generatedAt={portfolioNewsState.generatedAt}
-                symbols={resolvedNewsSymbols}
-                accountLabel={newsAccountLabel}
-                onRetry={handleRetryNews}
-                onSeePrompt={() => setShowNewsPromptDialog(true)}
-                prompt={portfolioNewsState.prompt}
-              />
-            </div>
+            {isNewsFeatureEnabled ? (
+              <div
+                id={newsPanelId}
+                role="tabpanel"
+                aria-labelledby={newsTabId}
+                hidden={!showNewsPanel}
+              >
+                <PortfolioNews
+                  status={newsStatus}
+                  articles={portfolioNewsState.articles}
+                  error={portfolioNewsState.error}
+                  disclaimer={portfolioNewsState.disclaimer}
+                  generatedAt={portfolioNewsState.generatedAt}
+                  symbols={resolvedNewsSymbols}
+                  accountLabel={newsAccountLabel}
+                  onRetry={handleRetryNews}
+                  onSeePrompt={() => setShowNewsPromptDialog(true)}
+                  prompt={portfolioNewsState.prompt}
+                />
+              </div>
+            ) : null}
           </section>
         )}
 
       </main>
-      {newsTabContextMenuState.open ? (
+      {isNewsFeatureEnabled && newsTabContextMenuState.open ? (
         <div
           ref={newsTabMenuRef}
           className="positions-table__context-menu"
@@ -8617,7 +8673,7 @@ export default function App() {
           accountUrl={investmentModelDialogAccountUrl}
         />
       )}
-      {showNewsPromptDialog && (
+      {isNewsFeatureEnabled && showNewsPromptDialog && (
         <NewsPromptDialog
           onClose={() => setShowNewsPromptDialog(false)}
           prompt={portfolioNewsState.prompt}
