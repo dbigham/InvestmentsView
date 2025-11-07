@@ -270,6 +270,7 @@ export default function ProjectionDialog({
   groupProjectionAccounts,
   retirementSettings,
   projectionTree,
+  onPersistGrowthPercent,
 }) {
   const toNumberOrNaN = (val) => {
     if (typeof val === 'number') return val;
@@ -305,7 +306,7 @@ export default function ProjectionDialog({
   const [savingRates, setSavingRates] = useState(false);
 
   const normalizedRate = useMemo(() => {
-    const trimmed = String(rateInput ?? '').replace(/[^0-9.\-]/g, '').trim();
+    const trimmed = String(rateInput ?? '').replace(/[^0-9.-]/g, '').trim();
     if (!trimmed || trimmed === '-' || trimmed === '.' || trimmed === '-.') {
       return null;
     }
@@ -361,7 +362,7 @@ export default function ProjectionDialog({
     if (!didEdit) {
       return undefined;
     }
-    const trimmed = String(rateInput ?? '').replace(/[^0-9.\-]/g, '').trim();
+    const trimmed = String(rateInput ?? '').replace(/[^0-9.-]/g, '').trim();
     // Avoid clobbering with 0 when input is temporarily empty during editing
     if (!trimmed || trimmed === '-' || trimmed === '.' || trimmed === '-.') {
       return undefined;
@@ -371,12 +372,19 @@ export default function ProjectionDialog({
       return undefined;
     }
     const timer = setTimeout(() => {
-      setAccountMetadata(accountKey, { projectionGrowthPercent: num }).catch((err) => {
-        console.warn('Failed to persist projectionGrowthPercent', err);
-      });
+      setAccountMetadata(accountKey, { projectionGrowthPercent: num }).then(
+        () => {
+          if (typeof onPersistGrowthPercent === 'function') {
+            onPersistGrowthPercent(accountKey, num);
+          }
+        },
+        (err) => {
+          console.warn('Failed to persist projectionGrowthPercent', err);
+        }
+      );
     }, 600);
     return () => clearTimeout(timer);
-  }, [accountKey, rateInput, didEdit]);
+  }, [accountKey, rateInput, didEdit, onPersistGrowthPercent]);
 
   useEffect(() => {
     setIncludeRetirementFlows(Boolean(retirementSettings?.mainRetirementAccount));
@@ -1081,8 +1089,6 @@ export default function ProjectionDialog({
                 root={projectionTree}
                 selectedIndex={selectedPoint.index}
                 startDate={projectionSeries.length ? parseDateOnly(projectionSeries[0]?.date) : null}
-                timeframeMonths={Math.max(1, Math.round(timeframeYears * 12))}
-                computeFlow={retirementModel.enabled ? computeRetirementFlow : null}
                 ratesById={ratesById}
                 setRatesById={setRatesById}
                 changedRateIds={changedRateIds}
@@ -1097,8 +1103,10 @@ export default function ProjectionDialog({
                       const p = ratesById.get(id);
                       if (Number.isFinite(p)) {
                         // Persist as projectionGrowthPercent
-                        // eslint-disable-next-line no-await-in-loop
                         await setAccountMetadata(id, { projectionGrowthPercent: p });
+                        if (typeof onPersistGrowthPercent === 'function') {
+                          onPersistGrowthPercent(id, p);
+                        }
                       }
                     }
                     setChangedRateIds(new Set());
@@ -1163,8 +1171,6 @@ function ProjectionBreakdown({
   root,
   selectedIndex,
   startDate,
-  timeframeMonths,
-  computeFlow,
   ratesById,
   setRatesById,
   changedRateIds,
@@ -1225,7 +1231,6 @@ function ProjectionBreakdown({
       states.push({ id: leaf.id, value: eq, monthlyRate: Math.pow(1 + rate, 1 / 12) - 1 });
     });
     for (let i = 0; i <= selectedIndex; i += 1) {
-      const date = addMonths(startDate, i);
       if (i > 0) {
         states.forEach((s) => { s.value *= 1 + s.monthlyRate; });
         // Do not distribute retirement flows into per-account values here to keep
@@ -1235,7 +1240,7 @@ function ProjectionBreakdown({
     const result = new Map();
     states.forEach((s) => result.set(s.id, s.value));
     return result;
-  }, [leaves, selectedIndex, startDate, computeFlow, ratesById, includedById]);
+  }, [leaves, selectedIndex, startDate, ratesById, includedById]);
 
   const computeGroupValueAtSelection = useCallback((node) => {
     let sum = 0;
@@ -1401,7 +1406,7 @@ function ProjectionBreakdown({
                 data-rate-input-id={node.id}
                 onFocus={() => setFocusedRateId(node.id)}
                 onBlur={(e) => {
-                  const val = (rateInputsById.get(node.id) ?? e.target.value).replace(/[^0-9.\-]/g, '');
+                  const val = (rateInputsById.get(node.id) ?? e.target.value).replace(/[^0-9.-]/g, '');
                   const isNumber = /^-?\d*(?:\.\d+)?$/.test(val) && !/^[-.]?$/.test(val);
                   if (!val) {
                     setRatesById((prev) => {
@@ -1430,7 +1435,7 @@ function ProjectionBreakdown({
                   ? rateInputsById.get(node.id)
                   : (Number.isFinite(ratesById.get(node.id)) ? String(ratesById.get(node.id)) : '')}
                 onChange={(e) => {
-                  const allowed = e.target.value.replace(/[^0-9.\-]/g, '');
+                  const allowed = e.target.value.replace(/[^0-9.-]/g, '');
                   setRateInputsById((prev) => {
                     const next = new Map(prev);
                     next.set(node.id, allowed);
@@ -1537,8 +1542,6 @@ ProjectionBreakdown.propTypes = {
   }).isRequired,
   selectedIndex: PropTypes.number.isRequired,
   startDate: PropTypes.instanceOf(Date),
-  timeframeMonths: PropTypes.number,
-  computeFlow: PropTypes.func,
   ratesById: PropTypes.instanceOf(Map).isRequired,
   setRatesById: PropTypes.func.isRequired,
   changedRateIds: PropTypes.instanceOf(Set).isRequired,
@@ -1551,8 +1554,6 @@ ProjectionBreakdown.propTypes = {
 
 ProjectionBreakdown.defaultProps = {
   startDate: null,
-  timeframeMonths: null,
-  computeFlow: null,
   savingRates: false,
 };
 
@@ -1594,6 +1595,7 @@ ProjectionDialog.propTypes = {
     label: PropTypes.string.isRequired,
     children: PropTypes.array,
   }),
+  onPersistGrowthPercent: PropTypes.func,
 };
 
 ProjectionDialog.defaultProps = {
@@ -1611,4 +1613,5 @@ ProjectionDialog.defaultProps = {
   groupProjectionAccounts: [],
   retirementSettings: null,
   projectionTree: null,
+  onPersistGrowthPercent: null,
 };
