@@ -7,6 +7,9 @@ const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
 const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
 const AXIS_TARGET_INTERVALS = 4;
+const MS_PER_YEAR_APPROX = 365.2425 * 24 * 60 * 60 * 1000;
+// Daniel's birthday: Nov 20, 1980 (UTC date-only)
+const DANIEL_BIRTHDATE = new Date(Date.UTC(1980, 10, 20));
 
 const PROJECTION_TIMEFRAME_OPTIONS = [
   { value: 1, label: '1 year' },
@@ -105,6 +108,11 @@ function parseDateOnly(value) {
   }
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : toDateOnly(d);
+}
+
+function yearsBetween(from, to) {
+  if (!(from instanceof Date) || !(to instanceof Date)) return null;
+  return (to.getTime() - from.getTime()) / MS_PER_YEAR_APPROX;
 }
 
 function formatMoneyCompact(value) {
@@ -242,7 +250,8 @@ export default function ProjectionDialog({
   };
   const headingId = useId();
   const selectRef = useRef(null);
-  const [timeframeYears, setTimeframeYears] = useState(10);
+  const chartContainerRef = useRef(null);
+  const [timeframeYears, setTimeframeYears] = useState(20);
   const [rateInput, setRateInput] = useState(() => {
     const v = toNumberOrNaN(initialGrowthPercent);
     return Number.isFinite(v) ? String(v) : '';
@@ -250,6 +259,7 @@ export default function ProjectionDialog({
   const [didEdit, setDidEdit] = useState(false);
   const [mode, setMode] = useState('today'); // 'today' | 'start'
   const [seriesState, setSeriesState] = useState({ status: 'idle', data: null, error: null });
+  const [hoverPoint, setHoverPoint] = useState(null);
 
   const normalizedRate = useMemo(() => {
     const trimmed = String(rateInput ?? '').replace(/[^0-9.\-]/g, '').trim();
@@ -477,7 +487,10 @@ export default function ProjectionDialog({
       const maxY = CHART_HEIGHT - PADDING.bottom - 8;
       const anchorY = Math.min(maxY, Math.max(minY, nearest.y - offset));
       const topPercent = Math.max(0, Math.min(100, (anchorY / CHART_HEIGHT) * 100));
-      return { x: nearest.x, y: nearest.y, leftPercent, topPercent, label: formatMoneyCompact(nearest.value), date: ds };
+      // Compute age at milestone date
+      const ageYears = yearsBetween(DANIEL_BIRTHDATE, d);
+      const ageLabel = Number.isFinite(ageYears) ? `${formatNumber(ageYears, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}` : '—';
+      return { x: nearest.x, y: nearest.y, leftPercent, topPercent, label: formatMoneyCompact(nearest.value), date: ds, ageLabel };
     });
   }, [metrics, milestones, projectionSeries]);
 
@@ -627,7 +640,59 @@ export default function ProjectionDialog({
               </div>
             )}
 
-            <div className="qqq-section__chart-container" aria-live="polite">
+            <div
+              className="qqq-section__chart-container"
+              aria-live="polite"
+              ref={chartContainerRef}
+              onMouseMove={(event) => {
+                if (!metrics || !metrics.pointsA.length || !chartRange.start) {
+                  setHoverPoint(null);
+                  return;
+                }
+                const rect = chartContainerRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                const relX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+                const ratio = rect.width > 0 ? relX / rect.width : 0;
+                const targetX = ratio * CHART_WIDTH;
+                // Find nearest plotted point on the projection path
+                let nearest = metrics.pointsA[0];
+                let best = Math.abs(nearest.x - targetX);
+                for (let i = 1; i < metrics.pointsA.length; i += 1) {
+                  const dist = Math.abs(metrics.pointsA[i].x - targetX);
+                  if (dist < best) {
+                    best = dist;
+                    nearest = metrics.pointsA[i];
+                  }
+                }
+                const leftPercent = Math.min(100, Math.max(0, (nearest.x / CHART_WIDTH) * 100));
+                const offset = 26;
+                const minY = PADDING.top + 8;
+                const maxY = CHART_HEIGHT - PADDING.bottom - 8;
+                const anchorY = Math.min(maxY, Math.max(minY, nearest.y - offset));
+                const topPercent = Math.max(0, Math.min(100, (anchorY / CHART_HEIGHT) * 100));
+                const start = chartRange.start;
+                const hoveredDate = parseDateOnly(nearest.date);
+                const diffYears = yearsBetween(start, hoveredDate);
+                const yearsLabel = Number.isFinite(diffYears)
+                  ? `${formatNumber(diffYears, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} years`
+                  : '—';
+                const ageYears = yearsBetween(DANIEL_BIRTHDATE, hoveredDate);
+                const ageLabel = Number.isFinite(ageYears)
+                  ? `${formatNumber(ageYears, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`
+                  : '—';
+                setHoverPoint({
+                  x: nearest.x,
+                  y: nearest.y,
+                  leftPercent,
+                  topPercent,
+                  amount: formatMoneyCompact(nearest.value),
+                  date: nearest.date,
+                  yearsLabel,
+                  ageLabel,
+                });
+              }}
+              onMouseLeave={() => setHoverPoint(null)}
+            >
               <svg className="qqq-section__chart pnl-dialog__chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-hidden="true">
                 <rect className="qqq-section__chart-surface" x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} rx="16" />
                 {metrics && metrics.axisTicks.map((tick) => (
@@ -654,6 +719,9 @@ export default function ProjectionDialog({
                 ))}
                 {pathActual && <path className="projection-dialog__actual-path" d={pathActual} />}
                 {pathProjection && <path className="qqq-section__series-path" d={pathProjection} />}
+                {hoverPoint && (
+                  <circle className="pnl-dialog__hover-marker" cx={hoverPoint.x} cy={hoverPoint.y} r="5" />
+                )}
                 {milestoneMarkers.map((m) => (
                   <g key={`m-${m.date}`}>
                     <line
@@ -668,6 +736,17 @@ export default function ProjectionDialog({
                   </g>
                 ))}
               </svg>
+              {hoverPoint && (
+                <div
+                  className="qqq-section__chart-label"
+                  style={{ position: 'absolute', left: `${hoverPoint.leftPercent}%`, top: `${hoverPoint.topPercent}%`, transform: 'translate(-50%, -100%)' }}
+                >
+                  <span className="pnl-dialog__label-amount">{hoverPoint.amount}</span>
+                  <span className="pnl-dialog__label-delta">{hoverPoint.yearsLabel}</span>
+                  <span className="pnl-dialog__label-date">{formatDate(hoverPoint.date)}</span>
+                  <span className="pnl-dialog__label-delta">Age: {hoverPoint.ageLabel}</span>
+                </div>
+              )}
               {milestoneMarkers.map((m) => (
                 <div
                   key={`label-${m.date}`}
@@ -676,6 +755,7 @@ export default function ProjectionDialog({
                 >
                   <span className="pnl-dialog__label-amount">{m.label}</span>
                   <span className="pnl-dialog__label-date">{formatDate(m.date)}</span>
+                  <span className="pnl-dialog__label-delta">Age: {m.ageLabel}</span>
                 </div>
               ))}
               <div className="qqq-section__chart-footer">

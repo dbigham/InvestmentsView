@@ -1263,7 +1263,7 @@ export default function SummaryMetrics({
 
   const parentGroupList = normalizedParentGroups.length ? (
     <div className="equity-card__parents" aria-live="polite">
-      <h3 className="equity-card__children-title">Parent groups</h3>
+      <h3 className="equity-card__children-title">Parent</h3>
       <ul className="equity-card__parents-list">
         {normalizedParentGroups.map((group) => {
           const href = group.href || `?accountId=${encodeURIComponent(group.id)}`;
