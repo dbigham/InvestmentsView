@@ -1174,6 +1174,17 @@ function ProjectionBreakdown({
   onSave,
   savingRates,
 }) {
+  // Temporary text state for rate inputs to allow typing decimals like "4." before committing
+  const [rateInputsById, setRateInputsById] = useState(new Map());
+  // Track which rate input should retain focus between renders
+  const [focusedRateId, setFocusedRateId] = useState(null);
+  useEffect(() => {
+    if (!focusedRateId) return;
+    const el = document.querySelector(`[data-rate-input-id="${focusedRateId}"]`);
+    if (el && document.activeElement !== el && typeof el.focus === 'function') {
+      el.focus({ preventScroll: true });
+    }
+  });
   // Flatten leaves
   const leaves = useMemo(() => {
     const out = [];
@@ -1387,19 +1398,49 @@ function ProjectionBreakdown({
                 type="text"
                 className="text-input projection-tree__rate-input"
                 inputMode="decimal"
-                value={Number.isFinite(ratesById.get(node.id)) ? String(ratesById.get(node.id)) : ''}
-                onChange={(e) => {
-                  const raw = e.target.value.replace(/[^0-9.\-]/g, '').trim();
-                  const num = Number(raw);
-                  if (!raw || !Number.isFinite(num)) {
+                data-rate-input-id={node.id}
+                onFocus={() => setFocusedRateId(node.id)}
+                onBlur={(e) => {
+                  const val = (rateInputsById.get(node.id) ?? e.target.value).replace(/[^0-9.\-]/g, '');
+                  const isNumber = /^-?\d*(?:\.\d+)?$/.test(val) && !/^[-.]?$/.test(val);
+                  if (!val) {
                     setRatesById((prev) => {
                       const next = new Map(prev);
                       next.delete(node.id);
                       return next;
                     });
                     setChangedRateIds((prev) => new Set(prev).add(node.id));
-                  } else {
-                    setRate(node.id, num);
+                  } else if (isNumber) {
+                    const num = Number(val);
+                    if (Number.isFinite(num)) setRate(node.id, num);
+                  }
+                  // Clear the temp buffer so controlled value reflects committed number
+                  setRateInputsById((prev) => {
+                    const next = new Map(prev);
+                    next.delete(node.id);
+                    return next;
+                  });
+                  setFocusedRateId(null);
+                }}
+                onKeyDown={(event) => {
+                  // Prevent global key handlers from stealing focus while typing
+                  event.stopPropagation();
+                }}
+                value={rateInputsById.has(node.id)
+                  ? rateInputsById.get(node.id)
+                  : (Number.isFinite(ratesById.get(node.id)) ? String(ratesById.get(node.id)) : '')}
+                onChange={(e) => {
+                  const allowed = e.target.value.replace(/[^0-9.\-]/g, '');
+                  setRateInputsById((prev) => {
+                    const next = new Map(prev);
+                    next.set(node.id, allowed);
+                    return next;
+                  });
+                  // If it's a clean number (no trailing '.' or isolated '-') commit immediately
+                  const isCleanNumber = /^-?\d*(?:\.\d+)?$/.test(allowed) && !/^[-.]?$/.test(allowed) && !/\.$/.test(allowed);
+                  if (isCleanNumber) {
+                    const num = Number(allowed);
+                    if (Number.isFinite(num)) setRate(node.id, num);
                   }
                 }}
                 placeholder="e.g. 8"

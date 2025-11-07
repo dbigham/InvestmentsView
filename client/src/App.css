@@ -4015,6 +4015,12 @@ button.time-pill:hover .time-pill__icon {
 /* Projection breakdown tree */
 .projection-breakdown {
   margin-top: 18px;
+  max-width: 720px;
+}
+
+/* Add breathing room under the breakdown heading */
+.projection-breakdown .equity-card__children-title {
+  margin-bottom: 10px;
 }
 
 .projection-breakdown__header {
@@ -4025,35 +4031,53 @@ button.time-pill:hover .time-pill__icon {
 }
 
 .projection-breakdown__actions {
-  display: inline-flex;
+  display: flex; /* block-level so it sits below the table */
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 28px;
   margin-bottom: 12px;
 }
 
 .projection-tree {
-  width: 100%;
+  /* Make the table content-sized rather than full width */
+  display: inline-table;
+  width: auto;
   border-collapse: collapse;
   table-layout: fixed;
   margin-top: 8px;
 }
 
-.projection-tree__col-start,
-.projection-tree__col-final { width: 100px; }
-.projection-tree__col-rate { width: 88px; }
+.projection-tree__col-start { width: 84px; }
+.projection-tree__col-final { width: 84px; }
+.projection-tree__col-rate { width: 92px; }
 
-.projection-tree__th-name { text-align: left; color: var(--color-text-secondary); font-weight: 600; }
+.projection-tree__th-name { text-align: left; color: var(--color-text-secondary); font-weight: 600; background: var(--color-neutral-soft); }
 .projection-tree__th { text-align: right; color: var(--color-text-secondary); font-weight: 600; }
+
+
+/* Add subtle grid lines and improved readability */
+.projection-tree thead th {
+  background: var(--color-neutral-soft);
+}
+
+.projection-tree td,
+.projection-tree th {
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.projection-tree td + td,
+.projection-tree th + th {
+  border-left: 1px solid var(--color-divider);
+}
 
 .projection-tree__row--disabled { opacity: 0.6; }
 
-.projection-tree td { padding: 6px 0; }
-.projection-tree th { padding: 6px 0; }
+.projection-tree td { padding: 6px 8px; }
+.projection-tree th { padding: 6px 8px; }
 
-.projection-tree__cell-name { text-align: left; }
+.projection-tree__cell-name { text-align: left; background: var(--color-surface-alt); }
 .projection-tree__cell-value { text-align: right; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
-.projection-tree__cell-value + .projection-tree__cell-value { padding-left: 2px; }
-.projection-tree__cell-rate { text-align: right; padding-left: 16px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.projection-tree__cell-value + .projection-tree__cell-value { padding-left: 0; }
+.projection-tree__cell-rate { text-align: right; padding-left: 24px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
 
 .projection-tree__name-wrap { display: inline-flex; align-items: center; gap: 8px; }
 .projection-tree__checkbox { flex: 0 0 auto; }
