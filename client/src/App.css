@@ -2530,7 +2530,8 @@ textarea {
   color: var(--color-text-muted);
 }
 
-.equity-card__children-menu {
+.equity-card__children-menu,
+.equity-card__context-menu {
   position: fixed;
   z-index: 1100;
   min-width: 200px;
@@ -2541,7 +2542,8 @@ textarea {
   padding: 6px 0;
 }
 
-.equity-card__children-menu-item {
+.equity-card__children-menu-item,
+.equity-card__context-menu-item {
   display: block;
   width: 100%;
   padding: 8px 16px;
@@ -2553,12 +2555,15 @@ textarea {
   cursor: pointer;
 }
 
-.equity-card__children-menu-item + .equity-card__children-menu-item {
+.equity-card__children-menu-item + .equity-card__children-menu-item,
+.equity-card__context-menu-item + .equity-card__context-menu-item {
   border-top: none;
 }
 
 .equity-card__children-menu-item:hover,
-.equity-card__children-menu-item:focus-visible {
+.equity-card__children-menu-item:focus-visible,
+.equity-card__context-menu-item:hover,
+.equity-card__context-menu-item:focus-visible {
   background: var(--color-surface-alt);
   outline: none;
 }

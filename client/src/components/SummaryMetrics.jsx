@@ -45,29 +45,65 @@ function computeElapsedYears(startDate, endDate) {
   return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
 }
 
-function MetricRow({ label, value, extra, tone, className, onActivate, tooltip, extraTooltip }) {
+function MetricRow({
+  label,
+  value,
+  extra,
+  tone,
+  className,
+  onActivate,
+  tooltip,
+  extraTooltip,
+  onContextMenuRequest,
+  contextMenuOpen,
+}) {
   const rowClass = className ? `equity-card__metric-row ${className}` : 'equity-card__metric-row';
   const interactive = typeof onActivate === 'function';
+  const supportsContextMenu = typeof onContextMenuRequest === 'function';
 
   const handleKeyDown = (event) => {
-    if (!interactive) {
+    if (supportsContextMenu && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = event.currentTarget?.getBoundingClientRect();
+      let x = rect ? rect.left + rect.width / 2 : 0;
+      let y = rect ? rect.top + rect.height : 0;
+      if (!rect && typeof window !== 'undefined') {
+        x = window.innerWidth / 2;
+        y = window.innerHeight / 2;
+      }
+      onContextMenuRequest(x, y, { viaKeyboard: true, event });
       return;
     }
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (interactive && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       onActivate();
     }
   };
 
-  const interactiveProps = interactive
-    ? {
-        role: 'button',
-        tabIndex: 0,
-        onClick: onActivate,
-        onKeyDown: handleKeyDown,
-        'data-interactive': 'true',
-      }
-    : {};
+  const interactiveProps = {};
+  if (interactive) {
+    interactiveProps.role = 'button';
+    interactiveProps.onClick = onActivate;
+    interactiveProps['data-interactive'] = 'true';
+  }
+  if (interactive || supportsContextMenu) {
+    interactiveProps.tabIndex = 0;
+    interactiveProps.onKeyDown = handleKeyDown;
+  }
+  if (supportsContextMenu) {
+    interactiveProps.onContextMenu = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const x = event.clientX ?? 0;
+      const y = event.clientY ?? 0;
+      onContextMenuRequest(x, y, { viaKeyboard: false, event });
+    };
+    interactiveProps['aria-haspopup'] = 'menu';
+    if (typeof contextMenuOpen === 'boolean') {
+      interactiveProps['aria-expanded'] = contextMenuOpen ? 'true' : 'false';
+    }
+  }
 
   const labelContent = tooltip ? (
     <span title={tooltip}>{label}</span>
@@ -102,6 +138,8 @@ MetricRow.propTypes = {
   onActivate: PropTypes.func,
   tooltip: PropTypes.string,
   extraTooltip: PropTypes.string,
+  onContextMenuRequest: PropTypes.func,
+  contextMenuOpen: PropTypes.bool,
 };
 
 MetricRow.defaultProps = {
@@ -110,6 +148,8 @@ MetricRow.defaultProps = {
   onActivate: null,
   tooltip: null,
   extraTooltip: null,
+  onContextMenuRequest: null,
+  contextMenuOpen: undefined,
 };
 
 function ActionMenu({
@@ -853,6 +893,63 @@ export default function SummaryMetrics({
     ? childAccountParentTotal
     : null;
 
+  const hasTotalMenuActions =
+    typeof onShowTotalPnl === 'function' || typeof onShowPnlBreakdown === 'function';
+
+  const [totalMenuState, setTotalMenuState] = useState({ open: false, x: 0, y: 0 });
+  const totalMenuRef = useRef(null);
+
+  const closeTotalMenu = useCallback(() => {
+    setTotalMenuState((state) => (state.open ? { open: false, x: 0, y: 0 } : state));
+  }, []);
+
+  const openTotalMenu = useCallback((x, y) => {
+    let targetX = x;
+    let targetY = y;
+    if (typeof window !== 'undefined') {
+      const padding = 12;
+      const estimatedWidth = 220;
+      const estimatedHeight = 96;
+      const viewportWidth = window.innerWidth || 0;
+      const viewportHeight = window.innerHeight || 0;
+      targetX = Math.min(Math.max(padding, targetX), Math.max(padding, viewportWidth - estimatedWidth));
+      targetY = Math.min(Math.max(padding, targetY), Math.max(padding, viewportHeight - estimatedHeight));
+    }
+    setTotalMenuState({ open: true, x: targetX, y: targetY });
+  }, []);
+
+  useEffect(() => {
+    if (!totalMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (totalMenuRef.current && totalMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeTotalMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeTotalMenu();
+      }
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('contextmenu', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('contextmenu', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [totalMenuState.open, closeTotalMenu]);
+
+  useEffect(() => {
+    if (!hasTotalMenuActions) {
+      closeTotalMenu();
+    }
+  }, [hasTotalMenuActions, closeTotalMenu]);
+
   const [childMenuState, setChildMenuState] = useState({ open: false, x: 0, y: 0, child: null });
   const childMenuRef = useRef(null);
 
@@ -861,6 +958,29 @@ export default function SummaryMetrics({
   }, []);
 
   const childMenuTarget = childMenuState.child;
+
+  const handleTotalContextMenuRequest = useCallback(
+    (x, y) => {
+      if (!hasTotalMenuActions) {
+        return;
+      }
+      closeChildMenu();
+      openTotalMenu(x, y);
+    },
+    [hasTotalMenuActions, openTotalMenu, closeChildMenu]
+  );
+
+  const handleTotalMenuAction = useCallback(
+    (action) => {
+      closeTotalMenu();
+      if (action === 'graph' && typeof onShowTotalPnl === 'function') {
+        onShowTotalPnl();
+      } else if (action === 'breakdown' && typeof onShowPnlBreakdown === 'function') {
+        onShowPnlBreakdown('total');
+      }
+    },
+    [onShowTotalPnl, onShowPnlBreakdown, closeTotalMenu]
+  );
 
   useEffect(() => {
     if (!childMenuState.open) {
@@ -1103,6 +1223,37 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  const totalContextMenu = totalMenuState.open ? (
+    <div
+      ref={totalMenuRef}
+      className="equity-card__context-menu"
+      style={{ top: `${totalMenuState.y}px`, left: `${totalMenuState.x}px` }}
+      role="menu"
+      aria-label="Total P&L actions"
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {typeof onShowTotalPnl === 'function' && (
+        <button
+          type="button"
+          className="equity-card__context-menu-item"
+          onClick={() => handleTotalMenuAction('graph')}
+        >
+          Graph
+        </button>
+      )}
+      {typeof onShowPnlBreakdown === 'function' && (
+        <button
+          type="button"
+          className="equity-card__context-menu-item"
+          onClick={() => handleTotalMenuAction('breakdown')}
+        >
+          Breakdown
+        </button>
+      )}
+    </div>
+  ) : null;
+
   return (
     <section className="equity-card">
       <header className="equity-card__header">
@@ -1226,15 +1377,17 @@ export default function SummaryMetrics({
             tone={openTone}
             onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
           />
-            <MetricRow
-              label="Total P&L"
-              value={formattedTotal}
-              extra={totalExtraPercent}
-              extraTooltip={totalExtraPercentTooltip}
-              tone={totalTone}
-              className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
-              onActivate={onShowTotalPnl}
-            />
+          <MetricRow
+            label="Total P&L"
+            value={formattedTotal}
+            extra={totalExtraPercent}
+            extraTooltip={totalExtraPercentTooltip}
+            tone={totalTone}
+            className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
+            onActivate={onShowTotalPnl}
+            onContextMenuRequest={handleTotalContextMenuRequest}
+            contextMenuOpen={totalMenuState.open}
+          />
           {totalPnlRangeNode}
           {totalDetailBlock}
           <MetricRow
@@ -1278,6 +1431,7 @@ export default function SummaryMetrics({
 
       {childAccountList}
       {childContextMenu}
+      {totalContextMenu}
 
     </section>
   );
