@@ -465,6 +465,7 @@ export async function setAccountMetadata(accountKey, metadata) {
       'rebalancePeriod',
       'ignoreSittingCash',
       'accountGroup',
+      'projectionGrowthPercent',
     ].forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(metadata, key)) {
         payload[key] = metadata[key];

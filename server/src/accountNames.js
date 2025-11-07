@@ -363,6 +363,24 @@ function applyIgnoreSittingCashSetting(target, key, value) {
   container.ignoreSittingCash = rounded;
 }
 
+function applyProjectionGrowthPercentSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const numeric = normalizeNumberLike(value);
+  if (numeric === null || Number.isNaN(numeric)) {
+    if (Object.prototype.hasOwnProperty.call(container, 'projectionGrowthPercent')) {
+      delete container.projectionGrowthPercent;
+    }
+    return;
+  }
+  const rounded = Math.round(Number(numeric) * 100) / 100;
+  if (Number.isFinite(rounded)) {
+    container.projectionGrowthPercent = rounded;
+  }
+}
+
 function normalizeTargetSymbol(value) {
   if (value == null) {
     return null;
@@ -1169,6 +1187,13 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'ignoreSittingCash')) {
       applyIgnoreSittingCashSetting(settingsTarget, resolvedKey, entry.ignoreSittingCash);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'projectionGrowthPercent')) {
+      applyProjectionGrowthPercentSetting(
+        settingsTarget,
+        resolvedKey,
+        entry.projectionGrowthPercent
+      );
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'targetProportions')) {
       applyTargetProportionsSetting(settingsTarget, resolvedKey, entry.targetProportions);
@@ -2118,6 +2143,22 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'projectionGrowthPercent')) {
+    const numeric = Number(updates.projectionGrowthPercent);
+    if (!Number.isFinite(numeric)) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'projectionGrowthPercent')) {
+        delete entry.projectionGrowthPercent;
+        changed = true;
+      }
+    } else {
+      const rounded = Math.round(numeric * 100) / 100; // keep two decimals
+      if (entry.projectionGrowthPercent !== rounded) {
+        entry.projectionGrowthPercent = rounded;
+        changed = true;
+      }
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(updates, 'accountGroup')) {
     const normalized = normalizeAccountGroupName(updates.accountGroup);
     if (normalized) {
@@ -2275,6 +2316,12 @@ function updateAccountMetadata(accountKey, updates) {
         const numeric = normalizeNumberLike(updates?.ignoreSittingCash);
         if (numeric === null) return null;
         const rounded = Math.max(0, Math.round(numeric));
+        return Number.isFinite(rounded) ? rounded : null;
+      })(),
+      projectionGrowthPercent: (function () {
+        const n = Number(updates?.projectionGrowthPercent);
+        if (!Number.isFinite(n)) return null;
+        const rounded = Math.round(n * 100) / 100;
         return Number.isFinite(rounded) ? rounded : null;
       })(),
       accountGroup: normalizeAccountGroupName(updates?.accountGroup) || null,

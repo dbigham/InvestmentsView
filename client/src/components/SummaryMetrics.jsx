@@ -154,6 +154,7 @@ MetricRow.defaultProps = {
 
 function ActionMenu({
   onCopySummary,
+  onShowProjections,
   onEstimateCagr,
   onPlanInvestEvenly,
   onMarkRebalanced,
@@ -171,6 +172,7 @@ function ActionMenu({
   const normalizedChatUrl = typeof chatUrl === 'string' ? chatUrl.trim() : '';
   const hasChatLink = Boolean(normalizedChatUrl);
   const hasCopyAction = typeof onCopySummary === 'function';
+  const hasProjectionsAction = typeof onShowProjections === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
   const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
@@ -216,6 +218,21 @@ function ActionMenu({
       return;
     }
     setOpen((value) => !value);
+  };
+
+  const handleShowProjections = async () => {
+    if (!onShowProjections || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onShowProjections();
+    } catch (error) {
+      console.error('Failed to open Projections dialog', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
   };
 
   const handleCopy = async () => {
@@ -383,6 +400,19 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasProjectionsAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleShowProjections}
+                disabled={busy}
+              >
+                Projections
+              </button>
+            </li>
+          )}
           {hasEditAccountDetailsAction && (
             <li role="none">
               <button
@@ -469,6 +499,7 @@ function ActionMenu({
 
 ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
+  onShowProjections: PropTypes.func,
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
@@ -482,6 +513,7 @@ ActionMenu.propTypes = {
 
 ActionMenu.defaultProps = {
   onCopySummary: null,
+  onShowProjections: null,
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
   onMarkRebalanced: null,
@@ -515,6 +547,7 @@ export default function SummaryMetrics({
   isAutoRefreshing,
   onCopySummary,
   onEstimateFutureCagr,
+  onShowProjections,
   onMarkRebalanced,
   onPlanInvestEvenly,
   onCheckTodos,
@@ -1313,6 +1346,7 @@ export default function SummaryMetrics({
             </button>
           )}
           {(onCopySummary ||
+            onShowProjections ||
             onEstimateFutureCagr ||
             onPlanInvestEvenly ||
             onMarkRebalanced ||
@@ -1323,6 +1357,7 @@ export default function SummaryMetrics({
             chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
+              onShowProjections={onShowProjections}
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
               onMarkRebalanced={onMarkRebalanced}
@@ -1503,6 +1538,7 @@ SummaryMetrics.propTypes = {
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
   onEstimateFutureCagr: PropTypes.func,
+  onShowProjections: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onCheckTodos: PropTypes.func,
@@ -1602,6 +1638,7 @@ SummaryMetrics.defaultProps = {
   isAutoRefreshing: false,
   onCopySummary: null,
   onEstimateFutureCagr: null,
+  onShowProjections: null,
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
   onCheckTodos: null,

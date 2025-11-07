@@ -27,6 +27,7 @@ import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
 import QqqTemperatureDialog from './components/QqqTemperatureDialog';
 import TotalPnlDialog from './components/TotalPnlDialog';
+import ProjectionDialog from './components/ProjectionDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
 import DividendBreakdown from './components/DividendBreakdown';
 import TargetProportionsDialog from './components/TargetProportionsDialog';
@@ -3666,6 +3667,13 @@ export default function App() {
   // so it applies even after the dialog closes.
   const [pnlBreakdownUseAllOverride, setPnlBreakdownUseAllOverride] = useState(null);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
+  const [showProjectionDialog, setShowProjectionDialog] = useState(false);
+  const [projectionContext, setProjectionContext] = useState({
+    accountKey: null,
+    label: null,
+    cagrStartDate: null,
+    parentAccountId: null,
+  });
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
   const [pendingTodoAction, setPendingTodoAction] = useState(() => {
@@ -5269,6 +5277,10 @@ export default function App() {
           kind: 'account',
           cagrStartDate: cagrStart || null,
           supportsCagrToggle: Boolean(cagrStart),
+          projectionGrowthPercent:
+            Number.isFinite(accountsById.get(accountId)?.projectionGrowthPercent)
+              ? accountsById.get(accountId).projectionGrowthPercent
+              : null,
         });
       });
     });
@@ -5329,6 +5341,31 @@ export default function App() {
         groupId && typeof accountFunding[groupId]?.cagrStartDate === 'string'
           ? accountFunding[groupId].cagrStartDate.trim()
           : '';
+      // Compute an approximate projected CAGR for this child group using
+      // a value-weighted average of its immediate and nested member accounts.
+      let groupProjectedRate = null;
+      if (groupId || childKey) {
+        const memberIds = collectGroupAccountIds(childKey);
+        let equitySum = 0;
+        let weighted = 0;
+        memberIds.forEach((accountId) => {
+          const acc = accountsById.get(accountId);
+          if (!acc) {
+            return;
+          }
+          const fund = accountFunding[accountId] || null;
+          const eq = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : null;
+          const rate = Number.isFinite(acc.projectionGrowthPercent) ? acc.projectionGrowthPercent : null;
+          if (Number.isFinite(eq) && eq > 0 && Number.isFinite(rate)) {
+            equitySum += eq;
+            weighted += eq * rate;
+          }
+        });
+        if (equitySum > 0) {
+          groupProjectedRate = weighted / equitySum;
+        }
+      }
+
       items.push({
         id: groupId || childKey,
         label: displayName,
@@ -5338,6 +5375,7 @@ export default function App() {
         kind: 'group',
         cagrStartDate: cagrStart || null,
         supportsCagrToggle: Boolean(groupId && cagrStart),
+        projectionGrowthPercent: Number.isFinite(groupProjectedRate) ? groupProjectedRate : null,
       });
     });
 
@@ -8080,6 +8118,89 @@ export default function App() {
     }
   }, [getSummaryText]);
 
+  const handleShowProjections = useCallback(() => {
+    if (!selectedAccountKey) {
+      return;
+    }
+    const label = resolveAccountLabelByKey(selectedAccountKey) || 'Account';
+    const cagrStart = cagrStartDate || null;
+    let parentAccountId = null;
+    let groupProjectionAccounts = [];
+    // If current selection is a leaf account, try to resolve its parent group id
+    if (selectedAccountInfo && typeof selectedAccountInfo.accountGroup === 'string') {
+      const key = selectedAccountInfo.accountGroup.trim().toLowerCase();
+      if (key) {
+        const group = accountGroupsByNormalizedName.get(key) || null;
+        if (group && group.id !== undefined && group.id !== null) {
+          parentAccountId = String(group.id);
+        }
+      }
+    }
+    // If this is a group view, build a flattened list of descendant accounts
+    if (isAggregateSelection && selectedAccount !== 'all') {
+      const group = accountGroupsById.get(selectedAccount) || null;
+      const gKey = group ? normalizeAccountGroupKey(group.name) : null;
+      if (gKey) {
+        // BFS to collect all nested group keys
+        const members = new Set();
+        const queue = [gKey];
+        const visited = new Set();
+        while (queue.length) {
+          const cur = queue.shift();
+          if (!cur || visited.has(cur)) continue;
+          visited.add(cur);
+          const accountsForGroup = accountsByGroupName.get(cur) || [];
+          accountsForGroup.forEach((acc) => {
+            if (acc && acc.id) {
+              members.add(String(acc.id));
+            }
+          });
+          const children = accountGroupChildrenMap.get(cur);
+          if (children && children.size) {
+            children.forEach((child) => {
+              if (child && !visited.has(child)) queue.push(child);
+            });
+          }
+        }
+        // Build projection accounts with equity + rate
+        const proj = [];
+        members.forEach((accountId) => {
+          const fund = accountFunding[accountId] || null;
+          const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
+          const acc = accountsById.get(accountId) || null;
+          const rate = Number.isFinite(acc?.projectionGrowthPercent) ? acc.projectionGrowthPercent / 100 : 0;
+          if (equity > 0) {
+            proj.push({ equity, rate });
+          }
+        });
+        groupProjectionAccounts = proj;
+      }
+    }
+    setProjectionContext({ accountKey: selectedAccountKey, label, cagrStartDate: cagrStart, parentAccountId });
+    setShowProjectionDialog(true);
+    // Attach computed projection accounts into a ref-like field on the context we pass to the dialog render
+    // by storing it on a stable object below via props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedAccountKey,
+    selectedAccountInfo,
+    resolveAccountLabelByKey,
+    cagrStartDate,
+    accountGroupsByNormalizedName,
+    isAggregateSelection,
+    selectedAccount,
+    accountGroupsById,
+    accountsByGroupName,
+    accountGroupChildrenMap,
+    accountFunding,
+    accountsById,
+  ]);
+
+  const handleCloseProjections = useCallback(() => {
+    setShowProjectionDialog(false);
+    setProjectionContext({ accountKey: null, label: null, cagrStartDate: null, parentAccountId: null });
+  }, []);
+
   const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
   const skipUsdToggle = investEvenlyPlan?.skipUsdPurchases ?? false;
 
@@ -8413,6 +8534,7 @@ export default function App() {
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
+            onShowProjections={handleShowProjections}
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onCheckTodos={handleCheckTodos}
@@ -8792,6 +8914,56 @@ export default function App() {
           onShowBreakdown={
             showContent && orderedPositions.length ? handleShowTotalPnlBreakdownFromDialog : null
           }
+        />
+      )}
+
+      {showProjectionDialog && (
+        <ProjectionDialog
+          onClose={handleCloseProjections}
+          accountKey={projectionContext.accountKey}
+          accountLabel={projectionContext.label}
+          todayTotalEquity={fundingSummaryForDisplay?.totalEquityCad ?? null}
+          todayDate={fundingSummaryForDisplay?.periodEndDate ?? asOf}
+          cagrStartDate={projectionContext.cagrStartDate}
+          onEstimateFutureCagr={handleEstimateFutureCagr}
+          childAccounts={childAccountSummaries}
+          onSelectAccount={handleAccountChange}
+          parentAccountId={projectionContext.parentAccountId}
+          initialGrowthPercent={selectedAccountInfo?.projectionGrowthPercent ?? null}
+          isGroupView={isAggregateSelection && selectedAccount !== 'all'}
+          groupProjectionAccounts={(function buildGroupProj() {
+            if (!(isAggregateSelection && selectedAccount !== 'all')) return [];
+            const group = accountGroupsById.get(selectedAccount) || null;
+            const gKey = group ? normalizeAccountGroupKey(group.name) : null;
+            if (!gKey) return [];
+            const members = new Set();
+            const queue = [gKey];
+            const visited = new Set();
+            while (queue.length) {
+              const cur = queue.shift();
+              if (!cur || visited.has(cur)) continue;
+              visited.add(cur);
+              const accountsForGroup = accountsByGroupName.get(cur) || [];
+              accountsForGroup.forEach((acc) => {
+                if (acc && acc.id) members.add(String(acc.id));
+              });
+              const children = accountGroupChildrenMap.get(cur);
+              if (children && children.size) {
+                children.forEach((child) => {
+                  if (child && !visited.has(child)) queue.push(child);
+                });
+              }
+            }
+            const proj = [];
+            members.forEach((accountId) => {
+              const fund = accountFunding[accountId] || null;
+              const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
+              const acc = accountsById.get(accountId) || null;
+              const rate = Number.isFinite(acc?.projectionGrowthPercent) ? acc.projectionGrowthPercent / 100 : 0;
+              if (equity > 0) proj.push({ equity, rate });
+            });
+            return proj;
+          })()}
         />
       )}
       {investEvenlyPlan && (

@@ -2496,6 +2496,16 @@ function applyAccountSettingsOverrideToAccount(target, override) {
       delete target.accountGroup;
     }
   }
+
+  if (Object.prototype.hasOwnProperty.call(override, 'projectionGrowthPercent')) {
+    const raw = override.projectionGrowthPercent;
+    const num = typeof raw === 'string' ? Number(raw.trim()) : raw;
+    if (Number.isFinite(num)) {
+      target.projectionGrowthPercent = num;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'projectionGrowthPercent')) {
+      delete target.projectionGrowthPercent;
+    }
+  }
 }
 
 function applyAccountSettingsOverrides(account, login) {
@@ -11191,6 +11201,11 @@ app.get('/api/summary', async function (req, res) {
           typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
             ? account.cagrStartDate.trim()
             : null,
+        projectionGrowthPercent: (function () {
+          const raw = account.projectionGrowthPercent;
+          const num = typeof raw === 'string' ? Number(raw.trim()) : raw;
+          return Number.isFinite(num) ? num : null;
+        })(),
         accountGroup: account.accountGroup || null,
         accountGroupId: account.accountGroupId || null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,

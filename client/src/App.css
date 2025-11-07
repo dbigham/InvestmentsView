@@ -3918,6 +3918,54 @@ button.time-pill:hover .time-pill__icon {
   stroke-width: 2;
 }
 
+/* Projections dialog: actual (historical) series overlay */
+.projection-dialog__actual-path {
+  fill: none;
+  stroke: rgba(136, 149, 167, 0.75);
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.projection-dialog__milestone {
+  fill: var(--color-accent);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+/* Projections dialog: neutral action button */
+.projection-dialog__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-alt);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color 120ms ease-in-out, border-color 120ms ease-in-out, color 120ms ease-in-out,
+    box-shadow 120ms ease-in-out;
+}
+
+.projection-dialog__button:hover,
+.projection-dialog__button:focus-visible {
+  border-color: var(--color-border-active);
+}
+
+.projection-dialog__button:focus-visible {
+  outline: 2px solid var(--color-border-active);
+  outline-offset: 2px;
+}
+
+.projection-dialog__button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 .qqq-section__chart-label {
   position: absolute;
   transform: translate(-50%, -100%);
