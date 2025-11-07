@@ -105,6 +105,18 @@ function buildPlanningContextUrl(accountKey) {
   return url.toString();
 }
 
+function buildAccountMetadataUrl(accountKey) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+  const encodedKey = encodeURIComponent(trimmedKey);
+  const path = `/api/accounts/${encodedKey}/metadata`;
+  const url = new URL(path, base);
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -417,6 +429,57 @@ export async function setAccountPlanningContext(accountKey, planningContext) {
 
   if (!response.ok) {
     let message = 'Failed to update planning context';
+    try {
+      const data = await response.json();
+      message = data?.message || data?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function setAccountMetadata(accountKey, metadata) {
+  const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
+  if (!trimmedKey) {
+    throw new Error('accountKey is required');
+  }
+
+  const payload = {};
+  if (metadata && typeof metadata === 'object') {
+    // Only include provided keys; allow empty strings to clear values
+    [
+      'displayName',
+      'portalAccountId',
+      'chatURL',
+      'cagrStartDate',
+      'rebalancePeriod',
+      'ignoreSittingCash',
+      'accountGroup',
+    ].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(metadata, key)) {
+        payload[key] = metadata[key];
+      }
+    });
+  }
+
+  const response = await fetch(buildAccountMetadataUrl(trimmedKey), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Failed to update account details';
     try {
       const data = await response.json();
       message = data?.message || data?.details || message;

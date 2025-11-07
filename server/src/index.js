@@ -25,6 +25,7 @@ const {
   updateAccountPlanningContext,
   extractSymbolSettingsFromOverride,
   getAccountGroupRelations,
+  updateAccountMetadata,
 } = require('./accountNames');
 const { assignAccountGroups } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
@@ -9896,6 +9897,38 @@ app.post('/api/accounts/:accountKey/planning-context', function (req, res) {
   }
 });
 
+app.post('/api/accounts/:accountKey/metadata', function (req, res) {
+  const rawAccountKey = typeof req.params.accountKey === 'string' ? req.params.accountKey : '';
+  const accountKey = rawAccountKey.trim();
+  if (!accountKey) {
+    return res.status(400).json({ message: 'Account identifier is required' });
+  }
+
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+
+  try {
+    const result = updateAccountMetadata(accountKey, payload);
+    return res.json({ updated: result.updated, updatedCount: result.updatedCount, metadata: result.payload });
+  } catch (error) {
+    if (error && error.code === 'INVALID_ACCOUNT') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'NOT_FOUND') {
+      return res.status(404).json({ message: 'Account configuration not found' });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to update account metadata:', error);
+    return res.status(500).json({ message: 'Failed to update account metadata' });
+  }
+});
+
 app.get('/api/summary', async function (req, res) {
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
@@ -11153,6 +11186,10 @@ app.get('/api/summary', async function (req, res) {
         planningContext:
           typeof account.planningContext === 'string' && account.planningContext.trim()
             ? account.planningContext.trim()
+            : null,
+        cagrStartDate:
+          typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
+            ? account.cagrStartDate.trim()
             : null,
         accountGroup: account.accountGroup || null,
         accountGroupId: account.accountGroupId || null,

@@ -2003,6 +2003,285 @@ function traverseAndSetPlanningContext(container, keySet, normalizedContext) {
   return { updated, matched, count };
 }
 
+function normalizeDisplayName(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const str = String(value).trim();
+  return str || null;
+}
+
+function normalizePortalId(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const str = String(value).trim();
+  return str || null;
+}
+
+function normalizeChatUrl(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const str = String(value).trim();
+  return str || null;
+}
+
+function applyMetadataToEntry(entry, updates) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+  if (!updates || typeof updates !== 'object') {
+    return false;
+  }
+
+  let changed = false;
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'displayName')) {
+    const normalized = normalizeDisplayName(updates.displayName);
+    if (normalized) {
+      if (entry.name !== normalized) {
+        entry.name = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'name')) {
+      delete entry.name;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'portalAccountId')) {
+    const normalized = normalizePortalId(updates.portalAccountId);
+    if (normalized) {
+      if (entry.portalAccountId !== normalized) {
+        entry.portalAccountId = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'portalAccountId')) {
+      delete entry.portalAccountId;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'chatURL')) {
+    const normalized = normalizeChatUrl(updates.chatURL);
+    if (normalized) {
+      if (entry.chatURL !== normalized) {
+        entry.chatURL = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'chatURL')) {
+      delete entry.chatURL;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'cagrStartDate')) {
+    const normalized = normalizeDateOnly(updates.cagrStartDate);
+    if (normalized) {
+      if (entry.cagrStartDate !== normalized) {
+        entry.cagrStartDate = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'cagrStartDate')) {
+      delete entry.cagrStartDate;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'rebalancePeriod')) {
+    const normalized = normalizePositiveInteger(updates.rebalancePeriod);
+    if (normalized !== null) {
+      if (entry.rebalancePeriod !== normalized) {
+        entry.rebalancePeriod = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'rebalancePeriod')) {
+      delete entry.rebalancePeriod;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'ignoreSittingCash')) {
+    const numeric = normalizeNumberLike(updates.ignoreSittingCash);
+    if (numeric === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'ignoreSittingCash')) {
+        delete entry.ignoreSittingCash;
+        changed = true;
+      }
+    } else {
+      const rounded = Math.max(0, Math.round(numeric));
+      if (entry.ignoreSittingCash !== rounded) {
+        entry.ignoreSittingCash = rounded;
+        changed = true;
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'accountGroup')) {
+    const normalized = normalizeAccountGroupName(updates.accountGroup);
+    if (normalized) {
+      if (entry.accountGroup !== normalized) {
+        entry.accountGroup = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'accountGroup')) {
+      delete entry.accountGroup;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function traverseAndUpdateMetadata(container, keySet, updates) {
+  if (!container) {
+    return { updated: false, matched: false, count: 0 };
+  }
+
+  let updated = false;
+  let matched = false;
+  let count = 0;
+
+  const processEntry = (entry, fallbackKey) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const candidates = [
+      entry.number,
+      entry.accountNumber,
+      entry.accountId,
+      entry.id,
+      entry.key,
+      fallbackKey,
+    ];
+    if (candidates.some((candidate) => matchesAccountKey(keySet, candidate))) {
+      matched = true;
+      if (applyMetadataToEntry(entry, updates)) {
+        updated = true;
+        count += 1;
+      }
+    }
+  };
+
+  const walk = (node, fallbackKey) => {
+    if (!node) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item) => {
+        if (item && typeof item === 'object') {
+          processEntry(item);
+          walk(item);
+        } else {
+          walk(item);
+        }
+      });
+      return;
+    }
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    processEntry(node, fallbackKey);
+
+    Object.entries(node).forEach(([key, value]) => {
+      if (matchesAccountKey(keySet, key) && value && typeof value === 'object') {
+        matched = true;
+        if (applyMetadataToEntry(value, updates)) {
+          updated = true;
+          count += 1;
+        }
+      }
+      walk(value, key);
+    });
+  };
+
+  walk(container);
+
+  return { updated, matched, count };
+}
+
+function updateAccountMetadata(accountKey, updates) {
+  const keySet = buildAccountKeySet(accountKey);
+  if (!keySet) {
+    const error = new Error('Account identifier is required');
+    error.code = 'INVALID_ACCOUNT';
+    throw error;
+  }
+
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath) {
+    const error = new Error('Accounts file path is not configured');
+    error.code = 'NO_FILE';
+    throw error;
+  }
+  if (!fs.existsSync(filePath)) {
+    const error = new Error('Accounts file not found at ' + filePath);
+    error.code = 'NO_FILE';
+    throw error;
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  if (!content.trim()) {
+    const error = new Error('Accounts file is empty');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    const error = new Error('Failed to parse accounts file');
+    error.code = 'PARSE_ERROR';
+    error.cause = parseError;
+    throw error;
+  }
+
+  const updateResult = traverseAndUpdateMetadata(parsed, keySet, updates || {});
+  if (!updateResult.matched) {
+    const error = new Error('Account configuration not found');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  if (updateResult.updated) {
+    const serialized = JSON.stringify(parsed, null, 2);
+    fs.writeFileSync(filePath, serialized + (serialized.endsWith('\n') ? '' : '\n'), 'utf-8');
+
+    cachedMarker = null;
+    cachedOverrides = {};
+    cachedPortalOverrides = {};
+    cachedChatOverrides = {};
+    cachedSettings = {};
+    cachedOrdering = [];
+    cachedDefaultAccount = null;
+    hasLoggedError = false;
+    loadAccountOverrides();
+  }
+
+  // Normalize payload for response
+  return {
+    updated: updateResult.updated,
+    updatedCount: updateResult.count,
+    payload: {
+      displayName: normalizeDisplayName(updates?.displayName) || null,
+      portalAccountId: normalizePortalId(updates?.portalAccountId) || null,
+      chatURL: normalizeChatUrl(updates?.chatURL) || null,
+      cagrStartDate: normalizeDateOnly(updates?.cagrStartDate) || null,
+      rebalancePeriod: normalizePositiveInteger(updates?.rebalancePeriod),
+      ignoreSittingCash: (function () {
+        const numeric = normalizeNumberLike(updates?.ignoreSittingCash);
+        if (numeric === null) return null;
+        const rounded = Math.max(0, Math.round(numeric));
+        return Number.isFinite(rounded) ? rounded : null;
+      })(),
+      accountGroup: normalizeAccountGroupName(updates?.accountGroup) || null,
+    },
+  };
+}
+
 function applySymbolNoteToEntry(entry, symbolKey, noteValue) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return false;
@@ -2417,6 +2696,7 @@ module.exports = {
   updateAccountTargetProportions,
   updateAccountSymbolNote,
   updateAccountPlanningContext,
+  updateAccountMetadata,
   extractSymbolSettingsFromOverride,
   getAccountGroupRelations,
   get accountNamesFilePath() {

@@ -120,6 +120,7 @@ function ActionMenu({
   onCheckTodos,
   onSetPlanningContext,
   onEditTargetProportions,
+  onEditAccountDetails,
   disabled,
   chatUrl,
 }) {
@@ -136,6 +137,7 @@ function ActionMenu({
   const hasTodoCheckAction = typeof onCheckTodos === 'function';
   const hasPlanningContextAction = typeof onSetPlanningContext === 'function';
   const hasTargetProportionAction = typeof onEditTargetProportions === 'function';
+  const hasEditAccountDetailsAction = typeof onEditAccountDetails === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -274,6 +276,14 @@ function ActionMenu({
     onEditTargetProportions();
   };
 
+  const handleEditAccountDetails = () => {
+    if (!onEditAccountDetails || disabled || busy) {
+      return;
+    }
+    setOpen(false);
+    onEditAccountDetails();
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -333,6 +343,19 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasEditAccountDetailsAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleEditAccountDetails}
+                disabled={busy}
+              >
+                Edit account details
+              </button>
+            </li>
+          )}
           {hasTargetProportionAction && (
             <li role="none">
               <button
@@ -368,7 +391,7 @@ function ActionMenu({
                 onClick={handleMarkAsRebalanced}
                 disabled={busy}
               >
-                Mark as Rebalanced
+                Mark as rebalanced
               </button>
             </li>
           )}
@@ -412,6 +435,7 @@ ActionMenu.propTypes = {
   onCheckTodos: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
+  onEditAccountDetails: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -424,6 +448,7 @@ ActionMenu.defaultProps = {
   onCheckTodos: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,
+  onEditAccountDetails: null,
   disabled: false,
   chatUrl: null,
 };
@@ -455,6 +480,7 @@ export default function SummaryMetrics({
   onCheckTodos,
   onSetPlanningContext,
   onEditTargetProportions,
+  onEditAccountDetails,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -1142,6 +1168,7 @@ export default function SummaryMetrics({
             onCheckTodos ||
             onSetPlanningContext ||
             onEditTargetProportions ||
+            onEditAccountDetails ||
             chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
@@ -1151,6 +1178,7 @@ export default function SummaryMetrics({
               onCheckTodos={onCheckTodos}
               onSetPlanningContext={onSetPlanningContext}
               onEditTargetProportions={onEditTargetProportions}
+              onEditAccountDetails={onEditAccountDetails}
               chatUrl={chatUrl}
             />
           )}
@@ -1326,6 +1354,7 @@ SummaryMetrics.propTypes = {
   onCheckTodos: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
+  onEditAccountDetails: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -1424,6 +1453,7 @@ SummaryMetrics.defaultProps = {
   onCheckTodos: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,
+  onEditAccountDetails: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,

@@ -16,6 +16,7 @@ import {
   getPortfolioNews,
   setAccountSymbolNotes,
   setAccountPlanningContext,
+  setAccountMetadata,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -33,6 +34,7 @@ import PortfolioNews from './components/PortfolioNews';
 import SymbolNotesDialog from './components/SymbolNotesDialog';
 import PlanningContextDialog from './components/PlanningContextDialog';
 import NewsPromptDialog from './components/NewsPromptDialog';
+import AccountMetadataDialog from './components/AccountMetadataDialog';
 import { formatMoney, formatNumber, formatDate } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -3657,6 +3659,7 @@ export default function App() {
   const [forcedTargetAccounts, setForcedTargetAccounts] = useState(() => new Set());
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
+  const [accountMetadataEditor, setAccountMetadataEditor] = useState(null);
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
   // Capture the Total P&L dialog's range choice when launching the breakdown
@@ -7962,6 +7965,62 @@ export default function App() {
     [activePlanningContext, setPlanningContextEditor, setRefreshKey]
   );
 
+  const handleOpenAccountMetadata = useCallback(() => {
+    if (!selectedAccountInfo) {
+      return;
+    }
+    const accountLabel = getAccountLabel(selectedAccountInfo) || 'Selected account';
+    const models = resolveAccountModelsForDisplay(selectedAccountInfo);
+    setAccountMetadataEditor({
+      accountKey:
+        (selectedAccountInfo.number && String(selectedAccountInfo.number).trim()) ||
+        (selectedAccountInfo.id && String(selectedAccountInfo.id).trim()) ||
+        null,
+      accountLabel,
+      initial: {
+        displayName:
+          (selectedAccountInfo.displayName && selectedAccountInfo.displayName.trim()) ||
+          (selectedAccountInfo.name && selectedAccountInfo.name.trim()) ||
+          '',
+        accountGroup: (selectedAccountInfo.accountGroup && selectedAccountInfo.accountGroup) || '',
+        portalAccountId: (selectedAccountInfo.portalAccountId && selectedAccountInfo.portalAccountId) || '',
+        chatURL: (selectedAccountInfo.chatURL && selectedAccountInfo.chatURL) || '',
+        cagrStartDate: (selectedAccountInfo.cagrStartDate && selectedAccountInfo.cagrStartDate) || '',
+        rebalancePeriod:
+          selectedAccountInfo.rebalancePeriod !== undefined && selectedAccountInfo.rebalancePeriod !== null
+            ? selectedAccountInfo.rebalancePeriod
+            : '',
+        ignoreSittingCash:
+          selectedAccountInfo.ignoreSittingCash !== undefined && selectedAccountInfo.ignoreSittingCash !== null
+            ? selectedAccountInfo.ignoreSittingCash
+            : '',
+      },
+      models,
+    });
+  }, [selectedAccountInfo]);
+
+  const handleCloseAccountMetadata = useCallback(() => {
+    setAccountMetadataEditor(null);
+  }, []);
+
+  const handleSaveAccountMetadata = useCallback(
+    async (payload) => {
+      if (!accountMetadataEditor || !accountMetadataEditor.accountKey) {
+        setAccountMetadataEditor(null);
+        return;
+      }
+      try {
+        await setAccountMetadata(accountMetadataEditor.accountKey, payload);
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : 'Failed to save account details.';
+        throw new Error(message);
+      }
+      setAccountMetadataEditor(null);
+      setRefreshKey((value) => value + 1);
+    },
+    [accountMetadataEditor, setRefreshKey]
+  );
+
   useEffect(() => {
     if (isAggregateSelection) {
       setPlanningContextEditor(null);
@@ -8323,10 +8382,11 @@ export default function App() {
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onCheckTodos={handleCheckTodos}
-            onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
-            onEditTargetProportions={
-              !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
-            }
+          onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
+          onEditAccountDetails={!isAggregateSelection && selectedAccountInfo ? handleOpenAccountMetadata : null}
+          onEditTargetProportions={
+            !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
+          }
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAggregateAccounts}
             qqqSummary={qqqSummary}
@@ -8731,6 +8791,15 @@ export default function App() {
           initialValue={planningContextEditor.initialValue}
           onClose={handleClosePlanningContext}
           onSave={(value) => handleSavePlanningContext(planningContextEditor.accountKey, value)}
+        />
+      )}
+      {accountMetadataEditor && (
+        <AccountMetadataDialog
+          accountLabel={accountMetadataEditor.accountLabel}
+          initial={accountMetadataEditor.initial}
+          models={accountMetadataEditor.models}
+          onClose={handleCloseAccountMetadata}
+          onSave={handleSaveAccountMetadata}
         />
       )}
       {symbolNotesEditor && (
