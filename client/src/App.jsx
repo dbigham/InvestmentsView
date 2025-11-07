@@ -6774,26 +6774,36 @@ export default function App() {
       if (!normalizedKey) {
         return;
       }
-      const resolvedLabel = options.label ?? resolveAccountLabelByKey(normalizedKey) ?? normalizedKey;
+      const normalizedOptions = options && typeof options === 'object' ? options : {};
+      const resolvedLabel =
+        normalizedOptions.label ?? resolveAccountLabelByKey(normalizedKey) ?? normalizedKey;
       const resolvedCagrStart =
-        options.cagrStartDate ?? resolveCagrStartDateForKey(normalizedKey) ?? null;
+        normalizedOptions.cagrStartDate ?? resolveCagrStartDateForKey(normalizedKey) ?? null;
       const supportsCagrToggle =
-        options.supportsCagrToggle ?? (normalizedKey !== 'all' && Boolean(resolvedCagrStart));
+        typeof normalizedOptions.supportsCagrToggle === 'boolean'
+          ? normalizedOptions.supportsCagrToggle
+          : normalizedKey !== 'all' && Boolean(resolvedCagrStart);
+      const preferredMode =
+        normalizedOptions.mode === 'all' || normalizedOptions.mode === 'cagr'
+          ? normalizedOptions.mode
+          : null;
+      const desiredMode = supportsCagrToggle ? preferredMode ?? 'cagr' : 'all';
       setTotalPnlDialogContext({
         accountKey: normalizedKey,
         label: resolvedLabel,
-        supportsCagrToggle,
+        supportsCagrToggle: Boolean(supportsCagrToggle),
         cagrStartDate: resolvedCagrStart,
       });
       setShowTotalPnlDialog(true);
-      const desiredMode = supportsCagrToggle ? 'cagr' : 'all';
       if (
         totalPnlSeriesState.accountKey !== normalizedKey ||
         totalPnlSeriesState.mode !== desiredMode ||
         totalPnlSeriesState.status === 'error' ||
         totalPnlSeriesState.status === 'idle'
       ) {
-        fetchTotalPnlSeries(normalizedKey, { applyAccountCagrStartDate: supportsCagrToggle });
+        fetchTotalPnlSeries(normalizedKey, {
+          applyAccountCagrStartDate: desiredMode !== 'all',
+        });
       }
     },
     [
@@ -6808,8 +6818,8 @@ export default function App() {
     if (!selectedAccountKey) {
       return;
     }
-    openTotalPnlDialogForAccount(selectedAccountKey);
-  }, [selectedAccountKey, openTotalPnlDialogForAccount]);
+    openTotalPnlDialogForAccount(selectedAccountKey, { mode: totalPnlRange });
+  }, [selectedAccountKey, totalPnlRange, openTotalPnlDialogForAccount]);
 
   const handleRetryTotalPnlSeries = useCallback(() => {
     const targetKey = totalPnlDialogContext.accountKey || selectedAccountKey;
@@ -7020,12 +7030,14 @@ export default function App() {
         label,
         cagrStartDate: cagrStart,
         supportsCagrToggle: supportsCagr,
+        mode: totalPnlRange,
       });
     },
     [
       openTotalPnlDialogForAccount,
       resolveAccountLabelByKey,
       resolveCagrStartDateForKey,
+      totalPnlRange,
     ]
   );
 
