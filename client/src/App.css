@@ -992,15 +992,18 @@ textarea {
 }
 
 .pnl-dialog__selection-header {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 8px;
 }
 
 .pnl-dialog__selection-metrics {
   display: inline-flex;
   align-items: baseline;
+  justify-content: center;
+  margin: 0 auto;
   gap: 0;
   pointer-events: none;
 }
@@ -1024,6 +1027,10 @@ textarea {
 }
 
 .pnl-dialog__selection-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
   pointer-events: auto;
   border: none;
   background: none;
