@@ -4,6 +4,8 @@ import { classifyPnL, formatDate, formatMoney, formatSignedMoney } from '../util
 import {
   TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
   buildTotalPnlDisplaySeries,
+  parseDateOnly,
+  subtractInterval,
 } from '../../../shared/totalPnlDisplay.js';
 
 const CHART_WIDTH = 680;
@@ -67,7 +69,29 @@ function buildAxisScale(minDomain, maxDomain) {
   };
 }
 
-function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
+function normalizeDate(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const parsed = parseDateOnly(value);
+  if (parsed) {
+    return parsed;
+  }
+  const fallback = new Date(value);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function toPlainDateString(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function buildChartMetrics(series, { useDisplayStartDelta = false, rangeStartDate, rangeEndDate } = {}) {
   if (!Array.isArray(series) || series.length === 0) {
     return null;
   }
@@ -87,6 +111,38 @@ function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
     return null;
   }
 
+  const parsedDates = series.map((entry) => normalizeDate(entry?.date));
+  const finiteDates = parsedDates.filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
+
+  let resolvedRangeStartDate = normalizeDate(rangeStartDate);
+  let resolvedRangeEndDate = normalizeDate(rangeEndDate);
+
+  if (!resolvedRangeStartDate && finiteDates.length) {
+    resolvedRangeStartDate = new Date(Math.min(...finiteDates.map((date) => date.getTime())));
+  }
+  if (!resolvedRangeEndDate && finiteDates.length) {
+    resolvedRangeEndDate = new Date(Math.max(...finiteDates.map((date) => date.getTime())));
+  }
+  if (!resolvedRangeStartDate && resolvedRangeEndDate) {
+    resolvedRangeStartDate = new Date(resolvedRangeEndDate.getTime());
+  }
+  if (resolvedRangeStartDate && !resolvedRangeEndDate) {
+    resolvedRangeEndDate = new Date(resolvedRangeStartDate.getTime());
+  }
+
+  if (
+    resolvedRangeStartDate &&
+    resolvedRangeEndDate &&
+    resolvedRangeStartDate.getTime() > resolvedRangeEndDate.getTime()
+  ) {
+    resolvedRangeEndDate = new Date(resolvedRangeStartDate.getTime());
+  }
+
+  const domainDuration =
+    resolvedRangeStartDate && resolvedRangeEndDate
+      ? Math.max(0, resolvedRangeEndDate.getTime() - resolvedRangeStartDate.getTime())
+      : 0;
+
   const minValue = Math.min(...finiteValues, 0);
   const maxValue = Math.max(...finiteValues, 0);
   const range = maxValue - minValue;
@@ -101,15 +157,23 @@ function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
   const points = series.map((entry, index) => {
     const totalValue = resolveValue(entry);
     const safeValue = Number.isFinite(totalValue) ? totalValue : 0;
-    const ratio = series.length === 1 ? 0 : index / (series.length - 1);
-    const x = PADDING.left + innerWidth * ratio;
+    let ratio;
+    const entryDate = parsedDates[index];
+    if (resolvedRangeStartDate && resolvedRangeEndDate && domainDuration > 0 && entryDate) {
+      ratio = (entryDate.getTime() - resolvedRangeStartDate.getTime()) / domainDuration;
+    } else if (series.length === 1) {
+      ratio = 0;
+    } else {
+      ratio = index / (series.length - 1);
+    }
+    const clampedRatio = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
     const normalized = (safeValue - minDomain) / domainRange;
     const clamped = Math.max(0, Math.min(1, normalized));
     const y = PADDING.top + innerHeight * (1 - clamped);
     const previousValue = index > 0 ? resolveValue(series[index - 1]) : totalValue;
     const safePrevious = Number.isFinite(previousValue) ? previousValue : safeValue;
     const trend = safeValue - safePrevious;
-    return { ...entry, x, y, trend, chartValue: safeValue };
+    return { ...entry, x: PADDING.left + innerWidth * clampedRatio, y, trend, chartValue: safeValue };
   });
 
   const yFor = (value) => {
@@ -121,8 +185,8 @@ function buildChartMetrics(series, { useDisplayStartDelta = false } = {}) {
   return {
     points,
     yFor,
-    rangeStart: series[0].date,
-    rangeEnd: series[series.length - 1].date,
+    rangeStart: toPlainDateString(resolvedRangeStartDate) ?? series[0].date,
+    rangeEnd: toPlainDateString(resolvedRangeEndDate) ?? series[series.length - 1].date,
     minDomain,
     maxDomain,
     domainRange,
@@ -240,9 +304,62 @@ export default function TotalPnlDialog({
   const summaryHasDisplayDelta = Number.isFinite(data?.summary?.totalPnlSinceDisplayStartCad);
   // Only use display-start deltas when in CAGR mode; otherwise show absolute all-time values
   const useDisplayStartDelta = isCagrMode && (summaryHasDisplayDelta || seriesHasDisplayDelta);
+  const { start: chartRangeStart, end: chartRangeEnd } = useMemo(() => {
+    const endCandidates = [];
+    if (filteredSeries.length) {
+      const lastFiltered = filteredSeries[filteredSeries.length - 1];
+      const parsedLastFiltered = parseDateOnly(lastFiltered?.date);
+      if (parsedLastFiltered) {
+        endCandidates.push(parsedLastFiltered);
+      }
+    }
+    if (Array.isArray(data?.points) && data.points.length) {
+      const lastRawPoint = data.points[data.points.length - 1];
+      const parsedLastRaw = parseDateOnly(lastRawPoint?.date);
+      if (parsedLastRaw) {
+        endCandidates.push(parsedLastRaw);
+      }
+    }
+    const parsedPeriodEnd = parseDateOnly(data?.periodEndDate);
+    if (parsedPeriodEnd) {
+      endCandidates.push(parsedPeriodEnd);
+    }
+
+    const resolvedEnd = endCandidates.length
+      ? new Date(Math.max(...endCandidates.map((date) => date.getTime())))
+      : null;
+
+    if (!resolvedEnd) {
+      return { start: null, end: null };
+    }
+
+    if (timeframe && timeframe !== 'ALL') {
+      const resolvedStart = subtractInterval(resolvedEnd, timeframe);
+      return { start: resolvedStart ?? null, end: resolvedEnd };
+    }
+
+    const startCandidates = [];
+    if (filteredSeries.length) {
+      const firstFiltered = filteredSeries[0];
+      const parsedFirstFiltered = parseDateOnly(firstFiltered?.date);
+      if (parsedFirstFiltered) {
+        startCandidates.push(parsedFirstFiltered);
+      }
+    }
+    const parsedPeriodStart = parseDateOnly(data?.periodStartDate);
+    if (parsedPeriodStart) {
+      startCandidates.push(parsedPeriodStart);
+    }
+
+    const resolvedStart = startCandidates.length
+      ? new Date(Math.min(...startCandidates.map((date) => date.getTime())))
+      : null;
+
+    return { start: resolvedStart, end: resolvedEnd };
+  }, [filteredSeries, timeframe, data?.points, data?.periodEndDate, data?.periodStartDate]);
   const chartMetrics = useMemo(
-    () => buildChartMetrics(filteredSeries, { useDisplayStartDelta }),
-    [filteredSeries, useDisplayStartDelta]
+    () => buildChartMetrics(filteredSeries, { useDisplayStartDelta, rangeStartDate: chartRangeStart, rangeEndDate: chartRangeEnd }),
+    [filteredSeries, useDisplayStartDelta, chartRangeStart, chartRangeEnd]
   );
   const hasChart = Boolean(chartMetrics && chartMetrics.points.length);
   const canShowBreakdown = typeof onShowBreakdown === 'function';
