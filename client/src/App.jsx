@@ -3887,6 +3887,29 @@ export default function App() {
     });
     return map;
   }, [groupRelations]);
+  const accountGroupParentsMap = useMemo(() => {
+    const map = new Map();
+    Object.entries(groupRelations).forEach(([childName, parents]) => {
+      const childKey = normalizeAccountGroupKey(childName);
+      if (!childKey) {
+        return;
+      }
+      const parentList = Array.isArray(parents) ? parents : [parents];
+      parentList.forEach((parentName) => {
+        const parentKey = normalizeAccountGroupKey(parentName);
+        if (!parentKey) {
+          return;
+        }
+        let set = map.get(childKey);
+        if (!set) {
+          set = new Set();
+          map.set(childKey, set);
+        }
+        set.add(parentKey);
+      });
+    });
+    return map;
+  }, [groupRelations]);
   const accountGroupNamesByKey = useMemo(() => {
     const map = new Map();
     accountGroups.forEach((group) => {
@@ -5129,24 +5152,26 @@ export default function App() {
   }, [rawPositions, currencyRates, baseCurrency]);
   const childAccountSummaryResult = useMemo(() => {
     if (!accounts.length) {
-      return { items: [], parentTotal: null };
+      return { items: [], parentTotal: null, parents: [] };
     }
 
     const parentKeys = new Set();
+    let selectedGroupKey = null;
 
     // Only show child accounts when a group is selected. For individual accounts,
     // do not infer children from the parent group (avoids showing siblings as children).
     if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
       const groupKey = normalizeAccountGroupKey(selectedAccountGroup.name);
       if (groupKey) {
+        selectedGroupKey = groupKey;
         parentKeys.add(groupKey);
       }
     } else {
-      return { items: [], parentTotal: null };
+      return { items: [], parentTotal: null, parents: [] };
     }
 
     if (!parentKeys.size) {
-      return { items: [], parentTotal: null };
+      return { items: [], parentTotal: null, parents: [] };
     }
 
     const excludeAccountIds = new Set();
@@ -5235,6 +5260,43 @@ export default function App() {
         }
       }
       return result;
+    };
+
+    const buildParentGroupItems = () => {
+      if (!selectedGroupKey) {
+        return [];
+      }
+      const parentSet = accountGroupParentsMap.get(selectedGroupKey);
+      if (!parentSet || !parentSet.size) {
+        return [];
+      }
+      const seenParentIds = new Set();
+      const parents = [];
+      parentSet.forEach((parentKey) => {
+        if (!parentKey || parentKey === selectedGroupKey) {
+          return;
+        }
+        const parentGroup = accountGroupsByNormalizedName.get(parentKey) || null;
+        const parentId =
+          parentGroup && parentGroup.id !== undefined && parentGroup.id !== null
+            ? String(parentGroup.id).trim()
+            : null;
+        if (parentId && seenParentIds.has(parentId)) {
+          return;
+        }
+        if (parentId) {
+          seenParentIds.add(parentId);
+        }
+        const displayName = accountGroupNamesByKey.get(parentKey) || parentId || parentKey;
+        const href = parentId ? buildAccountViewUrl(parentId) || null : null;
+        parents.push({
+          id: parentId || parentKey,
+          label: displayName,
+          href,
+        });
+      });
+      parents.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+      return parents;
     };
 
     const items = [];
@@ -5342,7 +5404,8 @@ export default function App() {
     });
 
     if (!items.length) {
-      return { items: [], parentTotal: null };
+      const parentGroupItems = buildParentGroupItems();
+      return { items: [], parentTotal: null, parents: parentGroupItems };
     }
 
     items.sort((a, b) => {
@@ -5353,6 +5416,8 @@ export default function App() {
       }
       return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
     });
+
+    const parentGroupItems = buildParentGroupItems();
 
     let parentTotal = null;
     if (isFiniteNumber(selectedAccountFunding?.totalEquityCad)) {
@@ -5369,12 +5434,13 @@ export default function App() {
       }
     }
 
-    return { items, parentTotal };
+    return { items, parentTotal, parents: parentGroupItems };
   }, [
     accounts,
     accountsById,
     accountsByGroupName,
     accountGroupChildrenMap,
+    accountGroupParentsMap,
     accountGroupNamesByKey,
     accountGroupsByNormalizedName,
     normalizedAccountBalances,
@@ -5391,6 +5457,7 @@ export default function App() {
   ]);
   const childAccountSummaries = childAccountSummaryResult.items;
   const childAccountParentTotal = childAccountSummaryResult.parentTotal;
+  const parentAccountSummaries = childAccountSummaryResult.parents || [];
 
   const peopleSummary = useMemo(() => {
     if (!accounts.length) {
@@ -8433,6 +8500,7 @@ export default function App() {
             onTotalPnlRangeChange={handleTotalPnlRangeChange}
             onAdjustDeployment={handleOpenDeploymentAdjustment}
             childAccounts={childAccountSummaries}
+            parentGroups={parentAccountSummaries}
             childAccountParentTotal={childAccountParentTotal}
             onSelectAccount={handleAccountChange}
             onShowChildPnlBreakdown={handleShowChildPnlBreakdown}
