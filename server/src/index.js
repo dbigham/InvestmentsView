@@ -8242,6 +8242,10 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   }
 
   const cashCadBySymbol = new Map(); // since effective start
+  // Track USD-currency cash flows in native USD so we can recompute a no-FX variant.
+  // Also track the CAD that originated from USD conversions to separate CAD-native flows.
+  const cashUsdBySymbol = new Map(); // since effective start (USD only)
+  const cashCadFromUsdBySymbol = new Map(); // portion of CAD cash originating from USD flows
   const investedOutflowCadBySymbol = new Map(); // since effective start
   const holdings = new Map(); // trade deltas on/after effective start
   const baselineHoldings = new Map(); // trade deltas before effective start
@@ -8342,6 +8346,13 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
         }
         amountCad = Number.isFinite(usdRate) && usdRate > 0 ? netAmount * usdRate : null;
+        // Track USD-native amount and its CAD-converted counterpart for no-FX variant.
+        const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+        cashUsdBySymbol.set(symbol, curUsd + (Number.isFinite(netAmount) ? netAmount : 0));
+        if (Number.isFinite(amountCad)) {
+          const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+          cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + amountCad);
+        }
       }
       if (Number.isFinite(amountCad)) {
         const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
@@ -8423,6 +8434,14 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           continue;
         }
         valueCad = qty * price * r;
+        // Track USD-native book-value cash so we can recompute at a constant end rate.
+        const bookCashUsd = -(qty * price); // Transfer out (−qty) => inflow (+)
+        const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+        cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
+        const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+        // Track the exact CAD cash increment we applied due to USD-sourced book cash
+        // so we can back it out when building a no-FX variant.
+        cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
       }
       const bookCashCad = -valueCad; // Transfer out (−qty) => inflow (+)
       const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
@@ -8431,6 +8450,8 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   }
 
   let result = [];
+  let resultNoFx = [];
+  let fxEffectCadTotal = 0;
   const allSymbols = new Set([
     ...Array.from(symbolMeta.keys()),
     ...Array.from(cashCadBySymbol.keys()),
@@ -8484,6 +8505,34 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       marketValueCad: Number.isFinite(marketValueCad) ? marketValueCad : null,
       currency: isUsd ? 'USD' : 'CAD',
     };
+    // Build no-FX variant: convert all USD cash and USD MV deltas at end rate; keep CAD-native parts as-is.
+    let totalPnlNoFxCad = null;
+    if (isUsd && Number.isFinite(endUsdRate) && endUsdRate > 0) {
+      const usdEndValue = Number.isFinite(endQty) && Number.isFinite(price) ? endQty * price : 0;
+      const usdStartValue = Number.isFinite(startQty) && Number.isFinite(startPrice) ? startQty * startPrice : 0;
+      const usdDelta = usdEndValue - usdStartValue;
+      const mvNoFxCad = usdDelta * endUsdRate;
+      const usdCash = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+      const cadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+      const cadTotalCash = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
+      const cadNativeCash = cadTotalCash - cadFromUsd;
+      const cashNoFxCad = usdCash * endUsdRate + cadNativeCash;
+      totalPnlNoFxCad = mvNoFxCad + cashNoFxCad;
+    } else {
+      // Non-USD symbols are unaffected by FX; keep original P&L.
+      if (Number.isFinite(totalPnlCad)) {
+        totalPnlNoFxCad = totalPnlCad;
+      }
+    }
+    const entryNoFx = {
+      symbol,
+      symbolId: Number.isFinite(meta.symbolId) ? meta.symbolId : null,
+      totalPnlCad: Number.isFinite(totalPnlNoFxCad) ? totalPnlNoFxCad : Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+      investedCad: Number.isFinite(investedCad) ? investedCad : null,
+      openQuantity: Number.isFinite(endQty) ? endQty : null,
+      marketValueCad: Number.isFinite(marketValueCad) ? marketValueCad : null,
+      currency: isUsd ? 'USD' : 'CAD',
+    };
     // Include if we have any signal (P&L, market value, or invested),
     // or if there was a non-trade quantity movement since start (e.g., book-value transfer out).
     const nonTradeDelta = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
@@ -8495,12 +8544,17 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       hadNonTradeMove
     ) {
       result.push(entry);
+      resultNoFx.push(entryNoFx);
+      if (Number.isFinite(entry.totalPnlCad) && Number.isFinite(entryNoFx.totalPnlCad)) {
+        fxEffectCadTotal += entry.totalPnlCad - entryNoFx.totalPnlCad;
+      }
     }
   }
 
   // If we saw journaling for a base symbol, fold share-class variants into the base.
   if (journalBases.size > 0 && result.length > 0) {
     const merged = new Map();
+    const mergedNoFx = new Map();
     const toKey = (sym) => {
       if (!sym) return sym;
       const noTo = stripToSuffix(String(sym).toUpperCase());
@@ -8534,7 +8588,35 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         }
       }
     }
+    for (const entry of resultNoFx) {
+      const key = toKey(entry.symbol);
+      const existing = mergedNoFx.get(key);
+      if (!existing) {
+        mergedNoFx.set(key, {
+          symbol: key,
+          symbolId: Number.isFinite(entry.symbolId) ? entry.symbolId : null,
+          totalPnlCad: Number(entry.totalPnlCad) || 0,
+          investedCad: Number(entry.investedCad) || 0,
+          openQuantity: Number(entry.openQuantity) || 0,
+          marketValueCad: Number(entry.marketValueCad) || 0,
+          currency: entry.currency || null,
+        });
+      } else {
+        const add = (v) => (Number.isFinite(v) ? v : 0);
+        existing.totalPnlCad += add(entry.totalPnlCad);
+        existing.investedCad += add(entry.investedCad);
+        existing.openQuantity += add(entry.openQuantity);
+        existing.marketValueCad += add(entry.marketValueCad);
+        if (!existing.symbolId && Number.isFinite(entry.symbolId)) {
+          existing.symbolId = entry.symbolId;
+        }
+        if (!existing.currency && entry.currency) {
+          existing.currency = entry.currency;
+        }
+      }
+    }
     result = Array.from(merged.values());
+    resultNoFx = Array.from(mergedNoFx.values());
   }
 
   // Sort by magnitude of contribution
@@ -8544,8 +8626,15 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     if (aMag !== bMag) return bMag - aMag;
     return (a.symbol || '').localeCompare(b.symbol || '');
   });
+  // Maintain the same order for the no-FX variant by re-sorting independent of FX.
+  resultNoFx.sort((a, b) => {
+    const aMag = Math.abs(Number(a.totalPnlCad) || 0);
+    const bMag = Math.abs(Number(b.totalPnlCad) || 0);
+    if (aMag !== bMag) return bMag - aMag;
+    return (a.symbol || '').localeCompare(b.symbol || '');
+  });
 
-  return { entries: result, endDate: endKey };
+  return { entries: result, entriesNoFx: resultNoFx, fxEffectCad: fxEffectCadTotal, endDate: endKey };
 }
 
 const BALANCE_NUMERIC_FIELDS = [
@@ -10446,6 +10535,8 @@ app.get('/api/summary', async function (req, res) {
         if (symbolTotals && Array.isArray(symbolTotals.entries)) {
           accountTotalPnlBySymbol[context.account.id] = {
             entries: symbolTotals.entries,
+            entriesNoFx: Array.isArray(symbolTotals.entriesNoFx) ? symbolTotals.entriesNoFx : undefined,
+            fxEffectCad: Number.isFinite(symbolTotals.fxEffectCad) ? symbolTotals.fxEffectCad : undefined,
             asOf: symbolTotals.endDate || null,
           };
         }
@@ -10457,6 +10548,8 @@ app.get('/api/summary', async function (req, res) {
         if (symbolTotalsAll && Array.isArray(symbolTotalsAll.entries)) {
           accountTotalPnlBySymbolAll[context.account.id] = {
             entries: symbolTotalsAll.entries,
+            entriesNoFx: Array.isArray(symbolTotalsAll.entriesNoFx) ? symbolTotalsAll.entriesNoFx : undefined,
+            fxEffectCad: Number.isFinite(symbolTotalsAll.fxEffectCad) ? symbolTotalsAll.fxEffectCad : undefined,
             asOf: symbolTotalsAll.endDate || null,
           };
         }
@@ -10632,8 +10725,12 @@ app.get('/api/summary', async function (req, res) {
 
       const symbolAggregateMap = new Map();
       const symbolAggregateMapAll = new Map();
+      const symbolAggregateNoFxMap = new Map();
+      const symbolAggregateNoFxMapAll = new Map();
       let aggregateAsOf = null;
       let aggregateAsOfAll = null;
+      let aggregateFxEffectCad = 0;
+      let aggregateFxEffectCadAll = 0;
       perAccountSymbolTotals.forEach(function (entry) {
         if (!entry || !entry.result || !Array.isArray(entry.result.entries)) {
           // keep going; maybe resultAll is present
@@ -10642,6 +10739,9 @@ app.get('/api/summary', async function (req, res) {
             if (!aggregateAsOf || entry.result.endDate > aggregateAsOf) {
               aggregateAsOf = entry.result.endDate;
             }
+          }
+          if (Number.isFinite(entry.result.fxEffectCad)) {
+            aggregateFxEffectCad += entry.result.fxEffectCad;
           }
           entry.result.entries.forEach(function (symbolEntry) {
             const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
@@ -10668,12 +10768,42 @@ app.get('/api/summary', async function (req, res) {
             }
             symbolAggregateMap.set(key, existing);
           });
+          if (Array.isArray(entry.result.entriesNoFx)) {
+            entry.result.entriesNoFx.forEach(function (symbolEntry) {
+              const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
+              if (!key) return;
+              const existing = symbolAggregateNoFxMap.get(key) || {
+                symbol: symbolEntry.symbol,
+                symbolId: symbolEntry.symbolId || null,
+                totalPnlCad: 0,
+                investedCad: 0,
+                openQuantity: 0,
+                marketValueCad: 0,
+                currency: symbolEntry.currency || null,
+              };
+              const add = (v) => (Number.isFinite(v) ? v : 0);
+              existing.totalPnlCad += add(symbolEntry.totalPnlCad);
+              existing.investedCad += add(symbolEntry.investedCad);
+              existing.openQuantity += add(symbolEntry.openQuantity);
+              existing.marketValueCad += add(symbolEntry.marketValueCad);
+              if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
+                existing.symbolId = symbolEntry.symbolId;
+              }
+              if (!existing.currency && symbolEntry.currency) {
+                existing.currency = symbolEntry.currency;
+              }
+              symbolAggregateNoFxMap.set(key, existing);
+            });
+          }
         }
         if (entry && entry.resultAll && Array.isArray(entry.resultAll.entries)) {
           if (typeof entry.resultAll.endDate === 'string' && entry.resultAll.endDate) {
             if (!aggregateAsOfAll || entry.resultAll.endDate > aggregateAsOfAll) {
               aggregateAsOfAll = entry.resultAll.endDate;
             }
+          }
+          if (Number.isFinite(entry.resultAll.fxEffectCad)) {
+            aggregateFxEffectCadAll += entry.resultAll.fxEffectCad;
           }
           entry.resultAll.entries.forEach(function (symbolEntry) {
             const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
@@ -10700,6 +10830,33 @@ app.get('/api/summary', async function (req, res) {
             }
             symbolAggregateMapAll.set(key, existing);
           });
+          if (Array.isArray(entry.resultAll.entriesNoFx)) {
+            entry.resultAll.entriesNoFx.forEach(function (symbolEntry) {
+              const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
+              if (!key) return;
+              const existing = symbolAggregateNoFxMapAll.get(key) || {
+                symbol: symbolEntry.symbol,
+                symbolId: symbolEntry.symbolId || null,
+                totalPnlCad: 0,
+                investedCad: 0,
+                openQuantity: 0,
+                marketValueCad: 0,
+                currency: symbolEntry.currency || null,
+              };
+              const add = (v) => (Number.isFinite(v) ? v : 0);
+              existing.totalPnlCad += add(symbolEntry.totalPnlCad);
+              existing.investedCad += add(symbolEntry.investedCad);
+              existing.openQuantity += add(symbolEntry.openQuantity);
+              existing.marketValueCad += add(symbolEntry.marketValueCad);
+              if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
+                existing.symbolId = symbolEntry.symbolId;
+              }
+              if (!existing.currency && symbolEntry.currency) {
+                existing.currency = symbolEntry.currency;
+              }
+              symbolAggregateNoFxMapAll.set(key, existing);
+            });
+          }
         }
       });
 
@@ -10709,23 +10866,37 @@ app.get('/api/summary', async function (req, res) {
       const aggregateEntriesAll = Array.from(symbolAggregateMapAll.values())
         .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
         .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+      const aggregateEntriesNoFx = Array.from(symbolAggregateNoFxMap.values())
+        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
+        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+      const aggregateEntriesNoFxAll = Array.from(symbolAggregateNoFxMapAll.values())
+        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
+        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
 
       if (viewingAccountGroup && selectedAccountGroup && selectedAccountGroup.id) {
         accountTotalPnlBySymbol[selectedAccountGroup.id] = {
           entries: aggregateEntries,
+          entriesNoFx: aggregateEntriesNoFx.length ? aggregateEntriesNoFx : undefined,
+          fxEffectCad: Number.isFinite(aggregateFxEffectCad) ? aggregateFxEffectCad : undefined,
           asOf: aggregateAsOf || null,
         };
         accountTotalPnlBySymbolAll[selectedAccountGroup.id] = {
           entries: aggregateEntriesAll,
+          entriesNoFx: aggregateEntriesNoFxAll.length ? aggregateEntriesNoFxAll : undefined,
+          fxEffectCad: Number.isFinite(aggregateFxEffectCadAll) ? aggregateFxEffectCadAll : undefined,
           asOf: aggregateAsOfAll || aggregateAsOf || null,
         };
       } else {
         accountTotalPnlBySymbol['all'] = {
           entries: aggregateEntries,
+          entriesNoFx: aggregateEntriesNoFx.length ? aggregateEntriesNoFx : undefined,
+          fxEffectCad: Number.isFinite(aggregateFxEffectCad) ? aggregateFxEffectCad : undefined,
           asOf: aggregateAsOf || null,
         };
         accountTotalPnlBySymbolAll['all'] = {
           entries: aggregateEntriesAll,
+          entriesNoFx: aggregateEntriesNoFxAll.length ? aggregateEntriesNoFxAll : undefined,
+          fxEffectCad: Number.isFinite(aggregateFxEffectCadAll) ? aggregateFxEffectCadAll : undefined,
           asOf: aggregateAsOfAll || aggregateAsOf || null,
         };
       }

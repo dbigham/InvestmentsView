@@ -8714,20 +8714,18 @@ export default function App() {
             const map = useAll
               ? (data?.accountTotalPnlBySymbolAll || data?.accountTotalPnlBySymbol || null)
               : (data?.accountTotalPnlBySymbol || null);
-            if (!map || typeof map !== 'object') return [];
+            if (!map || typeof map !== 'object') return {};
             // Aggregate views: 'all' or group:<slug>
             if (isAggregateSelection) {
               const key = typeof selectedAccount === 'string' && selectedAccount.trim() ? selectedAccount.trim() : 'all';
               const entry = map[key] || map['all'];
-              const list = Array.isArray(entry?.entries) ? entry.entries : [];
-              return list;
+              return entry || {};
             }
             // Single account
             const accountId = selectedAccountInfo?.id || null;
-            if (!accountId) return [];
+            if (!accountId) return {};
             const entry = map[accountId];
-            const list = Array.isArray(entry?.entries) ? entry.entries : [];
-            return list;
+            return entry || {};
           })()}
           totalPnlAsOf={(function resolveTotalPnlAsOf() {
             const useAll = (function decideVariant() {

@@ -677,6 +677,41 @@ export default function PnlHeatmapDialog({
   const metricLabel =
     metricMode === 'open' ? 'Open P&L' : metricMode === 'total' ? 'Total P&L' : "Today's P&L";
   const percentColorThreshold = metricMode === 'open' ? 70 : metricMode === 'total' ? 70 : 5;
+  const [fxBreakout, setFxBreakout] = useState(true);
+  const normalizeTotalList = useCallback(
+    (source, breakout) => {
+      if (Array.isArray(source)) {
+        return source;
+      }
+      if (!source || typeof source !== 'object') {
+        return [];
+      }
+      const entries = Array.isArray(source.entries) ? source.entries : [];
+      if (!breakout) {
+        return entries;
+      }
+      const entriesNoFx = Array.isArray(source.entriesNoFx) ? source.entriesNoFx : null;
+      if (!entriesNoFx) {
+        return entries;
+      }
+      const list = entriesNoFx.slice();
+      const fx = Number(source.fxEffectCad);
+      if (Number.isFinite(fx) && Math.abs(fx) > 1e-9) {
+        list.push({
+          symbol: 'USD/CAD',
+          symbolId: null,
+          totalPnlCad: fx,
+          investedCad: null,
+          openQuantity: null,
+          marketValueCad: 0,
+          currency: 'CAD',
+        });
+      }
+      return list;
+    },
+    []
+  );
+  const totalList = useMemo(() => normalizeTotalList(totalPnlBySymbol, fxBreakout), [totalPnlBySymbol, fxBreakout, normalizeTotalList]);
   const tileGapPx = 1;
   const halfTileGapPx = tileGapPx / 2;
   const epsilon = 0.0001;
@@ -787,7 +822,7 @@ export default function PnlHeatmapDialog({
     if (metricKey !== 'totalPnl') {
       return activePositions;
     }
-    const totals = Array.isArray(totalPnlBySymbol) ? totalPnlBySymbol : [];
+    const totals = totalList;
     if (!totals.length) {
       return [];
     }
@@ -822,7 +857,7 @@ export default function PnlHeatmapDialog({
       })
       .filter(Boolean);
     return merged;
-  }, [metricKey, activePositions, totalPnlBySymbol]);
+  }, [metricKey, activePositions, totalList]);
 
   const nodes = useMemo(
     () => buildHeatmapNodes(positionsForNodes, metricKey, styleMode),
@@ -836,12 +871,12 @@ export default function PnlHeatmapDialog({
     const hasAnyMarket = Array.isArray(activePositions)
       ? activePositions.some((p) => Number.isFinite(p?.normalizedMarketValue) && p.normalizedMarketValue > 0)
       : false;
-    const hasTotals = Array.isArray(totalPnlBySymbol) && totalPnlBySymbol.length > 0;
+    const hasTotals = Array.isArray(totalList) && totalList.length > 0;
     if (!hasAnyMarket && hasTotals) {
       setMetricMode('total');
       autoSwitchedRef.current = true;
     }
-  }, [metricMode, activePositions, totalPnlBySymbol]);
+  }, [metricMode, activePositions, totalList]);
   const menuRef = useRef(null);
   const [contextMenuState, setContextMenuState] = useState({ open: false, x: 0, y: 0, node: null });
 
@@ -1017,7 +1052,7 @@ export default function PnlHeatmapDialog({
 
   const totals = useMemo(() => {
     if (metricKey === 'totalPnl') {
-      const list = Array.isArray(totalPnlBySymbol) ? totalPnlBySymbol : [];
+      const list = totalList;
       const pnl = list.reduce(
         (sum, entry) => sum + (Number.isFinite(entry?.totalPnlCad) ? entry.totalPnlCad : 0),
         0
@@ -1040,7 +1075,7 @@ export default function PnlHeatmapDialog({
       },
       { marketValue: 0, pnl: 0 }
     );
-  }, [activePositions, metricKey, totalPnlBySymbol]);
+  }, [activePositions, metricKey, totalList]);
 
   const styleTwoTotals = useMemo(() => {
     if (styleMode !== 'style2') {
@@ -1162,7 +1197,7 @@ export default function PnlHeatmapDialog({
                 >
                   Open P&L
                 </button>
-                {Array.isArray(totalPnlBySymbol) && totalPnlBySymbol.length > 0 && (
+                {Array.isArray(totalList) && totalList.length > 0 && (
                   <button
                     type="button"
                     className={`pnl-heatmap-dialog__control${
@@ -1221,6 +1256,23 @@ export default function PnlHeatmapDialog({
                   {currencyLabel} change
                 </button>
               </div>
+              {metricKey === 'totalPnl' && !Array.isArray(totalPnlBySymbol) && totalPnlBySymbol && typeof totalPnlBySymbol === 'object' && Array.isArray(totalPnlBySymbol.entriesNoFx) && (
+                <div
+                  className="pnl-heatmap-dialog__controls"
+                  role="group"
+                  aria-label="FX options"
+                  style={{ marginLeft: 'auto', paddingLeft: '12px', paddingRight: '12px' }}
+                >
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                    <input
+                      type="checkbox"
+                      checked={fxBreakout}
+                      onChange={(e) => setFxBreakout(!!e.target.checked)}
+                    />
+                    Break out USD/CAD
+                  </label>
+                </div>
+              )}
             </div>
           </div>
           <button type="button" className="pnl-heatmap-dialog__close" onClick={onClose} aria-label="Close">
@@ -1424,16 +1476,42 @@ PnlHeatmapDialog.propTypes = {
     })
   ),
   initialAccount: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
-  totalPnlBySymbol: PropTypes.arrayOf(
+  totalPnlBySymbol: PropTypes.oneOfType([
+    PropTypes.arrayOf(
+      PropTypes.shape({
+        symbol: PropTypes.string.isRequired,
+        symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+        totalPnlCad: PropTypes.number,
+        investedCad: PropTypes.number,
+        openQuantity: PropTypes.number,
+        marketValueCad: PropTypes.number,
+      })
+    ),
     PropTypes.shape({
-      symbol: PropTypes.string.isRequired,
-      symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
-      totalPnlCad: PropTypes.number,
-      investedCad: PropTypes.number,
-      openQuantity: PropTypes.number,
-      marketValueCad: PropTypes.number,
-    })
-  ),
+      entries: PropTypes.arrayOf(
+        PropTypes.shape({
+          symbol: PropTypes.string.isRequired,
+          symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+          totalPnlCad: PropTypes.number,
+          investedCad: PropTypes.number,
+          openQuantity: PropTypes.number,
+          marketValueCad: PropTypes.number,
+        })
+      ),
+      entriesNoFx: PropTypes.arrayOf(
+        PropTypes.shape({
+          symbol: PropTypes.string.isRequired,
+          symbolId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+          totalPnlCad: PropTypes.number,
+          investedCad: PropTypes.number,
+          openQuantity: PropTypes.number,
+          marketValueCad: PropTypes.number,
+        })
+      ),
+      fxEffectCad: PropTypes.number,
+      asOf: PropTypes.string,
+    }),
+  ]),
   totalPnlAsOf: PropTypes.string,
 };
 
