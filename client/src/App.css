@@ -4012,6 +4012,59 @@ button.time-pill:hover .time-pill__icon {
     box-shadow 120ms ease-in-out;
 }
 
+/* Projection breakdown tree */
+.projection-breakdown {
+  margin-top: 18px;
+}
+
+.projection-breakdown__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.projection-breakdown__actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+.projection-tree {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin-top: 8px;
+}
+
+.projection-tree__col-start,
+.projection-tree__col-final { width: 100px; }
+.projection-tree__col-rate { width: 88px; }
+
+.projection-tree__th-name { text-align: left; color: var(--color-text-secondary); font-weight: 600; }
+.projection-tree__th { text-align: right; color: var(--color-text-secondary); font-weight: 600; }
+
+.projection-tree__row--disabled { opacity: 0.6; }
+
+.projection-tree td { padding: 6px 0; }
+.projection-tree th { padding: 6px 0; }
+
+.projection-tree__cell-name { text-align: left; }
+.projection-tree__cell-value { text-align: right; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.projection-tree__cell-value + .projection-tree__cell-value { padding-left: 2px; }
+.projection-tree__cell-rate { text-align: right; padding-left: 16px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+
+.projection-tree__name-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.projection-tree__checkbox { flex: 0 0 auto; }
+.projection-tree__name { font-weight: 500; }
+
+.projection-tree__rate { display: inline-flex; align-items: center; gap: 6px; }
+.projection-tree__rate-input { width: 64px; }
+.projection-tree__rate-suffix { color: var(--color-text-secondary); }
+.projection-tree__group-rate-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.projection-tree__group-rate-value { width: 64px; padding-left: 1px; text-align: left; font-weight: 600; }
+
 .projection-dialog__button:hover,
 .projection-dialog__button:focus-visible {
   border-color: var(--color-border-active);
@@ -5333,4 +5386,7 @@ button.time-pill:hover .time-pill__icon {
 .account-metadata-dialog__button--primary:hover:not(:disabled),
 .account-metadata-dialog__button--primary:focus-visible:not(:disabled) {
   filter: brightness(0.98);
+}
+.projection-tree__rate-placeholder {
+  width: 88px;
 }

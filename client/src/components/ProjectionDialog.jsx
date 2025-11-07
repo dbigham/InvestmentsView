@@ -137,6 +137,27 @@ function formatMoneyCompact(value) {
   return `${sign}$${formatNumber(abs, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
+// Compact number formatter without currency, lowercase suffixes (k/m/b)
+function formatNumberCompactPlain(value) {
+  if (!Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (abs >= 1e9) {
+    const num = abs / 1e9;
+    const digits = num >= 100 ? { minimumFractionDigits: 0, maximumFractionDigits: 0 } : { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+    return `${sign}${formatNumber(num, digits)} b`;
+  }
+  if (abs >= 1e6) {
+    const num = abs / 1e6;
+    return `${sign}${formatNumber(num, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} m`;
+  }
+  if (abs >= 1e3) {
+    const num = abs / 1e3;
+    return `${sign}${formatNumber(num, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} k`;
+  }
+  return `${sign}${formatNumber(abs, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
 function buildMilestones(years) {
   const Y = Math.max(1, Math.floor(years));
   const points = new Set([Y]);
@@ -248,6 +269,7 @@ export default function ProjectionDialog({
   isGroupView,
   groupProjectionAccounts,
   retirementSettings,
+  projectionTree,
 }) {
   const toNumberOrNaN = (val) => {
     if (typeof val === 'number') return val;
@@ -272,6 +294,15 @@ export default function ProjectionDialog({
   const [includeRetirementFlows, setIncludeRetirementFlows] = useState(
     Boolean(retirementSettings?.mainRetirementAccount)
   );
+
+  // Selection on the projection path: index into projectionSeries
+  const [selectedPoint, setSelectedPoint] = useState(null); // { date, index }
+
+  // Local per-account overrides and inclusion toggles (for group view tree)
+  const [ratesById, setRatesById] = useState(() => new Map()); // accountId -> percent number
+  const [changedRateIds, setChangedRateIds] = useState(() => new Set());
+  const [includedById, setIncludedById] = useState(() => new Map()); // accountId -> boolean
+  const [savingRates, setSavingRates] = useState(false);
 
   const normalizedRate = useMemo(() => {
     const trimmed = String(rateInput ?? '').replace(/[^0-9.\-]/g, '').trim();
@@ -490,6 +521,34 @@ export default function ProjectionDialog({
       const base = toDateOnly(projectionStartDate);
       const points = [];
       const childStates = (function buildChildStates() {
+        if (projectionTree && typeof projectionTree === 'object') {
+          // Flatten included leaves from the projection tree, applying overrides
+          const leaves = [];
+          const walk = (node) => {
+            if (!node) return;
+            if (node.kind === 'account') {
+              const accId = node.id;
+              const included = includedById.get(accId);
+              if (included !== false) {
+                const ratePercent = ratesById.has(accId)
+                  ? ratesById.get(accId)
+                  : (Number.isFinite(node.ratePercent) ? node.ratePercent : null);
+                const rate = Number.isFinite(ratePercent) ? ratePercent / 100 : 0;
+                leaves.push({ equity: Number(node.equity) || 0, rate });
+              }
+              return;
+            }
+            if (Array.isArray(node.children)) node.children.forEach(walk);
+          };
+          walk(projectionTree);
+          const filtered = leaves.filter((l) => (Number.isFinite(l.equity) ? l.equity : 0) > 0);
+          if (filtered.length) {
+            return filtered.map((leaf) => ({
+              monthlyRate: Math.pow(1 + (Number(leaf.rate) || 0), 1 / 12) - 1,
+              value: Number(leaf.equity) || 0,
+            }));
+          }
+        }
         if (groupChildren.length) {
           return groupChildren.map((child) => {
             const annual = Number(child?.rate) || 0;
@@ -557,6 +616,9 @@ export default function ProjectionDialog({
     groupChildren,
     retirementModel,
     computeRetirementFlow,
+    // Recompute when inclusion or rates change
+    includedById,
+    ratesById,
   ]);
 
   const chartRange = useMemo(() => {
@@ -565,6 +627,34 @@ export default function ProjectionDialog({
     const end = addMonths(start, Math.round(timeframeYears * 12));
     return { start, end };
   }, [projectionSeries, timeframeYears]);
+
+  // Initialize tree state (ratesById and includedById) once tree becomes available
+  useEffect(() => {
+    if (!isGroupView || !projectionTree) return;
+    const newRates = new Map();
+    const newIncluded = new Map();
+    const walk = (node) => {
+      if (!node) return;
+      if (node.kind === 'account') {
+        if (Number.isFinite(node.ratePercent)) newRates.set(node.id, node.ratePercent);
+        newIncluded.set(node.id, true);
+        return;
+      }
+      if (Array.isArray(node.children)) node.children.forEach(walk);
+    };
+    walk(projectionTree);
+    setRatesById(newRates);
+    setIncludedById(newIncluded);
+    setChangedRateIds(new Set());
+  }, [isGroupView, projectionTree]);
+
+  // Selected point defaults to the final chart date when series is ready
+  useEffect(() => {
+    if (!projectionSeries.length) return;
+    const last = projectionSeries[projectionSeries.length - 1];
+    if (!last?.date) return;
+    setSelectedPoint({ date: last.date, index: projectionSeries.length - 1 });
+  }, [projectionSeries]);
 
   const metrics = useMemo(() => {
     const actualWithinRange = overlayInfo.actualSeries.filter((e) => {
@@ -634,20 +724,57 @@ export default function ProjectionDialog({
     return Number.isFinite(last?.value) ? last.value : null;
   }, [projectionSeries]);
 
+  const displayedCurrentValue = useMemo(() => {
+    if (isGroupView && projectionTree) {
+      let sum = 0;
+      const walk = (node) => {
+        if (!node) return;
+        if (node.kind === 'account') {
+          if (includedById.get(node.id) === false) return;
+          const eq = Number(node.equity) || 0;
+          if (Number.isFinite(eq) && eq > 0) sum += eq;
+          return;
+        }
+        if (Array.isArray(node.children)) node.children.forEach(walk);
+      };
+      walk(projectionTree);
+      return Number.isFinite(sum) ? sum : null;
+    }
+    return Number.isFinite(todayTotalEquity) ? todayTotalEquity : null;
+  }, [isGroupView, projectionTree, includedById, todayTotalEquity]);
+
+  const effectiveGroupRatePercentAtSelection = useMemo(() => {
+    if (!isGroupView || !projectionTree || !selectedPoint || !projectionSeries.length) return null;
+    const endEntry = projectionSeries[selectedPoint.index];
+    const end = Number.isFinite(endEntry?.value) ? endEntry.value : null;
+    if (!(end > 0)) return null;
+    let startTotal = 0;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.kind === 'account') {
+        if (includedById.get(node.id) === false) return;
+        const eq = Number(node.equity) || 0;
+        if (Number.isFinite(eq) && eq > 0) startTotal += eq;
+        return;
+      }
+      if (Array.isArray(node.children)) node.children.forEach(walk);
+    };
+    walk(projectionTree);
+    if (!(startTotal > 0)) return null;
+    const years = selectedPoint.index / 12;
+    if (!(years > 0)) return null;
+    const eff = Math.pow(end / startTotal, 1 / years) - 1;
+    return Number.isFinite(eff) ? eff * 100 : null;
+  }, [isGroupView, projectionTree, selectedPoint, projectionSeries, includedById]);
+
   const ratePercentLabel = useMemo(() => {
     if (isGroupView) {
-      if (!Number.isFinite(projectionStartValue) || !Number.isFinite(finalProjectedValue) || !Number.isFinite(timeframeYears) || timeframeYears <= 0) {
-        return '—';
-      }
-      const ratio = finalProjectedValue / projectionStartValue;
-      if (!(ratio > 0)) return '—';
-      const eff = Math.pow(ratio, 1 / timeframeYears) - 1;
-      if (!Number.isFinite(eff)) return '—';
-      return `${formatNumber(eff * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+      if (!Number.isFinite(effectiveGroupRatePercentAtSelection)) return '—';
+      return `${formatNumber(effectiveGroupRatePercentAtSelection, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
     }
     if (!Number.isFinite(normalizedRate)) return '—';
     return `${formatNumber(normalizedRate * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
-  }, [isGroupView, normalizedRate, projectionStartValue, finalProjectedValue, timeframeYears]);
+  }, [isGroupView, normalizedRate, effectiveGroupRatePercentAtSelection]);
 
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
@@ -676,7 +803,7 @@ export default function ProjectionDialog({
               <div className="pnl-dialog__summary-item">
                 <span className="pnl-dialog__summary-label">Current value</span>
                 <span className="pnl-dialog__summary-value">
-                  {Number.isFinite(todayTotalEquity) ? formatMoney(todayTotalEquity) : '—'}
+                  {Number.isFinite(displayedCurrentValue) ? formatMoney(displayedCurrentValue) : '—'}
                 </span>
               </div>
               <div className="pnl-dialog__summary-item">
@@ -838,6 +965,26 @@ export default function ProjectionDialog({
                   ageLabel,
                 });
               }}
+              onClick={(event) => {
+                if (!metrics || !metrics.pointsA.length) return;
+                const rect = chartContainerRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                const relX = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+                const ratio = rect.width > 0 ? relX / rect.width : 0;
+                const targetX = ratio * CHART_WIDTH;
+                let nearest = metrics.pointsA[0];
+                let best = Math.abs(nearest.x - targetX);
+                let nearestIndex = 0;
+                for (let i = 1; i < metrics.pointsA.length; i += 1) {
+                  const dist = Math.abs(metrics.pointsA[i].x - targetX);
+                  if (dist < best) {
+                    best = dist;
+                    nearest = metrics.pointsA[i];
+                    nearestIndex = i;
+                  }
+                }
+                setSelectedPoint({ date: nearest.date, index: nearestIndex });
+              }}
               onMouseLeave={() => setHoverPoint(null)}
             >
               <svg className="qqq-section__chart pnl-dialog__chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-hidden="true">
@@ -879,7 +1026,25 @@ export default function ProjectionDialog({
                       y2={CHART_HEIGHT - PADDING.bottom}
                       strokeDasharray="3 6"
                     />
-                    <circle className="projection-dialog__milestone" cx={m.x} cy={m.y} r="5" />
+                    <circle
+                      className="projection-dialog__milestone"
+                      cx={m.x}
+                      cy={m.y}
+                      r="5"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // find nearest point index for the milestone date
+                        let nearestIndex = metrics.pointsA.length - 1;
+                        for (let i = 0; i < metrics.pointsA.length; i += 1) {
+                          if (metrics.pointsA[i].date >= m.date) {
+                            nearestIndex = i;
+                            break;
+                          }
+                        }
+                        setSelectedPoint({ date: metrics.pointsA[nearestIndex].date, index: nearestIndex });
+                      }}
+                      style={{ cursor: 'pointer' }}
+                    />
                   </g>
                 ))}
               </svg>
@@ -911,7 +1076,41 @@ export default function ProjectionDialog({
               </div>
             </div>
 
-            {Array.isArray(childAccounts) && childAccounts.length > 0 && (
+            {isGroupView && projectionTree && selectedPoint && (
+              <ProjectionBreakdown
+                root={projectionTree}
+                selectedIndex={selectedPoint.index}
+                startDate={projectionSeries.length ? parseDateOnly(projectionSeries[0]?.date) : null}
+                timeframeMonths={Math.max(1, Math.round(timeframeYears * 12))}
+                computeFlow={retirementModel.enabled ? computeRetirementFlow : null}
+                ratesById={ratesById}
+                setRatesById={setRatesById}
+                changedRateIds={changedRateIds}
+                setChangedRateIds={setChangedRateIds}
+                includedById={includedById}
+                setIncludedById={setIncludedById}
+                onSave={async () => {
+                  if (!changedRateIds.size) return;
+                  try {
+                    setSavingRates(true);
+                    for (const id of changedRateIds) {
+                      const p = ratesById.get(id);
+                      if (Number.isFinite(p)) {
+                        // Persist as projectionGrowthPercent
+                        // eslint-disable-next-line no-await-in-loop
+                        await setAccountMetadata(id, { projectionGrowthPercent: p });
+                      }
+                    }
+                    setChangedRateIds(new Set());
+                  } finally {
+                    setSavingRates(false);
+                  }
+                }}
+                savingRates={savingRates}
+              />
+            )}
+
+            {!isGroupView && Array.isArray(childAccounts) && childAccounts.length > 0 && (
               <div className="projection-dialog__children">
                 <h3 className="equity-card__children-title">Child accounts</h3>
                 <ul className="equity-card__children-list">
@@ -959,6 +1158,363 @@ export default function ProjectionDialog({
   );
 }
 
+// Projection breakdown tree view component
+function ProjectionBreakdown({
+  root,
+  selectedIndex,
+  startDate,
+  timeframeMonths,
+  computeFlow,
+  ratesById,
+  setRatesById,
+  changedRateIds,
+  setChangedRateIds,
+  includedById,
+  setIncludedById,
+  onSave,
+  savingRates,
+}) {
+  // Flatten leaves
+  const leaves = useMemo(() => {
+    const out = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.kind === 'account') {
+        out.push(node);
+        return;
+      }
+      if (Array.isArray(node.children)) node.children.forEach(walk);
+    };
+    walk(root);
+    return out;
+  }, [root]);
+
+  const maxDepth = useMemo(() => {
+    let max = 0;
+    const walk = (node, depth) => {
+      if (!node) return;
+      if (depth > max) max = depth;
+      if (Array.isArray(node.children)) node.children.forEach((c) => walk(c, depth + 1));
+    };
+    walk(root, 0);
+    return max;
+  }, [root]);
+
+  // Simulate to selected index for included leaves
+  const leafValues = useMemo(() => {
+    if (!startDate || !Number.isFinite(selectedIndex)) return new Map();
+    const states = [];
+    leaves.forEach((leaf) => {
+      const included = includedById.get(leaf.id);
+      if (included === false) return;
+      const eq = Number(leaf.equity) || 0;
+      if (!(eq > 0)) return;
+      const ratePercent = ratesById.has(leaf.id) ? ratesById.get(leaf.id) : (Number.isFinite(leaf.ratePercent) ? leaf.ratePercent : 0);
+      const rate = Number.isFinite(ratePercent) ? ratePercent / 100 : 0;
+      states.push({ id: leaf.id, value: eq, monthlyRate: Math.pow(1 + rate, 1 / 12) - 1 });
+    });
+    for (let i = 0; i <= selectedIndex; i += 1) {
+      const date = addMonths(startDate, i);
+      if (i > 0) {
+        states.forEach((s) => { s.value *= 1 + s.monthlyRate; });
+        // Do not distribute retirement flows into per-account values here to keep
+        // sibling branches independent when toggling inclusion.
+      }
+    }
+    const result = new Map();
+    states.forEach((s) => result.set(s.id, s.value));
+    return result;
+  }, [leaves, selectedIndex, startDate, computeFlow, ratesById, includedById]);
+
+  const computeGroupValueAtSelection = useCallback((node) => {
+    let sum = 0;
+    const walk = (n) => {
+      if (!n) return;
+      if (n.kind === 'account') {
+        if (includedById.get(n.id) === false) return;
+        const v = leafValues.get(n.id);
+        if (Number.isFinite(v)) sum += v;
+        return;
+      }
+      if (Array.isArray(n.children)) n.children.forEach(walk);
+    };
+    walk(node);
+    return sum;
+  }, [leafValues, includedById]);
+
+  const computeGroupStartValue = useCallback((node) => {
+    let sum = 0;
+    const walk = (n) => {
+      if (!n) return;
+      if (n.kind === 'account') {
+        if (includedById.get(n.id) === false) return;
+        const v = Number(n.equity) || 0;
+        if (Number.isFinite(v)) sum += v;
+        return;
+      }
+      if (Array.isArray(n.children)) n.children.forEach(walk);
+    };
+    walk(node);
+    return sum;
+  }, [includedById]);
+
+  const computeGroupAggregatedRate = useCallback((node) => {
+    // Effective CAGR from start to selectedIndex based on included leaves
+    if (!(selectedIndex > 0)) return null;
+    let startTotal = 0;
+    const walkStart = (n) => {
+      if (!n) return;
+      if (n.kind === 'account') {
+        if (includedById.get(n.id) === false) return;
+        const eq = Number(n.equity) || 0;
+        if (Number.isFinite(eq) && eq > 0) startTotal += eq;
+        return;
+      }
+      if (Array.isArray(n.children)) n.children.forEach(walkStart);
+    };
+    walkStart(node);
+    if (!(startTotal > 0)) return null;
+    const endTotal = computeGroupValueAtSelection(node);
+    if (!(endTotal > 0)) return null;
+    const years = selectedIndex / 12;
+    const eff = Math.pow(endTotal / startTotal, 1 / years) - 1;
+    return Number.isFinite(eff) ? eff * 100 : null;
+  }, [includedById, selectedIndex, computeGroupValueAtSelection]);
+
+  const setRate = (id, percent) => {
+    setRatesById((prev) => {
+      const next = new Map(prev);
+      next.set(id, percent);
+      return next;
+    });
+    setChangedRateIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  };
+
+  const setIncludedRecursive = (node, included) => {
+    const apply = (n) => {
+      if (!n) return;
+      if (n.kind === 'account') {
+        setIncludedById((prev) => {
+          const next = new Map(prev);
+          next.set(n.id, included);
+          return next;
+        });
+        return;
+      }
+      if (Array.isArray(n.children)) n.children.forEach(apply);
+    };
+    apply(node);
+  };
+
+  const TreeItem = ({ node, depth }) => {
+    const isAccount = node.kind === 'account';
+    const included = isAccount ? includedById.get(node.id) !== false : (function computeGroupIncluded(n) {
+      // included if all leaf descendants are included; indeterminate if mixed
+      let total = 0; let on = 0;
+      const walk = (m) => {
+        if (!m) return;
+        if (m.kind === 'account') {
+          total += 1;
+          if (includedById.get(m.id) !== false) on += 1;
+          return;
+        }
+        if (Array.isArray(m.children)) m.children.forEach(walk);
+      };
+      walk(n);
+      if (total === 0) return true;
+      return on === total;
+    }(node));
+
+    const indeterminate = !isAccount && (function computeIndeterminate(n) {
+      let total = 0; let on = 0;
+      const walk = (m) => {
+        if (!m) return;
+        if (m.kind === 'account') {
+          total += 1;
+          if (includedById.get(m.id) !== false) on += 1;
+          return;
+        }
+        if (Array.isArray(m.children)) m.children.forEach(walk);
+      };
+      walk(n);
+      return on > 0 && on < total;
+    }(node));
+
+    const valueAt = isAccount ? leafValues.get(node.id) : computeGroupValueAtSelection(node);
+    const startAt = isAccount ? (Number(node.equity) || 0) : computeGroupStartValue(node);
+    const ratePercent = isAccount
+      ? (ratesById.has(node.id) ? ratesById.get(node.id) : (Number.isFinite(node.ratePercent) ? node.ratePercent : null))
+      : computeGroupAggregatedRate(node);
+
+    const inputId = `proj-rate-${node.id}-${depth}`;
+
+    return (
+      <tr className={isAccount && !included ? 'projection-tree__row--disabled' : ''}>
+        <td className="projection-tree__cell-name">
+          <div className="projection-tree__name-wrap" style={{ paddingLeft: `${depth * 20}px` }}>
+            <input
+              type="checkbox"
+              className="projection-tree__checkbox"
+              checked={included}
+              ref={(el) => { if (el) el.indeterminate = Boolean(indeterminate); }}
+              onChange={(e) => {
+                const nextIncluded = e.target.checked;
+                if (isAccount) {
+                  setIncludedById((prev) => {
+                    const next = new Map(prev);
+                    next.set(node.id, nextIncluded);
+                    return next;
+                  });
+                } else {
+                  setIncludedRecursive(node, nextIncluded);
+                }
+              }}
+            />
+            <span className="projection-tree__name">{node.label}</span>
+          </div>
+        </td>
+        <td className="projection-tree__cell-value">{formatNumberCompactPlain(startAt)}</td>
+        <td className="projection-tree__cell-value">{formatNumberCompactPlain(valueAt)}</td>
+        <td className="projection-tree__cell-rate">
+          {isAccount ? (
+            <label htmlFor={inputId} className="projection-tree__rate">
+              <input
+                id={inputId}
+                type="text"
+                className="text-input projection-tree__rate-input"
+                inputMode="decimal"
+                value={Number.isFinite(ratesById.get(node.id)) ? String(ratesById.get(node.id)) : ''}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/[^0-9.\-]/g, '').trim();
+                  const num = Number(raw);
+                  if (!raw || !Number.isFinite(num)) {
+                    setRatesById((prev) => {
+                      const next = new Map(prev);
+                      next.delete(node.id);
+                      return next;
+                    });
+                    setChangedRateIds((prev) => new Set(prev).add(node.id));
+                  } else {
+                    setRate(node.id, num);
+                  }
+                }}
+                placeholder="e.g. 8"
+                disabled={!included}
+              />
+              <span className="projection-tree__rate-suffix">%</span>
+            </label>
+          ) : (
+            <span className="projection-tree__group-rate-wrap">
+              <span className="projection-tree__group-rate-value">
+                {Number.isFinite(ratePercent)
+                  ? formatNumber(ratePercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  : '—'}
+              </span>
+              <span className="projection-tree__rate-suffix">%</span>
+            </span>
+          )}
+        </td>
+      </tr>
+    );
+  };
+
+  return (
+    <div className="projection-breakdown" style={{ '--proj-indent-col': `${maxDepth * 16}px` }}>
+      <div className="projection-breakdown__header">
+        <h3 className="equity-card__children-title">{`Projected breakdown (Until ${formatDate(toPlainDateString(addMonths(startDate, selectedIndex))).replace(',', '')})`}</h3>
+      </div>
+      <table className="projection-tree" role="grid">
+        <colgroup>
+          <col className="projection-tree__col-name" />
+          <col className="projection-tree__col-start" />
+          <col className="projection-tree__col-final" />
+          <col className="projection-tree__col-rate" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th className="projection-tree__th-name">Account</th>
+            <th className="projection-tree__th">Start</th>
+            <th className="projection-tree__th">Final</th>
+            <th className="projection-tree__th">Growth</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(function renderRows() {
+            const rows = [];
+            const walk = (n, d) => {
+              rows.push({ n, d });
+              if (n && n.kind !== 'account' && Array.isArray(n.children)) {
+                n.children.forEach((c) => walk(c, d + 1));
+              }
+            };
+            walk(root, 0);
+            return rows.map(({ n, d }) => (
+              <TreeItem key={`${n.kind}-${n.id}`} node={n} depth={d} />
+            ));
+          })()}
+        </tbody>
+      </table>
+      <div className="projection-breakdown__actions">
+        <button type="button" className="projection-dialog__button" onClick={onSave} disabled={savingRates || !changedRateIds.size}>
+          {savingRates ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          className="projection-dialog__button"
+          onClick={() => {
+            // Reset overrides to initial
+            const base = new Map();
+            leaves.forEach((leaf) => {
+              if (Number.isFinite(leaf.ratePercent)) base.set(leaf.id, leaf.ratePercent);
+            });
+            setRatesById(base);
+            setChangedRateIds(new Set());
+            // Enable all
+            const incl = new Map();
+            leaves.forEach((leaf) => incl.set(leaf.id, true));
+            setIncludedById(incl);
+          }}
+          disabled={savingRates}
+        >
+          Reset
+        </button>
+      </div>
+    </div>
+  );
+}
+
+ProjectionBreakdown.propTypes = {
+  root: PropTypes.shape({
+    kind: PropTypes.oneOf(['group', 'account']).isRequired,
+    id: PropTypes.string.isRequired,
+    label: PropTypes.string.isRequired,
+    children: PropTypes.array,
+  }).isRequired,
+  selectedIndex: PropTypes.number.isRequired,
+  startDate: PropTypes.instanceOf(Date),
+  timeframeMonths: PropTypes.number,
+  computeFlow: PropTypes.func,
+  ratesById: PropTypes.instanceOf(Map).isRequired,
+  setRatesById: PropTypes.func.isRequired,
+  changedRateIds: PropTypes.instanceOf(Set).isRequired,
+  setChangedRateIds: PropTypes.func.isRequired,
+  includedById: PropTypes.instanceOf(Map).isRequired,
+  setIncludedById: PropTypes.func.isRequired,
+  onSave: PropTypes.func.isRequired,
+  savingRates: PropTypes.bool,
+};
+
+ProjectionBreakdown.defaultProps = {
+  startDate: null,
+  timeframeMonths: null,
+  computeFlow: null,
+  savingRates: false,
+};
+
 ProjectionDialog.propTypes = {
   onClose: PropTypes.func.isRequired,
   accountKey: PropTypes.string,
@@ -991,6 +1547,12 @@ ProjectionDialog.propTypes = {
     retirementLivingExpenses: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     retirementBirthDate: PropTypes.string,
   }),
+  projectionTree: PropTypes.shape({
+    kind: PropTypes.oneOf(['group', 'account']).isRequired,
+    id: PropTypes.string.isRequired,
+    label: PropTypes.string.isRequired,
+    children: PropTypes.array,
+  }),
 };
 
 ProjectionDialog.defaultProps = {
@@ -1007,4 +1569,5 @@ ProjectionDialog.defaultProps = {
   isGroupView: false,
   groupProjectionAccounts: [],
   retirementSettings: null,
+  projectionTree: null,
 };

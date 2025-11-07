@@ -9226,6 +9226,58 @@ export default function App() {
             });
             return proj;
           })()}
+          projectionTree={(function buildProjectionTree() {
+            if (!(isAggregateSelection && selectedAccount !== 'all')) return null;
+            const rootGroup = accountGroupsById.get(selectedAccount) || null;
+            const rootKey = rootGroup ? normalizeAccountGroupKey(rootGroup.name) : null;
+            if (!rootKey) return null;
+
+            const visited = new Set();
+
+            const buildGroupNode = (groupKey) => {
+              if (!groupKey || visited.has(groupKey)) return null;
+              visited.add(groupKey);
+
+              const group = accountGroupsByNormalizedName.get(groupKey) || null;
+              const groupId = group && group.id !== undefined && group.id !== null ? String(group.id).trim() : null;
+              const label = accountGroupNamesByKey.get(groupKey) || groupId || groupKey;
+
+              // Direct account members of this group
+              const accounts = (accountsByGroupName.get(groupKey) || [])
+                .map((acc) => {
+                  if (!acc || acc.id === undefined || acc.id === null) return null;
+                  const id = String(acc.id).trim();
+                  const fund = accountFunding[id] || null;
+                  const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
+                  const metaAcc = accountsById.get(id) || null;
+                  const ratePercent = Number.isFinite(metaAcc?.projectionGrowthPercent)
+                    ? metaAcc.projectionGrowthPercent
+                    : null;
+                  return { kind: 'account', id, label: getAccountLabel(acc) || id, equity, ratePercent };
+                })
+                .filter(Boolean);
+
+              // Child groups
+              const groupChildren = [];
+              const childrenKeys = accountGroupChildrenMap.get(groupKey);
+              if (childrenKeys && childrenKeys.size) {
+                childrenKeys.forEach((childKey) => {
+                  if (childKey && childKey !== groupKey) {
+                    const node = buildGroupNode(childKey);
+                    if (node && Array.isArray(node.children) && node.children.length) {
+                      groupChildren.push(node);
+                    }
+                  }
+                });
+              }
+
+              const children = [...accounts, ...groupChildren];
+              if (!children.length) return null;
+              return { kind: 'group', id: groupId || groupKey, groupKey, label, children };
+            };
+
+            return buildGroupNode(rootKey);
+          })()}
         />
       )}
       {investEvenlyPlan && (
