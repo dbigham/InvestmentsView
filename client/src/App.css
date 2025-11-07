@@ -1001,33 +1001,26 @@ textarea {
 .pnl-dialog__selection-metrics {
   display: inline-flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 0;
   pointer-events: none;
-}
-
-.pnl-dialog__selection-percent {
-  font-weight: 600;
-  font-size: 0.95rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-primary);
-}
-
-.pnl-dialog__selection-percent--positive {
-  color: var(--color-accent);
-}
-
-.pnl-dialog__selection-percent--negative {
-  color: var(--color-negative);
-}
-
-.pnl-dialog__selection-percent--neutral {
-  color: var(--color-text-primary);
 }
 
 .pnl-dialog__selection-change {
   font-size: 0.85rem;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.pnl-dialog__selection-summary--positive .pnl-dialog__selection-change {
+  color: var(--color-accent);
+}
+
+.pnl-dialog__selection-summary--negative .pnl-dialog__selection-change {
+  color: var(--color-negative);
+}
+
+.pnl-dialog__selection-summary--neutral .pnl-dialog__selection-change {
+  color: var(--color-text-primary);
 }
 
 .pnl-dialog__selection-clear {

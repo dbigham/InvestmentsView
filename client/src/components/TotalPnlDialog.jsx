@@ -1,12 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
-import {
-  classifyPnL,
-  formatDate,
-  formatMoney,
-  formatSignedMoney,
-  formatSignedPercent,
-} from '../utils/formatters';
+import { classifyPnL, formatDate, formatMoney, formatSignedMoney } from '../utils/formatters';
 import {
   TOTAL_PNL_TIMEFRAME_OPTIONS as TIMEFRAME_OPTIONS,
   buildTotalPnlDisplaySeries,
@@ -647,12 +641,6 @@ export default function TotalPnlDialog({
     const endValue = resolveValue(endPoint);
     const deltaValue =
       Number.isFinite(startValue) && Number.isFinite(endValue) ? endValue - startValue : null;
-    const percentChange =
-      Number.isFinite(startValue) &&
-      Math.abs(startValue) > 1e-9 &&
-      Number.isFinite(endValue)
-        ? ((endValue - startValue) / Math.abs(startValue)) * 100
-        : null;
     return {
       ...selectionRange,
       startPoint,
@@ -660,15 +648,11 @@ export default function TotalPnlDialog({
       startValue,
       endValue,
       deltaValue,
-      percentChange,
     };
   }, [selectionRange, resolvePointAtX]);
 
   const selectionTone = Number.isFinite(selectionSummary?.deltaValue)
     ? classifyPnL(selectionSummary.deltaValue)
-    : null;
-  const formattedSelectionPercent = Number.isFinite(selectionSummary?.percentChange)
-    ? formatSignedPercent(selectionSummary.percentChange, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : null;
   const formattedSelectionChange = Number.isFinite(selectionSummary?.deltaValue)
     ? formatSignedMoney(selectionSummary.deltaValue)
@@ -693,10 +677,6 @@ export default function TotalPnlDialog({
   }
   if (selectionTone) {
     selectionSummaryClassNames.push(`pnl-dialog__selection-summary--${selectionTone}`);
-  }
-  const selectionPercentClassNames = ['pnl-dialog__selection-percent'];
-  if (selectionTone) {
-    selectionPercentClassNames.push(`pnl-dialog__selection-percent--${selectionTone}`);
   }
   const selectionRect = selectionRange ? selectionRange : null;
   const showHoverMarker = Boolean(hoverPoint && !selectionRange?.isActive);
@@ -975,16 +955,11 @@ export default function TotalPnlDialog({
                     {selectionSummary && selectionLabelStyle && (
                       <div className={selectionSummaryClassNames.join(' ')} style={selectionLabelStyle}>
                         <div className="pnl-dialog__selection-header">
-                          <div className="pnl-dialog__selection-metrics">
-                            {formattedSelectionPercent && (
-                              <span className={selectionPercentClassNames.join(' ')}>
-                                {formattedSelectionPercent}
-                              </span>
-                            )}
-                            {formattedSelectionChange && (
+                          {formattedSelectionChange && (
+                            <div className="pnl-dialog__selection-metrics">
                               <span className="pnl-dialog__selection-change">{formattedSelectionChange}</span>
-                            )}
-                          </div>
+                            </div>
+                          )}
                           <button
                             type="button"
                             className="pnl-dialog__selection-clear"
