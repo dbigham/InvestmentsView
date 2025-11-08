@@ -86,8 +86,6 @@ export function buildRetirementModel(settings, opts = {}) {
 
   const yrsUntil = startDate ? Math.max(0, yearsBetween(todayRef, startDate)) : 0;
   const factor = yrsUntil > 0 ? Math.pow(1 + inflationRate, yrsUntil) : 1;
-  const cppMaxAtStart = maxCpp65 * factor;
-  const oasFullAtStart = fullOas65 * factor;
 
   const hh = (settings?.retirementHouseholdType || 'single').toLowerCase() === 'couple' ? 'couple' : 'single';
   const birth1 = parseDateOnly(settings.retirementBirthDate1) || ownerBirth;
@@ -105,23 +103,52 @@ export function buildRetirementModel(settings, opts = {}) {
     const startOasDate = toDateOnly(addMonths(birth, oasStartAge * 12));
     const contribYears = Math.max(0, Math.min(47, Math.round(cppYears)));
     const earningsRatio = Math.max(0, Math.min(100, cppPct)) / 100;
-    const baseCpp65 = cppMaxAtStart * Math.min(1, earningsRatio * (contribYears / 39));
+    // Anchor CPP/OAS bases to each program's own start date (not retirement start)
+    const cppYearsUntilStart = Math.max(0, yearsBetween(todayRef, startCppDate));
+    const cppInflationAtStart = cppYearsUntilStart > 0 ? Math.pow(1 + inflationRate, cppYearsUntilStart) : 1;
+    const baseCpp65 = (maxCpp65 * cppInflationAtStart) * Math.min(1, earningsRatio * (contribYears / 39));
     const monthsFrom65 = (cppStartAge - 65) * 12;
     const cppAdj = monthsFrom65 < 0 ? 1 + 0.006 * monthsFrom65 : 1 + 0.007 * monthsFrom65;
     const cppAnnualAtStart = Math.max(0, baseCpp65 * cppAdj);
     const oasResidYears = Math.max(0, Math.min(40, Math.round(oasYears)));
-    const baseOas65 = oasFullAtStart * Math.min(1, oasResidYears / 40);
+    const oasYearsUntilStart = Math.max(0, yearsBetween(todayRef, startOasDate));
+    const oasInflationAtStart = oasYearsUntilStart > 0 ? Math.pow(1 + inflationRate, oasYearsUntilStart) : 1;
+    const baseOas65 = (fullOas65 * oasInflationAtStart) * Math.min(1, oasResidYears / 40);
     const oasMonthsFrom65 = (oasStartAge - 65) * 12;
     const oasAdj = 1 + 0.006 * Math.max(0, oasMonthsFrom65);
     const oasAnnualAtStart = Math.max(0, baseOas65 * oasAdj);
-    return { birth, startCppDate, startOasDate, cppAnnualAtStart, oasAnnualAtStart };
+    // Expose both naming variants for compatibility with callers
+    return {
+      birth,
+      startCppDate,
+      startOasDate,
+      cppStartDate: startCppDate,
+      oasStartDate: startOasDate,
+      cppAnnualAtStart,
+      oasAnnualAtStart,
+    };
   };
 
   const p1 = buildPerson(1, birth1);
   const p2 = hh === 'couple' ? buildPerson(2, birth2) : null;
 
-  const adjustedIncomeAnnual = income * 1;
-  const adjustedLivingAnnual = living * 1;
+  // Reindex income/expenses when overriding retirement age: values are configured
+  // in the configured retirement-year dollars, so shift them to the chosen start year.
+  let configuredStartDate = null;
+  if (ownerBirth) {
+    if (configuredAge) {
+      configuredStartDate = toDateOnly(addMonths(ownerBirth, configuredAge * 12));
+    } else {
+      const cfgYear = normalizeNumber(settings.retirementYear, null);
+      if (Number.isFinite(cfgYear)) {
+        configuredStartDate = toDateOnly(new Date(Date.UTC(cfgYear, ownerBirth.getUTCMonth(), ownerBirth.getUTCDate())));
+      }
+    }
+  }
+  const reindexYears = (configuredStartDate && startDate) ? yearsBetween(configuredStartDate, startDate) : 0;
+  const reindexFactor = reindexYears !== 0 ? Math.pow(1 + inflationRate, reindexYears) : 1;
+  const adjustedIncomeAnnual = income * reindexFactor;
+  const adjustedLivingAnnual = living * reindexFactor;
 
   const cppAnnualAtStart = (p1?.cppAnnualAtStart || 0) + (p2?.cppAnnualAtStart || 0);
   const oasAnnualAtStart = (p1?.oasAnnualAtStart || 0) + (p2?.oasAnnualAtStart || 0);
@@ -145,8 +172,41 @@ export function buildRetirementModel(settings, opts = {}) {
 export function summarizeAtRetirementYear(model) {
   if (!model || !model.startDate) return null;
   const year = model.startDate.getUTCFullYear();
-  const cpp = Number(model.cppAnnualAtStart) || 0;
-  const oas = Number(model.oasAnnualAtStart) || 0;
-  const other = (Number(model.incomeMonthly) || 0) * 12;
+  const startOfYear = new Date(Date.UTC(year, 0, 1));
+  const endOfYear = new Date(Date.UTC(year, 11, 31));
+
+  const incomeMonthly = Number(model.incomeMonthly) || 0;
+  const inflationRate = Number(model.inflationRate) || 0;
+  const persons = Array.isArray(model.persons) ? model.persons : [];
+
+  let cpp = 0;
+  let oas = 0;
+  let other = 0;
+
+  // Iterate months within the retirement start year, summing flows for months on/after retirement start
+  for (let m = 0; m < 12; m += 1) {
+    const date = new Date(Date.UTC(year, m, 1));
+    if (date < model.startDate || date < startOfYear || date > endOfYear) continue;
+    // Other income applies for months after retirement start
+    other += incomeMonthly;
+    // Pensions (inflate from each program's start date to current month)
+    persons.forEach((p) => {
+      const cppStart = p.cppStartDate || p.startCppDate || null;
+      if (cppStart && date >= cppStart) {
+        const yrs = yearsBetween(cppStart, date);
+        const factorAtMonth = yrs > 0 ? Math.pow(1 + inflationRate, yrs) : 1;
+        const monthly = (Number(p.cppAnnualAtStart) || 0) / 12;
+        cpp += monthly * factorAtMonth;
+      }
+      const oasStart = p.oasStartDate || p.startOasDate || null;
+      if (oasStart && date >= oasStart) {
+        const yrs = yearsBetween(oasStart, date);
+        const factorAtMonth = yrs > 0 ? Math.pow(1 + inflationRate, yrs) : 1;
+        const monthly = (Number(p.oasAnnualAtStart) || 0) / 12;
+        oas += monthly * factorAtMonth;
+      }
+    });
+  }
+
   return { year, cpp, oas, other, total: cpp + oas + other };
 }
