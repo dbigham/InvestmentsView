@@ -182,3 +182,5 @@ module.exports = {
   parseDateOnly,
   subtractInterval,
 };
+
+module.exports.default = module.exports;
