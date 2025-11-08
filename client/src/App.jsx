@@ -47,6 +47,7 @@ import {
   readTodoReminderFromLocation,
 } from './utils/navigation';
 import './App.css';
+import deploymentDisplay from '../../shared/deploymentDisplay.js';
 
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
@@ -54,6 +55,14 @@ const MODEL_CHART_DEFAULT_START_DATE = '1980-01-01';
 const MAX_NEWS_SYMBOLS = 24;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const RESERVE_SYMBOLS = new Set(
+  Array.isArray(deploymentDisplay?.RESERVE_SYMBOLS)
+    ? deploymentDisplay.RESERVE_SYMBOLS.map((symbol) =>
+        typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''
+      ).filter(Boolean)
+    : []
+);
 
 function buildRebalanceOverrideKey(accountNumber, model) {
   const acct = typeof accountNumber === 'string' ? accountNumber.trim() : accountNumber != null ? String(accountNumber).trim() : '';
@@ -1543,7 +1552,6 @@ const TODO_AMOUNT_EPSILON = 0.009;
 const TODO_AMOUNT_TOLERANCE = 0.01;
 const TODO_TYPE_ORDER = { rebalance: 0, cash: 1 };
 
-const RESERVE_SYMBOLS = new Set(['SGOV', 'BIL', 'VBIL', 'PSA.TO', 'HFR.TO']);
 const RESERVE_FALLBACK_SYMBOL = 'VBIL';
 
 function normalizeSymbolKey(value) {
@@ -7599,9 +7607,10 @@ export default function App() {
         accountNumber: accountNumber || null,
         accountLabel: contextLabel || null,
         accountUrl: accountUrl || null,
+        accountKey: selectedAccountKey || null,
       };
     },
-    [selectedAccountInfo, isAggregateSelection, aggregateAccountLabel]
+    [selectedAccountInfo, isAggregateSelection, aggregateAccountLabel, selectedAccountKey]
   );
 
   const handlePlanInvestEvenly = useCallback(async () => {
