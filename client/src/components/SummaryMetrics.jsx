@@ -158,7 +158,6 @@ function ActionMenu({
   onEstimateCagr,
   onPlanInvestEvenly,
   onMarkRebalanced,
-  onCheckTodos,
   onSetPlanningContext,
   onEditTargetProportions,
   onEditAccountDetails,
@@ -176,7 +175,6 @@ function ActionMenu({
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
   const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
-  const hasTodoCheckAction = typeof onCheckTodos === 'function';
   const hasPlanningContextAction = typeof onSetPlanningContext === 'function';
   const hasTargetProportionAction = typeof onEditTargetProportions === 'function';
   const hasEditAccountDetailsAction = typeof onEditAccountDetails === 'function';
@@ -310,21 +308,6 @@ function ActionMenu({
     }
   };
 
-  const handleCheckTodos = async () => {
-    if (!onCheckTodos || disabled || busy) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await onCheckTodos();
-    } catch (error) {
-      console.error('Failed to check for TODOs', error);
-    } finally {
-      setBusy(false);
-      setOpen(false);
-    }
-  };
-
   const handleEditTargetProportions = () => {
     if (!onEditTargetProportions || disabled || busy) {
       return;
@@ -372,19 +355,6 @@ function ActionMenu({
               >
                 Chat
               </a>
-            </li>
-          )}
-          {hasTodoCheckAction && (
-            <li role="none">
-              <button
-                type="button"
-                className="equity-card__action-menu-item"
-                role="menuitem"
-                onClick={handleCheckTodos}
-                disabled={busy}
-              >
-                Check for TODOs
-              </button>
             </li>
           )}
           {hasPlanningContextAction && (
@@ -503,7 +473,6 @@ ActionMenu.propTypes = {
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
-  onCheckTodos: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
   onEditAccountDetails: PropTypes.func,
@@ -517,7 +486,6 @@ ActionMenu.defaultProps = {
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
   onMarkRebalanced: null,
-  onCheckTodos: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,
   onEditAccountDetails: null,
@@ -550,7 +518,6 @@ export default function SummaryMetrics({
   onShowProjections,
   onMarkRebalanced,
   onPlanInvestEvenly,
-  onCheckTodos,
   onSetPlanningContext,
   onEditTargetProportions,
   onEditAccountDetails,
@@ -1415,7 +1382,6 @@ export default function SummaryMetrics({
             onEstimateFutureCagr ||
             onPlanInvestEvenly ||
             onMarkRebalanced ||
-            onCheckTodos ||
             onSetPlanningContext ||
             onEditTargetProportions ||
             onEditAccountDetails ||
@@ -1426,7 +1392,6 @@ export default function SummaryMetrics({
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
               onMarkRebalanced={onMarkRebalanced}
-              onCheckTodos={onCheckTodos}
               onSetPlanningContext={onSetPlanningContext}
               onEditTargetProportions={onEditTargetProportions}
               onEditAccountDetails={onEditAccountDetails}
@@ -1607,7 +1572,6 @@ SummaryMetrics.propTypes = {
   onShowProjections: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
-  onCheckTodos: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
   onEditAccountDetails: PropTypes.func,
@@ -1714,7 +1678,6 @@ SummaryMetrics.defaultProps = {
   onShowProjections: null,
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
-  onCheckTodos: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,
   onEditAccountDetails: null,
