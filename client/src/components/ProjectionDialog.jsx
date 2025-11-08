@@ -367,21 +367,64 @@ export default function ProjectionDialog({
     setIncludeRetirementFlows(Boolean(retirementSettings?.mainRetirementAccount));
   }, [retirementSettings?.mainRetirementAccount]);
 
+  const ownerBirthDate = useMemo(
+    () =>
+      parseDateOnly(retirementSettings?.retirementBirthDate1) ||
+      parseDateOnly(retirementSettings?.retirementBirthDate) ||
+      DEFAULT_OWNER_BIRTHDATE,
+    [retirementSettings?.retirementBirthDate1, retirementSettings?.retirementBirthDate]
+  );
+
+  const effectiveRetirementAgeMin = useMemo(() => {
+    const today = parseDateOnly(todayDate) || new Date();
+    const ageYears = yearsBetween(ownerBirthDate, today);
+    if (Number.isFinite(ageYears) && ageYears >= 0) {
+      const nextBirthdayAge = Math.floor(ageYears) + 1;
+      const boundedMin = Math.max(RETIREMENT_AGE_MIN, nextBirthdayAge);
+      return Math.min(boundedMin, RETIREMENT_AGE_MAX);
+    }
+    return RETIREMENT_AGE_MIN;
+  }, [ownerBirthDate, todayDate]);
+
   // Reset local retirement age choice when the underlying setting changes (e.g., switching accounts)
   useEffect(() => {
+    const clampAge = (value) => {
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+      const rounded = Math.round(value);
+      if (!Number.isFinite(rounded)) {
+        return null;
+      }
+      const minAllowed = Number.isFinite(effectiveRetirementAgeMin)
+        ? effectiveRetirementAgeMin
+        : RETIREMENT_AGE_MIN;
+      return Math.min(RETIREMENT_AGE_MAX, Math.max(minAllowed, rounded));
+    };
+
     const raw = Number(retirementSettings?.retirementAge);
     if (Number.isFinite(raw) && raw > 0) {
-      setRetirementAgeChoice(Math.round(raw));
+      const clamped = clampAge(raw);
+      setRetirementAgeChoice(clamped);
       return;
     }
     const year = Number(retirementSettings?.retirementYear);
-    const bd = parseDateOnly(retirementSettings?.retirementBirthDate1) || parseDateOnly(retirementSettings?.retirementBirthDate);
+    const bd =
+      parseDateOnly(retirementSettings?.retirementBirthDate1) ||
+      parseDateOnly(retirementSettings?.retirementBirthDate);
     if (bd && Number.isFinite(year)) {
-      setRetirementAgeChoice(Math.max(0, Math.round(year - bd.getUTCFullYear())));
+      const clamped = clampAge(Math.max(0, Math.round(year - bd.getUTCFullYear())));
+      setRetirementAgeChoice(clamped);
     } else {
       setRetirementAgeChoice(null);
     }
-  }, [retirementSettings?.retirementAge, retirementSettings?.retirementYear, retirementSettings?.retirementBirthDate1, retirementSettings?.retirementBirthDate]);
+  }, [
+    retirementSettings?.retirementAge,
+    retirementSettings?.retirementYear,
+    retirementSettings?.retirementBirthDate1,
+    retirementSettings?.retirementBirthDate,
+    effectiveRetirementAgeMin,
+  ]);
 
   useEffect(() => {
     function handleDocumentClick(event) {
@@ -427,15 +470,6 @@ export default function ProjectionDialog({
     }, 600);
     return () => clearTimeout(timer);
   }, [accountKey, rateInput, didEdit, onPersistGrowthPercent]);
-
-  useEffect(() => {
-    setIncludeRetirementFlows(Boolean(retirementSettings?.mainRetirementAccount));
-  }, [retirementSettings?.mainRetirementAccount]);
-
-  const ownerBirthDate = useMemo(
-    () => parseDateOnly(retirementSettings?.retirementBirthDate1) || parseDateOnly(retirementSettings?.retirementBirthDate) || DEFAULT_OWNER_BIRTHDATE,
-    [retirementSettings?.retirementBirthDate1, retirementSettings?.retirementBirthDate]
-  );
 
   const configuredInflationRate = useMemo(() => {
     // Treat missing/null inflation percent as "not configured" and fall back to default.
@@ -1163,7 +1197,7 @@ export default function ProjectionDialog({
                     type="number"
                     className="pnl-dialog__number-input"
                     inputMode="numeric"
-                    min={RETIREMENT_AGE_MIN}
+                    min={effectiveRetirementAgeMin}
                     max={RETIREMENT_AGE_MAX}
                     step={1}
                     value={Number.isFinite(retirementAgeChoice) ? retirementAgeChoice : ''}
@@ -1178,7 +1212,10 @@ export default function ProjectionDialog({
                         setRetirementAgeChoice(null);
                         return;
                       }
-                      const clamped = Math.max(RETIREMENT_AGE_MIN, Math.min(RETIREMENT_AGE_MAX, n));
+                      const minAllowed = Number.isFinite(effectiveRetirementAgeMin)
+                        ? effectiveRetirementAgeMin
+                        : RETIREMENT_AGE_MIN;
+                      const clamped = Math.min(RETIREMENT_AGE_MAX, Math.max(minAllowed, n));
                       setRetirementAgeChoice(clamped);
                     }}
                     placeholder="e.g. 65"
