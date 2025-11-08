@@ -9413,10 +9413,23 @@ export default function App() {
           onSelectAccount={handleAccountChange}
           parentAccountId={projectionContext.parentAccountId}
           initialGrowthPercent={selectedAccountInfo?.projectionGrowthPercent ?? null}
-          isGroupView={isAggregateSelection && selectedAccount !== 'all'}
+          isGroupView={isAggregateSelection}
           retirementSettings={selectedRetirementSettings}
           groupProjectionAccounts={(function buildGroupProj() {
-            if (!(isAggregateSelection && selectedAccount !== 'all')) return [];
+            if (!isAggregateSelection) return [];
+            if (selectedAccount === 'all') {
+              const proj = [];
+              accountsById.forEach((acc, rawId) => {
+                if (!acc) return;
+                const accountId = rawId && String(rawId).trim();
+                if (!accountId) return;
+                const fund = accountFunding[accountId] || null;
+                const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
+                const rate = Number.isFinite(acc?.projectionGrowthPercent) ? acc.projectionGrowthPercent / 100 : 0;
+                if (equity > 0) proj.push({ equity, rate });
+              });
+              return proj;
+            }
             const group = accountGroupsById.get(selectedAccount) || null;
             const gKey = group ? normalizeAccountGroupKey(group.name) : null;
             if (!gKey) return [];
@@ -9449,7 +9462,35 @@ export default function App() {
             return proj;
           })()}
           projectionTree={(function buildProjectionTree() {
-            if (!(isAggregateSelection && selectedAccount !== 'all')) return null;
+            if (!isAggregateSelection) return null;
+            if (selectedAccount === 'all') {
+              const accountNodes = [];
+              accountsById.forEach((account, rawId) => {
+                if (!account) return;
+                const accountId = rawId && String(rawId).trim();
+                if (!accountId) return;
+                const fund = accountFunding[accountId] || null;
+                const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
+                const ratePercent = Number.isFinite(account?.projectionGrowthPercent)
+                  ? account.projectionGrowthPercent
+                  : null;
+                accountNodes.push({
+                  kind: 'account',
+                  id: accountId,
+                  label: getAccountLabel(account) || accountId,
+                  equity,
+                  ratePercent,
+                });
+              });
+              if (!accountNodes.length) return null;
+              return {
+                kind: 'group',
+                id: 'all',
+                groupKey: 'all',
+                label: aggregateAccountLabel || 'All accounts',
+                children: accountNodes,
+              };
+            }
             const rootGroup = accountGroupsById.get(selectedAccount) || null;
             const rootKey = rootGroup ? normalizeAccountGroupKey(rootGroup.name) : null;
             if (!rootKey) return null;

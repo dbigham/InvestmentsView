@@ -294,7 +294,6 @@ export default function ProjectionDialog({
   };
   const headingId = useId();
   const selectRef = useRef(null);
-  const retirementSelectRef = useRef(null);
   const chartContainerRef = useRef(null);
   const [timeframeYears, setTimeframeYears] = useState(50);
   const [rateInput, setRateInput] = useState(() => {
@@ -392,12 +391,6 @@ export default function ProjectionDialog({
           .querySelector('.select-control__list')
           ?.classList.remove('select-control__list--open');
       }
-      // Close retirement-age dropdown if click occurs outside it
-      if (retirementSelectRef.current && !retirementSelectRef.current.contains(event.target)) {
-        retirementSelectRef.current
-          .querySelector('.select-control__list')
-          ?.classList.remove('select-control__list--open');
-      }
     }
     document.addEventListener('mousedown', handleDocumentClick);
     return () => document.removeEventListener('mousedown', handleDocumentClick);
@@ -445,9 +438,15 @@ export default function ProjectionDialog({
   );
 
   const configuredInflationRate = useMemo(() => {
-    const raw = Number(retirementSettings?.retirementInflationPercent);
-    if (Number.isFinite(raw) && raw >= 0) {
-      return raw / 100;
+    // Treat missing/null inflation percent as "not configured" and fall back to default.
+    // Only use 0% inflation when explicitly configured as 0.
+    const raw = retirementSettings?.retirementInflationPercent;
+    if (raw === null || raw === undefined) {
+      return DEFAULT_RETIREMENT_INFLATION_PERCENT / 100;
+    }
+    const num = Number(raw);
+    if (Number.isFinite(num) && num >= 0) {
+      return num / 100;
     }
     return DEFAULT_RETIREMENT_INFLATION_PERCENT / 100;
   }, [retirementSettings?.retirementInflationPercent]);
@@ -489,6 +488,8 @@ export default function ProjectionDialog({
       oasAnnualAtStart: Number(model?.oasAnnualAtStart) || 0,
     };
   }, [retirementSettings, includeRetirementFlows, todayDate, retirementAgeChoice, configuredInflationRate]);
+
+  const showRetirementFlowColumns = Boolean(retirementModel?.enabled);
 
   // Inflation rate to use for normalization (prefer retirement model's if available)
   const normalizationInflationRate = useMemo(() => {
@@ -1023,7 +1024,7 @@ export default function ProjectionDialog({
     try {
       const lines = [];
       lines.push(`Projections${accountLabel ? ' — ' + accountLabel : ''}`);
-      lines.push(`Annual growth: ${ratePercentLabel}`);
+      lines.push(`Annual growth avg: ${ratePercentLabel}`);
       const cur = Number.isFinite(displayedCurrentValue) ? formatMoney(displayedCurrentValue) : '—';
       const fin = Number.isFinite(displayedFinalProjectedValue) ? formatMoney(displayedFinalProjectedValue) : '—';
       lines.push(`Current value: ${cur}`);
@@ -1032,19 +1033,29 @@ export default function ProjectionDialog({
       // confusion for late-in-year retirements which show only a partial year.
       if (yearlyRows.length) {
         lines.push('');
-        lines.push('Year | Start | CPP | OAS | Other | Expenses | Net flow | Change | End');
+        const headerColumns = showRetirementFlowColumns
+          ? ['Year', 'Start', 'CPP', 'OAS', 'Other', 'Expenses', 'Net flow', 'Change', 'End']
+          : ['Year', 'Start', 'Change', 'End'];
+        lines.push(headerColumns.join(' | '));
         yearlyRows.forEach((r) => {
-          lines.push([
+          const commonColumns = [
             r.year,
             formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
-            formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
-            formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
-            formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
-            formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
-            formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+          ];
+          const retirementColumns = showRetirementFlowColumns
+            ? [
+                formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+                formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+                formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+                formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+                formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+              ]
+            : [];
+          const trailingColumns = [
             formatMoney(r.change, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
             formatMoney(r.endValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
-          ].join(' | '));
+          ];
+          lines.push([...commonColumns, ...retirementColumns, ...trailingColumns].join(' | '));
         });
       }
       const text = lines.join('\n');
@@ -1068,7 +1079,7 @@ export default function ProjectionDialog({
     } catch (err) {
       console.error('Failed to copy Projections dialog text', err);
     }
-  }, [accountLabel, ratePercentLabel, displayedCurrentValue, displayedFinalProjectedValue, retirementStartYearIncome, yearlyRows, normalizeToBaseYear, normalizeBaseYearLabel, normalizeValueForDate, retirementModel]);
+  }, [accountLabel, ratePercentLabel, displayedCurrentValue, displayedFinalProjectedValue, retirementStartYearIncome, yearlyRows, normalizeToBaseYear, normalizeBaseYearLabel, normalizeValueForDate, retirementModel, showRetirementFlowColumns]);
 
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
@@ -1091,7 +1102,7 @@ export default function ProjectionDialog({
 
             <div className="pnl-dialog__summary" aria-live="polite">
               <div className="pnl-dialog__summary-item">
-                <span className="pnl-dialog__summary-label">Annual growth</span>
+                <span className="pnl-dialog__summary-label">Annual growth avg</span>
                 <span className="pnl-dialog__summary-value">{ratePercentLabel}</span>
               </div>
               <div className="pnl-dialog__summary-item">
@@ -1147,46 +1158,32 @@ export default function ProjectionDialog({
               {retirementModel.supported && (
                 <>
                   <label className="pnl-dialog__control-label" htmlFor="projection-retirement-age">Retirement age</label>
-                  <div className="select-control select-control--wide" ref={retirementSelectRef}>
-                    <button
-                      id="projection-retirement-age"
-                      type="button"
-                      className="select-control__button"
-                      onClick={(event) => {
-                        const menu = event.currentTarget.nextSibling;
-                        if (menu) menu.classList.toggle('select-control__list--open');
-                      }}
-                    >
-                      {Number.isFinite(retirementAgeChoice) ? String(retirementAgeChoice) : 'Choose…'}
-                      <span aria-hidden="true" className="select-control__chevron" />
-                    </button>
-                    <ul className="select-control__list" role="listbox">
-                      {(function buildAgeOptions() {
-                        const items = [];
-                        for (let age = RETIREMENT_AGE_MIN; age <= RETIREMENT_AGE_MAX; age += 1) {
-                          const selected = age === retirementAgeChoice;
-                          items.push(
-                            <li key={`age-${age}`}>
-                              <button
-                                type="button"
-                                className={selected ? 'select-control__option select-control__option--selected' : 'select-control__option'}
-                                onClick={() => {
-                                  setRetirementAgeChoice(age);
-                                  const container = document.getElementById('projection-retirement-age')?.nextSibling;
-                                  if (container) container.classList.remove('select-control__list--open');
-                                }}
-                                role="option"
-                                aria-selected={selected}
-                              >
-                                {age}
-                              </button>
-                            </li>
-                          );
-                        }
-                        return items;
-                      }())}
-                    </ul>
-                  </div>
+                  <input
+                    id="projection-retirement-age"
+                    type="number"
+                    className="pnl-dialog__number-input"
+                    inputMode="numeric"
+                    min={RETIREMENT_AGE_MIN}
+                    max={RETIREMENT_AGE_MAX}
+                    step={1}
+                    value={Number.isFinite(retirementAgeChoice) ? retirementAgeChoice : ''}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === '' || raw === null) {
+                        setRetirementAgeChoice(null);
+                        return;
+                      }
+                      const n = Math.round(Number(raw));
+                      if (!Number.isFinite(n)) {
+                        setRetirementAgeChoice(null);
+                        return;
+                      }
+                      const clamped = Math.max(RETIREMENT_AGE_MIN, Math.min(RETIREMENT_AGE_MAX, n));
+                      setRetirementAgeChoice(clamped);
+                    }}
+                    placeholder="e.g. 65"
+                    style={{ width: '77px' }}
+                  />
                 </>
               )}
 
@@ -1546,11 +1543,15 @@ export default function ProjectionDialog({
                       <tr>
                         <th className="projection-tree__th-name">Year</th>
                         <th className="projection-tree__th">Start</th>
-                        <th className="projection-tree__th">CPP</th>
-                        <th className="projection-tree__th">OAS</th>
-                        <th className="projection-tree__th">Other</th>
-                        <th className="projection-tree__th">Expenses</th>
-                        <th className="projection-tree__th">Net flow</th>
+                        {showRetirementFlowColumns && (
+                          <>
+                            <th className="projection-tree__th">CPP</th>
+                            <th className="projection-tree__th">OAS</th>
+                            <th className="projection-tree__th">Other</th>
+                            <th className="projection-tree__th">Expenses</th>
+                            <th className="projection-tree__th">Net flow</th>
+                          </>
+                        )}
                         <th className="projection-tree__th">Change</th>
                         <th className="projection-tree__th">End</th>
                       </tr>
@@ -1560,11 +1561,15 @@ export default function ProjectionDialog({
                         <tr key={`yr-${r.year}`}>
                           <td className="projection-tree__cell-name">{r.year}</td>
                           <td className="projection-tree__cell-value">{formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td className="projection-tree__cell-value">{formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td className="projection-tree__cell-value">{formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td className="projection-tree__cell-value">{formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td className="projection-tree__cell-value">{formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td className="projection-tree__cell-value">{formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          {showRetirementFlowColumns && (
+                            <>
+                              <td className="projection-tree__cell-value">{formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                              <td className="projection-tree__cell-value">{formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                              <td className="projection-tree__cell-value">{formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                              <td className="projection-tree__cell-value">{formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                              <td className="projection-tree__cell-value">{formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                            </>
+                          )}
                           <td className="projection-tree__cell-value">{formatMoney(r.change, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
                           <td className="projection-tree__cell-value">{formatMoney(r.endValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
                         </tr>
