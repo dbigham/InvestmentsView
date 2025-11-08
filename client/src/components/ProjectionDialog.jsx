@@ -301,6 +301,8 @@ export default function ProjectionDialog({
   const [includeRetirementFlows, setIncludeRetirementFlows] = useState(
     Boolean(retirementSettings?.mainRetirementAccount)
   );
+  // Normalize displayed values to current-year dollars (using configured inflation)
+  const [normalizeToBaseYear, setNormalizeToBaseYear] = useState(false);
   const [retirementAgeChoice, setRetirementAgeChoice] = useState(() => {
     const raw = Number(retirementSettings?.retirementAge);
     if (Number.isFinite(raw) && raw > 0) return Math.round(raw);
@@ -443,6 +445,13 @@ export default function ProjectionDialog({
     return DEFAULT_RETIREMENT_INFLATION_PERCENT / 100;
   }, [retirementSettings?.retirementInflationPercent]);
 
+  // Normalization base (Jan 1 of the current year, based on todayDate when provided)
+  const normalizeBaseDate = useMemo(() => {
+    const t = parseDateOnly(todayDate) || new Date();
+    return new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  }, [todayDate]);
+  const normalizeBaseYearLabel = useMemo(() => String(normalizeBaseDate.getUTCFullYear()), [normalizeBaseDate]);
+
   const retirementModel = useMemo(() => {
     const supported = Boolean(retirementSettings?.mainRetirementAccount);
     if (!supported) {
@@ -472,6 +481,26 @@ export default function ProjectionDialog({
       oasAnnualAtStart: Number(model?.oasAnnualAtStart) || 0,
     };
   }, [retirementSettings, includeRetirementFlows, todayDate, retirementAgeChoice, configuredInflationRate]);
+
+  // Inflation rate to use for normalization (prefer retirement model's if available)
+  const normalizationInflationRate = useMemo(() => {
+    const r = Number(retirementModel?.inflationRate);
+    return Number.isFinite(r) ? r : configuredInflationRate;
+  }, [retirementModel?.inflationRate, configuredInflationRate]);
+
+  // Helper to normalize a monetary value at a specific date to the base-year dollars
+  const normalizeValueForDate = useCallback(
+    (dateLike, value) => {
+      const v = Number(value);
+      if (!normalizeToBaseYear || !Number.isFinite(v)) return v;
+      const d = parseDateOnly(dateLike);
+      if (!d) return v;
+      const yrs = yearsBetween(normalizeBaseDate, d);
+      const factor = Number.isFinite(yrs) && yrs !== 0 ? Math.pow(1 + normalizationInflationRate, yrs) : 1;
+      return v / (factor || 1);
+    },
+    [normalizeToBaseYear, normalizeBaseDate, normalizationInflationRate]
+  );
 
   // Summarize CPP, OAS, and other retirement income for the retirement start year
   const retirementStartYearIncome = useMemo(() => {
@@ -699,6 +728,13 @@ export default function ProjectionDialog({
     ratesById,
   ]);
 
+  // Series used for display/charting (optionally normalized to base-year dollars)
+  const displayProjectionSeries = useMemo(() => {
+    if (!Array.isArray(projectionSeries) || !projectionSeries.length) return [];
+    if (!normalizeToBaseYear) return projectionSeries;
+    return projectionSeries.map((p) => ({ date: p.date, value: normalizeValueForDate(p.date, p.value) }));
+  }, [projectionSeries, normalizeToBaseYear, normalizeValueForDate]);
+
   const chartRange = useMemo(() => {
     if (!projectionSeries.length) return { start: null, end: null };
     const start = parseDateOnly(projectionSeries[0]?.date);
@@ -740,12 +776,16 @@ export default function ProjectionDialog({
       if (!d || !chartRange.start || !chartRange.end) return false;
       return d >= chartRange.start && d <= chartRange.end;
     });
+    const seriesB = mode === 'start' ? actualWithinRange : [];
+    const displaySeriesB = normalizeToBaseYear
+      ? seriesB.map((p) => ({ date: p.date, value: normalizeValueForDate(p.date, p.value) }))
+      : seriesB;
     return buildChartMetrics(
-      projectionSeries,
-      mode === 'start' ? actualWithinRange : [],
+      displayProjectionSeries,
+      displaySeriesB,
       { rangeStartDate: chartRange.start, rangeEndDate: chartRange.end }
     );
-  }, [overlayInfo.actualSeries, projectionSeries, chartRange.start, chartRange.end, mode]);
+  }, [overlayInfo.actualSeries, displayProjectionSeries, chartRange.start, chartRange.end, mode, normalizeToBaseYear, normalizeValueForDate]);
 
   const pathProjection = useMemo(() => {
     if (!metrics || !metrics.pointsA.length) return null;
@@ -815,6 +855,12 @@ export default function ProjectionDialog({
     return Number.isFinite(last?.value) ? last.value : null;
   }, [projectionSeries]);
 
+  const displayedFinalProjectedValue = useMemo(() => {
+    if (!projectionSeries.length) return null;
+    const last = projectionSeries[projectionSeries.length - 1];
+    return Number.isFinite(last?.value) ? normalizeValueForDate(last.date, last.value) : null;
+  }, [projectionSeries, normalizeValueForDate]);
+
   const displayedCurrentValue = useMemo(() => {
     if (isGroupView && projectionTree) {
       let sum = 0;
@@ -829,10 +875,14 @@ export default function ProjectionDialog({
         if (Array.isArray(node.children)) node.children.forEach(walk);
       };
       walk(projectionTree);
-      return Number.isFinite(sum) ? sum : null;
+      const baseToday = parseDateOnly(todayDate) || new Date();
+      const normalized = Number.isFinite(sum) ? normalizeValueForDate(baseToday, sum) : null;
+      return normalized;
     }
-    return Number.isFinite(todayTotalEquity) ? todayTotalEquity : null;
-  }, [isGroupView, projectionTree, includedById, todayTotalEquity]);
+    const baseToday = parseDateOnly(todayDate) || new Date();
+    const nominal = Number.isFinite(todayTotalEquity) ? todayTotalEquity : null;
+    return Number.isFinite(nominal) ? normalizeValueForDate(baseToday, nominal) : null;
+  }, [isGroupView, projectionTree, includedById, todayTotalEquity, todayDate, normalizeValueForDate]);
 
   const effectiveGroupRatePercentAtSelection = useMemo(() => {
     if (!isGroupView || !projectionTree || !selectedPoint || !projectionSeries.length) return null;
@@ -928,8 +978,12 @@ export default function ProjectionDialog({
         if (d <= lastOfYear) lastIdx = i;
       }
       if (firstIdx === null || lastIdx === null || firstIdx > lastIdx) continue;
-      const startValue = Number(projectionSeries[firstIdx]?.value) || 0;
-      const endValue = Number(projectionSeries[lastIdx]?.value) || startValue;
+      const startRaw = Number(projectionSeries[firstIdx]?.value) || 0;
+      const endRaw = Number(projectionSeries[lastIdx]?.value) || startRaw;
+      const startDateForYear = parseDateOnly(projectionSeries[firstIdx]?.date);
+      const endDateForYear = parseDateOnly(projectionSeries[lastIdx]?.date);
+      const startValue = normalizeValueForDate(startDateForYear, startRaw);
+      const endValue = normalizeValueForDate(endDateForYear, endRaw);
       let cppTotal = 0;
       let oasTotal = 0;
       let otherTotal = 0;
@@ -938,17 +992,21 @@ export default function ProjectionDialog({
         if (i === 0) continue;
         const d = parseDateOnly(projectionSeries[i].date);
         const c = computeFlowBreakdown(d);
-        cppTotal += c.cpp;
-        oasTotal += c.oas;
-        otherTotal += c.other;
-        expensesTotal += c.expenses;
+        const cppN = normalizeValueForDate(d, c.cpp);
+        const oasN = normalizeValueForDate(d, c.oas);
+        const otherN = normalizeValueForDate(d, c.other);
+        const expN = normalizeValueForDate(d, c.expenses);
+        cppTotal += cppN;
+        oasTotal += oasN;
+        otherTotal += otherN;
+        expensesTotal += expN;
       }
       const netFlow = otherTotal + cppTotal + oasTotal - expensesTotal;
       const change = endValue - startValue;
       rows.push({ year, startValue, cpp: cppTotal, oas: oasTotal, other: otherTotal, expenses: expensesTotal, netFlow, change, endValue });
     }
     return rows;
-  }, [projectionSeries, timeframeYears, computeFlowBreakdown]);
+  }, [projectionSeries, timeframeYears, computeFlowBreakdown, normalizeValueForDate]);
 
   const copyDialogAsText = useCallback(() => {
     try {
@@ -956,11 +1014,18 @@ export default function ProjectionDialog({
       lines.push(`Projections${accountLabel ? ' — ' + accountLabel : ''}`);
       lines.push(`Annual growth: ${ratePercentLabel}`);
       const cur = Number.isFinite(displayedCurrentValue) ? formatMoney(displayedCurrentValue) : '—';
-      const fin = Number.isFinite(finalProjectedValue) ? formatMoney(finalProjectedValue) : '—';
+      const fin = Number.isFinite(displayedFinalProjectedValue) ? formatMoney(displayedFinalProjectedValue) : '—';
       lines.push(`Current value: ${cur}`);
       lines.push(`Final value: ${fin}`);
       if (retirementStartYearIncome) {
-        lines.push(`At retirement (${retirementStartYearIncome.year}, in ${retirementStartYearIncome.year} dollars) — CPP ${formatMoney(retirementStartYearIncome.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, OAS ${formatMoney(retirementStartYearIncome.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Other ${formatMoney(retirementStartYearIncome.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Total ${formatMoney(retirementStartYearIncome.total, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`);
+        const inDollarsLabel = normalizeToBaseYear ? `${normalizeBaseYearLabel} dollars` : `${retirementStartYearIncome.year} dollars`;
+        const cppVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.cpp) : retirementStartYearIncome.cpp;
+        const oasVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.oas) : retirementStartYearIncome.oas;
+        const otherVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.other) : retirementStartYearIncome.other;
+        const totalVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.total) : retirementStartYearIncome.total;
+        lines.push(
+          `At retirement (${retirementStartYearIncome.year}, in ${inDollarsLabel}) — CPP ${formatMoney(cppVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, OAS ${formatMoney(oasVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Other ${formatMoney(otherVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Total ${formatMoney(totalVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+        );
       }
       if (yearlyRows.length) {
         lines.push('');
@@ -1000,7 +1065,7 @@ export default function ProjectionDialog({
     } catch (err) {
       console.error('Failed to copy Projections dialog text', err);
     }
-  }, [accountLabel, ratePercentLabel, displayedCurrentValue, finalProjectedValue, retirementStartYearIncome, yearlyRows]);
+  }, [accountLabel, ratePercentLabel, displayedCurrentValue, displayedFinalProjectedValue, retirementStartYearIncome, yearlyRows, normalizeToBaseYear, normalizeBaseYearLabel, normalizeValueForDate, retirementModel]);
 
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
@@ -1035,7 +1100,7 @@ export default function ProjectionDialog({
               <div className="pnl-dialog__summary-item">
                 <span className="pnl-dialog__summary-label">Final value</span>
                 <span className="pnl-dialog__summary-value">
-                  {Number.isFinite(finalProjectedValue) ? formatMoney(finalProjectedValue) : '—'}
+                  {Number.isFinite(displayedFinalProjectedValue) ? formatMoney(displayedFinalProjectedValue) : '—'}
                 </span>
               </div>
             </div>
@@ -1107,6 +1172,17 @@ export default function ProjectionDialog({
                   )}
                 </>
               )}
+            </div>
+
+            <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
+              <label className="pnl-dialog__range-toggle">
+                <input
+                  type="checkbox"
+                  checked={normalizeToBaseYear}
+                  onChange={(e) => setNormalizeToBaseYear(e.target.checked)}
+                />
+                <span>{`Normalize to ${normalizeBaseYearLabel} dollars`}</span>
+              </label>
             </div>
 
             {startOverlayAvailable && (
@@ -1198,11 +1274,11 @@ export default function ProjectionDialog({
                         } catch (e) { return ''; }
                       })()}
                     >
-                      <strong>At retirement ({retirementStartYearIncome.year}, in {retirementStartYearIncome.year} dollars)</strong> —
-                      {' '}CPP {formatMoney(retirementStartYearIncome.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
-                      {' '}OAS {formatMoney(retirementStartYearIncome.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
-                      {' '}Other {formatMoney(retirementStartYearIncome.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
-                      {' '}Total {formatMoney(retirementStartYearIncome.total, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      <strong>{`At retirement (${retirementStartYearIncome.year}, in ${normalizeToBaseYear ? normalizeBaseYearLabel : retirementStartYearIncome.year} dollars)`}</strong>
+                      {' '}— CPP {formatMoney(normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.cpp) : retirementStartYearIncome.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
+                      {' '}OAS {formatMoney(normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.oas) : retirementStartYearIncome.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
+                      {' '}Other {formatMoney(normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.other) : retirementStartYearIncome.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
+                      {' '}Total {formatMoney(normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.total) : retirementStartYearIncome.total, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                     </div>
                   </div>
                 )}
@@ -1392,6 +1468,7 @@ export default function ProjectionDialog({
                 setChangedRateIds={setChangedRateIds}
                 includedById={includedById}
                 setIncludedById={setIncludedById}
+                normalizeValueForDate={normalizeValueForDate}
                 onSave={async () => {
                   if (!changedRateIds.size) return;
                   try {
@@ -1517,6 +1594,7 @@ function ProjectionBreakdown({
   setChangedRateIds,
   includedById,
   setIncludedById,
+  normalizeValueForDate,
   onSave,
   savingRates,
 }) {
@@ -1700,8 +1778,11 @@ function ProjectionBreakdown({
       return on > 0 && on < total;
     }(node));
 
-    const valueAt = isAccount ? leafValues.get(node.id) : computeGroupValueAtSelection(node);
-    const startAt = isAccount ? (Number(node.equity) || 0) : computeGroupStartValue(node);
+    const valueAtRaw = isAccount ? leafValues.get(node.id) : computeGroupValueAtSelection(node);
+    const startAtRaw = isAccount ? (Number(node.equity) || 0) : computeGroupStartValue(node);
+    const selectedDate = startDate ? addMonths(startDate, Math.max(0, Math.round(selectedIndex))) : null;
+    const valueAt = Number.isFinite(valueAtRaw) ? normalizeValueForDate(selectedDate, valueAtRaw) : valueAtRaw;
+    const startAt = Number.isFinite(startAtRaw) ? normalizeValueForDate(startDate, startAtRaw) : startAtRaw;
     const ratePercent = isAccount
       ? (ratesById.has(node.id) ? ratesById.get(node.id) : (Number.isFinite(node.ratePercent) ? node.ratePercent : null))
       : computeGroupAggregatedRate(node);
@@ -1888,6 +1969,7 @@ ProjectionBreakdown.propTypes = {
   setChangedRateIds: PropTypes.func.isRequired,
   includedById: PropTypes.instanceOf(Map).isRequired,
   setIncludedById: PropTypes.func.isRequired,
+  normalizeValueForDate: PropTypes.func.isRequired,
   onSave: PropTypes.func.isRequired,
   savingRates: PropTypes.bool,
 };
