@@ -1,6 +1,6 @@
-export const RESERVE_SYMBOLS = Object.freeze(['SGOV', 'BIL', 'VBIL', 'PSA.TO', 'HFR.TO']);
+const RESERVE_SYMBOLS = Object.freeze(['SGOV', 'BIL', 'VBIL', 'PSA.TO', 'HFR.TO']);
 
-export const DEPLOYMENT_TIMEFRAME_OPTIONS = Object.freeze([
+const DEPLOYMENT_TIMEFRAME_OPTIONS = Object.freeze([
   { value: '1M', label: '1 month' },
   { value: '3M', label: '3 months' },
   { value: '6M', label: '6 months' },
@@ -10,7 +10,7 @@ export const DEPLOYMENT_TIMEFRAME_OPTIONS = Object.freeze([
   { value: 'ALL', label: 'All' },
 ]);
 
-export function parseDateOnly(value) {
+function parseDateOnly(value) {
   if (!value) {
     return null;
   }
@@ -25,7 +25,7 @@ export function parseDateOnly(value) {
   return parsed;
 }
 
-export function subtractInterval(date, option) {
+function subtractInterval(date, option) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return null;
   }
@@ -60,7 +60,7 @@ function coerceNumber(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-export function buildDeploymentDisplaySeries(points, timeframe = 'ALL') {
+function buildDeploymentDisplaySeries(points, timeframe = 'ALL') {
   if (!Array.isArray(points) || points.length === 0) {
     return [];
   }
@@ -175,12 +175,12 @@ export function buildDeploymentDisplaySeries(points, timeframe = 'ALL') {
   });
 }
 
-const defaultExport = Object.freeze({
+module.exports = {
   RESERVE_SYMBOLS,
   DEPLOYMENT_TIMEFRAME_OPTIONS,
   buildDeploymentDisplaySeries,
   parseDateOnly,
   subtractInterval,
-});
+};
 
-export default defaultExport;
+module.exports.default = module.exports;

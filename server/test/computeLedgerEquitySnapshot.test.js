@@ -22,7 +22,7 @@ if (!fs.existsSync(tokenStorePath)) {
 }
 
 const { computeLedgerEquitySnapshot } = require('../src/index.js');
-const { RESERVE_SYMBOLS } = require('../../shared/deploymentDisplay.js');
+const { RESERVE_SYMBOLS } = require('../../shared/deploymentDisplay.cjs');
 
 function makePriceSeries(entries) {
   return new Map(entries.map(([symbol, price]) => [symbol, new Map([["2025-01-15", price]])]));

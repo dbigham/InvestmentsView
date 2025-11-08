@@ -32,7 +32,7 @@ const { assignAccountGroups } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
-const deploymentDisplay = require('../../shared/deploymentDisplay.js');
+const deploymentDisplay = require('../../shared/deploymentDisplay.cjs');
 const {
   CASH_FLOW_EPSILON,
   DAY_IN_MS,

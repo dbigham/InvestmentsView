@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const {
   buildDeploymentDisplaySeries,
   DEPLOYMENT_TIMEFRAME_OPTIONS,
-} = require('../../shared/deploymentDisplay.js');
+} = require('../../shared/deploymentDisplay.cjs');
 
 test('buildDeploymentDisplaySeries sorts data and fills derived percentages', () => {
   const points = [
