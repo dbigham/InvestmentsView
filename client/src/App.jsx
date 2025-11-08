@@ -7458,41 +7458,6 @@ export default function App() {
       });
       return;
     }
-    if (isAggregateSelection) {
-      const items = computeTodos();
-      setTodoState((prev) => {
-        if (prev.scopeKey === todoScopeKey && prev.checked && areTodoListsEqual(prev.items, items)) {
-          return prev;
-        }
-        return { items, checked: true, scopeKey: todoScopeKey };
-      });
-      return;
-    }
-    setTodoState((prev) => {
-      if (prev.scopeKey !== todoScopeKey) {
-        return { items: [], checked: false, scopeKey: todoScopeKey };
-      }
-      if (!prev.checked) {
-        return prev;
-      }
-      const items = computeTodos();
-      if (areTodoListsEqual(prev.items, items)) {
-        return prev;
-      }
-      return { ...prev, items };
-    });
-  }, [showContent, isAggregateSelection, todoScopeKey, computeTodos]);
-
-  const handleCheckTodos = useCallback(async () => {
-    if (!todoScopeKey) {
-      setTodoState((prev) => {
-        if (prev.scopeKey === null && !prev.items.length && !prev.checked) {
-          return prev;
-        }
-        return { items: [], checked: false, scopeKey: null };
-      });
-      return;
-    }
     const items = computeTodos();
     setTodoState((prev) => {
       if (prev.scopeKey === todoScopeKey && prev.checked && areTodoListsEqual(prev.items, items)) {
@@ -7500,7 +7465,7 @@ export default function App() {
       }
       return { items, checked: true, scopeKey: todoScopeKey };
     });
-  }, [computeTodos, todoScopeKey]);
+  }, [showContent, todoScopeKey, computeTodos]);
 
   const currentTodoItems = todoState.items || [];
 
@@ -9019,7 +8984,6 @@ export default function App() {
             onShowProjections={handleShowProjections}
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
-            onCheckTodos={handleCheckTodos}
           onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
           onEditAccountDetails={canEditAccountDetails ? handleOpenAccountMetadata : null}
           onEditTargetProportions={
