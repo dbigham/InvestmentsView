@@ -455,7 +455,8 @@ export default function ProjectionDialog({
   // Normalization base (Jan 1 of the current year, based on todayDate when provided)
   const normalizeBaseDate = useMemo(() => {
     const t = parseDateOnly(todayDate) || new Date();
-    return new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+    // Use today's date (UTC midnight) as the normalization benchmark instead of Jan 1
+    return toDateOnly(t);
   }, [todayDate]);
   const normalizeBaseYearLabel = useMemo(() => String(normalizeBaseDate.getUTCFullYear()), [normalizeBaseDate]);
 
