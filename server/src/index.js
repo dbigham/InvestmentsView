@@ -32,6 +32,7 @@ const { assignAccountGroups } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
+const deploymentDisplay = require('../../shared/deploymentDisplay.js');
 const {
   CASH_FLOW_EPSILON,
   DAY_IN_MS,
@@ -62,6 +63,11 @@ const HTTP_BODY_TIMEOUT_MS = (() => {
   const v = Number(process.env.HTTP_BODY_TIMEOUT_MS);
   return Number.isFinite(v) && v >= 0 ? v : 60_000; // default 60s
 })();
+const RESERVE_SYMBOL_SET = new Set(Array.isArray(deploymentDisplay?.RESERVE_SYMBOLS)
+  ? deploymentDisplay.RESERVE_SYMBOLS.map((symbol) =>
+      typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''
+    ).filter(Boolean)
+  : []);
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
@@ -7220,11 +7226,26 @@ async function resolveUsdRateForDate(dateKey, accountKey, cache) {
   return cache.get(dateKey);
 }
 
-function computeLedgerEquitySnapshot(dateKey, holdings, cashByCurrency, symbolMeta, priceSeriesMap, usdRate) {
+function computeLedgerEquitySnapshot(
+  dateKey,
+  holdings,
+  cashByCurrency,
+  symbolMeta,
+  priceSeriesMap,
+  usdRate,
+  options = {}
+) {
   let cadValue = 0;
   let usdValue = 0;
   const missingPrices = [];
   const unsupportedCurrencies = new Set();
+  const reserveSymbols = options && options.reserveSymbols instanceof Set
+    ? options.reserveSymbols
+    : RESERVE_SYMBOL_SET;
+  let cadReserveSecurities = 0;
+  let usdReserveSecurities = 0;
+  let cadDeployedSecurities = 0;
+  let usdDeployedSecurities = 0;
 
   for (const [symbol, quantity] of holdings.entries()) {
     if (!Number.isFinite(quantity) || Math.abs(quantity) < LEDGER_QUANTITY_EPSILON) {
@@ -7243,10 +7264,22 @@ function computeLedgerEquitySnapshot(dateKey, holdings, cashByCurrency, symbolMe
       missingPrices.push(symbol);
       continue;
     }
+    const normalizedSymbol = symbol;
+    const isReserve = reserveSymbols.has(normalizedSymbol);
     if (currency === 'USD') {
       usdValue += positionValue;
+      if (isReserve) {
+        usdReserveSecurities += positionValue;
+      } else {
+        usdDeployedSecurities += positionValue;
+      }
     } else if (currency === 'CAD' || !currency) {
       cadValue += positionValue;
+      if (isReserve) {
+        cadReserveSecurities += positionValue;
+      } else {
+        cadDeployedSecurities += positionValue;
+      }
     } else {
       unsupportedCurrencies.add(currency);
     }
@@ -7257,13 +7290,35 @@ function computeLedgerEquitySnapshot(dateKey, holdings, cashByCurrency, symbolMe
   cadValue += cadCash;
   usdValue += usdCash;
 
+  const cadReserveTotal = cadCash + cadReserveSecurities;
+  const usdReserveTotal = usdCash + usdReserveSecurities;
+  const cadDeployedTotal = cadDeployedSecurities;
+  const usdDeployedTotal = usdDeployedSecurities;
+
   let equityCad = cadValue;
+  let reserveValueCad = cadReserveTotal;
+  let reserveSecurityValueCad = cadReserveSecurities;
+  let deployedValueCad = cadDeployedTotal;
+  let deployedSecurityValueCad = cadDeployedSecurities;
+  let hasUsdConversionIssue = false;
   if (Math.abs(usdValue) > 0.00001) {
     if (Number.isFinite(usdRate) && usdRate > 0) {
       equityCad += usdValue * usdRate;
+      reserveValueCad += usdReserveTotal * usdRate;
+      reserveSecurityValueCad += usdReserveSecurities * usdRate;
+      deployedValueCad += usdDeployedTotal * usdRate;
+      deployedSecurityValueCad += usdDeployedSecurities * usdRate;
     } else {
       unsupportedCurrencies.add('USD');
+      hasUsdConversionIssue = Math.abs(usdReserveTotal) > 0.00001 || Math.abs(usdDeployedTotal) > 0.00001;
     }
+  }
+
+  if (hasUsdConversionIssue) {
+    reserveValueCad = null;
+    reserveSecurityValueCad = null;
+    deployedValueCad = null;
+    deployedSecurityValueCad = null;
   }
 
   return {
@@ -7274,6 +7329,10 @@ function computeLedgerEquitySnapshot(dateKey, holdings, cashByCurrency, symbolMe
     usdCash,
     cadSecurityValue: cadValue - cadCash,
     usdSecurityValue: usdValue - usdCash,
+    reserveValueCad,
+    reserveSecurityValueCad,
+    deployedValueCad,
+    deployedSecurityValueCad,
   };
 }
 
@@ -7287,6 +7346,20 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   if (!activityContext) {
     return null;
   }
+
+  const reserveSymbols = (() => {
+    if (options && options.reserveSymbols instanceof Set) {
+      return options.reserveSymbols;
+    }
+    if (options && Array.isArray(options.reserveSymbols)) {
+      return new Set(
+        options.reserveSymbols
+          .map((symbol) => (typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''))
+          .filter(Boolean)
+      );
+    }
+    return RESERVE_SYMBOL_SET;
+  })();
 
   const netDepositOptions = {
     applyAccountCagrStartDate:
@@ -7779,7 +7852,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       cashByCurrency,
       symbolMeta,
       priceSeriesMap,
-      usdRate
+      usdRate,
+      { reserveSymbols }
     );
 
     if (snapshot.missingPrices.length) {
@@ -7799,12 +7873,33 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       totalPnlCad = equityCad - cumulativeNetDepositsCad;
     }
 
+    const reserveValueCad = Number.isFinite(snapshot.reserveValueCad) ? snapshot.reserveValueCad : null;
+    const deployedValueCad = Number.isFinite(snapshot.deployedValueCad) ? snapshot.deployedValueCad : null;
+    let deployedPercent = null;
+    if (Number.isFinite(deployedValueCad) && Number.isFinite(equityCad) && Math.abs(equityCad) > 0.00001) {
+      deployedPercent = (deployedValueCad / equityCad) * 100;
+    }
+    let reservePercent = null;
+    if (Number.isFinite(reserveValueCad) && Number.isFinite(equityCad) && Math.abs(equityCad) > 0.00001) {
+      reservePercent = (reserveValueCad / equityCad) * 100;
+    }
+
     points.push({
       date: dateKey,
       equityCad,
       cumulativeNetDepositsCad,
       totalPnlCad,
       usdToCadRate: Number.isFinite(usdRate) ? usdRate : undefined,
+      reserveValueCad,
+      reserveSecurityValueCad: Number.isFinite(snapshot.reserveSecurityValueCad)
+        ? snapshot.reserveSecurityValueCad
+        : undefined,
+      deployedValueCad,
+      deployedSecurityValueCad: Number.isFinite(snapshot.deployedSecurityValueCad)
+        ? snapshot.deployedSecurityValueCad
+        : undefined,
+      deployedPercent: Number.isFinite(deployedPercent) ? deployedPercent : undefined,
+      reservePercent: Number.isFinite(reservePercent) ? reservePercent : undefined,
     });
   }
 
@@ -8061,6 +8156,23 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     ? normalizedPoints[normalizedPoints.length - 1].date
     : dateKeys[dateKeys.length - 1];
 
+  const summaryReserveValue = lastNormalized && Number.isFinite(lastNormalized.reserveValueCad)
+    ? lastNormalized.reserveValueCad
+    : null;
+  const summaryDeployedValue = lastNormalized && Number.isFinite(lastNormalized.deployedValueCad)
+    ? lastNormalized.deployedValueCad
+    : null;
+  let summaryDeployedPercent = null;
+  if (lastNormalized && Number.isFinite(lastNormalized.deployedPercent)) {
+    summaryDeployedPercent = lastNormalized.deployedPercent;
+  } else if (
+    Number.isFinite(summaryDeployedValue) &&
+    Number.isFinite(summaryEquity) &&
+    Math.abs(summaryEquity) > 0.00001
+  ) {
+    summaryDeployedPercent = (summaryDeployedValue / summaryEquity) * 100;
+  }
+
   return {
     accountId: accountKey,
     periodStartDate: effectivePeriodStart,
@@ -8079,6 +8191,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         : undefined,
       netDepositsCad: summaryNetDeposits,
       netDepositsAllTimeCad: summaryNetDepositsAllTime,
+      reserveValueCad: Number.isFinite(summaryReserveValue) ? summaryReserveValue : undefined,
+      deployedValueCad: Number.isFinite(summaryDeployedValue) ? summaryDeployedValue : undefined,
+      deployedPercent: Number.isFinite(summaryDeployedPercent) ? summaryDeployedPercent : undefined,
       displayStartTotals: displayStartTotals || baselineTotals || undefined,
       seriesStartTotals:
         displayStartTotals &&
@@ -11625,6 +11740,8 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         netDepositsCad: 0,
         netDepositsAllTimeCad: 0,
         totalEquityCad: 0,
+        reserveValueCad: 0,
+        deployedValueCad: 0,
       };
       const summaryCounts = {
         totalPnlCad: 0,
@@ -11632,6 +11749,8 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         netDepositsCad: 0,
         netDepositsAllTimeCad: 0,
         totalEquityCad: 0,
+        reserveValueCad: 0,
+        deployedValueCad: 0,
       };
       let aggregatedStart = null;
       let aggregatedEnd = null;
@@ -11682,6 +11801,10 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
                 depositsCount: 0,
                 pnl: 0,
                 pnlCount: 0,
+                reserve: 0,
+                reserveCount: 0,
+                deployed: 0,
+                deployedCount: 0,
               };
               totalsByDate.set(dateKey, bucket);
             }
@@ -11699,6 +11822,20 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             if (Number.isFinite(pnl)) {
               bucket.pnl += pnl;
               bucket.pnlCount += 1;
+            }
+            const reserveValue = point && Number.isFinite(point.reserveValueCad)
+              ? point.reserveValueCad
+              : null;
+            if (Number.isFinite(reserveValue)) {
+              bucket.reserve += reserveValue;
+              bucket.reserveCount += 1;
+            }
+            const deployedValue = point && Number.isFinite(point.deployedValueCad)
+              ? point.deployedValueCad
+              : null;
+            if (Number.isFinite(deployedValue)) {
+              bucket.deployed += deployedValue;
+              bucket.deployedCount += 1;
             }
           });
         }
@@ -11725,6 +11862,14 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             summaryTotals.totalEquityCad += summary.totalEquityCad;
             summaryCounts.totalEquityCad += 1;
           }
+          if (Number.isFinite(summary.reserveValueCad)) {
+            summaryTotals.reserveValueCad += summary.reserveValueCad;
+            summaryCounts.reserveValueCad += 1;
+          }
+          if (Number.isFinite(summary.deployedValueCad)) {
+            summaryTotals.deployedValueCad += summary.deployedValueCad;
+            summaryCounts.deployedValueCad += 1;
+          }
         }
       });
 
@@ -11741,6 +11886,26 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             equityCad: bucket && bucket.equityCount > 0 ? bucket.equity : undefined,
             cumulativeNetDepositsCad: bucket && bucket.depositsCount > 0 ? bucket.deposits : undefined,
             totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
+            reserveValueCad: bucket && bucket.reserveCount > 0 ? bucket.reserve : undefined,
+            deployedValueCad: bucket && bucket.deployedCount > 0 ? bucket.deployed : undefined,
+            deployedPercent:
+              bucket &&
+              bucket.deployedCount > 0 &&
+              bucket.equityCount > 0 &&
+              Number.isFinite(bucket.deployed) &&
+              Number.isFinite(bucket.equity) &&
+              Math.abs(bucket.equity) > 0.00001
+                ? (bucket.deployed / bucket.equity) * 100
+                : undefined,
+            reservePercent:
+              bucket &&
+              bucket.reserveCount > 0 &&
+              bucket.equityCount > 0 &&
+              Number.isFinite(bucket.reserve) &&
+              Number.isFinite(bucket.equity) &&
+              Math.abs(bucket.equity) > 0.00001
+                ? (bucket.reserve / bucket.equity) * 100
+                : undefined,
           };
         })
         .filter((point) => point && Number.isFinite(point.totalPnlCad));
@@ -11765,7 +11930,17 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
               ? summaryTotals.netDepositsCad
               : null,
         totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
+        reserveValueCad: summaryCounts.reserveValueCad > 0 ? summaryTotals.reserveValueCad : null,
+        deployedValueCad: summaryCounts.deployedValueCad > 0 ? summaryTotals.deployedValueCad : null,
       };
+
+      if (
+        Number.isFinite(summaryPayload.deployedValueCad) &&
+        Number.isFinite(summaryPayload.totalEquityCad) &&
+        Math.abs(summaryPayload.totalEquityCad) > 0.00001
+      ) {
+        summaryPayload.deployedPercent = (summaryPayload.deployedValueCad / summaryPayload.totalEquityCad) * 100;
+      }
 
       const payload = {
         accountId: 'all',
@@ -11876,6 +12051,7 @@ module.exports = {
   convertAmountToCad,
   resolveUsdToCadRate,
   buildDailyPriceSeries,
+  computeLedgerEquitySnapshot,
   __setBookValueTransferPriceFetcher: setBookValueTransferPriceFetcher,
   fetchAccounts,
   fetchBalances,

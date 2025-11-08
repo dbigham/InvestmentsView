@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatMoney, formatNumber } from '../utils/formatters';
 import {
@@ -8,6 +8,7 @@ import {
   JOURNALLING_URL,
   truncateDescription,
 } from './investPlanUtils';
+import DeploymentGraphDialog from './DeploymentGraphDialog';
 
 function clampPercent(value) {
   if (!Number.isFinite(value)) {
@@ -70,6 +71,25 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
   const [inputValue, setInputValue] = useState(() => formatPercentInput(plan?.targetDeployedPercent));
   const [copyStatus, setCopyStatus] = useState(null);
   const [completedTransactions, setCompletedTransactions] = useState(() => new Set());
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
+  const menuRef = useRef(null);
+
+  const resolvedAccountKey = useMemo(() => {
+    const planKey = typeof plan?.accountKey === 'string' ? plan.accountKey.trim() : '';
+    if (planKey) {
+      return planKey;
+    }
+    const numberCandidate = plan?.accountNumber;
+    if (numberCandidate !== undefined && numberCandidate !== null) {
+      const normalized = String(numberCandidate).trim();
+      return normalized || null;
+    }
+    return null;
+  }, [plan?.accountKey, plan?.accountNumber]);
+  const baseCurrency = typeof plan?.baseCurrency === 'string' && plan.baseCurrency.trim()
+    ? plan.baseCurrency.trim().toUpperCase()
+    : 'CAD';
 
   useEffect(() => {
     const percent = clampPercent(plan?.targetDeployedPercent ?? 0);
@@ -105,11 +125,40 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
     setCompletedTransactions(new Set());
   }, [plan?.transactions]);
 
+  useEffect(() => {
+    if (!isMenuOpen) {
+      return undefined;
+    }
+    const handleClick = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [isMenuOpen]);
+
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
       onClose();
     }
   };
+
+  const handleToggleMenu = useCallback(() => {
+    setIsMenuOpen((value) => !value);
+  }, []);
+
+  const handleOpenGraph = useCallback(() => {
+    if (!resolvedAccountKey) {
+      return;
+    }
+    setShowGraph(true);
+    setIsMenuOpen(false);
+  }, [resolvedAccountKey]);
+
+  const handleCloseGraph = useCallback(() => {
+    setShowGraph(false);
+  }, []);
 
   const handleSliderChange = (event) => {
     const nextValue = clampPercent(Number(event.target.value));
@@ -331,14 +380,43 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
               </a>
             )}
           </div>
-          <button
-            type="button"
-            className="invest-plan-dialog__close"
-            aria-label="Close dialog"
-            onClick={onClose}
-          >
-            ×
-          </button>
+          <div className="invest-plan-dialog__actions">
+            <div className="invest-plan-dialog__menu" ref={menuRef}>
+              <button
+                type="button"
+                className="invest-plan-dialog__menu-button"
+                aria-haspopup="menu"
+                aria-expanded={isMenuOpen}
+                onClick={handleToggleMenu}
+              >
+                ⋮
+              </button>
+              <ul
+                className={isMenuOpen ? 'invest-plan-dialog__menu-list invest-plan-dialog__menu-list--open' : 'invest-plan-dialog__menu-list'}
+                role="menu"
+              >
+                <li>
+                  <button
+                    type="button"
+                    className="invest-plan-dialog__menu-item"
+                    role="menuitem"
+                    onClick={handleOpenGraph}
+                    disabled={!resolvedAccountKey}
+                  >
+                    Deployment graph
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <button
+              type="button"
+              className="invest-plan-dialog__close"
+              aria-label="Close dialog"
+              onClick={onClose}
+            >
+              ×
+            </button>
+          </div>
         </header>
         <div className="invest-plan-dialog__body">
           {copyStatus && (
@@ -632,6 +710,14 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
           </button>
         </footer>
       </div>
+      {showGraph && (
+        <DeploymentGraphDialog
+          accountKey={resolvedAccountKey}
+          accountLabel={accountLabel}
+          baseCurrency={baseCurrency}
+          onClose={handleCloseGraph}
+        />
+      )}
     </div>
   );
 }
@@ -649,6 +735,7 @@ DeploymentAdjustmentDialog.propTypes = {
     baseCurrency: PropTypes.string,
     accountLabel: PropTypes.string,
     accountName: PropTypes.string,
+    accountKey: PropTypes.string,
     accountNumber: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     accountUrl: PropTypes.string,
     summaryText: PropTypes.string,
