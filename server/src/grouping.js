@@ -100,6 +100,12 @@ function assignAccountGroups(accounts, options) {
         group.retirementAge = Math.round(age);
       }
     }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementYear')) {
+      const yr = Number(meta.retirementYear);
+      if (Number.isFinite(yr)) {
+        group.retirementYear = Math.round(yr);
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(meta, 'retirementIncome')) {
       const income = Number(meta.retirementIncome);
       if (Number.isFinite(income) && income >= 0) {
@@ -123,6 +129,34 @@ function assignAccountGroups(accounts, options) {
       if (Number.isFinite(n) && n >= 0) {
         group.retirementInflationPercent = Math.round(n * 100) / 100;
       }
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementHouseholdType')) {
+      const s = typeof meta.retirementHouseholdType === 'string' ? meta.retirementHouseholdType.trim().toLowerCase() : '';
+      if (s === 'single' || s === 'couple') {
+        group.retirementHouseholdType = s;
+      }
+    }
+    // Copy-through optional per-person pension fields if present
+    ['1','2'].forEach((idx) => {
+      const fields = [
+        'retirementBirthDate' + idx,
+        'retirementCppYearsContributed' + idx,
+        'retirementCppAvgEarningsPctOfYMPE' + idx,
+        'retirementCppStartAge' + idx,
+        'retirementOasYearsResident' + idx,
+        'retirementOasStartAge' + idx,
+      ];
+      fields.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(meta, key)) {
+          group[key] = meta[key];
+        }
+      });
+    });
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementCppMaxAt65Annual')) {
+      group.retirementCppMaxAt65Annual = meta.retirementCppMaxAt65Annual;
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'retirementOasFullAt65Annual')) {
+      group.retirementOasFullAt65Annual = meta.retirementOasFullAt65Annual;
     }
   };
 
@@ -332,6 +366,56 @@ function assignAccountGroups(accounts, options) {
         typeof group.retirementBirthDate === 'string' && group.retirementBirthDate
           ? group.retirementBirthDate
           : null,
+      // Additional retirement modeling fields surfaced for API consumers
+      retirementYear: Number.isFinite(group.retirementYear) ? Math.round(group.retirementYear) : null,
+      retirementHouseholdType:
+        typeof group.retirementHouseholdType === 'string' && group.retirementHouseholdType
+          ? group.retirementHouseholdType
+          : null,
+      retirementBirthDate1:
+        typeof group.retirementBirthDate1 === 'string' && group.retirementBirthDate1
+          ? group.retirementBirthDate1
+          : null,
+      retirementBirthDate2:
+        typeof group.retirementBirthDate2 === 'string' && group.retirementBirthDate2
+          ? group.retirementBirthDate2
+          : null,
+      retirementCppYearsContributed1: Number.isFinite(group.retirementCppYearsContributed1)
+        ? Math.max(0, Math.round(group.retirementCppYearsContributed1))
+        : null,
+      retirementCppAvgEarningsPctOfYMPE1: Number.isFinite(group.retirementCppAvgEarningsPctOfYMPE1)
+        ? Math.max(0, Math.round(group.retirementCppAvgEarningsPctOfYMPE1 * 100) / 100)
+        : null,
+      retirementCppStartAge1: Number.isFinite(group.retirementCppStartAge1)
+        ? Math.max(0, Math.round(group.retirementCppStartAge1))
+        : null,
+      retirementOasYearsResident1: Number.isFinite(group.retirementOasYearsResident1)
+        ? Math.max(0, Math.round(group.retirementOasYearsResident1))
+        : null,
+      retirementOasStartAge1: Number.isFinite(group.retirementOasStartAge1)
+        ? Math.max(0, Math.round(group.retirementOasStartAge1))
+        : null,
+      retirementCppYearsContributed2: Number.isFinite(group.retirementCppYearsContributed2)
+        ? Math.max(0, Math.round(group.retirementCppYearsContributed2))
+        : null,
+      retirementCppAvgEarningsPctOfYMPE2: Number.isFinite(group.retirementCppAvgEarningsPctOfYMPE2)
+        ? Math.max(0, Math.round(group.retirementCppAvgEarningsPctOfYMPE2 * 100) / 100)
+        : null,
+      retirementCppStartAge2: Number.isFinite(group.retirementCppStartAge2)
+        ? Math.max(0, Math.round(group.retirementCppStartAge2))
+        : null,
+      retirementOasYearsResident2: Number.isFinite(group.retirementOasYearsResident2)
+        ? Math.max(0, Math.round(group.retirementOasYearsResident2))
+        : null,
+      retirementOasStartAge2: Number.isFinite(group.retirementOasStartAge2)
+        ? Math.max(0, Math.round(group.retirementOasStartAge2))
+        : null,
+      retirementCppMaxAt65Annual: Number.isFinite(group.retirementCppMaxAt65Annual)
+        ? Math.max(0, Math.round(group.retirementCppMaxAt65Annual))
+        : null,
+      retirementOasFullAt65Annual: Number.isFinite(group.retirementOasFullAt65Annual)
+        ? Math.max(0, Math.round(group.retirementOasFullAt65Annual))
+        : null,
     };
   });
 

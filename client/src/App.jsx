@@ -3907,6 +3907,21 @@ export default function App() {
           typeof group.retirementBirthDate === 'string' && group.retirementBirthDate.trim()
             ? group.retirementBirthDate.trim()
             : null;
+        const normalizedRetirementYear =
+          Number.isFinite(group.retirementYear) ? Math.round(group.retirementYear) : null;
+        const normalizedHouseholdType =
+          typeof group.retirementHouseholdType === 'string' && group.retirementHouseholdType.trim()
+            ? group.retirementHouseholdType.trim()
+            : null;
+        const normalizedBirthDate1 =
+          typeof group.retirementBirthDate1 === 'string' && group.retirementBirthDate1.trim()
+            ? group.retirementBirthDate1.trim()
+            : null;
+        const normalizedBirthDate2 =
+          typeof group.retirementBirthDate2 === 'string' && group.retirementBirthDate2.trim()
+            ? group.retirementBirthDate2.trim()
+            : null;
+        const n = (v) => (Number.isFinite(v) ? v : null);
 
         return {
           id,
@@ -3917,9 +3932,21 @@ export default function App() {
           ownerLabels,
           mainRetirementAccount: group.mainRetirementAccount === true,
           retirementAge: normalizedRetirementAge,
+          retirementYear: normalizedRetirementYear,
           retirementIncome: normalizedRetirementIncome,
           retirementLivingExpenses: normalizedRetirementLivingExpenses,
           retirementBirthDate: normalizedRetirementBirthDate,
+          retirementHouseholdType: normalizedHouseholdType,
+          retirementBirthDate1: normalizedBirthDate1,
+          retirementBirthDate2: normalizedBirthDate2,
+          retirementCppYearsContributed1: n(group.retirementCppYearsContributed1),
+          retirementCppAvgEarningsPctOfYMPE1: n(group.retirementCppAvgEarningsPctOfYMPE1),
+          retirementOasYearsResident1: n(group.retirementOasYearsResident1),
+          retirementCppYearsContributed2: n(group.retirementCppYearsContributed2),
+          retirementCppAvgEarningsPctOfYMPE2: n(group.retirementCppAvgEarningsPctOfYMPE2),
+          retirementOasYearsResident2: n(group.retirementOasYearsResident2),
+          retirementCppMaxAt65Annual: n(group.retirementCppMaxAt65Annual),
+          retirementOasFullAt65Annual: n(group.retirementOasFullAt65Annual),
         };
       })
       .filter((group) => {
@@ -4231,7 +4258,18 @@ export default function App() {
       if (!source || source.mainRetirementAccount !== true) {
         return null;
       }
-      const age = normalizePositiveInteger(source.retirementAge);
+      const age = (function () {
+        const explicit = normalizePositiveInteger(source.retirementAge);
+        if (explicit) return explicit;
+        const ry = normalizePositiveInteger(source.retirementYear);
+        const bd1 = (typeof source.retirementBirthDate1 === 'string' && source.retirementBirthDate1)
+          ? new Date(`${source.retirementBirthDate1}T00:00:00Z`)
+          : (typeof source.retirementBirthDate === 'string' && source.retirementBirthDate ? new Date(`${source.retirementBirthDate}T00:00:00Z`) : null);
+        if (ry && bd1 && !Number.isNaN(bd1.getTime())) {
+          return Math.max(0, ry - bd1.getUTCFullYear());
+        }
+        return null;
+      })();
       const inflNum = Number(source.retirementInflationPercent);
       const inflationPercent = Number.isFinite(inflNum) && inflNum >= 0 ? Math.round(inflNum * 100) / 100 : null;
       return {
@@ -4244,6 +4282,41 @@ export default function App() {
             ? source.retirementBirthDate
             : null,
         retirementInflationPercent: inflationPercent,
+        retirementYear: normalizePositiveInteger(source.retirementYear),
+        retirementBirthDate1:
+          typeof source.retirementBirthDate1 === 'string' && source.retirementBirthDate1
+            ? source.retirementBirthDate1
+            : (typeof source.retirementBirthDate === 'string' && source.retirementBirthDate ? source.retirementBirthDate : null),
+        retirementHouseholdType:
+          typeof source.retirementHouseholdType === 'string' && source.retirementHouseholdType
+            ? source.retirementHouseholdType
+            : 'single',
+        retirementBirthDate1:
+          typeof source.retirementBirthDate1 === 'string' && source.retirementBirthDate1
+            ? source.retirementBirthDate1
+            : (typeof source.retirementBirthDate === 'string' && source.retirementBirthDate ? source.retirementBirthDate : null),
+        retirementBirthDate2:
+          typeof source.retirementBirthDate2 === 'string' && source.retirementBirthDate2
+            ? source.retirementBirthDate2
+            : null,
+        retirementCppYearsContributed1: normalizePositiveInteger(source.retirementCppYearsContributed1),
+        retirementCppAvgEarningsPctOfYMPE1: (function () {
+          const n = Number(source.retirementCppAvgEarningsPctOfYMPE1);
+          return Number.isFinite(n) ? n : null;
+        })(),
+        retirementCppStartAge1: normalizePositiveInteger(source.retirementCppStartAge1),
+        retirementOasYearsResident1: normalizePositiveInteger(source.retirementOasYearsResident1),
+        retirementOasStartAge1: normalizePositiveInteger(source.retirementOasStartAge1),
+        retirementCppYearsContributed2: normalizePositiveInteger(source.retirementCppYearsContributed2),
+        retirementCppAvgEarningsPctOfYMPE2: (function () {
+          const n = Number(source.retirementCppAvgEarningsPctOfYMPE2);
+          return Number.isFinite(n) ? n : null;
+        })(),
+        retirementCppStartAge2: normalizePositiveInteger(source.retirementCppStartAge2),
+        retirementOasYearsResident2: normalizePositiveInteger(source.retirementOasYearsResident2),
+        retirementOasStartAge2: normalizePositiveInteger(source.retirementOasStartAge2),
+        retirementCppMaxAt65Annual: normalizePositiveInteger(source.retirementCppMaxAt65Annual),
+        retirementOasFullAt65Annual: normalizePositiveInteger(source.retirementOasFullAt65Annual),
       };
     };
     const resolved = buildSettings(selectedAccountInfo) || buildSettings(selectedAccountGroup);
@@ -8251,6 +8324,10 @@ export default function App() {
           selectedAccountInfo.retirementAge !== undefined && selectedAccountInfo.retirementAge !== null
             ? selectedAccountInfo.retirementAge
             : '',
+        retirementYear:
+          selectedAccountInfo.retirementYear !== undefined && selectedAccountInfo.retirementYear !== null
+            ? selectedAccountInfo.retirementYear
+            : '',
         retirementIncome:
           selectedAccountInfo.retirementIncome !== undefined && selectedAccountInfo.retirementIncome !== null
             ? selectedAccountInfo.retirementIncome
@@ -8264,6 +8341,60 @@ export default function App() {
         retirementInflationPercent:
           selectedAccountInfo.retirementInflationPercent !== undefined && selectedAccountInfo.retirementInflationPercent !== null
             ? selectedAccountInfo.retirementInflationPercent
+            : '',
+        retirementHouseholdType:
+          (selectedAccountInfo.retirementHouseholdType && selectedAccountInfo.retirementHouseholdType) || 'single',
+        retirementBirthDate1:
+          (selectedAccountInfo.retirementBirthDate1 && selectedAccountInfo.retirementBirthDate1) || (selectedAccountInfo.retirementBirthDate || ''),
+        retirementBirthDate2:
+          (selectedAccountInfo.retirementBirthDate2 && selectedAccountInfo.retirementBirthDate2) || '',
+        retirementCppYearsContributed1:
+          selectedAccountInfo.retirementCppYearsContributed1 !== undefined && selectedAccountInfo.retirementCppYearsContributed1 !== null
+            ? selectedAccountInfo.retirementCppYearsContributed1
+            : '',
+        retirementCppAvgEarningsPctOfYMPE1:
+          selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE1 !== undefined && selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE1 !== null
+            ? selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE1
+            : '',
+        retirementCppStartAge1:
+          selectedAccountInfo.retirementCppStartAge1 !== undefined && selectedAccountInfo.retirementCppStartAge1 !== null
+            ? selectedAccountInfo.retirementCppStartAge1
+            : '',
+        retirementOasYearsResident1:
+          selectedAccountInfo.retirementOasYearsResident1 !== undefined && selectedAccountInfo.retirementOasYearsResident1 !== null
+            ? selectedAccountInfo.retirementOasYearsResident1
+            : '',
+        retirementOasStartAge1:
+          selectedAccountInfo.retirementOasStartAge1 !== undefined && selectedAccountInfo.retirementOasStartAge1 !== null
+            ? selectedAccountInfo.retirementOasStartAge1
+            : '',
+        retirementCppYearsContributed2:
+          selectedAccountInfo.retirementCppYearsContributed2 !== undefined && selectedAccountInfo.retirementCppYearsContributed2 !== null
+            ? selectedAccountInfo.retirementCppYearsContributed2
+            : '',
+        retirementCppAvgEarningsPctOfYMPE2:
+          selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE2 !== undefined && selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE2 !== null
+            ? selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE2
+            : '',
+        retirementCppStartAge2:
+          selectedAccountInfo.retirementCppStartAge2 !== undefined && selectedAccountInfo.retirementCppStartAge2 !== null
+            ? selectedAccountInfo.retirementCppStartAge2
+            : '',
+        retirementOasYearsResident2:
+          selectedAccountInfo.retirementOasYearsResident2 !== undefined && selectedAccountInfo.retirementOasYearsResident2 !== null
+            ? selectedAccountInfo.retirementOasYearsResident2
+            : '',
+        retirementOasStartAge2:
+          selectedAccountInfo.retirementOasStartAge2 !== undefined && selectedAccountInfo.retirementOasStartAge2 !== null
+            ? selectedAccountInfo.retirementOasStartAge2
+            : '',
+        retirementCppMaxAt65Annual:
+          selectedAccountInfo.retirementCppMaxAt65Annual !== undefined && selectedAccountInfo.retirementCppMaxAt65Annual !== null
+            ? selectedAccountInfo.retirementCppMaxAt65Annual
+            : '',
+        retirementOasFullAt65Annual:
+          selectedAccountInfo.retirementOasFullAt65Annual !== undefined && selectedAccountInfo.retirementOasFullAt65Annual !== null
+            ? selectedAccountInfo.retirementOasFullAt65Annual
             : '',
       };
       const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
@@ -8293,6 +8424,10 @@ export default function App() {
           selectedAccountGroup.retirementAge !== undefined && selectedAccountGroup.retirementAge !== null
             ? selectedAccountGroup.retirementAge
             : '',
+        retirementYear:
+          selectedAccountGroup.retirementYear !== undefined && selectedAccountGroup.retirementYear !== null
+            ? selectedAccountGroup.retirementYear
+            : '',
         retirementIncome:
           selectedAccountGroup.retirementIncome !== undefined && selectedAccountGroup.retirementIncome !== null
             ? selectedAccountGroup.retirementIncome
@@ -8308,6 +8443,60 @@ export default function App() {
           selectedAccountGroup.retirementInflationPercent !== undefined &&
           selectedAccountGroup.retirementInflationPercent !== null
             ? selectedAccountGroup.retirementInflationPercent
+            : '',
+        retirementHouseholdType:
+          (selectedAccountGroup.retirementHouseholdType && selectedAccountGroup.retirementHouseholdType) || 'single',
+        retirementBirthDate1:
+          (selectedAccountGroup.retirementBirthDate1 && selectedAccountGroup.retirementBirthDate1) || (selectedAccountGroup.retirementBirthDate || ''),
+        retirementBirthDate2:
+          (selectedAccountGroup.retirementBirthDate2 && selectedAccountGroup.retirementBirthDate2) || '',
+        retirementCppYearsContributed1:
+          selectedAccountGroup.retirementCppYearsContributed1 !== undefined && selectedAccountGroup.retirementCppYearsContributed1 !== null
+            ? selectedAccountGroup.retirementCppYearsContributed1
+            : '',
+        retirementCppAvgEarningsPctOfYMPE1:
+          selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE1 !== undefined && selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE1 !== null
+            ? selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE1
+            : '',
+        retirementCppStartAge1:
+          selectedAccountGroup.retirementCppStartAge1 !== undefined && selectedAccountGroup.retirementCppStartAge1 !== null
+            ? selectedAccountGroup.retirementCppStartAge1
+            : '',
+        retirementOasYearsResident1:
+          selectedAccountGroup.retirementOasYearsResident1 !== undefined && selectedAccountGroup.retirementOasYearsResident1 !== null
+            ? selectedAccountGroup.retirementOasYearsResident1
+            : '',
+        retirementOasStartAge1:
+          selectedAccountGroup.retirementOasStartAge1 !== undefined && selectedAccountGroup.retirementOasStartAge1 !== null
+            ? selectedAccountGroup.retirementOasStartAge1
+            : '',
+        retirementCppYearsContributed2:
+          selectedAccountGroup.retirementCppYearsContributed2 !== undefined && selectedAccountGroup.retirementCppYearsContributed2 !== null
+            ? selectedAccountGroup.retirementCppYearsContributed2
+            : '',
+        retirementCppAvgEarningsPctOfYMPE2:
+          selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE2 !== undefined && selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE2 !== null
+            ? selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE2
+            : '',
+        retirementCppStartAge2:
+          selectedAccountGroup.retirementCppStartAge2 !== undefined && selectedAccountGroup.retirementCppStartAge2 !== null
+            ? selectedAccountGroup.retirementCppStartAge2
+            : '',
+        retirementOasYearsResident2:
+          selectedAccountGroup.retirementOasYearsResident2 !== undefined && selectedAccountGroup.retirementOasYearsResident2 !== null
+            ? selectedAccountGroup.retirementOasYearsResident2
+            : '',
+        retirementOasStartAge2:
+          selectedAccountGroup.retirementOasStartAge2 !== undefined && selectedAccountGroup.retirementOasStartAge2 !== null
+            ? selectedAccountGroup.retirementOasStartAge2
+            : '',
+        retirementCppMaxAt65Annual:
+          selectedAccountGroup.retirementCppMaxAt65Annual !== undefined && selectedAccountGroup.retirementCppMaxAt65Annual !== null
+            ? selectedAccountGroup.retirementCppMaxAt65Annual
+            : '',
+        retirementOasFullAt65Annual:
+          selectedAccountGroup.retirementOasFullAt65Annual !== undefined && selectedAccountGroup.retirementOasFullAt65Annual !== null
+            ? selectedAccountGroup.retirementOasFullAt65Annual
             : '',
       };
       const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
@@ -8355,10 +8544,23 @@ export default function App() {
           'projectionGrowthPercent',
           'mainRetirementAccount',
           'retirementAge',
+          'retirementYear',
           'retirementIncome',
           'retirementLivingExpenses',
           'retirementBirthDate',
           'retirementInflationPercent',
+          // New retirement modeling fields
+          'retirementHouseholdType',
+          'retirementBirthDate1',
+          'retirementBirthDate2',
+          'retirementCppYearsContributed1',
+          'retirementCppAvgEarningsPctOfYMPE1',
+          'retirementOasYearsResident1',
+          'retirementCppYearsContributed2',
+          'retirementCppAvgEarningsPctOfYMPE2',
+          'retirementOasYearsResident2',
+          'retirementCppMaxAt65Annual',
+          'retirementOasFullAt65Annual',
         ].forEach((k) => {
           if (Object.prototype.hasOwnProperty.call(payload, k)) {
             safe[k] = payload[k];

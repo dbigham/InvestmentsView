@@ -884,6 +884,13 @@ textarea {
   min-width: 140px;
 }
 
+/* Wider variant for retirement-age control (about 80% wider than 140px) */
+/* Generic wide variant for custom select controls */
+/* Retirement age select: make modestly wider than 140px timeframe */
+.select-control--wide { width: 120px; }
+.select-control--wide .select-control__button { width: 100%; }
+.select-control--wide .select-control__list { min-width: 100%; }
+
 .select-control__list li {
   width: 100%;
 }
@@ -4108,6 +4115,14 @@ button.time-pill:hover .time-pill__icon {
   stroke-linecap: round;
 }
 
+/* Projections dialog: retirement start marker */
+.projection-dialog__retirement-line {
+  stroke: var(--color-primary);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 4;
+  opacity: 0.95;
+}
+
 .projection-dialog__milestone {
   fill: var(--color-accent);
   stroke: #ffffff;
@@ -4855,6 +4870,10 @@ button.time-pill:hover .time-pill__icon {
   font-size: 0.95rem;
   cursor: pointer;
   gap: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
 }
 
 .select-control__button:focus-visible {
@@ -4868,6 +4887,7 @@ button.time-pill:hover .time-pill__icon {
   border-left: 5px solid transparent;
   border-right: 5px solid transparent;
   border-top: 5px solid var(--color-text-muted);
+  margin-left: 8px;
 }
 
 .select-control__list {
@@ -5346,6 +5366,8 @@ button.time-pill:hover .time-pill__icon {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  /* Allow inner body to shrink and scroll */
+  min-height: 0;
 }
 
 .account-metadata-dialog__body {
@@ -5355,6 +5377,8 @@ button.time-pill:hover .time-pill__icon {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+  /* Needed so overflow works within flex column */
+  min-height: 0;
 }
 
 .account-metadata-dialog__status {
@@ -5428,6 +5452,9 @@ button.time-pill:hover .time-pill__icon {
 .account-metadata-dialog__field label {
   font-weight: 600;
   color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .account-metadata-dialog__input {
@@ -5438,6 +5465,61 @@ button.time-pill:hover .time-pill__icon {
   color: var(--color-text-primary);
   font-size: 14px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Inline info dot with CSS tooltip for field labels */
+.account-metadata-dialog__info-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  /* Slightly lighter gray for the info icon */
+  background: var(--color-text-muted);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+  padding: 0;
+  position: relative;
+}
+
+.account-metadata-dialog__info-dot:hover,
+.account-metadata-dialog__info-dot:focus-visible {
+  border-color: var(--color-border-active);
+  background: var(--color-text-muted);
+  outline: none;
+}
+
+.account-metadata-dialog__info-dot::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: 8px 10px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+  min-width: 220px;
+  max-width: 320px;
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.account-metadata-dialog__info-dot:hover::after,
+.account-metadata-dialog__info-dot:focus::after,
+.account-metadata-dialog__info-dot:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
 }
 
 .account-metadata-dialog__input:focus-visible {

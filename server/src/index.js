@@ -11272,6 +11272,7 @@ app.get('/api/summary', async function (req, res) {
           Number.isFinite(account.retirementAge) && account.retirementAge > 0
             ? Math.round(account.retirementAge)
             : null,
+        retirementYear: Number.isFinite(account.retirementYear) ? Math.round(account.retirementYear) : null,
         retirementIncome:
           Number.isFinite(account.retirementIncome) && account.retirementIncome >= 0
             ? Math.round(account.retirementIncome * 100) / 100
@@ -11284,6 +11285,54 @@ app.get('/api/summary', async function (req, res) {
           typeof account.retirementBirthDate === 'string' && account.retirementBirthDate.trim()
             ? account.retirementBirthDate.trim()
             : null,
+        retirementHouseholdType:
+          typeof account.retirementHouseholdType === 'string' && account.retirementHouseholdType.trim()
+            ? account.retirementHouseholdType.trim()
+            : null,
+        retirementBirthDate1:
+          typeof account.retirementBirthDate1 === 'string' && account.retirementBirthDate1.trim()
+            ? account.retirementBirthDate1.trim()
+            : null,
+        retirementBirthDate2:
+          typeof account.retirementBirthDate2 === 'string' && account.retirementBirthDate2.trim()
+            ? account.retirementBirthDate2.trim()
+            : null,
+        retirementCppYearsContributed1: Number.isFinite(account.retirementCppYearsContributed1)
+          ? Math.max(0, Math.round(account.retirementCppYearsContributed1))
+          : null,
+        retirementCppAvgEarningsPctOfYMPE1: Number.isFinite(account.retirementCppAvgEarningsPctOfYMPE1)
+          ? Math.max(0, Math.round(account.retirementCppAvgEarningsPctOfYMPE1 * 100) / 100)
+          : null,
+        retirementCppStartAge1: Number.isFinite(account.retirementCppStartAge1)
+          ? Math.max(0, Math.round(account.retirementCppStartAge1))
+          : null,
+        retirementOasYearsResident1: Number.isFinite(account.retirementOasYearsResident1)
+          ? Math.max(0, Math.round(account.retirementOasYearsResident1))
+          : null,
+        retirementOasStartAge1: Number.isFinite(account.retirementOasStartAge1)
+          ? Math.max(0, Math.round(account.retirementOasStartAge1))
+          : null,
+        retirementCppYearsContributed2: Number.isFinite(account.retirementCppYearsContributed2)
+          ? Math.max(0, Math.round(account.retirementCppYearsContributed2))
+          : null,
+        retirementCppAvgEarningsPctOfYMPE2: Number.isFinite(account.retirementCppAvgEarningsPctOfYMPE2)
+          ? Math.max(0, Math.round(account.retirementCppAvgEarningsPctOfYMPE2 * 100) / 100)
+          : null,
+        retirementCppStartAge2: Number.isFinite(account.retirementCppStartAge2)
+          ? Math.max(0, Math.round(account.retirementCppStartAge2))
+          : null,
+        retirementOasYearsResident2: Number.isFinite(account.retirementOasYearsResident2)
+          ? Math.max(0, Math.round(account.retirementOasYearsResident2))
+          : null,
+        retirementOasStartAge2: Number.isFinite(account.retirementOasStartAge2)
+          ? Math.max(0, Math.round(account.retirementOasStartAge2))
+          : null,
+        retirementCppMaxAt65Annual: Number.isFinite(account.retirementCppMaxAt65Annual)
+          ? Math.max(0, Math.round(account.retirementCppMaxAt65Annual))
+          : null,
+        retirementOasFullAt65Annual: Number.isFinite(account.retirementOasFullAt65Annual)
+          ? Math.max(0, Math.round(account.retirementOasFullAt65Annual))
+          : null,
         isDefault: defaultAccountId ? account.id === defaultAccountId : false,
       };
     });
@@ -11314,6 +11363,7 @@ app.get('/api/summary', async function (req, res) {
         Number.isFinite(group.retirementAge) && group.retirementAge > 0
           ? Math.round(group.retirementAge)
           : null;
+      const retirementYear = Number.isFinite(group.retirementYear) ? Math.round(group.retirementYear) : null;
       const retirementIncome =
         Number.isFinite(group.retirementIncome) && group.retirementIncome >= 0
           ? Math.round(group.retirementIncome * 100) / 100
@@ -11326,6 +11376,42 @@ app.get('/api/summary', async function (req, res) {
         typeof group.retirementBirthDate === 'string' && group.retirementBirthDate
           ? group.retirementBirthDate
           : null;
+      const retirementHouseholdType =
+        typeof group.retirementHouseholdType === 'string' && group.retirementHouseholdType
+          ? group.retirementHouseholdType
+          : null;
+      const retirementBirthDate1 =
+        typeof group.retirementBirthDate1 === 'string' && group.retirementBirthDate1
+          ? group.retirementBirthDate1
+          : null;
+      const retirementBirthDate2 =
+        typeof group.retirementBirthDate2 === 'string' && group.retirementBirthDate2
+          ? group.retirementBirthDate2
+          : null;
+      const retirementCppYearsContributed1 = Number.isFinite(group.retirementCppYearsContributed1)
+        ? Math.max(0, Math.round(group.retirementCppYearsContributed1))
+        : null;
+      const retirementCppYearsContributed2 = Number.isFinite(group.retirementCppYearsContributed2)
+        ? Math.max(0, Math.round(group.retirementCppYearsContributed2))
+        : null;
+      const retirementCppAvgEarningsPctOfYMPE1 = Number.isFinite(group.retirementCppAvgEarningsPctOfYMPE1)
+        ? Math.max(0, Math.round(group.retirementCppAvgEarningsPctOfYMPE1 * 100) / 100)
+        : null;
+      const retirementCppAvgEarningsPctOfYMPE2 = Number.isFinite(group.retirementCppAvgEarningsPctOfYMPE2)
+        ? Math.max(0, Math.round(group.retirementCppAvgEarningsPctOfYMPE2 * 100) / 100)
+        : null;
+      const retirementOasYearsResident1 = Number.isFinite(group.retirementOasYearsResident1)
+        ? Math.max(0, Math.round(group.retirementOasYearsResident1))
+        : null;
+      const retirementOasYearsResident2 = Number.isFinite(group.retirementOasYearsResident2)
+        ? Math.max(0, Math.round(group.retirementOasYearsResident2))
+        : null;
+      const retirementCppMaxAt65Annual = Number.isFinite(group.retirementCppMaxAt65Annual)
+        ? Math.max(0, Math.round(group.retirementCppMaxAt65Annual))
+        : null;
+      const retirementOasFullAt65Annual = Number.isFinite(group.retirementOasFullAt65Annual)
+        ? Math.max(0, Math.round(group.retirementOasFullAt65Annual))
+        : null;
       return {
         id: group.id,
         name: group.name,
@@ -11335,9 +11421,21 @@ app.get('/api/summary', async function (req, res) {
         ownerLabels: uniqueOwnerLabels,
         mainRetirementAccount: group.mainRetirementAccount === true,
         retirementAge,
+        retirementYear,
         retirementIncome,
         retirementLivingExpenses,
         retirementBirthDate,
+        retirementHouseholdType,
+        retirementBirthDate1,
+        retirementBirthDate2,
+        retirementCppYearsContributed1,
+        retirementCppAvgEarningsPctOfYMPE1,
+        retirementOasYearsResident1,
+        retirementCppYearsContributed2,
+        retirementCppAvgEarningsPctOfYMPE2,
+        retirementOasYearsResident2,
+        retirementCppMaxAt65Annual,
+        retirementOasFullAt65Annual,
       };
     });
 

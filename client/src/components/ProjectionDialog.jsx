@@ -21,6 +21,10 @@ const PROJECTION_TIMEFRAME_OPTIONS = [
   { value: 50, label: '50 years' },
 ];
 const DEFAULT_RETIREMENT_INFLATION_PERCENT = 2.5; // default when not configured
+const DEFAULT_MAX_CPP_65_ANNUAL = 17500; // fallback estimate; can override via metadata
+const DEFAULT_FULL_OAS_65_ANNUAL = 8500;  // fallback estimate; can override via metadata
+const RETIREMENT_AGE_MIN = 40;
+const RETIREMENT_AGE_MAX = 80;
 
 function niceNumber(value, round) {
   if (!Number.isFinite(value) || value === 0) {
@@ -282,6 +286,7 @@ export default function ProjectionDialog({
   };
   const headingId = useId();
   const selectRef = useRef(null);
+  const retirementSelectRef = useRef(null);
   const chartContainerRef = useRef(null);
   const [timeframeYears, setTimeframeYears] = useState(50);
   const [rateInput, setRateInput] = useState(() => {
@@ -295,6 +300,16 @@ export default function ProjectionDialog({
   const [includeRetirementFlows, setIncludeRetirementFlows] = useState(
     Boolean(retirementSettings?.mainRetirementAccount)
   );
+  const [retirementAgeChoice, setRetirementAgeChoice] = useState(() => {
+    const raw = Number(retirementSettings?.retirementAge);
+    if (Number.isFinite(raw) && raw > 0) return Math.round(raw);
+    const year = Number(retirementSettings?.retirementYear);
+    const bd = parseDateOnly(retirementSettings?.retirementBirthDate1) || parseDateOnly(retirementSettings?.retirementBirthDate);
+    if (bd && Number.isFinite(year)) {
+      return Math.max(0, Math.round(year - bd.getUTCFullYear()));
+    }
+    return null;
+  });
 
   // Selection on the projection path: index into projectionSeries
   const [selectedPoint, setSelectedPoint] = useState(null); // { date, index }
@@ -343,11 +358,35 @@ export default function ProjectionDialog({
     setIncludeRetirementFlows(Boolean(retirementSettings?.mainRetirementAccount));
   }, [retirementSettings?.mainRetirementAccount]);
 
+  // Reset local retirement age choice when the underlying setting changes (e.g., switching accounts)
+  useEffect(() => {
+    const raw = Number(retirementSettings?.retirementAge);
+    if (Number.isFinite(raw) && raw > 0) {
+      setRetirementAgeChoice(Math.round(raw));
+      return;
+    }
+    const year = Number(retirementSettings?.retirementYear);
+    const bd = parseDateOnly(retirementSettings?.retirementBirthDate1) || parseDateOnly(retirementSettings?.retirementBirthDate);
+    if (bd && Number.isFinite(year)) {
+      setRetirementAgeChoice(Math.max(0, Math.round(year - bd.getUTCFullYear())));
+    } else {
+      setRetirementAgeChoice(null);
+    }
+  }, [retirementSettings?.retirementAge, retirementSettings?.retirementYear, retirementSettings?.retirementBirthDate1, retirementSettings?.retirementBirthDate]);
+
   useEffect(() => {
     function handleDocumentClick(event) {
-      if (!selectRef.current) return;
-      if (!selectRef.current.contains(event.target)) {
-        selectRef.current.querySelector('.select-control__list')?.classList.remove('select-control__list--open');
+      // Close timeframe dropdown if click occurs outside it
+      if (selectRef.current && !selectRef.current.contains(event.target)) {
+        selectRef.current
+          .querySelector('.select-control__list')
+          ?.classList.remove('select-control__list--open');
+      }
+      // Close retirement-age dropdown if click occurs outside it
+      if (retirementSelectRef.current && !retirementSelectRef.current.contains(event.target)) {
+        retirementSelectRef.current
+          .querySelector('.select-control__list')
+          ?.classList.remove('select-control__list--open');
       }
     }
     document.addEventListener('mousedown', handleDocumentClick);
@@ -391,8 +430,8 @@ export default function ProjectionDialog({
   }, [retirementSettings?.mainRetirementAccount]);
 
   const ownerBirthDate = useMemo(
-    () => parseDateOnly(retirementSettings?.retirementBirthDate) || DEFAULT_OWNER_BIRTHDATE,
-    [retirementSettings?.retirementBirthDate]
+    () => parseDateOnly(retirementSettings?.retirementBirthDate1) || parseDateOnly(retirementSettings?.retirementBirthDate) || DEFAULT_OWNER_BIRTHDATE,
+    [retirementSettings?.retirementBirthDate1, retirementSettings?.retirementBirthDate]
   );
 
   const configuredInflationRate = useMemo(() => {
@@ -415,20 +454,83 @@ export default function ProjectionDialog({
         inflationRate: configuredInflationRate,
       };
     }
-    const rawAge = Number(retirementSettings?.retirementAge);
-    const normalizedAge = Number.isFinite(rawAge) && rawAge > 0 ? Math.round(rawAge) : null;
-    const startDate = normalizedAge ? toDateOnly(addMonths(ownerBirthDate, normalizedAge * 12)) : null;
+    const rawConfiguredAge = Number(retirementSettings?.retirementAge);
+    const configuredAge = Number.isFinite(rawConfiguredAge) && rawConfiguredAge > 0 ? Math.round(rawConfiguredAge) : null;
+    const chosenAge = Number.isFinite(retirementAgeChoice) && retirementAgeChoice > 0
+      ? Math.round(retirementAgeChoice)
+      : configuredAge;
+    const startDate = chosenAge ? toDateOnly(addMonths(ownerBirthDate, chosenAge * 12)) : null;
     const income = Number(retirementSettings?.retirementIncome);
     const living = Number(retirementSettings?.retirementLivingExpenses);
+    const maxCpp65 = Number(retirementSettings?.retirementCppMaxAt65Annual);
+    const fullOas65 = Number(retirementSettings?.retirementOasFullAt65Annual);
+    // Treat provided CPP/OAS maximums as today's dollars; inflate to retirement start date
+    const baseCppToday = Number.isFinite(maxCpp65) && maxCpp65 > 0 ? maxCpp65 : DEFAULT_MAX_CPP_65_ANNUAL;
+    const baseOasToday = Number.isFinite(fullOas65) && fullOas65 > 0 ? fullOas65 : DEFAULT_FULL_OAS_65_ANNUAL;
+    let cppMaxAtStart = baseCppToday;
+    let oasFullAtStart = baseOasToday;
+    if (configuredInflationRate > 0 && startDate instanceof Date) {
+      const today = toDateOnly(new Date());
+      const yrsUntil = yearsBetween(today, startDate) || 0;
+      const factor = yrsUntil > 0 ? Math.pow(1 + configuredInflationRate, yrsUntil) : 1;
+      cppMaxAtStart = baseCppToday * factor;
+      oasFullAtStart = baseOasToday * factor;
+    }
+    const hh = (retirementSettings?.retirementHouseholdType || 'single').toLowerCase() === 'couple' ? 'couple' : 'single';
+    const birth1 = parseDateOnly(retirementSettings?.retirementBirthDate1) || ownerBirthDate;
+    const birth2 = parseDateOnly(retirementSettings?.retirementBirthDate2) || null;
+    const buildPerson = (idx, birth) => {
+      if (!birth) return null;
+      const cppYears = Number(retirementSettings?.[`retirementCppYearsContributed${idx}`]);
+      const cppPct = Number(retirementSettings?.[`retirementCppAvgEarningsPctOfYMPE${idx}`]);
+      const oasYears = Number(retirementSettings?.[`retirementOasYearsResident${idx}`]);
+      // Derive start ages from retirement year/age: CPP can start 60–70, but for simplicity use retirement age.
+      const cppStartAge = Math.max(60, Math.min(70, chosenAge || 65));
+      const oasStartAge = Math.max(65, Math.min(70, chosenAge || 65));
+      const startCppDate = toDateOnly(addMonths(birth, cppStartAge * 12));
+      const startOasDate = toDateOnly(addMonths(birth, oasStartAge * 12));
+      const contribYears = Number.isFinite(cppYears) ? Math.max(0, Math.min(47, Math.round(cppYears))) : 0;
+      const earningsRatio = Number.isFinite(cppPct) ? Math.max(0, Math.min(100, cppPct)) / 100 : 0;
+      const baseCpp65 = cppMaxAtStart * Math.min(1, earningsRatio * (contribYears / 39));
+      const monthsFrom65 = (cppStartAge - 65) * 12;
+      const cppAdj = monthsFrom65 < 0 ? 1 + 0.006 * monthsFrom65 : 1 + 0.007 * monthsFrom65;
+      const cppAnnual = Math.max(0, baseCpp65 * cppAdj);
+      const oasResidYears = Number.isFinite(oasYears) ? Math.max(0, Math.min(40, Math.round(oasYears))) : 0;
+      const baseOas65 = oasFullAtStart * Math.min(1, oasResidYears / 40);
+      const oasMonthsFrom65 = (oasStartAge - 65) * 12;
+      const oasAdj = 1 + 0.006 * Math.max(0, oasMonthsFrom65);
+      const oasAnnual = Math.max(0, baseOas65 * oasAdj);
+      return {
+        birth,
+        cppStartDate: startCppDate,
+        oasStartDate: startOasDate,
+        cppAnnualAtStart: cppAnnual,
+        oasAnnualAtStart: oasAnnual,
+      };
+    };
+    const p1 = buildPerson(1, birth1);
+    const p2 = hh === 'couple' ? buildPerson(2, birth2) : null;
+    // Adjust baseline income and expenses to the chosen retirement age using inflation.
+    // Values in account details are assumed to be at the configured retirement age.
+    const deltaYears = Number.isFinite(configuredAge) && Number.isFinite(chosenAge) ? (chosenAge - configuredAge) : 0;
+    const ageAdjustmentFactor = Number.isFinite(deltaYears) ? Math.pow(1 + configuredInflationRate, deltaYears) : 1;
+    const adjustedIncomeAnnual = (Number.isFinite(income) && income >= 0 ? income : 0) * ageAdjustmentFactor;
+    const adjustedLivingAnnual = (Number.isFinite(living) && living >= 0 ? living : 0) * ageAdjustmentFactor;
     return {
       supported: true,
       enabled: Boolean(includeRetirementFlows && startDate),
       startDate,
-      incomeMonthly: Number.isFinite(income) && income >= 0 ? income / 12 : 0,
-      livingExpensesAnnual: Number.isFinite(living) && living >= 0 ? living : 0,
+      // Income is assumed nominal at chosen retirement start (no post-start inflation here)
+      incomeMonthly: adjustedIncomeAnnual / 12,
+      // Expenses will inflate post-start from this adjusted annual baseline
+      livingExpensesAnnual: adjustedLivingAnnual,
       inflationRate: configuredInflationRate,
+      household: hh,
+      persons: [p1, p2].filter(Boolean),
+      cppAnnualAtStart: (p1?.cppAnnualAtStart || 0) + (p2?.cppAnnualAtStart || 0),
+      oasAnnualAtStart: (p1?.oasAnnualAtStart || 0) + (p2?.oasAnnualAtStart || 0),
     };
-  }, [retirementSettings, includeRetirementFlows, ownerBirthDate, configuredInflationRate]);
+  }, [retirementSettings, includeRetirementFlows, ownerBirthDate, configuredInflationRate, retirementAgeChoice]);
 
   const computeRetirementFlow = useCallback(
     (date) => {
@@ -445,7 +547,23 @@ export default function ProjectionDialog({
           ? Math.pow(1 + retirementModel.inflationRate, elapsedYears)
           : 1;
       const monthlyExpenses = (retirementModel.livingExpensesAnnual * expenseMultiplier) / 12;
-      return retirementModel.incomeMonthly - monthlyExpenses;
+      let pensionMonthly = 0;
+      if (Array.isArray(retirementModel.persons)) {
+        retirementModel.persons.forEach((p) => {
+          if (!p) return;
+          if (p.cppStartDate && comparisonDate >= p.cppStartDate) {
+            const yrs = yearsBetween(p.cppStartDate, comparisonDate);
+            const factor = Number.isFinite(yrs) && yrs > 0 ? Math.pow(1 + retirementModel.inflationRate, yrs) : 1;
+            pensionMonthly += (p.cppAnnualAtStart * factor) / 12;
+          }
+          if (p.oasStartDate && comparisonDate >= p.oasStartDate) {
+            const yrs = yearsBetween(p.oasStartDate, comparisonDate);
+            const factor = Number.isFinite(yrs) && yrs > 0 ? Math.pow(1 + retirementModel.inflationRate, yrs) : 1;
+            pensionMonthly += (p.oasAnnualAtStart * factor) / 12;
+          }
+        });
+      }
+      return retirementModel.incomeMonthly + pensionMonthly - monthlyExpenses;
     },
     [retirementModel]
   );
@@ -699,6 +817,19 @@ export default function ProjectionDialog({
 
   const milestones = useMemo(() => buildMilestones(timeframeYears), [timeframeYears]);
 
+  // Compute retirement start marker position for the chart (visible even when flows disabled)
+  const retirementStartMarker = useMemo(() => {
+    if (!metrics || !retirementModel?.startDate || !chartRange.start || !chartRange.end) return null;
+    const d = toDateOnly(retirementModel.startDate);
+    if (!d) return null;
+    const start = chartRange.start;
+    const end = chartRange.end;
+    if (!(d >= start && d <= end)) return null;
+    const ratio = (d - start) / Math.max(1, end - start);
+    const x = PADDING.left + (metrics.innerWidth || (CHART_WIDTH - PADDING.left - PADDING.right)) * ratio;
+    return { x };
+  }, [metrics, retirementModel?.startDate, chartRange.start, chartRange.end]);
+
   const milestoneMarkers = useMemo(() => {
     if (!metrics || !metrics.pointsA.length) return [];
     const start = parseDateOnly(projectionSeries[0]?.date);
@@ -910,16 +1041,62 @@ export default function ProjectionDialog({
             )}
 
             {retirementModel.supported && (
-              <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
-                <label className="pnl-dialog__range-toggle">
-                  <input
-                    type="checkbox"
-                    checked={includeRetirementFlows}
-                    onChange={(e) => setIncludeRetirementFlows(e.target.checked)}
-                  />
-                  <span>Include retirement income and expenses</span>
-                </label>
-              </div>
+              <>
+                <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
+                  <label className="pnl-dialog__range-toggle">
+                    <input
+                      type="checkbox"
+                      checked={includeRetirementFlows}
+                      onChange={(e) => setIncludeRetirementFlows(e.target.checked)}
+                    />
+                    <span>Include retirement income and expenses</span>
+                  </label>
+                </div>
+                <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <label className="pnl-dialog__control-label" htmlFor="projection-retirement-age">Retirement age</label>
+                  <div className="select-control select-control--wide" ref={retirementSelectRef}>
+                    <button
+                      id="projection-retirement-age"
+                      type="button"
+                      className="select-control__button"
+                      onClick={(event) => {
+                        const menu = event.currentTarget.nextSibling;
+                        if (menu) menu.classList.toggle('select-control__list--open');
+                      }}
+                    >
+                      {Number.isFinite(retirementAgeChoice) ? String(retirementAgeChoice) : 'Choose…'}
+                      <span aria-hidden="true" className="select-control__chevron" />
+                    </button>
+                    <ul className="select-control__list" role="listbox">
+                      {(function buildAgeOptions() {
+                        const items = [];
+                        for (let age = RETIREMENT_AGE_MIN; age <= RETIREMENT_AGE_MAX; age += 1) {
+                          const selected = age === retirementAgeChoice;
+                          items.push(
+                            <li key={`age-${age}`}>
+                              <button
+                                type="button"
+                                className={selected ? 'select-control__option select-control__option--selected' : 'select-control__option'}
+                                onClick={() => {
+                                  setRetirementAgeChoice(age);
+                                  const container = document.getElementById('projection-retirement-age')?.nextSibling;
+                                  if (container) container.classList.remove('select-control__list--open');
+                                }}
+                                role="option"
+                                aria-selected={selected}
+                              >
+                                {age}
+                              </button>
+                            </li>
+                          );
+                        }
+                        return items;
+                      }())}
+                    </ul>
+                  </div>
+                </div>
+                {/* CPP/OAS breakdown is shown in Account Details dialog, not here. */}
+              </>
             )}
 
             <div
@@ -1019,6 +1196,15 @@ export default function ProjectionDialog({
                     />
                   </g>
                 ))}
+                {retirementStartMarker && (
+                  <line
+                    className="projection-dialog__retirement-line"
+                    x1={retirementStartMarker.x}
+                    x2={retirementStartMarker.x}
+                    y1={PADDING.top}
+                    y2={CHART_HEIGHT - PADDING.bottom}
+                  />
+                )}
                 {pathActual && <path className="projection-dialog__actual-path" d={pathActual} />}
                 {pathProjection && <path className="qqq-section__series-path" d={pathProjection} />}
                 {hoverPoint && (
@@ -1588,6 +1774,22 @@ ProjectionDialog.propTypes = {
     retirementIncome: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     retirementLivingExpenses: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     retirementBirthDate: PropTypes.string,
+    retirementInflationPercent: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementHouseholdType: PropTypes.string,
+    retirementBirthDate1: PropTypes.string,
+    retirementBirthDate2: PropTypes.string,
+    retirementCppYearsContributed1: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementCppAvgEarningsPctOfYMPE1: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementCppStartAge1: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementOasYearsResident1: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementOasStartAge1: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementCppYearsContributed2: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementCppAvgEarningsPctOfYMPE2: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementCppStartAge2: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementOasYearsResident2: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementOasStartAge2: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementCppMaxAt65Annual: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    retirementOasFullAt65Annual: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
   }),
   projectionTree: PropTypes.shape({
     kind: PropTypes.oneOf(['group', 'account']).isRequired,

@@ -577,6 +577,144 @@ function recordGroupMetadataEntry(target, label, entry) {
     }
   }
 
+  // Additional retirement modeling fields at the group level
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementYear')) {
+    const normalized = normalizePositiveInteger(entry.retirementYear);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'retirementYear')) {
+        delete metadata.retirementYear;
+        changed = true;
+      }
+    } else if (metadata.retirementYear !== normalized) {
+      metadata.retirementYear = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementHouseholdType')) {
+    const s = typeof entry.retirementHouseholdType === 'string' ? entry.retirementHouseholdType.trim().toLowerCase() : '';
+    if (s === 'single' || s === 'couple') {
+      if (metadata.retirementHouseholdType !== s) {
+        metadata.retirementHouseholdType = s;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(metadata, 'retirementHouseholdType')) {
+      delete metadata.retirementHouseholdType;
+      changed = true;
+    }
+  }
+
+  ['1','2'].forEach((idx) => {
+    const bKey = 'retirementBirthDate' + idx;
+    if (Object.prototype.hasOwnProperty.call(entry, bKey)) {
+      const normalized = normalizeDateOnly(entry[bKey]);
+      if (normalized) {
+        if (metadata[bKey] !== normalized) {
+          metadata[bKey] = normalized;
+          changed = true;
+        }
+      } else if (Object.prototype.hasOwnProperty.call(metadata, bKey)) {
+        delete metadata[bKey];
+        changed = true;
+      }
+    }
+    const cppYears = 'retirementCppYearsContributed' + idx;
+    if (Object.prototype.hasOwnProperty.call(entry, cppYears)) {
+      const normalized = normalizePositiveInteger(entry[cppYears]);
+      if (normalized === null) {
+        if (Object.prototype.hasOwnProperty.call(metadata, cppYears)) {
+          delete metadata[cppYears];
+          changed = true;
+        }
+      } else if (metadata[cppYears] !== normalized) {
+        metadata[cppYears] = normalized;
+        changed = true;
+      }
+    }
+    const cppPct = 'retirementCppAvgEarningsPctOfYMPE' + idx;
+    if (Object.prototype.hasOwnProperty.call(entry, cppPct)) {
+      const n = normalizeNumberLike(entry[cppPct]);
+      if (n === null || Number.isNaN(n)) {
+        if (Object.prototype.hasOwnProperty.call(metadata, cppPct)) {
+          delete metadata[cppPct];
+          changed = true;
+        }
+      } else {
+        const bounded = Math.max(0, Math.min(Number(n), 100));
+        const rounded = Math.round(bounded * 100) / 100;
+        if (metadata[cppPct] !== rounded) {
+          metadata[cppPct] = rounded;
+          changed = true;
+        }
+      }
+    }
+    const cppAge = 'retirementCppStartAge' + idx;
+    if (Object.prototype.hasOwnProperty.call(entry, cppAge)) {
+      const normalized = normalizePositiveInteger(entry[cppAge]);
+      if (normalized === null) {
+        if (Object.prototype.hasOwnProperty.call(metadata, cppAge)) {
+          delete metadata[cppAge];
+          changed = true;
+        }
+      } else if (metadata[cppAge] !== normalized) {
+        metadata[cppAge] = normalized;
+        changed = true;
+      }
+    }
+    const oasYears = 'retirementOasYearsResident' + idx;
+    if (Object.prototype.hasOwnProperty.call(entry, oasYears)) {
+      const normalized = normalizePositiveInteger(entry[oasYears]);
+      if (normalized === null) {
+        if (Object.prototype.hasOwnProperty.call(metadata, oasYears)) {
+          delete metadata[oasYears];
+          changed = true;
+        }
+      } else if (metadata[oasYears] !== normalized) {
+        metadata[oasYears] = normalized;
+        changed = true;
+      }
+    }
+    const oasAge = 'retirementOasStartAge' + idx;
+    if (Object.prototype.hasOwnProperty.call(entry, oasAge)) {
+      const normalized = normalizePositiveInteger(entry[oasAge]);
+      if (normalized === null) {
+        if (Object.prototype.hasOwnProperty.call(metadata, oasAge)) {
+          delete metadata[oasAge];
+          changed = true;
+        }
+      } else if (metadata[oasAge] !== normalized) {
+        metadata[oasAge] = normalized;
+        changed = true;
+      }
+    }
+  });
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementCppMaxAt65Annual')) {
+    const normalized = normalizePositiveInteger(entry.retirementCppMaxAt65Annual);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'retirementCppMaxAt65Annual')) {
+        delete metadata.retirementCppMaxAt65Annual;
+        changed = true;
+      }
+    } else if (metadata.retirementCppMaxAt65Annual !== normalized) {
+      metadata.retirementCppMaxAt65Annual = normalized;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(entry, 'retirementOasFullAt65Annual')) {
+    const normalized = normalizePositiveInteger(entry.retirementOasFullAt65Annual);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(metadata, 'retirementOasFullAt65Annual')) {
+        delete metadata.retirementOasFullAt65Annual;
+        changed = true;
+      }
+    } else if (metadata.retirementOasFullAt65Annual !== normalized) {
+      metadata.retirementOasFullAt65Annual = normalized;
+      changed = true;
+    }
+  }
+
   if (!changed && target.has(key)) {
     return;
   }
@@ -2466,6 +2604,19 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementYear')) {
+    const normalized = normalizePositiveInteger(updates.retirementYear);
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'retirementYear')) {
+        delete entry.retirementYear;
+        changed = true;
+      }
+    } else if (entry.retirementYear !== normalized) {
+      entry.retirementYear = normalized;
+      changed = true;
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(updates, 'retirementIncome')) {
     const normalized = normalizeRetirementAmount(updates.retirementIncome);
     if (normalized === null) {
@@ -2520,6 +2671,86 @@ function applyMetadataToEntry(entry, updates) {
         changed = true;
       }
     }
+  }
+
+  // Household and pension modeling fields
+  const normalizeHousehold = (value) => {
+    const s = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (s === 'single' || s === 'couple') return s;
+    return null;
+  };
+  const normalizeInt = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n) : null;
+  };
+  const normalizePct = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    const bounded = Math.max(0, Math.min(n, 1000));
+    return Math.round(bounded * 100) / 100;
+  };
+  const normalizeDateOnly = (value) => {
+    if (value == null) return null;
+    if (typeof value === 'string') {
+      const t = value.trim();
+      if (!t) return null;
+      const d = new Date(`${t}T00:00:00Z`);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+    }
+    return null;
+  };
+
+  const setOrDelete = (key, normalized) => {
+    if (normalized === null) {
+      if (Object.prototype.hasOwnProperty.call(entry, key)) {
+        delete entry[key];
+        return true;
+      }
+      return false;
+    }
+    if (entry[key] !== normalized) {
+      entry[key] = normalized;
+      return true;
+    }
+    return false;
+  };
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementHouseholdType')) {
+    if (setOrDelete('retirementHouseholdType', normalizeHousehold(updates.retirementHouseholdType))) changed = true;
+  }
+  ['1','2'].forEach((idx) => {
+    const bKey = 'retirementBirthDate' + idx;
+    if (Object.prototype.hasOwnProperty.call(updates, bKey)) {
+      if (setOrDelete(bKey, normalizeDateOnly(updates[bKey]))) changed = true;
+    }
+    const cppYears = 'retirementCppYearsContributed' + idx;
+    if (Object.prototype.hasOwnProperty.call(updates, cppYears)) {
+      if (setOrDelete(cppYears, normalizeInt(updates[cppYears]))) changed = true;
+    }
+    const cppPct = 'retirementCppAvgEarningsPctOfYMPE' + idx;
+    if (Object.prototype.hasOwnProperty.call(updates, cppPct)) {
+      if (setOrDelete(cppPct, normalizePct(updates[cppPct]))) changed = true;
+    }
+    const cppAge = 'retirementCppStartAge' + idx;
+    if (Object.prototype.hasOwnProperty.call(updates, cppAge)) {
+      if (setOrDelete(cppAge, normalizeInt(updates[cppAge]))) changed = true;
+    }
+    const oasYears = 'retirementOasYearsResident' + idx;
+    if (Object.prototype.hasOwnProperty.call(updates, oasYears)) {
+      if (setOrDelete(oasYears, normalizeInt(updates[oasYears]))) changed = true;
+    }
+    const oasAge = 'retirementOasStartAge' + idx;
+    if (Object.prototype.hasOwnProperty.call(updates, oasAge)) {
+      if (setOrDelete(oasAge, normalizeInt(updates[oasAge]))) changed = true;
+    }
+  });
+
+  // Optional overrides of maxima
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementCppMaxAt65Annual')) {
+    if (setOrDelete('retirementCppMaxAt65Annual', normalizeInt(updates.retirementCppMaxAt65Annual))) changed = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'retirementOasFullAt65Annual')) {
+    if (setOrDelete('retirementOasFullAt65Annual', normalizeInt(updates.retirementOasFullAt65Annual))) changed = true;
   }
 
   return changed;
@@ -2684,6 +2915,7 @@ function updateAccountMetadata(accountKey, updates) {
         return normalized === null ? null : normalized;
       })(),
       retirementAge: normalizeRetirementAge(updates?.retirementAge),
+      retirementYear: normalizePositiveInteger(updates?.retirementYear),
       retirementIncome: normalizeRetirementAmount(updates?.retirementIncome),
       retirementLivingExpenses: normalizeRetirementAmount(updates?.retirementLivingExpenses),
       retirementBirthDate: normalizeDateOnly(updates?.retirementBirthDate),
@@ -2694,6 +2926,36 @@ function updateAccountMetadata(accountKey, updates) {
         const rounded = Math.round(bounded * 100) / 100;
         return Number.isFinite(rounded) ? rounded : null;
       })(),
+      retirementHouseholdType: (function () {
+        const s = typeof updates?.retirementHouseholdType === 'string' ? updates.retirementHouseholdType.trim().toLowerCase() : '';
+        return s === 'single' || s === 'couple' ? s : null;
+      })(),
+      retirementBirthDate1: normalizeDateOnly(updates?.retirementBirthDate1),
+      retirementBirthDate2: normalizeDateOnly(updates?.retirementBirthDate2),
+      retirementCppYearsContributed1: normalizePositiveInteger(updates?.retirementCppYearsContributed1),
+      retirementCppAvgEarningsPctOfYMPE1: (function () {
+        const n = normalizeNumberLike(updates?.retirementCppAvgEarningsPctOfYMPE1);
+        if (n === null) return null;
+        const bounded = Math.max(0, Math.min(Number(n), 100));
+        const rounded = Math.round(bounded * 100) / 100;
+        return Number.isFinite(rounded) ? rounded : null;
+      })(),
+      retirementCppStartAge1: normalizePositiveInteger(updates?.retirementCppStartAge1),
+      retirementOasYearsResident1: normalizePositiveInteger(updates?.retirementOasYearsResident1),
+      retirementOasStartAge1: normalizePositiveInteger(updates?.retirementOasStartAge1),
+      retirementCppYearsContributed2: normalizePositiveInteger(updates?.retirementCppYearsContributed2),
+      retirementCppAvgEarningsPctOfYMPE2: (function () {
+        const n = normalizeNumberLike(updates?.retirementCppAvgEarningsPctOfYMPE2);
+        if (n === null) return null;
+        const bounded = Math.max(0, Math.min(Number(n), 100));
+        const rounded = Math.round(bounded * 100) / 100;
+        return Number.isFinite(rounded) ? rounded : null;
+      })(),
+      retirementCppStartAge2: normalizePositiveInteger(updates?.retirementCppStartAge2),
+      retirementOasYearsResident2: normalizePositiveInteger(updates?.retirementOasYearsResident2),
+      retirementOasStartAge2: normalizePositiveInteger(updates?.retirementOasStartAge2),
+      retirementCppMaxAt65Annual: normalizePositiveInteger(updates?.retirementCppMaxAt65Annual),
+      retirementOasFullAt65Annual: normalizePositiveInteger(updates?.retirementOasFullAt65Annual),
     },
   };
 }

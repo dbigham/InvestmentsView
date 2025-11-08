@@ -472,6 +472,24 @@ export async function setAccountMetadata(accountKey, metadata) {
       'retirementLivingExpenses',
       'retirementBirthDate',
       'retirementInflationPercent',
+      'retirementYear',
+      // Pension modeling (per-person, supports single or couple)
+      'retirementHouseholdType',
+      'retirementBirthDate1',
+      'retirementBirthDate2',
+      'retirementCppYearsContributed1',
+      'retirementCppAvgEarningsPctOfYMPE1',
+      'retirementCppStartAge1',
+      'retirementOasYearsResident1',
+      'retirementOasStartAge1',
+      'retirementCppYearsContributed2',
+      'retirementCppAvgEarningsPctOfYMPE2',
+      'retirementCppStartAge2',
+      'retirementOasYearsResident2',
+      'retirementOasStartAge2',
+      // Optional overrides of gov maxima (fallback constants used if omitted)
+      'retirementCppMaxAt65Annual',
+      'retirementOasFullAt65Annual',
     ].forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(metadata, key)) {
         payload[key] = metadata[key];
