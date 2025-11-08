@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types';
 import { getTotalPnlSeries, setAccountMetadata } from '../api/questrade';
 import { formatDate, formatMoney, formatNumber } from '../utils/formatters';
+import { buildRetirementModel as buildSharedRetirementModel, summarizeAtRetirementYear as summarizeAtRetirementYearShared } from '../../../shared/retirementModel.js';
 
 const CHART_WIDTH = 680;
 const CHART_HEIGHT = 260;
@@ -452,85 +453,34 @@ export default function ProjectionDialog({
         incomeMonthly: 0,
         livingExpensesAnnual: 0,
         inflationRate: configuredInflationRate,
+        persons: [],
+        cppAnnualAtStart: 0,
+        oasAnnualAtStart: 0,
       };
     }
-    const rawConfiguredAge = Number(retirementSettings?.retirementAge);
-    const configuredAge = Number.isFinite(rawConfiguredAge) && rawConfiguredAge > 0 ? Math.round(rawConfiguredAge) : null;
-    const chosenAge = Number.isFinite(retirementAgeChoice) && retirementAgeChoice > 0
-      ? Math.round(retirementAgeChoice)
-      : configuredAge;
-    const startDate = chosenAge ? toDateOnly(addMonths(ownerBirthDate, chosenAge * 12)) : null;
-    const income = Number(retirementSettings?.retirementIncome);
-    const living = Number(retirementSettings?.retirementLivingExpenses);
-    const maxCpp65 = Number(retirementSettings?.retirementCppMaxAt65Annual);
-    const fullOas65 = Number(retirementSettings?.retirementOasFullAt65Annual);
-    // Treat provided CPP/OAS maximums as today's dollars; inflate to retirement start date
-    const baseCppToday = Number.isFinite(maxCpp65) && maxCpp65 > 0 ? maxCpp65 : DEFAULT_MAX_CPP_65_ANNUAL;
-    const baseOasToday = Number.isFinite(fullOas65) && fullOas65 > 0 ? fullOas65 : DEFAULT_FULL_OAS_65_ANNUAL;
-    let cppMaxAtStart = baseCppToday;
-    let oasFullAtStart = baseOasToday;
-    if (configuredInflationRate > 0 && startDate instanceof Date) {
-      const today = toDateOnly(new Date());
-      const yrsUntil = yearsBetween(today, startDate) || 0;
-      const factor = yrsUntil > 0 ? Math.pow(1 + configuredInflationRate, yrsUntil) : 1;
-      cppMaxAtStart = baseCppToday * factor;
-      oasFullAtStart = baseOasToday * factor;
-    }
-    const hh = (retirementSettings?.retirementHouseholdType || 'single').toLowerCase() === 'couple' ? 'couple' : 'single';
-    const birth1 = parseDateOnly(retirementSettings?.retirementBirthDate1) || ownerBirthDate;
-    const birth2 = parseDateOnly(retirementSettings?.retirementBirthDate2) || null;
-    const buildPerson = (idx, birth) => {
-      if (!birth) return null;
-      const cppYears = Number(retirementSettings?.[`retirementCppYearsContributed${idx}`]);
-      const cppPct = Number(retirementSettings?.[`retirementCppAvgEarningsPctOfYMPE${idx}`]);
-      const oasYears = Number(retirementSettings?.[`retirementOasYearsResident${idx}`]);
-      // Derive start ages from retirement year/age: CPP can start 60–70, but for simplicity use retirement age.
-      const cppStartAge = Math.max(60, Math.min(70, chosenAge || 65));
-      const oasStartAge = Math.max(65, Math.min(70, chosenAge || 65));
-      const startCppDate = toDateOnly(addMonths(birth, cppStartAge * 12));
-      const startOasDate = toDateOnly(addMonths(birth, oasStartAge * 12));
-      const contribYears = Number.isFinite(cppYears) ? Math.max(0, Math.min(47, Math.round(cppYears))) : 0;
-      const earningsRatio = Number.isFinite(cppPct) ? Math.max(0, Math.min(100, cppPct)) / 100 : 0;
-      const baseCpp65 = cppMaxAtStart * Math.min(1, earningsRatio * (contribYears / 39));
-      const monthsFrom65 = (cppStartAge - 65) * 12;
-      const cppAdj = monthsFrom65 < 0 ? 1 + 0.006 * monthsFrom65 : 1 + 0.007 * monthsFrom65;
-      const cppAnnual = Math.max(0, baseCpp65 * cppAdj);
-      const oasResidYears = Number.isFinite(oasYears) ? Math.max(0, Math.min(40, Math.round(oasYears))) : 0;
-      const baseOas65 = oasFullAtStart * Math.min(1, oasResidYears / 40);
-      const oasMonthsFrom65 = (oasStartAge - 65) * 12;
-      const oasAdj = 1 + 0.006 * Math.max(0, oasMonthsFrom65);
-      const oasAnnual = Math.max(0, baseOas65 * oasAdj);
-      return {
-        birth,
-        cppStartDate: startCppDate,
-        oasStartDate: startOasDate,
-        cppAnnualAtStart: cppAnnual,
-        oasAnnualAtStart: oasAnnual,
-      };
-    };
-    const p1 = buildPerson(1, birth1);
-    const p2 = hh === 'couple' ? buildPerson(2, birth2) : null;
-    // Adjust baseline income and expenses to the chosen retirement age using inflation.
-    // Values in account details are assumed to be at the configured retirement age.
-    const deltaYears = Number.isFinite(configuredAge) && Number.isFinite(chosenAge) ? (chosenAge - configuredAge) : 0;
-    const ageAdjustmentFactor = Number.isFinite(deltaYears) ? Math.pow(1 + configuredInflationRate, deltaYears) : 1;
-    const adjustedIncomeAnnual = (Number.isFinite(income) && income >= 0 ? income : 0) * ageAdjustmentFactor;
-    const adjustedLivingAnnual = (Number.isFinite(living) && living >= 0 ? living : 0) * ageAdjustmentFactor;
+    const overrideAge = Number.isFinite(retirementAgeChoice) && retirementAgeChoice > 0 ? Math.round(retirementAgeChoice) : undefined;
+    const model = buildSharedRetirementModel(retirementSettings, { todayDate, overrideRetirementAge: overrideAge });
     return {
       supported: true,
-      enabled: Boolean(includeRetirementFlows && startDate),
-      startDate,
-      // Income is assumed nominal at chosen retirement start (no post-start inflation here)
-      incomeMonthly: adjustedIncomeAnnual / 12,
-      // Expenses will inflate post-start from this adjusted annual baseline
-      livingExpensesAnnual: adjustedLivingAnnual,
-      inflationRate: configuredInflationRate,
-      household: hh,
-      persons: [p1, p2].filter(Boolean),
-      cppAnnualAtStart: (p1?.cppAnnualAtStart || 0) + (p2?.cppAnnualAtStart || 0),
-      oasAnnualAtStart: (p1?.oasAnnualAtStart || 0) + (p2?.oasAnnualAtStart || 0),
+      enabled: Boolean(includeRetirementFlows && model?.startDate),
+      startDate: model?.startDate || null,
+      incomeMonthly: Number(model?.incomeMonthly) || 0,
+      livingExpensesAnnual: Number(model?.livingExpensesAnnual) || 0,
+      inflationRate: Number(model?.inflationRate) || configuredInflationRate,
+      persons: Array.isArray(model?.persons) ? model.persons : [],
+      cppAnnualAtStart: Number(model?.cppAnnualAtStart) || 0,
+      oasAnnualAtStart: Number(model?.oasAnnualAtStart) || 0,
     };
-  }, [retirementSettings, includeRetirementFlows, ownerBirthDate, configuredInflationRate, retirementAgeChoice]);
+  }, [retirementSettings, includeRetirementFlows, todayDate, retirementAgeChoice, configuredInflationRate]);
+
+  // Summarize CPP, OAS, and other retirement income for the retirement start year
+  const retirementStartYearIncome = useMemo(() => {
+    if (!retirementSettings?.mainRetirementAccount) return null;
+    const chosenAge = Number.isFinite(retirementAgeChoice) && retirementAgeChoice > 0 ? Math.round(retirementAgeChoice) : undefined;
+    const model = buildSharedRetirementModel(retirementSettings, { todayDate, overrideRetirementAge: chosenAge });
+    const summary = summarizeAtRetirementYearShared(model);
+    return summary;
+  }, [retirementSettings, retirementAgeChoice, todayDate]);
 
   const computeRetirementFlow = useCallback(
     (date) => {
@@ -551,13 +501,15 @@ export default function ProjectionDialog({
       if (Array.isArray(retirementModel.persons)) {
         retirementModel.persons.forEach((p) => {
           if (!p) return;
-          if (p.cppStartDate && comparisonDate >= p.cppStartDate) {
-            const yrs = yearsBetween(p.cppStartDate, comparisonDate);
+          const cppStart = p.cppStartDate || p.startCppDate || null;
+          if (cppStart && comparisonDate >= cppStart) {
+            const yrs = yearsBetween(cppStart, comparisonDate);
             const factor = Number.isFinite(yrs) && yrs > 0 ? Math.pow(1 + retirementModel.inflationRate, yrs) : 1;
             pensionMonthly += (p.cppAnnualAtStart * factor) / 12;
           }
-          if (p.oasStartDate && comparisonDate >= p.oasStartDate) {
-            const yrs = yearsBetween(p.oasStartDate, comparisonDate);
+          const oasStart = p.oasStartDate || p.startOasDate || null;
+          if (oasStart && comparisonDate >= oasStart) {
+            const yrs = yearsBetween(oasStart, comparisonDate);
             const factor = Number.isFinite(yrs) && yrs > 0 ? Math.pow(1 + retirementModel.inflationRate, yrs) : 1;
             pensionMonthly += (p.oasAnnualAtStart * factor) / 12;
           }
@@ -915,6 +867,141 @@ export default function ProjectionDialog({
     return `${formatNumber(normalizedRate * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
   }, [isGroupView, normalizedRate, effectiveGroupRatePercentAtSelection]);
 
+  // Flow breakdown for a specific month date using same retirement logic as chart
+  const computeFlowBreakdown = useCallback(
+    (date) => {
+      if (!retirementModel.enabled || !retirementModel.startDate) {
+        return { cpp: 0, oas: 0, other: 0, expenses: 0, net: 0 };
+      }
+      const comparisonDate = toDateOnly(date);
+      if (!comparisonDate || comparisonDate < retirementModel.startDate) {
+        return { cpp: 0, oas: 0, other: 0, expenses: 0, net: 0 };
+      }
+      const elapsedYears = yearsBetween(retirementModel.startDate, comparisonDate);
+      const expenseMultiplier =
+        Number.isFinite(elapsedYears) && elapsedYears > 0
+          ? Math.pow(1 + retirementModel.inflationRate, elapsedYears)
+          : 1;
+      const expenses = (retirementModel.livingExpensesAnnual * expenseMultiplier) / 12;
+      let cpp = 0;
+      let oas = 0;
+      if (Array.isArray(retirementModel.persons)) {
+        retirementModel.persons.forEach((p) => {
+          if (!p) return;
+          const cppStart = p.cppStartDate || p.startCppDate || null;
+          if (cppStart && comparisonDate >= cppStart) {
+            const yrs = yearsBetween(cppStart, comparisonDate);
+            const factor = Number.isFinite(yrs) && yrs > 0 ? Math.pow(1 + retirementModel.inflationRate, yrs) : 1;
+            cpp += (p.cppAnnualAtStart * factor) / 12;
+          }
+          const oasStart = p.oasStartDate || p.startOasDate || null;
+          if (oasStart && comparisonDate >= oasStart) {
+            const yrs = yearsBetween(oasStart, comparisonDate);
+            const factor = Number.isFinite(yrs) && yrs > 0 ? Math.pow(1 + retirementModel.inflationRate, yrs) : 1;
+            oas += (p.oasAnnualAtStart * factor) / 12;
+          }
+        });
+      }
+      const other = retirementModel.incomeMonthly || 0;
+      const net = other + cpp + oas - expenses;
+      return { cpp, oas, other, expenses, net };
+    },
+    [retirementModel]
+  );
+
+  // Build yearly table rows from projection series
+  const yearlyRows = useMemo(() => {
+    if (!projectionSeries.length) return [];
+    const start = parseDateOnly(projectionSeries[0]?.date);
+    const end = addMonths(start, Math.round(timeframeYears * 12));
+    const rows = [];
+    const startYear = start.getUTCFullYear();
+    const endYear = end.getUTCFullYear();
+    for (let year = startYear; year <= endYear; year += 1) {
+      const firstOfYear = new Date(Date.UTC(year, 0, 1));
+      const lastOfYear = new Date(Date.UTC(year, 11, 31));
+      let firstIdx = null;
+      let lastIdx = null;
+      for (let i = 0; i < projectionSeries.length; i += 1) {
+        const d = parseDateOnly(projectionSeries[i].date);
+        if (firstIdx === null && d >= firstOfYear) firstIdx = i;
+        if (d <= lastOfYear) lastIdx = i;
+      }
+      if (firstIdx === null || lastIdx === null || firstIdx > lastIdx) continue;
+      const startValue = Number(projectionSeries[firstIdx]?.value) || 0;
+      const endValue = Number(projectionSeries[lastIdx]?.value) || startValue;
+      let cppTotal = 0;
+      let oasTotal = 0;
+      let otherTotal = 0;
+      let expensesTotal = 0;
+      for (let i = firstIdx; i <= lastIdx; i += 1) {
+        if (i === 0) continue;
+        const d = parseDateOnly(projectionSeries[i].date);
+        const c = computeFlowBreakdown(d);
+        cppTotal += c.cpp;
+        oasTotal += c.oas;
+        otherTotal += c.other;
+        expensesTotal += c.expenses;
+      }
+      const netFlow = otherTotal + cppTotal + oasTotal - expensesTotal;
+      const change = endValue - startValue;
+      rows.push({ year, startValue, cpp: cppTotal, oas: oasTotal, other: otherTotal, expenses: expensesTotal, netFlow, change, endValue });
+    }
+    return rows;
+  }, [projectionSeries, timeframeYears, computeFlowBreakdown]);
+
+  const copyDialogAsText = useCallback(() => {
+    try {
+      const lines = [];
+      lines.push(`Projections${accountLabel ? ' — ' + accountLabel : ''}`);
+      lines.push(`Annual growth: ${ratePercentLabel}`);
+      const cur = Number.isFinite(displayedCurrentValue) ? formatMoney(displayedCurrentValue) : '—';
+      const fin = Number.isFinite(finalProjectedValue) ? formatMoney(finalProjectedValue) : '—';
+      lines.push(`Current value: ${cur}`);
+      lines.push(`Final value: ${fin}`);
+      if (retirementStartYearIncome) {
+        lines.push(`At retirement (${retirementStartYearIncome.year}, in ${retirementStartYearIncome.year} dollars) — CPP ${formatMoney(retirementStartYearIncome.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, OAS ${formatMoney(retirementStartYearIncome.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Other ${formatMoney(retirementStartYearIncome.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Total ${formatMoney(retirementStartYearIncome.total, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`);
+      }
+      if (yearlyRows.length) {
+        lines.push('');
+        lines.push('Year | Start | CPP | OAS | Other | Expenses | Net flow | Change | End');
+        yearlyRows.forEach((r) => {
+          lines.push([
+            r.year,
+            formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.change, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+            formatMoney(r.endValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
+          ].join(' | '));
+        });
+      }
+      const text = lines.join('\n');
+      const run = async () => {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        return true;
+      };
+      run();
+    } catch (err) {
+      console.error('Failed to copy Projections dialog text', err);
+    }
+  }, [accountLabel, ratePercentLabel, displayedCurrentValue, finalProjectedValue, retirementStartYearIncome, yearlyRows]);
+
   const handleOverlayClick = (event) => {
     if (event.target === event.currentTarget) {
       onClose();
@@ -1095,6 +1182,30 @@ export default function ProjectionDialog({
                     </ul>
                   </div>
                 </div>
+                {retirementStartYearIncome && (
+                  <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
+                    <div
+                      style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}
+                      title={(function () {
+                        try {
+                          const m = buildSharedRetirementModel(retirementSettings, { todayDate, overrideRetirementAge: Number.isFinite(retirementAgeChoice) ? retirementAgeChoice : undefined });
+                          const start = m.startDate ? m.startDate.toISOString().slice(0, 10) : 'n/a';
+                          const today = m.todayRef ? m.todayRef.toISOString().slice(0, 10) : 'n/a';
+                          const yrs = Number.isFinite(m.yrsUntil) ? m.yrsUntil.toFixed(3) : 'n/a';
+                          const infl = Number.isFinite(m.inflationRate) ? (m.inflationRate*100).toFixed(2) + '%' : 'n/a';
+                          const factor = m.factor?.toFixed?.(4) ?? 'n/a';
+                          return `Inflation factor: ${factor}\nStart date: ${start}\nToday: ${today}\nYears until start: ${yrs}\nInflation: ${infl}`; 
+                        } catch (e) { return ''; }
+                      })()}
+                    >
+                      <strong>At retirement ({retirementStartYearIncome.year}, in {retirementStartYearIncome.year} dollars)</strong> —
+                      {' '}CPP {formatMoney(retirementStartYearIncome.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
+                      {' '}OAS {formatMoney(retirementStartYearIncome.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
+                      {' '}Other {formatMoney(retirementStartYearIncome.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })},
+                      {' '}Total {formatMoney(retirementStartYearIncome.total, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                    </div>
+                  </div>
+                )}
                 {/* CPP/OAS breakdown is shown in Account Details dialog, not here. */}
               </>
             )}
@@ -1335,6 +1446,49 @@ export default function ProjectionDialog({
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {yearlyRows.length > 0 && (
+              <div className="projection-dialog__yearly" style={{ marginTop: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 className="equity-card__children-title" style={{ margin: 0 }}>Yearly breakdown</h3>
+                  <button type="button" className="pnl-dialog__link-button" onClick={copyDialogAsText}>
+                    Copy to clipboard
+                  </button>
+                </div>
+                <div style={{ overflowX: 'auto', marginTop: '6px' }}>
+                  <table className="account-metadata-dialog__summary-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '6px 0' }}>Year</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Start</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>CPP</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>OAS</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Other</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Expenses</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Net flow</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Change</th>
+                        <th style={{ textAlign: 'right', padding: '6px 0' }}>End</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {yearlyRows.map((r) => (
+                        <tr key={`yr-${r.year}`}>
+                          <td style={{ padding: '4px 0' }}>{r.year}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.change, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.endValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 

@@ -15,7 +15,9 @@
     "debug:groups": "node src/scripts/debug-groups.js",
     "debug:pnl-by-symbol": "node scripts/print-total-pnl-by-symbol-debug.js",
     "print:pnl-by-symbol": "node src/scripts/print-total-pnl-by-symbol.js",
-    "diagnose:symbol-pnl": "node src/scripts/diagnose-symbol-pnl.js"
+    "diagnose:symbol-pnl": "node src/scripts/diagnose-symbol-pnl.js",
+    "compute:retirement": "node src/scripts/compute-retirement.js RRSP --today 2025-11-08",
+    "compute:projection": "node src/scripts/compute-projection.js RRSP --today 2025-11-08 --equity 564008.12 --years 50"
   },
   "dependencies": {
     "axios": "^1.12.2",
