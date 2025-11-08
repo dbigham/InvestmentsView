@@ -106,7 +106,11 @@ export function buildRetirementModel(settings, opts = {}) {
     // Anchor CPP/OAS bases to each program's own start date (not retirement start)
     const cppYearsUntilStart = Math.max(0, yearsBetween(todayRef, startCppDate));
     const cppInflationAtStart = cppYearsUntilStart > 0 ? Math.pow(1 + inflationRate, cppYearsUntilStart) : 1;
-    const baseCpp65 = (maxCpp65 * cppInflationAtStart) * Math.min(1, earningsRatio * (contribYears / 39));
+    // If retiring before 65, reduce effective contribution years by the gap
+    const retireAge = chosenAge; // retirement decision age (work stop), not CPP start age
+    const earlyGapYears = Math.max(0, 65 - retireAge);
+    const effectiveContribYears = Math.max(0, contribYears - earlyGapYears);
+    const baseCpp65 = (maxCpp65 * cppInflationAtStart) * Math.min(1, earningsRatio * (effectiveContribYears / 39));
     const monthsFrom65 = (cppStartAge - 65) * 12;
     const cppAdj = monthsFrom65 < 0 ? 1 + 0.006 * monthsFrom65 : 1 + 0.007 * monthsFrom65;
     const cppAnnualAtStart = Math.max(0, baseCpp65 * cppAdj);

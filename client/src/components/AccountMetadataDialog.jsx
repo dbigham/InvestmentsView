@@ -298,8 +298,11 @@ export default function AccountMetadataDialog({
       const cppAge = Math.max(60, Math.min(70, Math.round(fallbackAge)));
       const oasAge = Math.max(65, Math.min(70, Math.round(fallbackAge)));
       const contribYears = Number.isFinite(cppYears) ? Math.max(0, Math.min(47, Math.round(cppYears))) : 0;
+      // If retiring before 65, reduce effective contribution years by the early gap
+      const earlyGapYears = Math.max(0, 65 - Math.round(fallbackAge));
+      const effectiveContribYears = Math.max(0, contribYears - earlyGapYears);
       const earningsRatio = Number.isFinite(cppPct) ? Math.max(0, Math.min(100, cppPct)) / 100 : 0;
-      const baseCpp65 = cppMaxAtRetirement * Math.min(1, earningsRatio * (contribYears / 39));
+      const baseCpp65 = cppMaxAtRetirement * Math.min(1, earningsRatio * (effectiveContribYears / 39));
       const monthsFrom65 = (cppAge - 65) * 12;
       const cppAdj = monthsFrom65 < 0 ? 1 + 0.006 * monthsFrom65 : 1 + 0.007 * monthsFrom65;
       const cpp = Math.max(0, baseCpp65 * cppAdj);

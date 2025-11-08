@@ -24,6 +24,7 @@ const PROJECTION_TIMEFRAME_OPTIONS = [
 const DEFAULT_RETIREMENT_INFLATION_PERCENT = 2.5; // default when not configured
 const DEFAULT_MAX_CPP_65_ANNUAL = 17500; // fallback estimate; can override via metadata
 const DEFAULT_FULL_OAS_65_ANNUAL = 8500;  // fallback estimate; can override via metadata
+const DEFAULT_BORROWING_RATE_ANNUAL = 0.06; // 6% default when portfolio goes negative
 const RETIREMENT_AGE_MIN = 40;
 const RETIREMENT_AGE_MAX = 80;
 
@@ -174,19 +175,25 @@ function buildMilestones(years) {
   return Array.from(points).sort((a, b) => a - b);
 }
 
-function computeProjectionSeries({ startDate, startValue, annualRate, years, cashFlowResolver }) {
+function computeProjectionSeries({ startDate, startValue, annualRate, years, cashFlowResolver, borrowingAnnualRate = DEFAULT_BORROWING_RATE_ANNUAL }) {
   if (!Number.isFinite(startValue) || !Number.isFinite(annualRate) || !Number.isFinite(years)) {
     return [];
   }
   const totalMonths = Math.max(1, Math.round(years * 12));
   const monthlyRate = Math.pow(1 + annualRate, 1 / 12) - 1;
+  const monthlyBorrowRate = Math.pow(1 + (Number(borrowingAnnualRate) || 0), 1 / 12) - 1;
   const points = [];
   const base = toDateOnly(startDate);
   let currentValue = startValue;
   for (let i = 0; i <= totalMonths; i += 1) {
     const date = addMonths(base, i);
     if (i > 0) {
-      currentValue *= 1 + monthlyRate;
+      // Apply borrowing rate when value is negative; otherwise use investment rate
+      if (currentValue < 0) {
+        currentValue *= 1 + monthlyBorrowRate;
+      } else {
+        currentValue *= 1 + monthlyRate;
+      }
       if (typeof cashFlowResolver === 'function') {
         const flow = cashFlowResolver({ date, monthIndex: i, value: currentValue });
         if (Number.isFinite(flow) && flow !== 0) {
@@ -674,11 +681,14 @@ export default function ProjectionDialog({
           },
         ];
       })();
+      const monthlyBorrowRate = Math.pow(1 + DEFAULT_BORROWING_RATE_ANNUAL, 1 / 12) - 1;
       for (let i = 0; i <= totalMonths; i += 1) {
         const date = addMonths(base, i);
         if (i > 0) {
           childStates.forEach((state) => {
-            state.value *= 1 + state.monthlyRate;
+            // If a child state ever goes negative (due to withdrawals), accrue borrowing interest
+            const rate = state.value < 0 ? monthlyBorrowRate : state.monthlyRate;
+            state.value *= 1 + rate;
           });
           if (retirementModel.enabled) {
             const flow = computeRetirementFlow(date);
@@ -1017,16 +1027,8 @@ export default function ProjectionDialog({
       const fin = Number.isFinite(displayedFinalProjectedValue) ? formatMoney(displayedFinalProjectedValue) : '—';
       lines.push(`Current value: ${cur}`);
       lines.push(`Final value: ${fin}`);
-      if (retirementStartYearIncome) {
-        const inDollarsLabel = normalizeToBaseYear ? `${normalizeBaseYearLabel} dollars` : `${retirementStartYearIncome.year} dollars`;
-        const cppVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.cpp) : retirementStartYearIncome.cpp;
-        const oasVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.oas) : retirementStartYearIncome.oas;
-        const otherVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.other) : retirementStartYearIncome.other;
-        const totalVal = normalizeToBaseYear ? normalizeValueForDate(retirementModel?.startDate, retirementStartYearIncome.total) : retirementStartYearIncome.total;
-        lines.push(
-          `At retirement (${retirementStartYearIncome.year}, in ${inDollarsLabel}) — CPP ${formatMoney(cppVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, OAS ${formatMoney(oasVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Other ${formatMoney(otherVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}, Total ${formatMoney(totalVal, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-        );
-      }
+      // Intentionally omit the single-year-at-retirement summary line to avoid
+      // confusion for late-in-year retirements which show only a partial year.
       if (yearlyRows.length) {
         lines.push('');
         lines.push('Year | Start | CPP | OAS | Other | Expenses | Net flow | Change | End');
@@ -1141,6 +1143,52 @@ export default function ProjectionDialog({
                 </ul>
               </div>
 
+              {retirementModel.supported && (
+                <>
+                  <label className="pnl-dialog__control-label" htmlFor="projection-retirement-age">Retirement age</label>
+                  <div className="select-control select-control--wide" ref={retirementSelectRef}>
+                    <button
+                      id="projection-retirement-age"
+                      type="button"
+                      className="select-control__button"
+                      onClick={(event) => {
+                        const menu = event.currentTarget.nextSibling;
+                        if (menu) menu.classList.toggle('select-control__list--open');
+                      }}
+                    >
+                      {Number.isFinite(retirementAgeChoice) ? String(retirementAgeChoice) : 'Choose…'}
+                      <span aria-hidden="true" className="select-control__chevron" />
+                    </button>
+                    <ul className="select-control__list" role="listbox">
+                      {(function buildAgeOptions() {
+                        const items = [];
+                        for (let age = RETIREMENT_AGE_MIN; age <= RETIREMENT_AGE_MAX; age += 1) {
+                          const selected = age === retirementAgeChoice;
+                          items.push(
+                            <li key={`age-${age}`}>
+                              <button
+                                type="button"
+                                className={selected ? 'select-control__option select-control__option--selected' : 'select-control__option'}
+                                onClick={() => {
+                                  setRetirementAgeChoice(age);
+                                  const container = document.getElementById('projection-retirement-age')?.nextSibling;
+                                  if (container) container.classList.remove('select-control__list--open');
+                                }}
+                                role="option"
+                                aria-selected={selected}
+                              >
+                                {age}
+                              </button>
+                            </li>
+                          );
+                        }
+                        return items;
+                      }())}
+                    </ul>
+                  </div>
+                </>
+              )}
+
               {!isGroupView && (
                 <>
                   <label className="pnl-dialog__control-label" htmlFor="projection-rate">Growth</label>
@@ -1205,7 +1253,7 @@ export default function ProjectionDialog({
 
             {retirementModel.supported && (
               <>
-                <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
+                <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '2px' }}>
                   <label className="pnl-dialog__range-toggle">
                     <input
                       type="checkbox"
@@ -1215,50 +1263,7 @@ export default function ProjectionDialog({
                     <span>Include retirement income and expenses</span>
                   </label>
                 </div>
-                <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <label className="pnl-dialog__control-label" htmlFor="projection-retirement-age">Retirement age</label>
-                  <div className="select-control select-control--wide" ref={retirementSelectRef}>
-                    <button
-                      id="projection-retirement-age"
-                      type="button"
-                      className="select-control__button"
-                      onClick={(event) => {
-                        const menu = event.currentTarget.nextSibling;
-                        if (menu) menu.classList.toggle('select-control__list--open');
-                      }}
-                    >
-                      {Number.isFinite(retirementAgeChoice) ? String(retirementAgeChoice) : 'Choose…'}
-                      <span aria-hidden="true" className="select-control__chevron" />
-                    </button>
-                    <ul className="select-control__list" role="listbox">
-                      {(function buildAgeOptions() {
-                        const items = [];
-                        for (let age = RETIREMENT_AGE_MIN; age <= RETIREMENT_AGE_MAX; age += 1) {
-                          const selected = age === retirementAgeChoice;
-                          items.push(
-                            <li key={`age-${age}`}>
-                              <button
-                                type="button"
-                                className={selected ? 'select-control__option select-control__option--selected' : 'select-control__option'}
-                                onClick={() => {
-                                  setRetirementAgeChoice(age);
-                                  const container = document.getElementById('projection-retirement-age')?.nextSibling;
-                                  if (container) container.classList.remove('select-control__list--open');
-                                }}
-                                role="option"
-                                aria-selected={selected}
-                              >
-                                {age}
-                              </button>
-                            </li>
-                          );
-                        }
-                        return items;
-                      }())}
-                    </ul>
-                  </div>
-                </div>
-                {retirementStartYearIncome && (
+                {false && retirementStartYearIncome && (
                   <div className="pnl-dialog__range-toggle-row" style={{ marginTop: '6px' }}>
                     <div
                       style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}
@@ -1535,32 +1540,32 @@ export default function ProjectionDialog({
                   </button>
                 </div>
                 <div style={{ overflowX: 'auto', marginTop: '6px' }}>
-                  <table className="account-metadata-dialog__summary-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <table className="projection-tree" role="grid" style={{ tableLayout: 'auto', width: '100%' }}>
                     <thead>
                       <tr>
-                        <th style={{ textAlign: 'left', padding: '6px 0' }}>Year</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Start</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>CPP</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>OAS</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Other</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Expenses</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Net flow</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>Change</th>
-                        <th style={{ textAlign: 'right', padding: '6px 0' }}>End</th>
+                        <th className="projection-tree__th-name">Year</th>
+                        <th className="projection-tree__th">Start</th>
+                        <th className="projection-tree__th">CPP</th>
+                        <th className="projection-tree__th">OAS</th>
+                        <th className="projection-tree__th">Other</th>
+                        <th className="projection-tree__th">Expenses</th>
+                        <th className="projection-tree__th">Net flow</th>
+                        <th className="projection-tree__th">Change</th>
+                        <th className="projection-tree__th">End</th>
                       </tr>
                     </thead>
                     <tbody>
                       {yearlyRows.map((r) => (
                         <tr key={`yr-${r.year}`}>
-                          <td style={{ padding: '4px 0' }}>{r.year}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.change, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
-                          <td style={{ padding: '4px 0', textAlign: 'right' }}>{formatMoney(r.endValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-name">{r.year}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.cpp, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.oas, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.other, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.expenses, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.netFlow, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.change, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
+                          <td className="projection-tree__cell-value">{formatMoney(r.endValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
                         </tr>
                       ))}
                     </tbody>
