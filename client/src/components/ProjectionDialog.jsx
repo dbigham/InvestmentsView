@@ -1534,7 +1534,7 @@ export default function ProjectionDialog({
 
             {!isGroupView && Array.isArray(childAccounts) && childAccounts.length > 0 && (
               <div className="projection-dialog__children">
-                <h3 className="equity-card__children-title">Child accounts</h3>
+                <h3 className="equity-card__children-title">Sub accounts</h3>
                 <ul className="equity-card__children-list">
                   {childAccounts.map((child) => (
                     <li key={child.id} className="equity-card__children-item">

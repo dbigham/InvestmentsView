@@ -1178,7 +1178,7 @@ export default function SummaryMetrics({
 
   const childAccountList = normalizedChildAccounts.length ? (
     <div className="equity-card__children" aria-live="polite">
-      <h3 className="equity-card__children-title">Child accounts</h3>
+      <h3 className="equity-card__children-title">Sub accounts</h3>
       <ul className="equity-card__children-list">
         {normalizedChildAccounts.map((child) => {
           const href = child.href || `?accountId=${encodeURIComponent(child.id)}`;
@@ -1260,7 +1260,7 @@ export default function SummaryMetrics({
       aria-label={
         childMenuTarget
           ? `Actions for ${childMenuTarget.label}`
-          : 'Child account actions'
+          : 'Sub account actions'
       }
       onMouseDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
