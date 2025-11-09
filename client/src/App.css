@@ -566,6 +566,7 @@ textarea {
   list-style: none;
 }
 
+
 .account-selector__option {
   display: flex;
   align-items: center;
@@ -586,13 +587,20 @@ textarea {
 
 .account-selector__option-tree {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   pointer-events: none;
   flex-shrink: 0;
+  position: relative;
   --account-selector-tree-indent: 16px;
-  --account-selector-tree-color: rgba(148, 163, 184, 0.45);
+  /* Slightly lighter to avoid visually darker stacking */
+  --account-selector-tree-color: rgba(148, 163, 184, 0.35);
   --account-selector-tree-gap: 10px;
+  /* Space between the end of the horizontal connector and the text */
+  --account-selector-tree-right-gap: 6px;
 }
+
+/* Subtle vertical trunk at the far-left of the tree area */
+/* Remove per-row left trunk; global trunk aligns with connectors */
 
 .account-selector__tree-segment {
   position: relative;
@@ -614,36 +622,24 @@ textarea {
 .account-selector__tree-segment--ancestor::before {
   left: calc(var(--account-selector-tree-indent) / 2);
   width: 1px;
-  top: 0;
-  bottom: 0;
+  /* Increased overlap to bridge any vertical spacing */
+  top: -8px;
+  bottom: -8px;
   opacity: 0.45;
 }
 
-.account-selector__tree-segment--ancestor.account-selector__tree-segment--continue::before {
-  display: block;
+.account-selector__tree-segment--ancestor.account-selector__tree-segment--continue::before { display: none; }
+
+.account-selector__tree-segment--current::before { display: none; }
+
+.account-selector__tree-segment--current.account-selector__tree-segment--last::before { display: none; }
+
+/* Ensure no unintended margins between options */
+.account-selector__option {
+  margin: 0;
 }
 
-.account-selector__tree-segment--current::before {
-  display: block;
-  left: calc(var(--account-selector-tree-indent) / 2);
-  width: 1px;
-  top: 0;
-  bottom: 0;
-  opacity: 0.45;
-}
-
-.account-selector__tree-segment--current.account-selector__tree-segment--last::before {
-  bottom: calc(var(--account-selector-tree-indent) / 2);
-}
-
-.account-selector__tree-segment--current::after {
-  display: block;
-  left: calc(var(--account-selector-tree-indent) / 2);
-  width: calc(var(--account-selector-tree-indent) / 2 + var(--account-selector-tree-gap));
-  top: calc(var(--account-selector-tree-indent) / 2);
-  height: 1px;
-  opacity: 0.45;
-}
+.account-selector__tree-segment--current::after { display: none; }
 
 .account-selector__option--nested {
   padding-left: 12px;
@@ -683,6 +679,8 @@ textarea {
   background-position: center;
   background-size: contain;
   flex-shrink: 0;
+  /* Keep check icon centered when row items stretch */
+  align-self: center;
 }
 
 .account-selector__empty {
