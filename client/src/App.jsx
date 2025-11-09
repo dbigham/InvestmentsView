@@ -6023,6 +6023,9 @@ export default function App() {
     currencyRates,
     baseCurrency,
     accountPnlTotals,
+    // Ensure People totals recompute when focusing or clearing a symbol
+    focusedSymbol,
+    symbolFilteredPositions,
   ]);
 
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
