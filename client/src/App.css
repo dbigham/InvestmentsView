@@ -3861,6 +3861,16 @@ textarea {
   grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 92px;
 }
 
+.positions-table--with-account .positions-table__row,
+.positions-table--with-account .positions-table__row--head {
+  grid-template-columns: 118px minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 108px 92px;
+}
+
+.positions-table--with-account.positions-table--no-target .positions-table__row,
+.positions-table--with-account.positions-table--no-target .positions-table__row--head {
+  grid-template-columns: 118px minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 92px;
+}
+
 .positions-table__row--head {
   background: var(--color-surface-alt);
   font-size: 12px;

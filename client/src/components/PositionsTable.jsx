@@ -690,7 +690,16 @@ function PositionsTable({
     );
   }
 
-  const tableClassName = showTargetColumn ? 'positions-table' : 'positions-table positions-table--no-target';
+  const tableClassName = (() => {
+    const classes = ['positions-table'];
+    if (!showTargetColumn) {
+      classes.push('positions-table--no-target');
+    }
+    if (showAccountColumn) {
+      classes.push('positions-table--with-account');
+    }
+    return classes.join(' ');
+  })();
 
   const renderTable = () => (
     <div className={tableClassName} role="table">
@@ -800,11 +809,6 @@ function PositionsTable({
               onClick={(event) => handleRowNavigation(event, position.symbol)}
               onContextMenu={(event) => handleRowContextMenu(event, position)}
             >
-              {showAccountColumn ? (
-                <div className="positions-table__cell positions-table__cell--account" role="cell">
-                  {position.accountDisplayName || position.accountNumber || position.accountId || ''}
-                </div>
-              ) : null}
               <div
                 className="positions-table__cell positions-table__cell--symbol"
                 role="cell"
@@ -844,6 +848,11 @@ function PositionsTable({
                   {displayDescription}
                 </div>
               </div>
+              {showAccountColumn ? (
+                <div className="positions-table__cell positions-table__cell--account" role="cell">
+                  {position.accountDisplayName || position.accountNumber || position.accountId || ''}
+                </div>
+              ) : null}
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                 <PnlBadge
                   value={position.dayPnl}
