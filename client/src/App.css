@@ -576,11 +576,80 @@ textarea {
   transition: background-color 0.15s ease;
 }
 
+.account-selector__option-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.account-selector__option-tree {
+  display: flex;
+  align-items: stretch;
+  pointer-events: none;
+  flex-shrink: 0;
+  --account-selector-tree-indent: 16px;
+  --account-selector-tree-color: rgba(148, 163, 184, 0.35);
+}
+
+.account-selector__tree-segment {
+  position: relative;
+  width: var(--account-selector-tree-indent);
+  min-width: var(--account-selector-tree-indent);
+  display: block;
+}
+
+.account-selector__tree-segment::before,
+.account-selector__tree-segment::after {
+  content: '';
+  position: absolute;
+  background: var(--account-selector-tree-color);
+  pointer-events: none;
+  display: none;
+}
+
+.account-selector__tree-segment--ancestor::before {
+  left: calc(var(--account-selector-tree-indent) / 2);
+  width: 1px;
+  top: 0;
+  bottom: 0;
+  opacity: 0.45;
+}
+
+.account-selector__tree-segment--ancestor.account-selector__tree-segment--continue::before {
+  display: block;
+}
+
+.account-selector__tree-segment--current::before {
+  display: block;
+  left: calc(var(--account-selector-tree-indent) / 2);
+  width: 1px;
+  top: 0;
+  bottom: 0;
+  opacity: 0.45;
+}
+
+.account-selector__tree-segment--current.account-selector__tree-segment--last::before {
+  bottom: calc(var(--account-selector-tree-indent) / 2);
+}
+
+.account-selector__tree-segment--current::after {
+  display: block;
+  left: calc(var(--account-selector-tree-indent) / 2);
+  right: -12px;
+  top: calc(var(--account-selector-tree-indent) / 2);
+  height: 1px;
+  opacity: 0.45;
+}
+
 .account-selector__option-content {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
 .account-selector__option:hover,
