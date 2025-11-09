@@ -5025,6 +5025,64 @@ export default function App() {
       handleShowTotalPnlDialog();
     } else if (k === 'projections' || k === 'retirement-projections') {
       handleShowProjections();
+    } else if (k === 'deployment') {
+      // Open the deployment adjustment dialog
+      handleOpenDeploymentAdjustment();
+    } else if (k === 'models') {
+      // Switch to Models tab if available
+      if (shouldShowInvestmentModels) {
+        setPortfolioViewTab('models');
+        const scroll = () => document.getElementById('portfolio-panel-models')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => setTimeout(scroll, 0));
+        } else {
+          setTimeout(scroll, 0);
+        }
+      }
+    } else if (k === 'people') {
+      if (!peopleDisabled) {
+        handleOpenPeople();
+      }
+    } else if (k === 'cash-breakdown') {
+      if (cashBreakdownAvailable) {
+        const activeCurrencyCode =
+          typeof activeCurrency?.currency === 'string'
+            ? activeCurrency.currency.trim().toUpperCase()
+            : null;
+        if (activeCurrencyCode === 'CAD' || activeCurrencyCode === 'USD') {
+          handleShowCashBreakdown(activeCurrencyCode);
+        }
+      }
+    } else if (k === 'breakdown-day') {
+      if (showContent && orderedPositions.length) {
+        handleShowPnlBreakdown('day');
+      }
+    } else if (k === 'breakdown-open') {
+      if (showContent && orderedPositions.length) {
+        handleShowPnlBreakdown('open');
+      }
+    } else if (k === 'breakdown-total') {
+      if (showContent && orderedPositions.length) {
+        handleShowPnlBreakdown('total');
+      }
+    } else if (k === 'return-breakdown') {
+      if (Array.isArray(fundingSummaryForDisplay?.returnBreakdown) && fundingSummaryForDisplay.returnBreakdown.length > 0) {
+        handleShowAnnualizedReturnDetails();
+      }
+    } else if (k === 'investment-model') {
+      if (showingAggregateAccounts) {
+        handleShowInvestmentModelDialog();
+      }
+    } else if (k === 'copy-summary') {
+      handleCopySummary();
+    } else if (k === 'estimate-cagr') {
+      handleEstimateFutureCagr();
+    } else if (k === 'invest-evenly') {
+      handlePlanInvestEvenly();
+    } else if (k === 'mark-rebalanced') {
+      if (markRebalanceContext) {
+        handleMarkAccountAsRebalanced();
+      }
     }
   };
 
@@ -9315,6 +9373,60 @@ export default function App() {
             symbols={searchSymbols}
             accounts={accounts}
             accountGroups={accountGroups}
+            navItems={(() => {
+              // Build dynamic search commands, skipping disabled features
+              const items = [
+                { key: 'positions', label: 'Positions' },
+                { key: 'orders', label: 'Orders' },
+                { key: 'dividends', label: 'Dividends' },
+                { key: 'total-pnl', label: 'Total P&L' },
+                { key: 'projections', label: 'Projections' },
+                { key: 'retirement-projections', label: 'Retirement Projections' },
+                { key: 'deployment', label: 'Deployment' },
+              ];
+
+              // Models tab (only if available)
+              if (shouldShowInvestmentModels) {
+                items.push({ key: 'models', label: 'Models' });
+              }
+
+              // People (only if household totals available)
+              if (!peopleDisabled) {
+                items.push({ key: 'people', label: 'People' });
+              }
+
+              // Cash breakdown (only in aggregate view with CAD/USD)
+              if (cashBreakdownAvailable) {
+                items.push({ key: 'cash-breakdown', label: 'Cash Breakdown' });
+              }
+
+              // P&L breakdowns (only when we have positions content)
+              if (showContent && orderedPositions.length) {
+                items.push({ key: 'breakdown-day', label: "P&L Breakdown — Today" });
+                items.push({ key: 'breakdown-open', label: 'P&L Breakdown — Open' });
+                items.push({ key: 'breakdown-total', label: 'P&L Breakdown — Total' });
+              }
+
+              // Return breakdown dialog (only if data available)
+              if (Array.isArray(fundingSummaryForDisplay?.returnBreakdown) && fundingSummaryForDisplay.returnBreakdown.length > 0) {
+                items.push({ key: 'return-breakdown', label: 'Return Breakdown' });
+              }
+
+              // Investment model (global). Show when aggregate accounts.
+              if (showingAggregateAccounts) {
+                items.push({ key: 'investment-model', label: 'Investment Model' });
+              }
+
+              // Quick actions
+              items.push({ key: 'copy-summary', label: 'Copy account summary' });
+              items.push({ key: 'estimate-cagr', label: 'Estimate future CAGR' });
+              items.push({ key: 'invest-evenly', label: 'Invest cash evenly' });
+              if (markRebalanceContext) {
+                items.push({ key: 'mark-rebalanced', label: 'Mark as rebalanced' });
+              }
+
+              return items;
+            })()}
             onSelectSymbol={handleSearchSelectSymbol}
             onSelectAccount={handleAccountChange}
             onNavigate={handleSearchNavigate}

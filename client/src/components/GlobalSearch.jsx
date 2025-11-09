@@ -71,6 +71,8 @@ export default function GlobalSearch({
 
   useOutsideDismiss(containerRef, () => setOpen(false));
 
+  // (moved below results) Ensure we reset highlighted option when opening
+
   const symbolItems = useMemo(() => {
     const seen = new Set();
     const list = Array.isArray(symbols) ? symbols : [];
@@ -173,6 +175,17 @@ export default function GlobalSearch({
     const top = withScores.slice(0, 10).map((e) => e.item);
     return top;
   }, [query, symbolItems, accountItems, groupItems, navItemsNormalized]);
+
+  // Ensure we reset the highlighted option to the first item whenever
+  // the list opens (after having been closed), so pressing Enter
+  // acts on the first visible result by default.
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setHighlightedIndex(results.length ? 0 : -1);
+    }
+    wasOpenRef.current = open;
+  }, [open, results]);
 
   useEffect(() => {
     if (!open) return;
