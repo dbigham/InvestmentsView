@@ -319,6 +319,12 @@ export default function ProjectionDialog({
     }
     return null;
   });
+  const [retirementAgeInput, setRetirementAgeInput] = useState(() => {
+    if (Number.isFinite(retirementAgeChoice)) {
+      return String(Math.round(retirementAgeChoice));
+    }
+    return '';
+  });
 
   // Selection on the projection path: index into projectionSeries
   const [selectedPoint, setSelectedPoint] = useState(null); // { date, index }
@@ -385,6 +391,28 @@ export default function ProjectionDialog({
     }
     return RETIREMENT_AGE_MIN;
   }, [ownerBirthDate, todayDate]);
+  const retirementAgeMinBound = Number.isFinite(effectiveRetirementAgeMin)
+    ? effectiveRetirementAgeMin
+    : RETIREMENT_AGE_MIN;
+  const trimmedRetirementAgeInput = String(retirementAgeInput ?? '').trim();
+  const retirementAgeDigitCount = (trimmedRetirementAgeInput.match(/\d/g) || []).length;
+  const parsedRetirementAgeInput = Number(trimmedRetirementAgeInput);
+  const retirementAgeHasAtLeastTwoDigits = retirementAgeDigitCount >= 2;
+  const isRetirementAgeInputNumeric = Number.isFinite(parsedRetirementAgeInput);
+  const isRetirementAgeInputInvalid =
+    retirementAgeHasAtLeastTwoDigits &&
+    (!isRetirementAgeInputNumeric ||
+      parsedRetirementAgeInput < retirementAgeMinBound ||
+      parsedRetirementAgeInput > RETIREMENT_AGE_MAX);
+
+  useEffect(() => {
+    setRetirementAgeInput((current) => {
+      const next = Number.isFinite(retirementAgeChoice)
+        ? String(Math.round(retirementAgeChoice))
+        : '';
+      return current === next ? current : next;
+    });
+  }, [retirementAgeChoice]);
 
   // Reset local retirement age choice when the underlying setting changes (e.g., switching accounts)
   useEffect(() => {
@@ -1197,29 +1225,37 @@ export default function ProjectionDialog({
                     type="number"
                     className="pnl-dialog__number-input"
                     inputMode="numeric"
-                    min={effectiveRetirementAgeMin}
                     max={RETIREMENT_AGE_MAX}
                     step={1}
-                    value={Number.isFinite(retirementAgeChoice) ? retirementAgeChoice : ''}
+                    value={retirementAgeInput}
                     onChange={(e) => {
                       const raw = e.target.value;
+                      setRetirementAgeInput(raw);
                       if (raw === '' || raw === null) {
                         setRetirementAgeChoice(null);
                         return;
                       }
-                      const n = Math.round(Number(raw));
-                      if (!Number.isFinite(n)) {
-                        setRetirementAgeChoice(null);
+                      const parsed = Number(raw);
+                      if (!Number.isFinite(parsed)) {
                         return;
                       }
-                      const minAllowed = Number.isFinite(effectiveRetirementAgeMin)
-                        ? effectiveRetirementAgeMin
-                        : RETIREMENT_AGE_MIN;
-                      const clamped = Math.min(RETIREMENT_AGE_MAX, Math.max(minAllowed, n));
-                      setRetirementAgeChoice(clamped);
+                      const rounded = Math.round(parsed);
+                      if (!Number.isFinite(rounded)) {
+                        return;
+                      }
+                      if (rounded < retirementAgeMinBound || rounded > RETIREMENT_AGE_MAX) {
+                        return;
+                      }
+                      setRetirementAgeChoice(rounded);
                     }}
                     placeholder="e.g. 65"
-                    style={{ width: '77px' }}
+                    aria-invalid={isRetirementAgeInputInvalid}
+                    style={{
+                      width: '77px',
+                      backgroundColor: isRetirementAgeInputInvalid
+                        ? 'rgba(255, 192, 203, 0.35)'
+                        : undefined,
+                    }}
                   />
                 </>
               )}
@@ -1534,7 +1570,7 @@ export default function ProjectionDialog({
 
             {!isGroupView && Array.isArray(childAccounts) && childAccounts.length > 0 && (
               <div className="projection-dialog__children">
-                <h3 className="equity-card__children-title">Child accounts</h3>
+                <h3 className="equity-card__children-title">Sub accounts</h3>
                 <ul className="equity-card__children-list">
                   {childAccounts.map((child) => (
                     <li key={child.id} className="equity-card__children-item">
