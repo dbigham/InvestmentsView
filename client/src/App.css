@@ -840,6 +840,11 @@ textarea {
   transition: color 0.2s ease, background-color 0.2s ease;
 }
 
+.qqq-dialog__close--scroll-guard {
+  /* Leave extra space for overlay scrollbars and device safe areas */
+  right: max(48px, calc(env(safe-area-inset-right) + 40px));
+}
+
 .qqq-dialog__close:hover,
 .qqq-dialog__close:focus-visible {
   color: var(--color-text-primary);
