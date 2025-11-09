@@ -800,11 +800,6 @@ function PositionsTable({
               onClick={(event) => handleRowNavigation(event, position.symbol)}
               onContextMenu={(event) => handleRowContextMenu(event, position)}
             >
-              {showAccountColumn ? (
-                <div className="positions-table__cell positions-table__cell--account" role="cell">
-                  {position.accountDisplayName || position.accountNumber || position.accountId || ''}
-                </div>
-              ) : null}
               <div
                 className="positions-table__cell positions-table__cell--symbol"
                 role="cell"
@@ -844,6 +839,11 @@ function PositionsTable({
                   {displayDescription}
                 </div>
               </div>
+              {showAccountColumn ? (
+                <div className="positions-table__cell positions-table__cell--account" role="cell">
+                  {position.accountDisplayName || position.accountNumber || position.accountId || ''}
+                </div>
+              ) : null}
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                 <PnlBadge
                   value={position.dayPnl}
