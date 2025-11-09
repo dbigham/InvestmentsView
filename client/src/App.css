@@ -92,7 +92,7 @@ textarea {
 }
 
 .summary-main {
-  max-width: 1280px;
+  max-width: 1440px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -100,7 +100,7 @@ textarea {
 }
 
 .summary-main--compact {
-  max-width: 1120px;
+  max-width: 1280px;
 }
 
 .page-header {
@@ -3616,6 +3616,26 @@ textarea {
   margin-bottom: -12px;
 }
 
+.positions-card__attribution {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.positions-card__attribution a {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.positions-card__attribution a:hover,
+.positions-card__attribution a:focus-visible {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  outline: none;
+}
+
+.positions-card__attribution--below { margin: 8px 20px 0 20px; }
+
 .orders-panel {
   display: flex;
   flex-direction: column;
@@ -3937,25 +3957,26 @@ textarea {
 .positions-table__row,
 .positions-table__row--head {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 108px 92px;
-  gap: 8px;
+  grid-template-columns: 40px minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 108px 92px;
+  column-gap: 20px;
+  row-gap: 0;
   align-items: center;
   padding: 14px 20px;
 }
 
 .positions-table--no-target .positions-table__row,
 .positions-table--no-target .positions-table__row--head {
-  grid-template-columns: minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 92px;
+  grid-template-columns: 40px minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 92px;
 }
 
 .positions-table--with-account .positions-table__row,
 .positions-table--with-account .positions-table__row--head {
-  grid-template-columns: 118px minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 108px 92px;
+  grid-template-columns: 40px minmax(160px, 220px) 118px 118px 118px 100px 112px 112px 130px 76px 108px 92px;
 }
 
 .positions-table--with-account.positions-table--no-target .positions-table__row,
 .positions-table--with-account.positions-table--no-target .positions-table__row--head {
-  grid-template-columns: 118px minmax(160px, 220px) 118px 118px 100px 112px 112px 130px 76px 92px;
+  grid-template-columns: 40px minmax(160px, 220px) 118px 118px 118px 100px 112px 112px 130px 76px 92px;
 }
 
 .positions-table__row--head {
@@ -3993,6 +4014,8 @@ textarea {
   outline: 2px solid #1b2733;
   outline-offset: 2px;
 }
+
+/* no logo config UI needed when using ticker-based logo URLs */
 
 .positions-table__sort-indicator {
   width: 12px;
@@ -4213,12 +4236,12 @@ textarea {
 @media (max-width: 1100px) {
   .positions-table__row,
   .positions-table__row--head {
-    grid-template-columns: minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 100px 92px;
+    grid-template-columns: 40px minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 100px 92px;
   }
 
   .positions-table--no-target .positions-table__row,
   .positions-table--no-target .positions-table__row--head {
-    grid-template-columns: minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 92px;
+    grid-template-columns: 40px minmax(150px, 200px) 110px 110px 96px 104px 104px 120px 72px 92px;
   }
 }
 
@@ -4302,6 +4325,10 @@ button.time-pill.time-pill--auto:hover .time-pill__icon {
   justify-content: center;
 }
 
+.positions-table__head--logo .positions-table__head-button {
+  justify-content: center;
+}
+
 button.time-pill:hover .time-pill__icon {
   width: 14px;
   height: 14px;
@@ -4313,6 +4340,26 @@ button.time-pill:hover .time-pill__icon {
 .positions-table__cell--currency span {
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.positions-table__cell--logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.positions-table__logo {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+}
+
+.positions-table__logo--placeholder {
+  color: var(--color-text-muted);
 }
 
 .qqq-section {

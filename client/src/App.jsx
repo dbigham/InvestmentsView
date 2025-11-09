@@ -9900,9 +9900,22 @@ export default function App() {
                   onSeePrompt={() => setShowNewsPromptDialog(true)}
                   prompt={portfolioNewsState.prompt}
                 />
-              </div>
+            </div>
             ) : null}
           </section>
+        )}
+
+        {portfolioViewTab === 'positions' && (
+          <div className="positions-card__attribution positions-card__attribution--below">
+            <span>Logos by </span>
+            <a
+              href="https://logo.dev/?utm_source=investments-view&utm_medium=app&utm_campaign=attribution"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Logo.dev
+            </a>
+          </div>
         )}
 
       </main>

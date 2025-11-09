@@ -75,6 +75,7 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
 - Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
 - Dividends tab that groups historical distributions by symbol, currency, and time range.
 - News tab that summarizes recent web articles about the current holdings by querying OpenAI's GPT-5 model (requires an OpenAI API key).
+- Optional company logos column in the Positions table. If you set `VITE_LOGO_DEV_PUBLISHABLE_KEY` in `client/.env`, logos are fetched from Logo.dev using the ticker endpoint.
 - Action menu to copy a text summary, draft a CAGR prompt, or build an "invest cash evenly" plan from live holdings and balances.
 - Manual refresh button to force a new fetch from Questrade.
 - People overlay that converts every account to CAD and totals holdings for each household member.
@@ -99,6 +100,16 @@ A local web app that mirrors the Questrade web portal "Summary" tab so you can r
         npm run build
 
 The compiled frontend lives under `client/dist/`. Serve it with any static host and point it at the running proxy.
+
+### Company logos (Logo.dev)
+
+To enable high-quality company logos via Logo.dev in the Positions table:
+
+- Set `VITE_LOGO_DEV_PUBLISHABLE_KEY=pk_...` in `client/.env` (publishable key).
+- The UI loads logos from `https://img.logo.dev/ticker/<TICKER>?token=...` with sensible sizing.
+
+Notes:
+- Do not set a secret key in the frontend. If you only have a secret (`sk_...`), keep it on the server. The implementation uses a publishable key on the client.
 
 ## Rotating tokens
 

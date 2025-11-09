@@ -6,8 +6,16 @@ import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
 import { buildExplainMovementPrompt, derivePercentages, formatQuantity, formatShare } from '../utils/positions';
 import { openAccountSummary } from '../utils/questrade';
+// Logo column uses Logo.dev ticker endpoint when a publishable key is present
 
 const TABLE_HEADERS = [
+  {
+    key: 'logo',
+    label: '',
+    className: 'positions-table__head--logo',
+    sortType: 'text',
+    accessor: (row) => row.symbol || '',
+  },
   {
     key: 'symbol',
     label: 'Symbol',
@@ -218,6 +226,7 @@ function PositionsTable({
   hideTargetColumn = false,
   accountsById = null,
 }) {
+  // No local mapping required when using Logo.dev ticker endpoint
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
     ? externalPnlMode
@@ -770,6 +779,15 @@ function PositionsTable({
             typeof position.symbol === 'string' && position.symbol.trim()
               ? position.symbol.trim()
               : position.symbol || 'this symbol';
+          const logoUrl = (() => {
+            const symbol = normalizedSymbol;
+            const pk = (import.meta && import.meta.env && import.meta.env.VITE_LOGO_DEV_PUBLISHABLE_KEY)
+              ? import.meta.env.VITE_LOGO_DEV_PUBLISHABLE_KEY
+              : null;
+            if (!symbol || !pk) return null;
+            const base = 'https://img.logo.dev/ticker';
+            return `${base}/${encodeURIComponent(symbol)}?token=${encodeURIComponent(pk)}&size=64&format=png`;
+          })();
           const hasNotes = (() => {
             if (typeof position.notes === 'string' && position.notes.trim()) {
               return true;
@@ -809,6 +827,21 @@ function PositionsTable({
               onClick={(event) => handleRowNavigation(event, position.symbol)}
               onContextMenu={(event) => handleRowContextMenu(event, position)}
             >
+              <div className="positions-table__cell positions-table__cell--logo" role="cell">
+                {logoUrl ? (
+                  <img
+                    className="positions-table__logo"
+                    src={logoUrl}
+                    alt={displayDescription ? `${displayDescription} logo` : `${normalizedSymbol} logo`}
+                    width={32}
+                    height={32}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <span className="positions-table__logo--placeholder" aria-hidden="true">—</span>
+                )}
+              </div>
               <div
                 className="positions-table__cell positions-table__cell--symbol"
                 role="cell"
@@ -975,6 +1008,18 @@ function PositionsTable({
               Positions
             </button>
           </div>
+          {(import.meta && import.meta.env && import.meta.env.VITE_LOGO_DEV_PUBLISHABLE_KEY) ? (
+            <div className="positions-card__attribution">
+              Logos by{' '}
+              <a
+                href="https://logo.dev/?utm_source=investments-view&utm_medium=app&utm_campaign=attribution"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Logo.dev
+              </a>
+            </div>
+          ) : null}
         </header>
 
         {renderTable()}
