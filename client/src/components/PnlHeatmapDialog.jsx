@@ -744,7 +744,7 @@ export default function PnlHeatmapDialog({
         return Array.from(map.values());
       };
       const aggregateUsdCad = (list, fxContribution, options = {}) => {
-        const { mergeDlr = true } = options || {};
+        const { mergeDlr = true, dlrComponentPnlField = 'totalPnlCad' } = options || {};
         const entries = Array.isArray(list) ? list : [];
         if (!entries.length && !(Number.isFinite(fxContribution) && Math.abs(fxContribution) > 1e-9)) {
           return entries;
@@ -753,6 +753,8 @@ export default function PnlHeatmapDialog({
         let usdCadEntry = null;
         let dlrTotals = {
           totalPnlCad: 0,
+          totalPnlWithFxCad: 0,
+          totalPnlNoFxCad: 0,
           investedCad: 0,
           openQuantity: 0,
           marketValueCad: 0,
@@ -789,6 +791,8 @@ export default function PnlHeatmapDialog({
           if (isDlr) {
             dlrTotals = {
               totalPnlCad: dlrTotals.totalPnlCad + addNumber(entry.totalPnlCad),
+              totalPnlWithFxCad: dlrTotals.totalPnlWithFxCad + addNumber(entry.totalPnlWithFxCad),
+              totalPnlNoFxCad: dlrTotals.totalPnlNoFxCad + addNumber(entry.totalPnlNoFxCad),
               investedCad: dlrTotals.investedCad + addNumber(entry.investedCad),
               openQuantity: dlrTotals.openQuantity + addNumber(entry.openQuantity),
               marketValueCad: dlrTotals.marketValueCad + addNumber(entry.marketValueCad),
@@ -800,9 +804,11 @@ export default function PnlHeatmapDialog({
         });
         const fxValue = Number.isFinite(fxContribution) ? fxContribution : 0;
         const hasFxContribution = Math.abs(fxValue) > 1e-9;
+        const dlrTotalsBreakdownValue = addNumber(dlrTotals[dlrComponentPnlField]);
         const hasDlrContribution =
           mergeDlr &&
           (Math.abs(dlrTotals.totalPnlCad) > 1e-9 ||
+            Math.abs(dlrTotalsBreakdownValue) > 1e-9 ||
             Math.abs(dlrTotals.investedCad) > 1e-9 ||
             Math.abs(dlrTotals.openQuantity) > 1e-9 ||
             Math.abs(dlrTotals.marketValueCad) > 1e-9);
@@ -841,9 +847,7 @@ export default function PnlHeatmapDialog({
           ]);
         }
         const breakdown = {};
-        if (hasFxContribution) {
-          breakdown.rawFxCad = fxValue;
-        }
+        let dlrBreakdownTotal = 0;
         if (mergeDlr && dlrComponents.length) {
           const dlrBySymbol = {};
           let dlrTotal = 0;
@@ -855,16 +859,22 @@ export default function PnlHeatmapDialog({
             if (!key) {
               return;
             }
-            const value = addNumber(component.totalPnlCad);
+            const value = addNumber(component[dlrComponentPnlField]);
             dlrBySymbol[key] = (dlrBySymbol[key] || 0) + value;
             dlrTotal += value;
           });
           if (Object.keys(dlrBySymbol).length) {
             breakdown.dlrBySymbol = dlrBySymbol;
             breakdown.dlrCad = dlrTotal;
+            dlrBreakdownTotal = dlrTotal;
           }
-        } else if (mergeDlr && Math.abs(dlrTotals.totalPnlCad) > 1e-9) {
-          breakdown.dlrCad = addNumber(dlrTotals.totalPnlCad);
+        } else if (mergeDlr && Math.abs(dlrTotalsBreakdownValue) > 1e-9) {
+          const dlrValue = dlrTotalsBreakdownValue;
+          breakdown.dlrCad = dlrValue;
+          dlrBreakdownTotal = dlrValue;
+        }
+        if (hasFxContribution) {
+          breakdown.rawFxCad = fxValue - dlrBreakdownTotal;
         }
         if (Object.keys(breakdown).length) {
           combinedEntry.breakdown = breakdown;
@@ -891,7 +901,10 @@ export default function PnlHeatmapDialog({
       }
       const fx = Number(source.fxEffectCad);
       const fxContribution = Number.isFinite(fx) ? fx : 0;
-      return aggregateUsdCad(entriesNoFx, fxContribution, { mergeDlr: breakout });
+      return aggregateUsdCad(entriesNoFx, fxContribution, {
+        mergeDlr: breakout,
+        dlrComponentPnlField: 'totalPnlWithFxCad',
+      });
     },
     []
   );
