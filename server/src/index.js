@@ -8958,6 +8958,27 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       marketValueCad: Number.isFinite(marketValueCad) ? marketValueCad : null,
       currency: isUsd ? 'USD' : 'CAD',
     };
+    const actualPnl = Number.isFinite(entry.totalPnlCad) ? entry.totalPnlCad : 0;
+    const noFxPnl = Number.isFinite(entryNoFx.totalPnlCad) ? entryNoFx.totalPnlCad : actualPnl;
+    const investedComponent = Number.isFinite(entry.investedCad) ? entry.investedCad : 0;
+    const openQtyComponent = Number.isFinite(entry.openQuantity) ? entry.openQuantity : 0;
+    const marketValueComponent = Number.isFinite(entry.marketValueCad) ? entry.marketValueCad : 0;
+    const component = {
+      symbol,
+      totalPnlCad: actualPnl,
+      totalPnlWithFxCad: actualPnl,
+      totalPnlNoFxCad: noFxPnl,
+      investedCad: investedComponent,
+      openQuantity: openQtyComponent,
+      marketValueCad: marketValueComponent,
+    };
+    entry.components = [component];
+    entryNoFx.components = [
+      {
+        ...component,
+        totalPnlCad: noFxPnl,
+      },
+    ];
     // Include if we have any signal (P&L, market value, or invested),
     // or if there was a non-trade quantity movement since start (e.g., book-value transfer out).
     const nonTradeDelta = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
@@ -8986,6 +9007,57 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       const base = noTo.endsWith('.U') ? noTo.slice(0, -2) : noTo;
       return journalBases.has(base) ? base : noTo;
     };
+    const mergeComponents = (targetComponents, sourceComponents) => {
+      if (!Array.isArray(sourceComponents) || sourceComponents.length === 0) {
+        return Array.isArray(targetComponents) ? targetComponents : [];
+      }
+      const map = new Map();
+      if (Array.isArray(targetComponents)) {
+        targetComponents.forEach((existingComponent) => {
+          if (!existingComponent) {
+            return;
+          }
+          const key = existingComponent.symbol ? String(existingComponent.symbol).toUpperCase() : '';
+          if (!key) {
+            return;
+          }
+          map.set(key, { ...existingComponent });
+        });
+      }
+      sourceComponents.forEach((componentEntry) => {
+        if (!componentEntry) {
+          return;
+        }
+        const key = componentEntry.symbol ? String(componentEntry.symbol).toUpperCase() : '';
+        if (!key) {
+          return;
+        }
+        const addComponentValue = (value) => (Number.isFinite(value) ? value : 0);
+        if (!map.has(key)) {
+          map.set(key, {
+            symbol: componentEntry.symbol || null,
+            totalPnlCad: addComponentValue(componentEntry.totalPnlCad),
+            totalPnlWithFxCad: addComponentValue(componentEntry.totalPnlWithFxCad),
+            totalPnlNoFxCad: addComponentValue(componentEntry.totalPnlNoFxCad),
+            investedCad: addComponentValue(componentEntry.investedCad),
+            openQuantity: addComponentValue(componentEntry.openQuantity),
+            marketValueCad: addComponentValue(componentEntry.marketValueCad),
+          });
+        } else {
+          const existingComponent = map.get(key);
+          existingComponent.totalPnlCad += addComponentValue(componentEntry.totalPnlCad);
+          existingComponent.totalPnlWithFxCad += addComponentValue(componentEntry.totalPnlWithFxCad);
+          existingComponent.totalPnlNoFxCad += addComponentValue(componentEntry.totalPnlNoFxCad);
+          existingComponent.investedCad += addComponentValue(componentEntry.investedCad);
+          existingComponent.openQuantity += addComponentValue(componentEntry.openQuantity);
+          existingComponent.marketValueCad += addComponentValue(componentEntry.marketValueCad);
+          if (!existingComponent.symbol && componentEntry.symbol) {
+            existingComponent.symbol = componentEntry.symbol;
+          }
+        }
+      });
+      return Array.from(map.values());
+    };
     for (const entry of result) {
       const key = toKey(entry.symbol);
       const existing = merged.get(key);
@@ -8998,6 +9070,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           openQuantity: Number(entry.openQuantity) || 0,
           marketValueCad: Number(entry.marketValueCad) || 0,
           currency: entry.currency || null,
+          components: Array.isArray(entry.components)
+            ? entry.components.map((componentEntry) => ({ ...componentEntry }))
+            : [],
         });
       } else {
         const add = (v) => (Number.isFinite(v) ? v : 0);
@@ -9011,6 +9086,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         if (!existing.currency && entry.currency) {
           existing.currency = entry.currency;
         }
+        existing.components = mergeComponents(existing.components, entry.components);
       }
     }
     for (const entry of resultNoFx) {
@@ -9025,6 +9101,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           openQuantity: Number(entry.openQuantity) || 0,
           marketValueCad: Number(entry.marketValueCad) || 0,
           currency: entry.currency || null,
+          components: Array.isArray(entry.components)
+            ? entry.components.map((componentEntry) => ({ ...componentEntry }))
+            : [],
         });
       } else {
         const add = (v) => (Number.isFinite(v) ? v : 0);
@@ -9038,6 +9117,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         if (!existing.currency && entry.currency) {
           existing.currency = entry.currency;
         }
+        existing.components = mergeComponents(existing.components, entry.components);
       }
     }
     result = Array.from(merged.values());
