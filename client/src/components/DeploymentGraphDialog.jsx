@@ -95,11 +95,25 @@ function buildChartMetrics(series, mode) {
 
   const minValue = Math.min(...finiteValues);
   const maxValue = Math.max(...finiteValues);
-  const range = maxValue - minValue;
-  const padding = range === 0 ? Math.max(1, Math.abs(maxValue) * 0.1 || 1) : Math.max(1, range * 0.1);
-  const rawMinDomain = minValue - padding;
-  const rawMaxDomain = maxValue + padding;
-  const { minDomain, maxDomain, ticks } = buildAxisScale(rawMinDomain, rawMaxDomain);
+  let minDomain;
+  let maxDomain;
+  let ticks;
+  if (mode === 'percent') {
+    const axis = buildAxisScale(0, 100);
+    minDomain = 0;
+    maxDomain = 100;
+    const percentTicks = Array.isArray(axis.ticks) ? axis.ticks : [];
+    ticks = percentTicks.length ? percentTicks : [0, 25, 50, 75, 100];
+  } else {
+    const range = maxValue - minValue;
+    const padding = range === 0 ? Math.max(1, Math.abs(maxValue) * 0.1 || 1) : Math.max(1, range * 0.1);
+    const rawMinDomain = minValue - padding;
+    const rawMaxDomain = maxValue + padding;
+    const axis = buildAxisScale(rawMinDomain, rawMaxDomain);
+    minDomain = axis.minDomain;
+    maxDomain = axis.maxDomain;
+    ticks = Array.isArray(axis.ticks) ? axis.ticks : [];
+  }
   const domainRange = maxDomain - minDomain || 1;
   const innerWidth = CHART_WIDTH - PADDING.left - PADDING.right;
   const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
@@ -284,7 +298,11 @@ export default function DeploymentGraphDialog({ accountKey, accountLabel, baseCu
         return;
       }
       const rect = chartRef.current.getBoundingClientRect();
-      const relativeX = event.clientX - rect.left;
+      if (!rect.width) {
+        return;
+      }
+      const scaleX = CHART_WIDTH / rect.width;
+      const relativeX = (event.clientX - rect.left) * scaleX;
       let nearestIndex = null;
       let nearestDistance = Number.POSITIVE_INFINITY;
       chartMetrics.points.forEach((point, index) => {
@@ -474,8 +492,9 @@ export default function DeploymentGraphDialog({ accountKey, accountLabel, baseCu
                 )}
 
                 {!error && hasChart && (
-                  <div className="qqq-section__chart-container">
-                    <svg
+                  <>
+                    <div className="qqq-section__chart-container">
+                      <svg
                       ref={chartRef}
                       className="qqq-section__chart pnl-dialog__chart"
                       viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
@@ -534,6 +553,7 @@ export default function DeploymentGraphDialog({ accountKey, accountLabel, baseCu
                         <circle className="qqq-section__marker" cx={markerPoint.x} cy={markerPoint.y} r="5" />
                       )}
                     </svg>
+                    </div>
                     {activePoint && (
                       <div className="pnl-dialog__chart-summary">
                         <div className="pnl-dialog__chart-summary-date">{tooltipDate}</div>
@@ -557,7 +577,7 @@ export default function DeploymentGraphDialog({ accountKey, accountLabel, baseCu
                         </div>
                       </div>
                     )}
-                  </div>
+                  </>
                 )}
 
                 {!error && !hasChart && (
