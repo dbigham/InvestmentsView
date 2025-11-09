@@ -8346,11 +8346,9 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     const desc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
     const isDividend = INCOME_ACTIVITY_REGEX.test(desc);
     const isTradeLike = isOrderLikeActivity(activity);
-    if (!isTradeLike) {
-      // dividends not included in invested baseline; they will reflect in total P&L via equity changes only if
-      // we tracked cash, which we omit for symbol breakdown. Keeping simple per requirement.
-      continue;
-    }
+    // For invested baseline we only consider trade-like cash flows; income like dividends should
+    // not change the invested baseline (they are profit). Equity will reflect them via cash.
+    if (!isTradeLike) continue;
     const netAmount = Number(activity.netAmount);
     const currency = normalizeCurrency(activity.currency);
     const { cadAmount } = await convertAmountToCad(netAmount, currency, timestamp, accountKey);
@@ -8362,7 +8360,8 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
 
   // Iterate days computing symbol equity and P&L
   const holdings = new Map();
-  const cashByCurrency = new Map(); // intentionally empty for symbol series
+  // Track symbol-linked cash so equity includes dividends, coupon payments, and trade cash effects.
+  const cashByCurrency = new Map();
   const usdRateCache = new Map();
   const points = [];
   let cumulativeInvested = 0;
@@ -8373,6 +8372,18 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       const qty = Number(entry.activity.quantity);
       if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
         adjustHolding(holdings, targetSymbol, qty);
+      }
+      // Apply cash effects for income (dividends/interest) only — exclude trade cash to
+      // avoid cancelling out invested principal in symbol-scope equity.
+      const activityDesc = [entry.activity.type || '', entry.activity.action || '', entry.activity.description || ''].join(' ');
+      const isIncome = INCOME_ACTIVITY_REGEX.test(activityDesc);
+      const isTradeLike = isOrderLikeActivity(entry.activity);
+      if (isIncome && !isTradeLike) {
+        const rawAmount = Number(entry.activity.netAmount);
+        const cashCurrency = normalizeCurrency(entry.activity.currency);
+        if (cashCurrency && Number.isFinite(rawAmount) && Math.abs(rawAmount) >= CASH_FLOW_EPSILON / 10) {
+          adjustCash(cashByCurrency, cashCurrency, rawAmount);
+        }
       }
     }
     const daily = dailyInvestedCad.has(dateKey) ? dailyInvestedCad.get(dateKey) : 0;

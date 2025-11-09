@@ -3806,6 +3806,7 @@ export default function App() {
     error: null,
     accountKey: null,
     mode: 'cagr',
+    symbol: null,
   });
   const [totalPnlRange, setTotalPnlRange] = useState('all');
   const lastAccountForRange = useRef(null);
@@ -7246,23 +7247,30 @@ export default function App() {
       applyCagr = false;
     }
     const mode = applyCagr ? 'cagr' : 'all';
+    const symbol = typeof options?.symbol === 'string' && options.symbol.trim()
+      ? options.symbol.trim().toUpperCase()
+      : null;
     const normalizedOptions =
       options && typeof options === 'object'
         ? { ...options, applyAccountCagrStartDate: applyCagr }
         : { applyAccountCagrStartDate: applyCagr };
     setTotalPnlSeriesState((prev) => ({
       status: 'loading',
-      data: prev.accountKey === accountKey && prev.mode === mode ? prev.data : null,
+      data:
+        prev.accountKey === accountKey && prev.mode === mode && (prev.symbol || null) === (symbol || null)
+          ? prev.data
+          : null,
       error: null,
       accountKey,
       mode,
+      symbol,
     }));
     try {
       const payload = await getTotalPnlSeries(accountKey, normalizedOptions);
-      setTotalPnlSeriesState({ status: 'success', data: payload, error: null, accountKey, mode });
+      setTotalPnlSeriesState({ status: 'success', data: payload, error: null, accountKey, mode, symbol });
     } catch (err) {
       const normalized = err instanceof Error ? err : new Error('Failed to load Total P&L series');
-      setTotalPnlSeriesState({ status: 'error', data: null, error: normalized, accountKey, mode });
+      setTotalPnlSeriesState({ status: 'error', data: null, error: normalized, accountKey, mode, symbol });
     }
   }, []);
 
@@ -7353,6 +7361,7 @@ export default function App() {
       if (
         totalPnlSeriesState.accountKey !== normalizedKey ||
         totalPnlSeriesState.mode !== desiredMode ||
+        (totalPnlSeriesState.symbol || null) !== (focusedSymbol || null) ||
         totalPnlSeriesState.status === 'error' ||
         totalPnlSeriesState.status === 'idle'
       ) {
@@ -7422,7 +7431,9 @@ export default function App() {
         return;
       }
       const applyCagr = normalizedMode !== 'all';
-      fetchTotalPnlSeries(targetKey, { applyAccountCagrStartDate: applyCagr });
+      const opts = { applyAccountCagrStartDate: applyCagr };
+      if (focusedSymbol) opts.symbol = focusedSymbol;
+      fetchTotalPnlSeries(targetKey, opts);
     },
     [
       totalPnlDialogContext.accountKey,
@@ -7431,6 +7442,7 @@ export default function App() {
       totalPnlSeriesState.mode,
       totalPnlSeriesState.status,
       fetchTotalPnlSeries,
+      focusedSymbol,
     ]
   );
 
