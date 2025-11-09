@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
+import GlobalSearch from './components/GlobalSearch';
 import TodoSummary from './components/TodoSummary';
 import PositionsTable from './components/PositionsTable';
 import OrdersTable from './components/OrdersTable';
@@ -36,7 +37,7 @@ import SymbolNotesDialog from './components/SymbolNotesDialog';
 import PlanningContextDialog from './components/PlanningContextDialog';
 import NewsPromptDialog from './components/NewsPromptDialog';
 import AccountMetadataDialog from './components/AccountMetadataDialog';
-import { formatMoney, formatNumber, formatDate } from './utils/formatters';
+import { formatMoney, formatNumber, formatDate, formatSignedMoney } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl } from './utils/questrade';
@@ -3774,6 +3775,8 @@ export default function App() {
   const [newsTabContextMenuState, setNewsTabContextMenuState] = useState({ open: false, x: 0, y: 0 });
   const newsTabMenuRef = useRef(null);
   const isNewsFeatureEnabled = false;
+  const [focusedSymbol, setFocusedSymbol] = useState(null);
+  const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
 
   const closeNewsTabContextMenu = useCallback(() => {
     setNewsTabContextMenuState((state) => (state.open ? { ...state, open: false } : state));
@@ -4891,6 +4894,57 @@ export default function App() {
     normalizedDividendTimeframe,
   ]);
   const hasDividendSummary = Boolean(selectedAccountDividends);
+  const selectedAccountDividendsForView = useMemo(() => {
+    if (!focusedSymbol) return selectedAccountDividends;
+    if (!selectedAccountDividends || typeof selectedAccountDividends !== 'object') return selectedAccountDividends;
+    const upper = String(focusedSymbol).trim().toUpperCase();
+    const entries = Array.isArray(selectedAccountDividends.entries) ? selectedAccountDividends.entries : [];
+    const matched = entries.filter((e) => {
+      const s1 = (e?.symbol || '').toString().trim().toUpperCase();
+      const s2 = (e?.displaySymbol || '').toString().trim().toUpperCase();
+      const set = new Set((Array.isArray(e?.rawSymbols) ? e.rawSymbols : []).map((x) => String(x).trim().toUpperCase()));
+      return s1 === upper || s2 === upper || set.has(upper);
+    });
+    if (!matched.length) {
+      return {
+        ...selectedAccountDividends,
+        entries: [],
+        totalsByCurrency: {},
+        totalCad: 0,
+        totalCount: 0,
+        conversionIncomplete: false,
+      };
+    }
+    const totalsByCurrency = {};
+    let totalCad = 0;
+    let totalCount = 0;
+    let startDate = null;
+    let endDate = null;
+    matched.forEach((e) => {
+      if (e?.currencyTotals && typeof e.currencyTotals === 'object') {
+        Object.entries(e.currencyTotals).forEach(([cur, val]) => {
+          const n = Number(val);
+          if (!Number.isFinite(n)) return;
+          totalsByCurrency[cur] = (totalsByCurrency[cur] || 0) + n;
+        });
+      }
+      if (Number.isFinite(e?.cadAmount)) totalCad += e.cadAmount;
+      if (Number.isFinite(e?.activityCount)) totalCount += Math.round(e.activityCount);
+      const s = e?.firstDate || e?.startDate || null;
+      const en = e?.lastDate || e?.endDate || null;
+      if (s && (!startDate || s < startDate)) startDate = s;
+      if (en && (!endDate || en > endDate)) endDate = en;
+    });
+    return {
+      ...selectedAccountDividends,
+      entries: matched,
+      totalsByCurrency,
+      totalCad,
+      totalCount,
+      startDate: startDate || selectedAccountDividends.startDate || null,
+      endDate: endDate || selectedAccountDividends.endDate || null,
+    };
+  }, [focusedSymbol, selectedAccountDividends]);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
   const showOrdersPanel = portfolioViewTab === 'orders';
   const showNewsPanel = isNewsFeatureEnabled && portfolioViewTab === 'news';
@@ -4906,6 +4960,52 @@ export default function App() {
   const modelsPanelId = 'portfolio-panel-models';
   const newsPanelId = 'portfolio-panel-news';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
+
+  
+
+  const handleSearchSelectSymbol = useCallback((symbol, meta) => {
+    const up = (symbol || '').toString().trim().toUpperCase();
+    if (!up) return;
+    setFocusedSymbol(up);
+    setFocusedSymbolDescription(meta?.description || null);
+    setOrdersFilter(up);
+    setPortfolioViewTab('positions');
+  }, []);
+
+  const handleSearchNavigate = (key) => {
+    const k = (key || '').toString().toLowerCase();
+    if (k === 'positions') {
+      setPortfolioViewTab('positions');
+      const scroll = () => document.getElementById('portfolio-panel-positions')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => setTimeout(scroll, 0));
+      } else {
+        setTimeout(scroll, 0);
+      }
+    } else if (k === 'orders') {
+      setPortfolioViewTab('orders');
+      const scroll = () => document.getElementById('portfolio-panel-orders')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => setTimeout(scroll, 0));
+      } else {
+        setTimeout(scroll, 0);
+      }
+    } else if (k === 'dividends') {
+      setPortfolioViewTab('dividends');
+      const scroll = () => document.getElementById('portfolio-panel-dividends')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => setTimeout(scroll, 0));
+      } else {
+        setTimeout(scroll, 0);
+      }
+    } else if (k === 'total-pnl') {
+      handleShowTotalPnlDialog();
+    } else if (k === 'projections' || k === 'retirement-projections') {
+      handleShowProjections();
+    }
+  };
+
+  
   const a1ReferenceAccount = useMemo(() => {
     if (!accounts.length) {
       return null;
@@ -5085,10 +5185,73 @@ export default function App() {
         normalizedMarketValue: normalizedValue,
         normalizedDayPnl,
         normalizedOpenPnl,
-        targetProportion,
-      };
-    });
+      targetProportion,
+    };
+  });
   }, [positions, totalMarketValue, currencyRates, baseCurrency]);
+
+  // Derive filtered positions and market value when a symbol is focused
+  const symbolFilteredPositions = useMemo(() => {
+    if (!focusedSymbol) {
+      return { list: positionsWithShare, total: totalMarketValue };
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    // For aggregate selections, show one row per account holding the symbol
+    const baseList = isAggregateSelection ? rawPositions : positions;
+    const subset = baseList.filter((p) => (p?.symbol || '').toString().trim().toUpperCase() === key);
+    const prepared = preparePositionsForHeatmap(subset, currencyRates, baseCurrency);
+    return { list: prepared.positions, total: prepared.totalMarketValue };
+  }, [focusedSymbol, positions, rawPositions, positionsWithShare, isAggregateSelection, currencyRates, baseCurrency, totalMarketValue]);
+
+  // Compute quick symbol-level P&L summary for the focused symbol
+  const focusedSymbolPnl = useMemo(() => {
+    if (!focusedSymbol) return null;
+    const up = String(focusedSymbol).trim().toUpperCase();
+    // Day/Open from positions (normalized in CAD)
+    let day = 0;
+    let open = 0;
+    positionsWithShare.forEach((p) => {
+      const sym = (p?.symbol || '').toString().trim().toUpperCase();
+      if (sym !== up) return;
+      const d = Number(p?.normalizedDayPnl ?? p?.dayPnl);
+      const o = Number(p?.normalizedOpenPnl ?? p?.openPnl);
+      if (Number.isFinite(d)) day += d;
+      if (Number.isFinite(o)) open += o;
+    });
+    // Total from per-symbol Total P&L map
+    const useAll = (function decideVariant() {
+      if (isAggregateSelection && selectedAccount === 'all') return true;
+      return totalPnlRange === 'all';
+    })();
+    const map = useAll
+      ? (data?.accountTotalPnlBySymbolAll || data?.accountTotalPnlBySymbol || null)
+      : (data?.accountTotalPnlBySymbol || null);
+    let total = null;
+    if (map && typeof map === 'object') {
+      if (isAggregateSelection) {
+        const key = typeof selectedAccount === 'string' && selectedAccount.trim() ? selectedAccount.trim() : 'all';
+        const entry = map[key] || map['all'];
+        const arr = Array.isArray(entry?.entries) ? entry.entries : [];
+        const match = arr.find((e) => (e?.symbol || '').toString().trim().toUpperCase() === up);
+        if (match && Number.isFinite(match.totalPnlCad)) total = match.totalPnlCad;
+      } else if (selectedAccountInfo?.id) {
+        const entry = map[selectedAccountInfo.id];
+        const arr = Array.isArray(entry?.entries) ? entry.entries : [];
+        const match = arr.find((e) => (e?.symbol || '').toString().trim().toUpperCase() === up);
+        if (match && Number.isFinite(match.totalPnlCad)) total = match.totalPnlCad;
+      }
+    }
+    return { dayPnl: day, openPnl: open, totalPnl: Number.isFinite(total) ? total : null };
+  }, [
+    focusedSymbol,
+    positionsWithShare,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountInfo?.id,
+    data?.accountTotalPnlBySymbol,
+    data?.accountTotalPnlBySymbolAll,
+    totalPnlRange,
+  ]);
 
   const orderedPositions = useMemo(() => {
     const list = positionsWithShare.slice();
@@ -5105,6 +5268,33 @@ export default function App() {
     });
     return list;
   }, [positionsWithShare]);
+
+  // Build symbol suggestions for search (after positions are initialized)
+  const searchSymbols = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    positions.forEach((p) => {
+      const sym = (p?.symbol || '').toString().trim().toUpperCase();
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      list.push({ symbol: sym, description: (p?.description || '').toString() });
+    });
+    const divEntries = Array.isArray(selectedAccountDividends?.entries) ? selectedAccountDividends.entries : [];
+    divEntries.forEach((e) => {
+      const sym = (e?.symbol || e?.displaySymbol || '').toString().trim().toUpperCase();
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      list.push({ symbol: sym, description: (e?.description || '').toString() });
+    });
+    const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
+    ordList.forEach((o) => {
+      const sym = (o?.symbol || '').toString().trim().toUpperCase();
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      list.push({ symbol: sym, description: (o?.description || '').toString() });
+    });
+    return list;
+  }, [positions, selectedAccountDividends, ordersForSelectedAccount]);
 
   const hasTargetProportionsForSelection = useMemo(
     () => orderedPositions.some((position) => Number.isFinite(position?.targetProportion)),
@@ -5700,6 +5890,39 @@ export default function App() {
   const peopleSummary = useMemo(() => {
     if (!accounts.length) {
       return { totals: [], missingAccounts: [], hasBalances: false };
+    }
+    // In symbol mode, compute using symbol-filtered positions only
+    if (focusedSymbol && Array.isArray(symbolFilteredPositions.list)) {
+      const accountMap = new Map();
+      accounts.forEach((account) => {
+        if (account && account.id) {
+          accountMap.set(account.id, account);
+        }
+      });
+      const buckets = new Map(); // beneficiary -> { total, dayPnl, openPnl, accounts:set }
+      symbolFilteredPositions.list.forEach((p) => {
+        const accountId = p?.accountId;
+        if (!accountId) return;
+        const account = accountMap.get(accountId);
+        const beneficiary = account?.beneficiary || 'Unassigned';
+        const b = buckets.get(beneficiary) || { total: 0, dayPnl: 0, openPnl: 0, accounts: new Set() };
+        b.total += Number(p?.normalizedMarketValue ?? p?.currentMarketValue ?? 0) || 0;
+        b.dayPnl += Number(p?.normalizedDayPnl ?? p?.dayPnl ?? 0) || 0;
+        b.openPnl += Number(p?.normalizedOpenPnl ?? p?.openPnl ?? 0) || 0;
+        b.accounts.add(String(accountId));
+        buckets.set(beneficiary, b);
+      });
+      const totals = Array.from(buckets.entries())
+        .map(([beneficiary, agg]) => ({
+          beneficiary,
+          total: agg.total,
+          dayPnl: agg.dayPnl,
+          openPnl: agg.openPnl,
+          accountCount: agg.accounts.size,
+          totalAccounts: agg.accounts.size,
+        }))
+        .sort((a, b) => (b.total || 0) - (a.total || 0));
+      return { totals, missingAccounts: [], hasBalances: totals.length > 0 };
     }
 
     const balanceEntries = normalizedAccountBalances;
@@ -6633,14 +6856,25 @@ export default function App() {
     accountsById,
     isAggregateSelection,
   ]);
-  const shouldShowInvestmentModels = investmentModelSections.length > 0;
+  const filteredInvestmentModelSections = useMemo(() => {
+    if (!focusedSymbol) {
+      return investmentModelSections;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    return investmentModelSections.filter((section) => {
+      const candidates = [section.symbol, section.leveragedSymbol, section.reserveSymbol]
+        .map((s) => (typeof s === 'string' ? s.trim().toUpperCase() : ''));
+      return candidates.includes(key);
+    });
+  }, [investmentModelSections, focusedSymbol]);
+  const shouldShowInvestmentModels = filteredInvestmentModelSections.length > 0;
   const shouldShowQqqDetails = Boolean(selectedAccountInfo?.showQQQDetails);
   const modelsRequireAttention = useMemo(() => {
     if (!shouldShowInvestmentModels) {
       return false;
     }
-    return investmentModelSections.some((section) => getModelSectionPriority(section) === 0);
-  }, [shouldShowInvestmentModels, investmentModelSections]);
+    return filteredInvestmentModelSections.some((section) => getModelSectionPriority(section) === 0);
+  }, [shouldShowInvestmentModels, filteredInvestmentModelSections]);
   const showModelsPanel = shouldShowInvestmentModels && portfolioViewTab === 'models';
 
   const investmentModelSymbolMap = useMemo(() => {
@@ -6649,7 +6883,7 @@ export default function App() {
     }
     const targetAccountId = String(selectedAccountInfo.id);
     const map = new Map();
-    investmentModelSections.forEach((section) => {
+    filteredInvestmentModelSections.forEach((section) => {
       if (!section || typeof section !== 'object') {
         return;
       }
@@ -6671,7 +6905,7 @@ export default function App() {
       });
     });
     return map.size > 0 ? map : null;
-  }, [selectedAccountInfo, investmentModelSections]);
+  }, [selectedAccountInfo, filteredInvestmentModelSections]);
 
   const activeAccountModelSection = useMemo(() => {
     if (activeInvestmentModelDialog?.type !== 'account-model') {
@@ -6686,7 +6920,7 @@ export default function App() {
         ? String(activeInvestmentModelDialog.accountId)
         : null;
     return (
-      investmentModelSections.find((section) => {
+      filteredInvestmentModelSections.find((section) => {
         if (!section || typeof section !== 'object') {
           return false;
         }
@@ -6700,7 +6934,7 @@ export default function App() {
         return String(section.accountId ?? '') === targetAccountId;
       }) || null
     );
-  }, [activeInvestmentModelDialog, investmentModelSections]);
+  }, [activeInvestmentModelDialog, filteredInvestmentModelSections]);
 
   useEffect(() => {
     const allowedTabs = ['positions', 'orders'];
@@ -7122,9 +7356,9 @@ export default function App() {
         totalPnlSeriesState.status === 'error' ||
         totalPnlSeriesState.status === 'idle'
       ) {
-        fetchTotalPnlSeries(normalizedKey, {
-          applyAccountCagrStartDate: desiredMode !== 'all',
-        });
+        const fetchOpts = { applyAccountCagrStartDate: desiredMode !== 'all' };
+        if (focusedSymbol) fetchOpts.symbol = focusedSymbol;
+        fetchTotalPnlSeries(normalizedKey, fetchOpts);
       }
     },
     [
@@ -7132,6 +7366,7 @@ export default function App() {
       resolveAccountLabelByKey,
       resolveCagrStartDateForKey,
       totalPnlSeriesState,
+      focusedSymbol,
     ]
   );
 
@@ -7148,12 +7383,15 @@ export default function App() {
       return;
     }
     const applyCagr = totalPnlSeriesState.mode !== 'all';
-    fetchTotalPnlSeries(targetKey, { applyAccountCagrStartDate: applyCagr });
+    const opts = { applyAccountCagrStartDate: applyCagr };
+    if (focusedSymbol) opts.symbol = focusedSymbol;
+    fetchTotalPnlSeries(targetKey, opts);
   }, [
     fetchTotalPnlSeries,
     selectedAccountKey,
     totalPnlDialogContext.accountKey,
     totalPnlSeriesState.mode,
+    focusedSymbol,
   ]);
 
   const handleCloseTotalPnlDialog = useCallback(() => {
@@ -8861,7 +9099,7 @@ export default function App() {
   }
 
   const activeTotalPnlAccountKey = totalPnlDialogContext.accountKey || selectedAccountKey;
-  const totalPnlDialogData =
+  const totalPnlDialogDataBase =
     totalPnlSeriesState.accountKey === activeTotalPnlAccountKey ? totalPnlSeriesState.data : null;
   const totalPnlDialogLoading =
     totalPnlSeriesState.accountKey === activeTotalPnlAccountKey && totalPnlSeriesState.status === 'loading';
@@ -8869,6 +9107,69 @@ export default function App() {
     totalPnlSeriesState.accountKey === activeTotalPnlAccountKey && totalPnlSeriesState.status === 'error'
       ? totalPnlSeriesState.error
       : null;
+
+  // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
+  const totalPnlDialogData = useMemo(() => {
+    if (!focusedSymbol) {
+      return totalPnlDialogDataBase;
+    }
+    // Prefer server-provided series when available
+    if (totalPnlDialogDataBase && Array.isArray(totalPnlDialogDataBase.points) && totalPnlDialogDataBase.points.length) {
+      return totalPnlDialogDataBase;
+    }
+    // Resolve symbol totals for current view (all/group/account) and range mode
+    const useAll = totalPnlSeriesState.mode === 'all';
+    const map = useAll
+      ? (data?.accountTotalPnlBySymbolAll || data?.accountTotalPnlBySymbol || null)
+      : (data?.accountTotalPnlBySymbol || null);
+    if (!map || typeof map !== 'object') return totalPnlDialogDataBase;
+    let container = null;
+    if (isAggregateSelection) {
+      const key = typeof selectedAccount === 'string' && selectedAccount.trim() ? selectedAccount.trim() : 'all';
+      container = map[key] || map['all'] || null;
+    } else if (selectedAccountInfo?.id) {
+      container = map[selectedAccountInfo.id] || null;
+    }
+    if (!container || !Array.isArray(container.entries)) return totalPnlDialogDataBase;
+    const up = String(focusedSymbol).trim().toUpperCase();
+    const match = container.entries.find((e) => (e?.symbol || '').toString().trim().toUpperCase() === up);
+    if (!match) return totalPnlDialogDataBase;
+    const totalPnl = Number(match.totalPnlCad);
+    const equity = Number(match.marketValueCad);
+    const asOfKey = typeof container.asOf === 'string' && container.asOf.trim() ? container.asOf.trim() : (asOf || new Date().toISOString()).slice(0,10);
+    const startKey = (function resolveStart(){
+      if (typeof cagrStartDate === 'string' && cagrStartDate) return cagrStartDate;
+      const fs = fundingSummaryForDisplay?.annualizedReturnStartDate || fundingSummaryForDisplay?.periodStartDate;
+      return typeof fs === 'string' ? fs : null;
+    })();
+    const cost = Number.isFinite(totalPnl) && Number.isFinite(equity) ? equity - totalPnl : null;
+    const points = [];
+    if (startKey) {
+      points.push({ date: startKey, equityCad: Number.isFinite(cost) ? cost : 0, cumulativeNetDepositsCad: Number.isFinite(cost) ? cost : 0, totalPnlCad: 0 });
+    }
+    points.push({ date: asOfKey, equityCad: Number.isFinite(equity) ? equity : 0, cumulativeNetDepositsCad: Number.isFinite(cost) ? cost : 0, totalPnlCad: Number.isFinite(totalPnl) ? totalPnl : 0 });
+    const summary = {
+      netDepositsCad: Number.isFinite(cost) ? cost : null,
+      totalEquityCad: Number.isFinite(equity) ? equity : null,
+      totalPnlCad: Number.isFinite(totalPnl) ? totalPnl : null,
+      totalPnlAllTimeCad: Number.isFinite(totalPnl) ? totalPnl : null,
+    };
+    return { accountId: activeTotalPnlAccountKey, periodStartDate: startKey, periodEndDate: asOfKey, points, summary };
+  }, [
+    focusedSymbol,
+    totalPnlDialogDataBase,
+    totalPnlSeriesState.mode,
+    data?.accountTotalPnlBySymbol,
+    data?.accountTotalPnlBySymbolAll,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountInfo?.id,
+    cagrStartDate,
+    fundingSummaryForDisplay?.annualizedReturnStartDate,
+    fundingSummaryForDisplay?.periodStartDate,
+    asOf,
+    activeTotalPnlAccountKey,
+  ]);
 
   if (loading && !data) {
     return (
@@ -8890,6 +9191,13 @@ export default function App() {
     <div className="summary-page">
       <main className={summaryMainClassName}>
         <header className="page-header">
+          <GlobalSearch
+            symbols={searchSymbols}
+            accounts={accounts}
+            onSelectSymbol={handleSearchSelectSymbol}
+            onSelectAccount={handleAccountChange}
+            onNavigate={handleSearchNavigate}
+          />
           <AccountSelector
             accounts={accounts}
             accountGroups={accountGroups}
@@ -8899,6 +9207,30 @@ export default function App() {
             disabled={loading && !data}
           />
         </header>
+        {focusedSymbol ? (
+          <section className="symbol-view" aria-label="Symbol focus">
+            <div className="symbol-view__row">
+              <div className="symbol-view__title">
+                Viewing: <strong>{focusedSymbol}</strong>
+                {focusedSymbolDescription ? (
+                  <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
+                ) : null}
+              </div>
+              <div className="symbol-view__spacer" />
+              <button
+                type="button"
+                className="symbol-view__clear"
+                onClick={() => {
+                  setFocusedSymbol(null);
+                  setFocusedSymbolDescription(null);
+                  setOrdersFilter('');
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {rebalanceTodos.length > 0 && (
           <section className="todo-panel" aria-label="Account reminders">
@@ -8968,22 +9300,49 @@ export default function App() {
             currencyOption={activeCurrency}
             currencyOptions={currencyOptions}
             onCurrencyChange={setCurrencyView}
-            balances={activeBalances}
-            deploymentSummary={activeDeploymentSummary}
-            pnl={activePnl}
-            fundingSummary={fundingSummaryForDisplay}
+            balances={focusedSymbol ? { totalEquity: symbolFilteredPositions.total, marketValue: symbolFilteredPositions.total, cash: null } : activeBalances}
+            deploymentSummary={focusedSymbol ? null : activeDeploymentSummary}
+            pnl={focusedSymbol ? { dayPnl: focusedSymbolPnl?.dayPnl ?? 0, openPnl: focusedSymbolPnl?.openPnl ?? 0, totalPnl: focusedSymbolPnl?.totalPnl ?? null } : activePnl}
+            fundingSummary={focusedSymbol ? (function buildSymbolFunding(){
+              const mv = Number(symbolFilteredPositions.total) || 0;
+              const totalP = Number(focusedSymbolPnl?.totalPnl);
+              const cost = Number.isFinite(totalP) ? mv - totalP : null;
+              let rate = null;
+              const startKey = (function resolveStart(){
+                if (typeof cagrStartDate === 'string' && cagrStartDate) return cagrStartDate;
+                const s1 = fundingSummaryForDisplay?.annualizedReturnStartDate;
+                if (typeof s1 === 'string' && s1) return s1;
+                const s2 = fundingSummaryForDisplay?.periodStartDate;
+                if (typeof s2 === 'string' && s2) return s2;
+                return null;
+              })();
+              if (cost && cost > 0 && typeof startKey === 'string' && startKey) {
+                const start = new Date(`${startKey}T00:00:00Z`);
+                const end = new Date(asOf || new Date().toISOString());
+                const years = (end - start) / (1000 * 60 * 60 * 24) / 365.25;
+                if (Number.isFinite(years) && years > 0) {
+                  const growth = mv / cost;
+                  if (Number.isFinite(growth) && growth > 0) {
+                    rate = Math.pow(growth, 1 / years) - 1;
+                  }
+                }
+              }
+              return {
+                annualizedReturnRate: Number.isFinite(rate) ? rate : null,
+                annualizedReturnAsOf: asOf,
+                annualizedReturnStartDate: startKey,
+                periodStartDate: startKey,
+                periodEndDate: asOf,
+              };
+            })() : fundingSummaryForDisplay}
             asOf={asOf}
             onRefresh={handleRefresh}
-            displayTotalEquity={displayTotalEquity}
+            displayTotalEquity={focusedSymbol ? symbolFilteredPositions.total : displayTotalEquity}
             usdToCadRate={usdToCadRate}
             onShowPeople={handleOpenPeople}
             peopleDisabled={peopleDisabled}
-            onShowCashBreakdown={
-              cashBreakdownAvailable && activeCurrencyCode
-                ? () => handleShowCashBreakdown(activeCurrencyCode)
-                : null
-            }
-            onShowPnlBreakdown={orderedPositions.length ? handleShowPnlBreakdown : null}
+            onShowCashBreakdown={focusedSymbol ? null : (cashBreakdownAvailable && activeCurrencyCode ? () => handleShowCashBreakdown(activeCurrencyCode) : null)}
+            onShowPnlBreakdown={focusedSymbol ? null : (orderedPositions.length ? handleShowPnlBreakdown : null)}
             onShowTotalPnl={handleShowTotalPnlDialog}
             onShowAnnualizedReturn={handleShowAnnualizedReturnDetails}
             isRefreshing={isRefreshing}
@@ -9005,13 +9364,14 @@ export default function App() {
               showingAggregateAccounts ? handleShowInvestmentModelDialog : null
             }
             benchmarkComparison={benchmarkSummary}
-            totalPnlRangeOptions={totalPnlRangeOptions}
-            selectedTotalPnlRange={totalPnlRange}
-            onTotalPnlRangeChange={handleTotalPnlRangeChange}
-            onAdjustDeployment={handleOpenDeploymentAdjustment}
-            childAccounts={childAccountSummaries}
-            parentGroups={parentAccountSummaries}
-            childAccountParentTotal={childAccountParentTotal}
+            totalPnlRangeOptions={focusedSymbol ? [] : totalPnlRangeOptions}
+            selectedTotalPnlRange={focusedSymbol ? null : totalPnlRange}
+            onTotalPnlRangeChange={focusedSymbol ? null : handleTotalPnlRangeChange}
+            onAdjustDeployment={focusedSymbol ? null : handleOpenDeploymentAdjustment}
+            symbolMode={Boolean(focusedSymbol)}
+            childAccounts={focusedSymbol ? [] : childAccountSummaries}
+            parentGroups={focusedSymbol ? [] : parentAccountSummaries}
+            childAccountParentTotal={focusedSymbol ? null : childAccountParentTotal}
             onSelectAccount={handleAccountChange}
             onShowChildPnlBreakdown={handleShowChildPnlBreakdown}
             onShowChildTotalPnl={handleShowChildTotalPnl}
@@ -9120,8 +9480,8 @@ export default function App() {
               hidden={portfolioViewTab !== 'positions'}
             >
               <PositionsTable
-                positions={orderedPositions}
-                totalMarketValue={totalMarketValue}
+                positions={symbolFilteredPositions.list}
+                totalMarketValue={symbolFilteredPositions.total}
                 sortColumn={resolvedSortColumn}
                 sortDirection={resolvedSortDirection}
                 onSortChange={setPositionsSort}
@@ -9133,6 +9493,9 @@ export default function App() {
                 onShowNotes={handleShowSymbolNotes}
                 onShowOrders={handleShowSymbolOrders}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
+                showPortfolioShare={!focusedSymbol}
+                showAccountColumn={Boolean(focusedSymbol) && isAggregateSelection}
+                hideTargetColumn={Boolean(focusedSymbol)}
               />
             </div>
 
@@ -9184,7 +9547,7 @@ export default function App() {
                 className="positions-card__models-panel"
               >
                 {showModelsPanel
-                  ? investmentModelSections.map((section, index) => {
+                  ? filteredInvestmentModelSections.map((section, index) => {
                     const modelKey = section.model || '';
                     const chartState = section.chart || { data: null, loading: false, error: null };
                     const mapKey = `${section.accountId || 'account'}-${section.chartKey || modelKey || index}`;
@@ -9248,7 +9611,7 @@ export default function App() {
                     ))}
                   </select>
                 </div>
-                <DividendBreakdown summary={selectedAccountDividends} variant="panel" />
+                <DividendBreakdown summary={selectedAccountDividendsForView} variant="panel" />
               </div>
             ) : null}
             {isNewsFeatureEnabled ? (
@@ -9363,6 +9726,7 @@ export default function App() {
           error={totalPnlDialogError}
           onRetry={handleRetryTotalPnlSeries}
           accountLabel={totalPnlDialogContext.label}
+          symbolLabel={focusedSymbol || null}
           supportsCagrToggle={Boolean(totalPnlDialogContext.supportsCagrToggle)}
           mode={totalPnlSeriesState.mode}
           onModeChange={handleChangeTotalPnlSeriesMode}

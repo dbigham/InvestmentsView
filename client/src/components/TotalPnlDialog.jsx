@@ -243,6 +243,7 @@ export default function TotalPnlDialog({
   error,
   onRetry,
   accountLabel,
+  symbolLabel,
   supportsCagrToggle,
   mode,
   onModeChange,
@@ -769,7 +770,7 @@ export default function TotalPnlDialog({
         <div className="qqq-dialog__content pnl-dialog__content">
           <section className="pnl-dialog" aria-labelledby={headingId}>
             <div className="pnl-dialog__header">
-              <h2 id={headingId}>Total P&amp;L</h2>
+              <h2 id={headingId}>{symbolLabel ? `${symbolLabel} Total P&L` : 'Total P&L'}</h2>
               {accountLabel && <span className="pnl-dialog__account">{accountLabel}</span>}
             </div>
 
@@ -1066,6 +1067,7 @@ TotalPnlDialog.propTypes = {
   error: PropTypes.instanceOf(Error),
   onRetry: PropTypes.func,
   accountLabel: PropTypes.string,
+  symbolLabel: PropTypes.string,
   supportsCagrToggle: PropTypes.bool,
   mode: PropTypes.oneOf(['cagr', 'all']),
   onModeChange: PropTypes.func,
@@ -1079,6 +1081,7 @@ TotalPnlDialog.defaultProps = {
   error: null,
   onRetry: null,
   accountLabel: null,
+  symbolLabel: null,
   supportsCagrToggle: false,
   mode: 'cagr',
   onModeChange: null,

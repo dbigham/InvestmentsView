@@ -135,6 +135,9 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   if (params && params.applyAccountCagrStartDate === false) {
     url.searchParams.set('applyAccountCagrStartDate', 'false');
   }
+  if (params && typeof params.symbol === 'string' && params.symbol.trim()) {
+    url.searchParams.set('symbol', params.symbol.trim());
+  }
   return url.toString();
 }
 

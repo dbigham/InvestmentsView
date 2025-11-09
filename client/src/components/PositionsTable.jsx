@@ -212,6 +212,9 @@ function PositionsTable({
   onShowNotes = null,
   onShowOrders = null,
   forceShowTargetColumn = false,
+  showPortfolioShare = true,
+  showAccountColumn = false,
+  hideTargetColumn = false,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
@@ -279,14 +282,25 @@ function PositionsTable({
     });
   }, [positions, aggregateMarketValue]);
 
-  const showTargetColumn = useMemo(
-    () =>
+  const showTargetColumn = useMemo(() => {
+    if (hideTargetColumn) return false;
+    return (
       forceShowTargetColumn ||
-      decoratedPositions.some((position) => hasTargetProportionValue(position)),
-    [decoratedPositions, forceShowTargetColumn]
-  );
+      decoratedPositions.some((position) => hasTargetProportionValue(position))
+    );
+  }, [decoratedPositions, forceShowTargetColumn, hideTargetColumn]);
 
-  const activeHeaders = showTargetColumn ? TABLE_HEADERS : TABLE_HEADERS_WITHOUT_TARGET;
+  let activeHeaders = showTargetColumn ? TABLE_HEADERS : TABLE_HEADERS_WITHOUT_TARGET;
+  if (!showPortfolioShare) {
+    activeHeaders = activeHeaders.filter((c) => c.key !== 'portfolioShare');
+  }
+  if (showAccountColumn) {
+    const accountHeader = { key: 'account', label: 'Account', className: 'positions-table__head--account', sortType: 'text', accessor: (row) => row.accountDisplayName || row.accountNumber || row.accountId || '' };
+    const symbolIndex = activeHeaders.findIndex((c) => c.key === 'symbol');
+    const insertAt = symbolIndex >= 0 ? symbolIndex + 1 : 1;
+    activeHeaders = activeHeaders.slice();
+    activeHeaders.splice(insertAt, 0, accountHeader);
+  }
 
   const sortedPositions = useMemo(() => {
     const header = activeHeaders.find((column) => column.key === sortState.column);
@@ -574,21 +588,21 @@ function PositionsTable({
           const isSorted = column.key === sortState.column;
           const sortDirectionValue = isSorted ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none';
           return (
-            <div
-              key={column.key}
-              role="columnheader"
-              aria-sort={sortDirectionValue}
-              className={`positions-table__head ${column.className}${isSorted ? ' sorted' : ''}`}
-            >
-              <button type="button" className="positions-table__head-button" onClick={() => handleSort(column.key)}>
-                <span>{column.label}</span>
-                {isSorted && (
-                  <span className={`positions-table__sort-indicator ${sortState.direction}`} aria-hidden="true" />
-                )}
-              </button>
-            </div>
-          );
-        })}
+              <div
+                key={column.key}
+                role="columnheader"
+                aria-sort={sortDirectionValue}
+                className={`positions-table__head ${column.className}${isSorted ? ' sorted' : ''}`}
+              >
+                <button type="button" className="positions-table__head-button" onClick={() => handleSort(column.key)}>
+                  <span>{column.label}</span>
+                  {isSorted && (
+                    <span className={`positions-table__sort-indicator ${sortState.direction}`} aria-hidden="true" />
+                  )}
+                </button>
+              </div>
+            );
+          })}
       </div>
 
       <div className="positions-table__body">
@@ -675,6 +689,11 @@ function PositionsTable({
               onClick={(event) => handleRowNavigation(event, position.symbol)}
               onContextMenu={(event) => handleRowContextMenu(event, position)}
             >
+              {showAccountColumn ? (
+                <div className="positions-table__cell positions-table__cell--account" role="cell">
+                  {position.accountDisplayName || position.accountNumber || position.accountId || ''}
+                </div>
+              ) : null}
               <div
                 className="positions-table__cell positions-table__cell--symbol"
                 role="cell"
@@ -746,9 +765,11 @@ function PositionsTable({
               <div className="positions-table__cell positions-table__cell--currency" role="cell">
                 <span>{position.currency || ''}</span>
               </div>
-              <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {displayShare}
-              </div>
+              {showPortfolioShare ? (
+                <div className="positions-table__cell positions-table__cell--numeric" role="cell">
+                  {displayShare}
+                </div>
+              ) : null}
               {showTargetColumn ? (
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                   {displayTargetShare}
@@ -881,6 +902,9 @@ PositionsTable.propTypes = {
   onShowNotes: PropTypes.func,
   onShowOrders: PropTypes.func,
   forceShowTargetColumn: PropTypes.bool,
+  showPortfolioShare: PropTypes.bool,
+  showAccountColumn: PropTypes.bool,
+  hideTargetColumn: PropTypes.bool,
 };
 
 PositionsTable.defaultProps = {
@@ -896,6 +920,9 @@ PositionsTable.defaultProps = {
   onShowNotes: null,
   onShowOrders: null,
   forceShowTargetColumn: false,
+  showPortfolioShare: true,
+  showAccountColumn: false,
+  hideTargetColumn: false,
 };
 
 export default PositionsTable;

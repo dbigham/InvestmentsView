@@ -530,6 +530,7 @@ export default function SummaryMetrics({
   selectedTotalPnlRange,
   onTotalPnlRangeChange,
   onAdjustDeployment,
+  symbolMode = false,
   childAccounts,
   parentGroups,
   onSelectAccount,
@@ -551,7 +552,7 @@ export default function SummaryMetrics({
   const isCombinedView =
     currencyOption?.scope === 'combined' &&
     (currencyOption?.currency === 'CAD' || currencyOption?.currency === 'USD');
-  const showDeploymentBreakdown = deploymentAvailable && isCombinedView;
+  const showDeploymentBreakdown = !symbolMode && deploymentAvailable && isCombinedView;
   const deployedValue = Number.isFinite(deploymentSummary?.deployedValue)
     ? deploymentSummary.deployedValue
     : 0;
@@ -594,7 +595,7 @@ export default function SummaryMetrics({
   const netDepositsValue = Number.isFinite(fundingSummary?.netDepositsCad)
     ? fundingSummary.netDepositsCad
     : null;
-  const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
+  const formattedNetDeposits = symbolMode ? null : (netDepositsValue !== null ? formatMoney(netDepositsValue) : null);
 
   const annualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
     ? fundingSummary.annualizedReturnRate
@@ -1407,7 +1408,7 @@ export default function SummaryMetrics({
         </div>
       </header>
 
-      {currencyOptions.length > 0 && (
+      {currencyOptions.length > 0 && !symbolMode && (
         <div className="equity-card__chip-row" role="group" aria-label="Currency views">
           {currencyOptions.map((option) => {
             const isActive = currencyOption?.value === option.value;
@@ -1433,14 +1434,14 @@ export default function SummaryMetrics({
             value={formattedToday}
             extra={dayPercent ? `(${dayPercent})` : null}
             tone={todayTone}
-            onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null}
+            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
           />
           <MetricRow
             label="Open P&L"
             value={formattedOpen}
             extra={openPercent ? `(${openPercent})` : null}
             tone={openTone}
-            onActivate={onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null}
+            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null)}
           />
           <MetricRow
             label="Total P&L"
@@ -1453,26 +1454,28 @@ export default function SummaryMetrics({
             onContextMenuRequest={handleTotalContextMenuRequest}
             contextMenuOpen={totalMenuState.open}
           />
-          {totalPnlRangeNode}
-          {totalDetailBlock}
+          {!symbolMode && totalPnlRangeNode}
+          {!symbolMode && totalDetailBlock}
           <MetricRow
             label="Annualized return"
             tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
             value={formattedCagr}
             tone={cagrTone}
-            onActivate={canShowReturnBreakdown ? onShowAnnualizedReturn : null}
+            onActivate={symbolMode ? null : (canShowReturnBreakdown ? onShowAnnualizedReturn : null)}
           />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
         <dl className="equity-card__metric-column">
           <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
           <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
-          <MetricRow
-            label="Cash"
-            value={formatMoney(cash)}
-            tone="neutral"
-            onActivate={onShowCashBreakdown || null}
-          />
+          {!symbolMode && (
+            <MetricRow
+              label="Cash"
+              value={formatMoney(cash)}
+              tone="neutral"
+              onActivate={onShowCashBreakdown || null}
+            />
+          )}
           {showDeploymentBreakdown && (
             <MetricRow
               label="Deployed"
@@ -1632,6 +1635,7 @@ SummaryMetrics.propTypes = {
   selectedTotalPnlRange: PropTypes.string,
   onTotalPnlRangeChange: PropTypes.func,
   onAdjustDeployment: PropTypes.func,
+  symbolMode: PropTypes.bool,
   childAccounts: PropTypes.arrayOf(
     PropTypes.shape({
       id: PropTypes.string.isRequired,
@@ -1691,6 +1695,7 @@ SummaryMetrics.defaultProps = {
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,
   onAdjustDeployment: null,
+  symbolMode: false,
   childAccounts: [],
   parentGroups: [],
   onSelectAccount: null,

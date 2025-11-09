@@ -8208,6 +8208,237 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   };
 }
 
+// Compute a per-symbol daily Total P&L series (in CAD) for the given account.
+// This mirrors computeTotalPnlSeries but restricts holdings and cash flows to a single symbol,
+// and treats cumulative net deposits as invested trade cash into that symbol (buys positive, sells negative).
+async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombinedBalances, options = {}) {
+  if (!account || !account.id) {
+    return null;
+  }
+  const rawSymbol = typeof options.symbol === 'string' ? options.symbol.trim() : '';
+  const targetSymbol = normalizeSymbol(rawSymbol);
+  if (!targetSymbol) {
+    return null;
+  }
+
+  const accountKey = account.id;
+  const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
+  if (!activityContext) {
+    return null;
+  }
+
+  // Determine date range (align with account-level computation for consistency)
+  const netDepositsSummary = await computeNetDepositsCore(
+    account,
+    perAccountCombinedBalances,
+    { applyAccountCagrStartDate: options.applyAccountCagrStartDate !== false },
+    activityContext
+  );
+  if (!netDepositsSummary) {
+    return null;
+  }
+
+  const startDateIso = (function resolveStart() {
+    const candidates = [];
+    if (typeof options.startDate === 'string' && options.startDate.trim()) candidates.push(options.startDate.trim());
+    if (typeof netDepositsSummary.periodStartDate === 'string' && netDepositsSummary.periodStartDate.trim()) {
+      candidates.push(netDepositsSummary.periodStartDate.trim());
+    }
+    const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
+    if (crawlStartIso) candidates.push(crawlStartIso);
+    const nowIso = formatDateOnly(activityContext.now) || null;
+    if (nowIso) candidates.push(nowIso);
+    const valid = candidates
+      .map((d) => ({ d, t: Date.parse(d + 'T00:00:00Z') }))
+      .filter((x) => Number.isFinite(x.t))
+      .sort((a, b) => a.t - b.t);
+    return valid.length ? valid[0].d : netDepositsSummary.periodStartDate || crawlStartIso || nowIso;
+  })();
+  const displayStartIso = options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
+    ? account.cagrStartDate.trim()
+    : startDateIso;
+  const endDateIso =
+    typeof options.endDate === 'string' && options.endDate.trim()
+      ? options.endDate.trim()
+      : netDepositsSummary.periodEndDate || formatDateOnly(activityContext.now);
+
+  const startDate = parseDateOnlyString(startDateIso);
+  const displayStartDate = parseDateOnlyString(displayStartIso);
+  const endDate = parseDateOnlyString(endDateIso);
+  if (!startDate || !endDate || startDate > endDate) {
+    return null;
+  }
+  const dateKeys = enumerateDateKeys(startDate, endDate);
+  if (!dateKeys.length) {
+    return null;
+  }
+
+  await ensureUsdToCadRates(dateKeys);
+
+  // Build symbol metadata and activity list for this symbol only
+  const processedActivities = [];
+  const symbolIds = new Set();
+  const symbolMeta = new Map();
+  const nonTradeQtyByDate = new Map();
+  const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
+  rawActivities.forEach((activity) => {
+    const timestamp = resolveActivityTimestamp(activity);
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) return;
+    const dateKey = formatDateOnly(timestamp);
+    if (!dateKey) return;
+    const directSymbol = normalizeSymbol(activity.symbol);
+    const resolved = directSymbol || resolveActivitySymbol(activity) || null;
+    if (!resolved || normalizeSymbol(resolved) !== targetSymbol) return;
+    processedActivities.push({ activity, timestamp, dateKey, symbol: targetSymbol });
+    const symbolId = Number(activity.symbolId);
+    if (Number.isFinite(symbolId) && symbolId > 0) symbolIds.add(symbolId);
+    const activityCurrency = normalizeCurrency(activity.currency) || null;
+    if (!symbolMeta.has(targetSymbol)) {
+      symbolMeta.set(targetSymbol, {
+        symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+        currency: inferSymbolCurrency(targetSymbol) || activityCurrency || null,
+      });
+    }
+
+    // Track non-trade quantity deltas (journals/transfers) so we can treat their value as invested cash
+    const qty = Number(activity.quantity);
+    const isTradeLike = isOrderLikeActivity(activity);
+    if (!isTradeLike && Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
+      adjustNumericMap(nonTradeQtyByDate, dateKey, qty, LEDGER_QUANTITY_EPSILON);
+    }
+  });
+  // If we have symbolIds but missing currency, try details
+  if (symbolIds.size > 0) {
+    try {
+      const details = await fetchSymbolsDetails(login, Array.from(symbolIds));
+      const one = Object.values(details)[0];
+      if (one) {
+        const meta = symbolMeta.get(targetSymbol) || {};
+        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(one.symbolId)) meta.symbolId = one.symbolId;
+        if (!meta.currency && one.currency) meta.currency = normalizeCurrency(one.currency);
+        symbolMeta.set(targetSymbol, meta);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Price series
+  const priceSeriesMap = new Map();
+  const startKey = dateKeys[0];
+  const endKey = dateKeys[dateKeys.length - 1];
+  try {
+    const meta = symbolMeta.get(targetSymbol) || {};
+    const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
+    const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
+    const history = await fetchSymbolPriceHistory(targetSymbol, startKey, endKey, { login, symbolId, accountKey });
+    priceSeriesMap.set(targetSymbol, buildDailyPriceSeries(history || [], dateKeys));
+  } catch (e) {
+    priceSeriesMap.set(targetSymbol, new Map());
+  }
+
+  // Build daily invested cash map for this symbol: trades only (buys positive, sells negative)
+  const dailyInvestedCad = new Map();
+  for (const entry of processedActivities) {
+    const { activity, timestamp, dateKey } = entry;
+    const action = (activity.action || '').toString().toLowerCase();
+    const type = (activity.type || '').toString().toLowerCase();
+    const desc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
+    const isDividend = INCOME_ACTIVITY_REGEX.test(desc);
+    const isTradeLike = isOrderLikeActivity(activity);
+    if (!isTradeLike) {
+      // dividends not included in invested baseline; they will reflect in total P&L via equity changes only if
+      // we tracked cash, which we omit for symbol breakdown. Keeping simple per requirement.
+      continue;
+    }
+    const netAmount = Number(activity.netAmount);
+    const currency = normalizeCurrency(activity.currency);
+    const { cadAmount } = await convertAmountToCad(netAmount, currency, timestamp, accountKey);
+    if (!Number.isFinite(cadAmount) || Math.abs(cadAmount) < CASH_FLOW_EPSILON / 10) continue;
+    // Buys: netAmount negative -> invested positive; Sells: netAmount positive -> invested negative.
+    const investedDelta = -cadAmount;
+    adjustNumericMap(dailyInvestedCad, dateKey, investedDelta, CASH_FLOW_EPSILON);
+  }
+
+  // Iterate days computing symbol equity and P&L
+  const holdings = new Map();
+  const cashByCurrency = new Map(); // intentionally empty for symbol series
+  const usdRateCache = new Map();
+  const points = [];
+  let cumulativeInvested = 0;
+  for (const dateKey of dateKeys) {
+    // apply all activity up to this day for this symbol
+    for (const entry of processedActivities) {
+      if (entry.dateKey !== dateKey) continue;
+      const qty = Number(entry.activity.quantity);
+      if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
+        adjustHolding(holdings, targetSymbol, qty);
+      }
+    }
+    const daily = dailyInvestedCad.has(dateKey) ? dailyInvestedCad.get(dateKey) : 0;
+    if (Number.isFinite(daily) && Math.abs(daily) >= CASH_FLOW_EPSILON / 10) {
+      cumulativeInvested += daily;
+    }
+    const usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+
+    // Treat non-trade share transfers as deposits/withdrawals at the day's price
+    const qtyDelta = nonTradeQtyByDate.has(dateKey) ? nonTradeQtyByDate.get(dateKey) : 0;
+    if (Number.isFinite(qtyDelta) && Math.abs(qtyDelta) >= LEDGER_QUANTITY_EPSILON) {
+      const series = priceSeriesMap.get(targetSymbol) || new Map();
+      const nativePrice = series.get(dateKey);
+      let cadPrice = null;
+      if (Number.isFinite(nativePrice)) {
+        const cur = (symbolMeta.get(targetSymbol) && symbolMeta.get(targetSymbol).currency) || 'CAD';
+        cadPrice = cur === 'USD' ? (Number.isFinite(usdRate) && usdRate > 0 ? nativePrice * usdRate : null) : nativePrice;
+      }
+      if (Number.isFinite(cadPrice) && Math.abs(cadPrice) > 0) {
+        const deltaInvested = qtyDelta * cadPrice;
+        if (Math.abs(deltaInvested) >= CASH_FLOW_EPSILON / 10) {
+          cumulativeInvested += deltaInvested;
+        }
+      }
+    }
+    const snapshot = computeLedgerEquitySnapshot(
+      dateKey,
+      holdings,
+      cashByCurrency,
+      symbolMeta,
+      priceSeriesMap,
+      usdRate,
+      { reserveSymbols: new Set() }
+    );
+    const equityCad = Number.isFinite(snapshot.equityCad) ? snapshot.equityCad : 0;
+    const totalPnlCad = Number.isFinite(cumulativeInvested) ? equityCad - cumulativeInvested : null;
+    points.push({ date: dateKey, equityCad, cumulativeNetDepositsCad: Number.isFinite(cumulativeInvested) ? cumulativeInvested : null, totalPnlCad });
+  }
+
+  const summary = (function buildSummary() {
+    const last = points[points.length - 1] || {};
+    const first = points[0] || {};
+    return {
+      netDepositsCad: Number.isFinite(last.cumulativeNetDepositsCad) ? last.cumulativeNetDepositsCad : null,
+      totalPnlCad: Number.isFinite(last.totalPnlCad) ? last.totalPnlCad : null,
+      totalPnlAllTimeCad: Number.isFinite(last.totalPnlCad) ? last.totalPnlCad : null,
+      totalEquityCad: Number.isFinite(last.equityCad) ? last.equityCad : null,
+      seriesStartTotals: {
+        cumulativeNetDepositsCad: Number.isFinite(first.cumulativeNetDepositsCad) ? first.cumulativeNetDepositsCad : null,
+        equityCad: Number.isFinite(first.equityCad) ? first.equityCad : null,
+        totalPnlCad: Number.isFinite(first.totalPnlCad) ? first.totalPnlCad : null,
+      },
+      displayStartTotals: undefined,
+    };
+  })();
+
+  return {
+    accountId: accountKey,
+    periodStartDate: formatDateOnly(startDate),
+    periodEndDate: formatDateOnly(endDate),
+    displayStartDate: formatDateOnly(displayStartDate),
+    points,
+    summary,
+  };
+}
+
 // Compute total P&L by symbol (in CAD) using the same activity context and pricing used
 // for the account-level Total P&L series. Result entries include closed symbols.
 async function computeTotalPnlBySymbol(login, account, options = {}) {
@@ -11621,6 +11852,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         aggregateOptions.endDate = req.query.endDate.trim();
       }
       aggregateOptions.applyAccountCagrStartDate = false;
+      const symbolParam = typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
 
       const contexts = [];
       let hadAccountFetchFailure = false;
@@ -11708,12 +11940,19 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         MAX_AGGREGATE_FUNDING_CONCURRENCY,
         async function (context) {
           try {
-            const series = await computeTotalPnlSeries(
-              context.login,
-              context.account,
-              perAccountCombinedBalances,
-              aggregateOptions
-            );
+            const series = symbolParam
+              ? await computeTotalPnlSeriesForSymbol(
+                  context.login,
+                  context.account,
+                  perAccountCombinedBalances,
+                  { ...aggregateOptions, symbol: symbolParam }
+                )
+              : await computeTotalPnlSeries(
+                  context.login,
+                  context.account,
+                  perAccountCombinedBalances,
+                  aggregateOptions
+                );
             return { context, series };
           } catch (error) {
             const message = error && error.message ? error.message : String(error);
@@ -11999,8 +12238,17 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     if (req.query.applyAccountCagrStartDate === 'false' || req.query.applyAccountCagrStartDate === '0') {
       options.applyAccountCagrStartDate = false;
     }
+    const symbolParam = typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
 
-    const series = await computeTotalPnlSeries(login, effectiveAccount, perAccountCombinedBalances, options);
+    let series = null;
+    if (symbolParam) {
+      series = await computeTotalPnlSeriesForSymbol(login, effectiveAccount, perAccountCombinedBalances, {
+        ...options,
+        symbol: symbolParam,
+      });
+    } else {
+      series = await computeTotalPnlSeries(login, effectiveAccount, perAccountCombinedBalances, options);
+    }
     if (!series) {
       return res.status(503).json({ message: 'Total P&L series unavailable' });
     }
