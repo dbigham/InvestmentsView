@@ -590,7 +590,8 @@ textarea {
   pointer-events: none;
   flex-shrink: 0;
   --account-selector-tree-indent: 16px;
-  --account-selector-tree-color: rgba(148, 163, 184, 0.35);
+  --account-selector-tree-color: rgba(148, 163, 184, 0.45);
+  --account-selector-tree-gap: 10px;
 }
 
 .account-selector__tree-segment {
@@ -598,6 +599,7 @@ textarea {
   width: var(--account-selector-tree-indent);
   min-width: var(--account-selector-tree-indent);
   display: block;
+  height: 100%;
 }
 
 .account-selector__tree-segment::before,
@@ -637,10 +639,18 @@ textarea {
 .account-selector__tree-segment--current::after {
   display: block;
   left: calc(var(--account-selector-tree-indent) / 2);
-  right: -12px;
+  width: calc(var(--account-selector-tree-indent) / 2 + var(--account-selector-tree-gap));
   top: calc(var(--account-selector-tree-indent) / 2);
   height: 1px;
   opacity: 0.45;
+}
+
+.account-selector__option--nested {
+  padding-left: 12px;
+}
+
+.account-selector__option--nested .account-selector__option-tree {
+  margin-left: -8px;
 }
 
 .account-selector__option-content {
@@ -652,9 +662,13 @@ textarea {
   min-width: 0;
 }
 
-.account-selector__option:hover,
-.account-selector__option--highlighted {
+.account-selector__option:hover:not(.account-selector__option--selected),
+.account-selector__option--highlighted:not(.account-selector__option--selected) {
   background: var(--color-surface-alt);
+}
+
+.account-selector__option--selected {
+  background: var(--color-accent-soft);
 }
 
 .account-selector__option--selected .account-selector__primary {
