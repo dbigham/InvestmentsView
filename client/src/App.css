@@ -827,7 +827,8 @@ textarea {
 .qqq-dialog__close {
   position: absolute;
   top: 16px;
-  right: 16px;
+  /* Keep the close button away from overlaid scrollbars and device safe areas */
+  right: max(24px, calc(env(safe-area-inset-right) + 16px));
   border: none;
   background: transparent;
   color: var(--color-text-secondary);
