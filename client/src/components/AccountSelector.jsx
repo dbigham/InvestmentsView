@@ -248,21 +248,159 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
   const optionsState = useMemo(() => {
     const normalize = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
     const relationsMap = new Map();
+    const parentListMap = new Map();
+    const rawNameByKey = new Map();
+
     if (groupRelations && typeof groupRelations === 'object') {
-      Object.entries(groupRelations).forEach(([child, parents]) => {
-        const c = normalize(child);
-        const parentList = Array.isArray(parents) ? parents : [parents];
-        let set = relationsMap.get(c);
-        if (!set) {
-          set = new Set();
-          relationsMap.set(c, set);
+      Object.entries(groupRelations).forEach(([childName, parents]) => {
+        const childDisplay = typeof childName === 'string' ? childName.trim() : '';
+        const childKey = normalize(childDisplay);
+        if (childKey && childDisplay && !rawNameByKey.has(childKey)) {
+          rawNameByKey.set(childKey, childDisplay);
         }
-        parentList.forEach((p) => {
-          const pn = normalize(p);
-          if (pn) set.add(pn);
+        const parentList = Array.isArray(parents) ? parents : [parents];
+        const normalizedParents = [];
+        parentList.forEach((parentName) => {
+          const parentDisplay = typeof parentName === 'string' ? parentName.trim() : '';
+          const parentKey = normalize(parentDisplay);
+          if (!parentKey) {
+            return;
+          }
+          normalizedParents.push(parentKey);
+          if (parentDisplay && !rawNameByKey.has(parentKey)) {
+            rawNameByKey.set(parentKey, parentDisplay);
+          }
+          let set = relationsMap.get(childKey);
+          if (!set) {
+            set = new Set();
+            relationsMap.set(childKey, set);
+          }
+          set.add(parentKey);
         });
+        if (childKey && normalizedParents.length) {
+          parentListMap.set(childKey, normalizedParents);
+        }
       });
     }
+
+    const accountOptions = [];
+    const accountEntries = [];
+    accounts.forEach((account, index) => {
+      const option = buildAccountOption(account, { multipleOwners, totalAccounts });
+      if (!option || shouldHideAccountOption(option)) {
+        return;
+      }
+      const groupName = typeof account?.accountGroup === 'string' ? account.accountGroup.trim() : '';
+      const groupKey = normalize(groupName);
+      if (groupKey && groupName && !rawNameByKey.has(groupKey)) {
+        rawNameByKey.set(groupKey, groupName);
+      }
+      accountOptions.push(option);
+      accountEntries.push({
+        node: {
+          type: 'account',
+          option,
+          orderIndex: index,
+          children: [],
+        },
+        groupKey,
+        groupName,
+      });
+    });
+
+    const baseGroupCount = Array.isArray(accountGroups) ? accountGroups.length : 0;
+    const groupNodesByKey = new Map();
+    const groupNodesList = [];
+    const groupOptions = [];
+    let syntheticGroupIndex = 0;
+
+    const ensureGroupNode = (key, rawName) => {
+      const normalizedKey = normalize(key);
+      if (!normalizedKey) {
+        return null;
+      }
+      let existing = groupNodesByKey.get(normalizedKey);
+      if (existing) {
+        if (rawName && rawName.trim() && !rawNameByKey.has(normalizedKey)) {
+          rawNameByKey.set(normalizedKey, rawName.trim());
+        }
+        return existing;
+      }
+      const displaySource =
+        (rawName && rawName.trim()) || rawNameByKey.get(normalizedKey) || '';
+      if (displaySource && !rawNameByKey.has(normalizedKey)) {
+        rawNameByKey.set(normalizedKey, displaySource);
+      }
+      const fallbackName =
+        displaySource ||
+        toFriendlyLabel(normalizedKey.replace(/[-_]+/g, ' ')) ||
+        'Group';
+      const idBase = normalizedKey.replace(/[^a-z0-9]+/g, '-') || 'group';
+      const placeholderId = `group:${idBase}`;
+      const option = {
+        value: placeholderId,
+        primary: fallbackName,
+        meta: null,
+        secondary: null,
+        group: { id: placeholderId, name: fallbackName },
+      };
+      const node = {
+        type: 'group',
+        option,
+        orderIndex: baseGroupCount + syntheticGroupIndex,
+        normalizedKey,
+        children: [],
+        parent: null,
+        isPlaceholder: true,
+      };
+      syntheticGroupIndex += 1;
+      groupNodesByKey.set(normalizedKey, node);
+      groupNodesList.push(node);
+      groupOptions.push(option);
+      return node;
+    };
+
+    if (Array.isArray(accountGroups)) {
+      accountGroups.forEach((group, index) => {
+        const option = buildAccountGroupOption(group);
+        if (!option || shouldHideAccountOption(option)) {
+          return;
+        }
+        const name = typeof group.name === 'string' ? group.name.trim() : option.primary;
+        const normalizedKey = normalize(name);
+        if (normalizedKey && name) {
+          rawNameByKey.set(normalizedKey, name);
+        }
+        const node = {
+          type: 'group',
+          option,
+          orderIndex: index,
+          normalizedKey,
+          children: [],
+          parent: null,
+        };
+        groupNodesByKey.set(normalizedKey, node);
+        groupNodesList.push(node);
+        groupOptions.push(option);
+      });
+    }
+
+    parentListMap.forEach((parents, childKey) => {
+      if (childKey && !groupNodesByKey.has(childKey)) {
+        ensureGroupNode(childKey, rawNameByKey.get(childKey));
+      }
+      parents.forEach((parentKey) => {
+        if (parentKey && !groupNodesByKey.has(parentKey)) {
+          ensureGroupNode(parentKey, rawNameByKey.get(parentKey));
+        }
+      });
+    });
+
+    accountEntries.forEach(({ groupKey, groupName }) => {
+      if (groupKey && !groupNodesByKey.has(groupKey)) {
+        ensureGroupNode(groupKey, groupName);
+      }
+    });
 
     const isAncestor = (maybeParentName, childName) => {
       const parentKey = normalize(maybeParentName);
@@ -274,48 +412,180 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       const queue = [childKey];
       while (queue.length) {
         const current = queue.shift();
-        if (seen.has(current)) continue;
+        if (seen.has(current)) {
+          continue;
+        }
         seen.add(current);
         const parents = relationsMap.get(current);
-        if (!parents) continue;
+        if (!parents) {
+          continue;
+        }
         if (parents.has(parentKey)) {
           return true;
         }
-        parents.forEach((p) => queue.push(p));
+        parents.forEach((p) => {
+          if (!seen.has(p)) {
+            queue.push(p);
+          }
+        });
       }
       return false;
     };
 
-    const accountOptions = accounts
-      .map((account) => buildAccountOption(account, { multipleOwners, totalAccounts }))
-      .filter((option) => option && !shouldHideAccountOption(option));
-    const groupOptionsRaw = Array.isArray(accountGroups)
-      ? accountGroups
-          .map((group) => buildAccountGroupOption(group))
-          .filter((option) => option && !shouldHideAccountOption(option))
-      : [];
-    const groupOptions = groupOptionsRaw
+    const rootGroupNodes = [];
+    const sortedGroupNodes = groupNodesList
       .slice()
       .sort((a, b) => {
-        // Parents first: if a is ancestor of b, a comes first; if b is ancestor of a, b first.
-        if (isAncestor(a.primary, b.primary)) return -1;
-        if (isAncestor(b.primary, a.primary)) return 1;
-        // Fallback to alphabetical
-        return a.primary.localeCompare(b.primary, undefined, { sensitivity: 'base' });
+        const aOrder = Number.isFinite(a.orderIndex) ? a.orderIndex : Number.MAX_SAFE_INTEGER;
+        const bOrder = Number.isFinite(b.orderIndex) ? b.orderIndex : Number.MAX_SAFE_INTEGER;
+        if (aOrder !== bOrder) {
+          return aOrder - bOrder;
+        }
+        const aName = (a.option?.primary || '').toLowerCase();
+        const bName = (b.option?.primary || '').toLowerCase();
+        return aName.localeCompare(bName);
       });
+
+    sortedGroupNodes.forEach((node) => {
+      const key = node.normalizedKey;
+      if (!key) {
+        rootGroupNodes.push(node);
+        return;
+      }
+      const parentCandidates = parentListMap.get(key) || [];
+      let parentNode = null;
+      for (let i = 0; i < parentCandidates.length; i += 1) {
+        const parentKey = parentCandidates[i];
+        if (!parentKey || parentKey === key) {
+          continue;
+        }
+        if (isAncestor(key, parentKey)) {
+          continue;
+        }
+        const candidate = groupNodesByKey.get(parentKey);
+        if (candidate) {
+          parentNode = candidate;
+          break;
+        }
+      }
+      if (parentNode) {
+        node.parent = parentNode;
+        parentNode.children.push(node);
+      } else {
+        rootGroupNodes.push(node);
+      }
+    });
+
+    const rootAccountNodes = [];
+    accountEntries.forEach(({ node, groupKey }) => {
+      if (groupKey && groupNodesByKey.has(groupKey)) {
+        const parent = groupNodesByKey.get(groupKey);
+        parent.children.push(node);
+        node.parent = parent;
+      } else {
+        rootAccountNodes.push(node);
+      }
+    });
+
+    const computeEffectiveOrder = (node) => {
+      if (!node) {
+        return Number.MAX_SAFE_INTEGER;
+      }
+      if (node.type === 'account') {
+        const orderValue = Number.isFinite(node.orderIndex)
+          ? node.orderIndex
+          : Number.MAX_SAFE_INTEGER;
+        node.effectiveOrder = orderValue;
+        return orderValue;
+      }
+      let minOrder = Number.isFinite(node.orderIndex)
+        ? node.orderIndex
+        : Number.MAX_SAFE_INTEGER;
+      node.children.forEach((child) => {
+        const childOrder = computeEffectiveOrder(child);
+        if (childOrder < minOrder) {
+          minOrder = childOrder;
+        }
+      });
+      node.effectiveOrder = minOrder;
+      return minOrder;
+    };
+
+    const topLevelNodes = [...rootGroupNodes, ...rootAccountNodes];
+    topLevelNodes.forEach((node) => {
+      computeEffectiveOrder(node);
+    });
+
+    const compareNodes = (a, b) => {
+      const aOrder = Number.isFinite(a.effectiveOrder) ? a.effectiveOrder : Number.MAX_SAFE_INTEGER;
+      const bOrder = Number.isFinite(b.effectiveOrder) ? b.effectiveOrder : Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+      if (a.type !== b.type) {
+        if (a.type === 'group') {
+          return -1;
+        }
+        if (b.type === 'group') {
+          return 1;
+        }
+      }
+      const aName = (a.option?.primary || '').toLowerCase();
+      const bName = (b.option?.primary || '').toLowerCase();
+      if (aName && bName) {
+        const cmp = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) {
+          return cmp;
+        }
+      }
+      return 0;
+    };
+
+    const flattenedOptions = [];
+    const flattenNodes = (nodes, depth, ancestorsHasNext) => {
+      if (!nodes || !nodes.length) {
+        return;
+      }
+      const sorted = nodes.slice().sort(compareNodes);
+      sorted.forEach((node, index) => {
+        const isLast = index === sorted.length - 1;
+        const ancestorFlags = ancestorsHasNext.slice();
+        const option = {
+          ...node.option,
+          depth,
+          isGroup: node.type === 'group',
+          hasChildren: node.type === 'group' && node.children.length > 0,
+          treeAncestors: ancestorFlags,
+          isLastChild: isLast,
+        };
+        flattenedOptions.push(option);
+        if (node.type === 'group' && node.children.length) {
+          const childAncestors = ancestorsHasNext.slice();
+          childAncestors.push(!isLast);
+          flattenNodes(node.children, depth + 1, childAncestors);
+        }
+      });
+    };
+
     const allOption = buildAllOption(totalAccounts, accountOptions, multipleOwners);
-    const optionsList = [];
-    if (allOption) {
-      optionsList.push(allOption);
+    if (topLevelNodes.length) {
+      const sortedTopLevel = topLevelNodes.slice().sort(compareNodes);
+      flattenNodes(sortedTopLevel, 1, []);
     }
-    if (groupOptions.length) {
-      groupOptions.forEach((option) => {
-        optionsList.push(option);
+
+    if (allOption) {
+      flattenedOptions.unshift({
+        ...allOption,
+        depth: 0,
+        isGroup: false,
+        hasChildren: topLevelNodes.length > 0,
+        treeAncestors: [],
+        isLastChild: false,
       });
     }
-    optionsList.push(...accountOptions);
+
     return {
-      options: optionsList,
+      options: flattenedOptions,
       accountOptions,
       groupOptions,
       allOption,
@@ -565,7 +835,23 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
                 if (index === highlightedIndex) {
                   optionClasses.push('account-selector__option--highlighted');
                 }
+                if (option.depth > 0) {
+                  optionClasses.push('account-selector__option--nested');
+                }
+                if (option.isGroup) {
+                  optionClasses.push('account-selector__option--group');
+                }
                 const optionId = `${baseId}-option-${index}`;
+                const ancestorSegments = Array.isArray(option.treeAncestors)
+                  ? option.treeAncestors
+                  : [];
+                const currentSegmentClasses = [
+                  'account-selector__tree-segment',
+                  'account-selector__tree-segment--current',
+                ];
+                if (option.isLastChild) {
+                  currentSegmentClasses.push('account-selector__tree-segment--last');
+                }
                 return (
                   <li
                     key={option.value}
@@ -576,12 +862,34 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
                     onMouseEnter={() => setHighlightedIndex(index)}
                     onClick={(event) => handleSelect(option, event)}
                   >
-                    <div className="account-selector__option-content">
-                      {option.meta && <span className="account-selector__meta">{option.meta}</span>}
-                      <span className="account-selector__primary">{option.primary}</span>
-                      {option.secondary && (
-                        <span className="account-selector__secondary">{option.secondary}</span>
+                    <div className="account-selector__option-inner">
+                      {option.depth > 0 && (
+                        <div className="account-selector__option-tree" aria-hidden="true">
+                          {ancestorSegments.map((hasNext, treeIndex) => {
+                            const segmentClasses = [
+                              'account-selector__tree-segment',
+                              'account-selector__tree-segment--ancestor',
+                            ];
+                            if (hasNext) {
+                              segmentClasses.push('account-selector__tree-segment--continue');
+                            }
+                            return (
+                              <span
+                                key={`ancestor-${option.value}-${treeIndex}`}
+                                className={segmentClasses.join(' ')}
+                              />
+                            );
+                          })}
+                          <span className={currentSegmentClasses.join(' ')} />
+                        </div>
                       )}
+                      <div className="account-selector__option-content">
+                        {option.meta && <span className="account-selector__meta">{option.meta}</span>}
+                        <span className="account-selector__primary">{option.primary}</span>
+                        {option.secondary && (
+                          <span className="account-selector__secondary">{option.secondary}</span>
+                        )}
+                      </div>
                     </div>
                     {option.value === selected && <span className="account-selector__check" aria-hidden="true" />}
                   </li>

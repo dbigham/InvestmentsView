@@ -1170,7 +1170,12 @@ export default function ProjectionDialog({
   return (
     <div className="qqq-dialog-overlay" role="presentation" onClick={handleOverlayClick}>
       <div className="qqq-dialog pnl-dialog__container" role="dialog" aria-modal="true" aria-labelledby={headingId}>
-        <button type="button" className="qqq-dialog__close" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="qqq-dialog__close qqq-dialog__close--scroll-guard"
+          onClick={onClose}
+          aria-label="Close"
+        >
           ×
         </button>
         <div className="qqq-dialog__content pnl-dialog__content">

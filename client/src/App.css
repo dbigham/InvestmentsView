@@ -566,6 +566,7 @@ textarea {
   list-style: none;
 }
 
+
 .account-selector__option {
   display: flex;
   align-items: center;
@@ -576,16 +577,94 @@ textarea {
   transition: background-color 0.15s ease;
 }
 
+.account-selector__option-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.account-selector__option-tree {
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  flex-shrink: 0;
+  position: relative;
+  --account-selector-tree-indent: 16px;
+  /* Slightly lighter to avoid visually darker stacking */
+  --account-selector-tree-color: rgba(148, 163, 184, 0.35);
+  --account-selector-tree-gap: 10px;
+  /* Space between the end of the horizontal connector and the text */
+  --account-selector-tree-right-gap: 6px;
+}
+
+/* Subtle vertical trunk at the far-left of the tree area */
+/* Remove per-row left trunk; global trunk aligns with connectors */
+
+.account-selector__tree-segment {
+  position: relative;
+  width: var(--account-selector-tree-indent);
+  min-width: var(--account-selector-tree-indent);
+  display: block;
+  height: 100%;
+}
+
+.account-selector__tree-segment::before,
+.account-selector__tree-segment::after {
+  content: '';
+  position: absolute;
+  background: var(--account-selector-tree-color);
+  pointer-events: none;
+  display: none;
+}
+
+.account-selector__tree-segment--ancestor::before {
+  left: calc(var(--account-selector-tree-indent) / 2);
+  width: 1px;
+  /* Increased overlap to bridge any vertical spacing */
+  top: -8px;
+  bottom: -8px;
+  opacity: 0.45;
+}
+
+.account-selector__tree-segment--ancestor.account-selector__tree-segment--continue::before { display: none; }
+
+.account-selector__tree-segment--current::before { display: none; }
+
+.account-selector__tree-segment--current.account-selector__tree-segment--last::before { display: none; }
+
+/* Ensure no unintended margins between options */
+.account-selector__option {
+  margin: 0;
+}
+
+.account-selector__tree-segment--current::after { display: none; }
+
+.account-selector__option--nested {
+  padding-left: 12px;
+}
+
+.account-selector__option--nested .account-selector__option-tree {
+  margin-left: -8px;
+}
+
 .account-selector__option-content {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
-.account-selector__option:hover,
-.account-selector__option--highlighted {
+.account-selector__option:hover:not(.account-selector__option--selected),
+.account-selector__option--highlighted:not(.account-selector__option--selected) {
   background: var(--color-surface-alt);
+}
+
+.account-selector__option--selected {
+  background: var(--color-accent-soft);
 }
 
 .account-selector__option--selected .account-selector__primary {
@@ -600,6 +679,8 @@ textarea {
   background-position: center;
   background-size: contain;
   flex-shrink: 0;
+  /* Keep check icon centered when row items stretch */
+  align-self: center;
 }
 
 .account-selector__empty {
@@ -827,7 +908,8 @@ textarea {
 .qqq-dialog__close {
   position: absolute;
   top: 16px;
-  right: 16px;
+  /* Keep the close button away from overlaid scrollbars and device safe areas */
+  right: max(24px, calc(env(safe-area-inset-right) + 16px));
   border: none;
   background: transparent;
   color: var(--color-text-secondary);
@@ -837,6 +919,11 @@ textarea {
   padding: 4px 8px;
   border-radius: var(--radius-pill);
   transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.qqq-dialog__close--scroll-guard {
+  /* Leave extra space for overlay scrollbars and device safe areas */
+  right: max(48px, calc(env(safe-area-inset-right) + 40px));
 }
 
 .qqq-dialog__close:hover,
