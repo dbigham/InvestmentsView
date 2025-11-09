@@ -690,7 +690,16 @@ function PositionsTable({
     );
   }
 
-  const tableClassName = showTargetColumn ? 'positions-table' : 'positions-table positions-table--no-target';
+  const tableClassName = (() => {
+    const classes = ['positions-table'];
+    if (!showTargetColumn) {
+      classes.push('positions-table--no-target');
+    }
+    if (showAccountColumn) {
+      classes.push('positions-table--with-account');
+    }
+    return classes.join(' ');
+  })();
 
   const renderTable = () => (
     <div className={tableClassName} role="table">
