@@ -1,18 +1,65 @@
+function parsePathParts(pathname) {
+  const parts = typeof pathname === 'string' ? pathname.split('/').filter(Boolean) : [];
+  const result = { accountId: null, symbol: null };
+  for (let i = 0; i < parts.length; i += 1) {
+    const seg = parts[i];
+    if (seg === 'account' && i + 1 < parts.length) {
+      try {
+        result.accountId = decodeURIComponent(parts[i + 1]);
+      } catch (e) {
+        result.accountId = parts[i + 1];
+      }
+      i += 1;
+      continue;
+    }
+    if (seg === 'symbol' && i + 1 < parts.length) {
+      try {
+        result.symbol = decodeURIComponent(parts[i + 1]).toUpperCase();
+      } catch (e) {
+        result.symbol = parts[i + 1].toUpperCase();
+      }
+      i += 1;
+      continue;
+    }
+  }
+  return result;
+}
+
+function buildPathWithParts(currentPathname, nextParts) {
+  // Preserve no extra segments for now; create canonical /account/:id[/symbol/:sym]
+  const segments = [];
+  if (nextParts.accountId) {
+    segments.push('account', encodeURIComponent(String(nextParts.accountId)));
+  }
+  if (nextParts.symbol) {
+    segments.push('symbol', encodeURIComponent(String(nextParts.symbol).toUpperCase()));
+  }
+  return `/${segments.join('/')}`;
+}
+
 export function readAccountIdFromLocation(location) {
   const targetLocation =
     location || (typeof window !== 'undefined' && window.location ? window.location : null);
-  if (!targetLocation || typeof targetLocation.search !== 'string') {
+  if (!targetLocation) {
     return null;
   }
 
   try {
-    const params = new URLSearchParams(targetLocation.search);
-    const rawValue = params.get('accountId');
-    if (typeof rawValue !== 'string') {
-      return null;
+    // Prefer path-based routing: /account/:id
+    const fromPath = parsePathParts(targetLocation.pathname).accountId;
+    if (typeof fromPath === 'string' && fromPath.trim()) {
+      return fromPath.trim();
     }
-    const trimmed = rawValue.trim();
-    return trimmed ? trimmed : null;
+    // Fallback: query param ?accountId=
+    if (typeof targetLocation.search === 'string') {
+      const params = new URLSearchParams(targetLocation.search);
+      const rawValue = params.get('accountId');
+      if (typeof rawValue === 'string') {
+        const trimmed = rawValue.trim();
+        return trimmed ? trimmed : null;
+      }
+    }
+    return null;
   } catch (error) {
     console.warn('Failed to read accountId from location', error);
     return null;
@@ -41,11 +88,19 @@ export function buildAccountViewUrl(accountId, location, extraSearchParams) {
     }
 
     const url = new URL(href);
+
+    // Build canonical path /account/:id[/symbol/:sym]
+    const current = parsePathParts(url.pathname);
+    const next = { ...current };
     if (!accountId || accountId === 'default') {
-      url.searchParams.delete('accountId');
+      next.accountId = null;
     } else {
-      url.searchParams.set('accountId', String(accountId));
+      next.accountId = String(accountId);
     }
+    url.pathname = buildPathWithParts(url.pathname, next);
+
+    // Remove legacy query param
+    url.searchParams.delete('accountId');
 
     if (extraSearchParams && typeof extraSearchParams === 'object') {
       Object.entries(extraSearchParams).forEach(([key, value]) => {
@@ -146,6 +201,89 @@ export function readTodoReminderFromLocation(location) {
     };
   } catch (error) {
     console.warn('Failed to read TODO reminder from location', error);
+    return null;
+  }
+}
+
+export function readSymbolFromLocation(location) {
+  const targetLocation =
+    location || (typeof window !== 'undefined' && window.location ? window.location : null);
+  if (!targetLocation) {
+    return null;
+  }
+
+  try {
+    // Prefer path /symbol/:sym
+    const fromPath = parsePathParts(targetLocation.pathname).symbol;
+    if (typeof fromPath === 'string' && fromPath.trim()) {
+      return { symbol: fromPath.trim().toUpperCase() };
+    }
+    if (typeof targetLocation.search === 'string') {
+      const params = new URLSearchParams(targetLocation.search);
+      const symbolParam = params.get('symbol');
+      const symbol =
+        typeof symbolParam === 'string' && symbolParam.trim()
+          ? symbolParam.trim().toUpperCase()
+          : null;
+      if (symbol) {
+        return { symbol };
+      }
+    }
+    return null;
+  } catch (error) {
+    console.warn('Failed to read symbol from location', error);
+    return null;
+  }
+}
+
+export function buildSymbolViewUrl(symbol, location, extraSearchParams) {
+  const targetLocation =
+    location || (typeof window !== 'undefined' && window.location ? window.location : null);
+  if (!targetLocation) {
+    return null;
+  }
+
+  try {
+    let href = typeof targetLocation.href === 'string' ? targetLocation.href : null;
+    if (!href) {
+      const origin =
+        typeof targetLocation.origin === 'string'
+          ? targetLocation.origin
+          : targetLocation.protocol && targetLocation.host
+          ? `${targetLocation.protocol}//${targetLocation.host}`
+          : '';
+      href = `${origin}${targetLocation.pathname || ''}${targetLocation.search || ''}${
+        targetLocation.hash || ''
+      }`;
+    }
+
+    const url = new URL(href);
+    const normalizedSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+
+    // Build canonical path /account/:id[/symbol/:sym]
+    const current = parsePathParts(url.pathname);
+    const next = { ...current, symbol: normalizedSymbol || null };
+    url.pathname = buildPathWithParts(url.pathname, next);
+
+    // Remove legacy query params
+    url.searchParams.delete('symbol');
+    url.searchParams.delete('symbolDesc');
+
+    if (extraSearchParams && typeof extraSearchParams === 'object') {
+      Object.entries(extraSearchParams).forEach(([key, value]) => {
+        if (typeof key !== 'string' || !key) {
+          return;
+        }
+        if (value === undefined || value === null || value === '') {
+          url.searchParams.delete(key);
+          return;
+        }
+        url.searchParams.set(key, String(value));
+      });
+    }
+    return url.toString();
+  } catch (error) {
+    console.warn('Failed to build symbol view URL', error);
     return null;
   }
 }

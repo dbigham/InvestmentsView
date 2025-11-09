@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import { buildSymbolViewUrl, buildAccountViewUrl } from '../utils/navigation';
 
 function normalize(value) {
   if (value === null || value === undefined) return '';
@@ -53,6 +54,7 @@ function scoreMatch(haystack, needle) {
 export default function GlobalSearch({
   symbols,
   accounts,
+  accountGroups,
   navItems,
   placeholder = 'Search symbols, accounts, or pages…',
   onSelectSymbol,
@@ -111,6 +113,20 @@ export default function GlobalSearch({
       .filter(Boolean);
   }, [accounts]);
 
+  const groupItems = useMemo(() => {
+    const list = Array.isArray(accountGroups) ? accountGroups : [];
+    return list
+      .map((group) => {
+        if (!group || !group.id || !group.name) return null;
+        const label = normalize(group.name);
+        const count = Number.isFinite(group.memberCount) ? group.memberCount : null;
+        const sub = count !== null ? `${count} account${count === 1 ? '' : 's'}` : null;
+        return { kind: 'group', key: String(group.id), label, sublabel: sub };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [accountGroups]);
+
   const navItemsNormalized = useMemo(() => {
     const defaults = [
       { key: 'positions', label: 'Positions' },
@@ -141,19 +157,22 @@ export default function GlobalSearch({
       } else if (item.kind === 'account') {
         boost += 5;
         if (item.sublabel) boost = Math.max(boost, scoreMatch(item.sublabel, q) - 5);
+      } else if (item.kind === 'group') {
+        boost += 5;
+        if (item.sublabel) boost = Math.max(boost, scoreMatch(item.sublabel, q) - 5);
       } else if (item.kind === 'nav') {
         boost += 10; // nav is short keyword-like terms
       }
       return base + boost;
     };
-    const pool = [...symbolItems, ...accountItems, ...navItemsNormalized];
+    const pool = [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
     const withScores = pool
       .map((item) => ({ item, score: rank(item) }))
       .filter((e) => e.score >= 0)
       .sort((a, b) => b.score - a.score);
     const top = withScores.slice(0, 10).map((e) => e.item);
     return top;
-  }, [query, symbolItems, accountItems, navItemsNormalized]);
+  }, [query, symbolItems, accountItems, groupItems, navItemsNormalized]);
 
   useEffect(() => {
     if (!open) return;
@@ -172,9 +191,53 @@ export default function GlobalSearch({
       onSelectSymbol(item.key, { description: item.sublabel || null });
     } else if (item.kind === 'account' && typeof onSelectAccount === 'function') {
       onSelectAccount(item.key);
+    } else if (item.kind === 'group' && typeof onSelectAccount === 'function') {
+      onSelectAccount(item.key);
     } else if (item.kind === 'nav' && typeof onNavigate === 'function') {
       onNavigate(item.key);
     }
+  };
+
+  const handleOptionMouseDown = (event, item) => {
+    // Prevent input losing focus when clicking options
+    // Also handle middle-click new tab behavior for symbols
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+    if (!item) return;
+    if (event && event.button === 1) {
+      // Middle-click behavior: open appropriate target in new tab
+      let targetUrl = null;
+      if (item.kind === 'symbol') {
+        targetUrl = buildSymbolViewUrl(item.key);
+      } else if (item.kind === 'account' || item.kind === 'group') {
+        targetUrl = buildAccountViewUrl(item.key);
+      }
+      if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+        if (typeof event.stopPropagation === 'function') event.stopPropagation();
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      }
+    }
+  };
+
+  const handleOptionClick = (event, item) => {
+    if (!item) return;
+    if (event && (event.ctrlKey || event.metaKey)) {
+      // Ctrl/Cmd click -> open in new tab for symbols, accounts, and groups
+      let targetUrl = null;
+      if (item.kind === 'symbol') {
+        targetUrl = buildSymbolViewUrl(item.key);
+      } else if (item.kind === 'account' || item.kind === 'group') {
+        targetUrl = buildAccountViewUrl(item.key);
+      }
+      if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+        if (typeof event.stopPropagation === 'function') event.stopPropagation();
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+    handleSelect(item);
   };
 
   const handleKeyDown = (event) => {
@@ -246,14 +309,15 @@ export default function GlobalSearch({
                   role="option"
                   aria-selected={index === highlightedIndex}
                   onMouseEnter={() => setHighlightedIndex(index)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => handleSelect(item)}
+                  onMouseDown={(e) => handleOptionMouseDown(e, item)}
+                  onClick={(e) => handleOptionClick(e, item)}
                 >
                   <div className="global-search__label">
                     {item.label}
                     {item.kind === 'symbol' ? <span className="global-search__badge">SYM</span> : null}
                     {item.kind === 'nav' ? <span className="global-search__badge">NAV</span> : null}
                     {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
+                    {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
                   </div>
                   {item.sublabel ? (
                     <div className="global-search__sublabel">{item.sublabel}</div>
@@ -289,6 +353,13 @@ GlobalSearch.propTypes = {
       loginLabel: PropTypes.string,
     })
   ),
+  accountGroups: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string.isRequired,
+      memberCount: PropTypes.number,
+    })
+  ),
   navItems: PropTypes.arrayOf(
     PropTypes.shape({ key: PropTypes.string.isRequired, label: PropTypes.string.isRequired })
   ),
@@ -301,6 +372,7 @@ GlobalSearch.propTypes = {
 GlobalSearch.defaultProps = {
   symbols: [],
   accounts: [],
+  accountGroups: [],
   navItems: undefined,
   placeholder: 'Search symbols, accounts, or pages…',
   onSelectSymbol: undefined,

@@ -46,6 +46,7 @@ import {
   readAccountIdFromLocation,
   readTodoActionFromLocation,
   readTodoReminderFromLocation,
+  readSymbolFromLocation,
 } from './utils/navigation';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
@@ -3668,6 +3669,13 @@ export default function App() {
     return readTodoReminderFromLocation(window.location);
   }, []);
 
+  const initialSymbolFromUrl = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    return readSymbolFromLocation(window.location);
+  }, []);
+
   const [selectedAccountState, setSelectedAccountState] = useState(() => {
     if (!initialAccountIdFromUrl || initialAccountIdFromUrl === 'default') {
       return 'all';
@@ -3808,6 +3816,20 @@ export default function App() {
     mode: 'cagr',
     symbol: null,
   });
+  
+  // If a symbol is present in the URL, focus it on load
+  useEffect(() => {
+    const s = initialSymbolFromUrl?.symbol || null;
+    if (!s) return;
+    const up = String(s).trim().toUpperCase();
+    if (!up) return;
+    setFocusedSymbol(up);
+    setFocusedSymbolDescription(initialSymbolFromUrl?.description || null);
+    setOrdersFilter(up);
+    setPortfolioViewTab('positions');
+  }, [initialSymbolFromUrl]);
+
+  // (moved) Resolve missing symbol description later, once data is available
   const [totalPnlRange, setTotalPnlRange] = useState('all');
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
@@ -5296,6 +5318,89 @@ export default function App() {
     });
     return list;
   }, [positions, selectedAccountDividends, ordersForSelectedAccount]);
+
+  // Keep focused symbol description in sync: prefer local data; fallback to quote
+  useEffect(() => {
+    if (!focusedSymbol) {
+      return;
+    }
+    const up = String(focusedSymbol).trim().toUpperCase();
+    if (!up) {
+      return;
+    }
+
+    const findDescriptionFromLocalData = () => {
+      // Positions
+      for (let i = 0; i < positions.length; i += 1) {
+        const p = positions[i];
+        const sym = (p?.symbol || '').toString().trim().toUpperCase();
+        if (sym === up) {
+          const desc = (p?.description || '').toString().trim();
+          if (desc) return desc;
+        }
+      }
+      // Dividends
+      const divEntries = Array.isArray(selectedAccountDividends?.entries)
+        ? selectedAccountDividends.entries
+        : [];
+      for (let i = 0; i < divEntries.length; i += 1) {
+        const e = divEntries[i];
+        const sym = (e?.symbol || e?.displaySymbol || '').toString().trim().toUpperCase();
+        if (sym === up) {
+          const desc = (e?.description || '').toString().trim();
+          if (desc) return desc;
+        }
+      }
+      // Orders
+      const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
+      for (let i = 0; i < ordList.length; i += 1) {
+        const o = ordList[i];
+        const sym = (o?.symbol || '').toString().trim().toUpperCase();
+        if (sym === up) {
+          const desc = (o?.description || '').toString().trim();
+          if (desc) return desc;
+        }
+      }
+      return null;
+    };
+
+    const local = findDescriptionFromLocalData();
+    if (local) {
+      if (local !== focusedSymbolDescription) {
+        setFocusedSymbolDescription(local);
+      }
+      return;
+    }
+
+    if (!focusedSymbolDescription) {
+      let cancelled = false;
+      (async () => {
+        try {
+          const quote = await getQuote(up);
+          if (cancelled) return;
+          const name = typeof quote?.name === 'string' ? quote.name.trim() : '';
+          if (name) {
+            setFocusedSymbolDescription(name);
+          }
+        } catch (error) {
+          // Non-fatal: leave description empty if quote lookup fails
+          console.warn('Failed to resolve symbol description', up, error);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+    // If we already have a description (likely from quote) and no local description exists yet,
+    // do nothing; when local data arrives, effect will re-run and prefer local.
+    return undefined;
+  }, [
+    focusedSymbol,
+    focusedSymbolDescription,
+    positions,
+    selectedAccountDividends?.entries,
+    ordersForSelectedAccount,
+  ]);
 
   const hasTargetProportionsForSelection = useMemo(
     () => orderedPositions.some((position) => Number.isFinite(position?.targetProportion)),
@@ -9209,6 +9314,7 @@ export default function App() {
           <GlobalSearch
             symbols={searchSymbols}
             accounts={accounts}
+            accountGroups={accountGroups}
             onSelectSymbol={handleSearchSelectSymbol}
             onSelectAccount={handleAccountChange}
             onNavigate={handleSearchNavigate}
