@@ -457,8 +457,11 @@ export default function ProjectionDialog({
 
   // Apply explicit prefill for retirement age (e.g., from GlobalSearch intent)
   useEffect(() => {
+    // Ignore when no prefill provided. Number(null) === 0 would otherwise clamp to min.
+    if (prefillRetirementAge === null || prefillRetirementAge === undefined) return;
     const n = Number(prefillRetirementAge);
-    if (!Number.isFinite(n)) return;
+    // Require a positive, finite override
+    if (!Number.isFinite(n) || n <= 0) return;
     const rounded = Math.round(n);
     if (!Number.isFinite(rounded)) return;
     const minAllowed = Number.isFinite(effectiveRetirementAgeMin)
