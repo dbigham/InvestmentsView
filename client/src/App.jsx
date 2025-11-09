@@ -9508,6 +9508,7 @@ export default function App() {
                 showPortfolioShare={!focusedSymbol}
                 showAccountColumn={Boolean(focusedSymbol) && isAggregateSelection}
                 hideTargetColumn={Boolean(focusedSymbol)}
+                accountsById={accountsById}
               />
             </div>
 

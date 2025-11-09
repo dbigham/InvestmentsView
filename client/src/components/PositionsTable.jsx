@@ -5,6 +5,7 @@ import { buildQuoteUrl, openQuote } from '../utils/quotes';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
 import { buildExplainMovementPrompt, derivePercentages, formatQuantity, formatShare } from '../utils/positions';
+import { openAccountSummary } from '../utils/questrade';
 
 const TABLE_HEADERS = [
   {
@@ -215,6 +216,7 @@ function PositionsTable({
   showPortfolioShare = true,
   showAccountColumn = false,
   hideTargetColumn = false,
+  accountsById = null,
 }) {
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const initialExternalMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
@@ -399,6 +401,91 @@ function PositionsTable({
     []
   );
 
+  const resolveAccountForPosition = useCallback(
+    (position) => {
+      if (!position) {
+        return null;
+      }
+
+      const portalAccountId =
+        position.portalAccountId || position.accountPortalId || position.portalId || position.accountPortalUuid || null;
+      if (portalAccountId) {
+        return { portalAccountId };
+      }
+
+      if (!accountsById || typeof accountsById.has !== 'function') {
+        return null;
+      }
+
+      const matches = new Map();
+      const addMatch = (account) => {
+        if (!account) {
+          return;
+        }
+        const id = account.id != null ? String(account.id) : null;
+        if (!id || matches.has(id)) {
+          return;
+        }
+        matches.set(id, account);
+      };
+
+      const tryMatchById = (rawId) => {
+        if (rawId == null) {
+          return;
+        }
+        const normalized = String(rawId);
+        if (!normalized || !accountsById.has(normalized)) {
+          return;
+        }
+        addMatch(accountsById.get(normalized));
+      };
+
+      const tryMatchByNumber = (rawNumber) => {
+        if (!rawNumber && rawNumber !== 0) {
+          return;
+        }
+        const normalizedNumber = String(rawNumber).trim();
+        if (!normalizedNumber) {
+          return;
+        }
+        if (typeof accountsById.values !== 'function') {
+          return;
+        }
+        for (const account of accountsById.values()) {
+          const accountNumber = account?.number != null ? String(account.number).trim() : '';
+          if (accountNumber && accountNumber === normalizedNumber) {
+            addMatch(account);
+          }
+        }
+      };
+
+      const candidateEntries = [];
+      candidateEntries.push({ accountId: position.accountId, accountNumber: position.accountNumber });
+      if (Array.isArray(position.accountNotes) && position.accountNotes.length) {
+        position.accountNotes.forEach((entry) => {
+          candidateEntries.push({ accountId: entry?.accountId, accountNumber: entry?.accountNumber });
+        });
+      }
+
+      candidateEntries.forEach((entry) => {
+        tryMatchById(entry.accountId);
+      });
+      if (matches.size === 1) {
+        return matches.values().next().value;
+      }
+
+      candidateEntries.forEach((entry) => {
+        tryMatchByNumber(entry.accountNumber);
+      });
+      if (matches.size === 1) {
+        return matches.values().next().value;
+      }
+
+      return null;
+    },
+    [accountsById]
+  );
+
   const handleExplainMovement = useCallback(async () => {
     const targetPosition = contextMenuState.position;
     closeContextMenu();
@@ -437,6 +524,30 @@ function PositionsTable({
     }
     onShowOrders(targetPosition);
   }, [closeContextMenu, contextMenuState.position, onShowOrders]);
+
+  const handleOpenBuySell = useCallback(async () => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition) {
+      return;
+    }
+
+    const account = resolveAccountForPosition(targetPosition);
+    if (account) {
+      openAccountSummary(account);
+    }
+
+    const symbol = typeof targetPosition.symbol === 'string' ? targetPosition.symbol.trim().toUpperCase() : '';
+    if (!symbol) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(symbol);
+    } catch (error) {
+      console.error('Failed to copy symbol to clipboard', error);
+    }
+  }, [closeContextMenu, contextMenuState.position, resolveAccountForPosition]);
 
   const handleNotesIndicatorClick = useCallback(
     (event, targetPosition) => {
@@ -789,6 +900,16 @@ function PositionsTable({
       style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
     >
       <ul className="positions-table__context-menu-list" role="menu">
+        <li role="none">
+          <button
+            type="button"
+            className="positions-table__context-menu-item"
+            role="menuitem"
+            onClick={handleOpenBuySell}
+          >
+            Buy/sell
+          </button>
+        </li>
         {typeof onShowOrders === 'function' ? (
           <li role="none">
             <button
@@ -905,6 +1026,7 @@ PositionsTable.propTypes = {
   showPortfolioShare: PropTypes.bool,
   showAccountColumn: PropTypes.bool,
   hideTargetColumn: PropTypes.bool,
+  accountsById: PropTypes.instanceOf(Map),
 };
 
 PositionsTable.defaultProps = {
@@ -923,6 +1045,7 @@ PositionsTable.defaultProps = {
   showPortfolioShare: true,
   showAccountColumn: false,
   hideTargetColumn: false,
+  accountsById: null,
 };
 
 export default PositionsTable;
