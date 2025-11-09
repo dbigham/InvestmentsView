@@ -149,6 +149,45 @@ export default function GlobalSearch({
     if (!q) {
       return [];
     }
+    // Special intent: "retire at 55" / "retirement at 55"
+    const lower = q.toLowerCase();
+    let retireAction = null;
+    const templateActions = [];
+    try {
+      // Match variations like: retire at 55, retirement at 60, retire 55, retirement age 65
+      const m = lower.match(/\bretire(?:ment)?(?:\s+(?:at|age))?\s*(\d{2})\b/);
+      if (m && m[1]) {
+        const age = Number(m[1]);
+        if (Number.isFinite(age) && age >= 40 && age <= 80) {
+          retireAction = {
+            kind: 'action',
+            key: `retire-at:${age}`,
+            label: `Retire at ${age}`,
+            sublabel: 'Open Projections and prefill retirement age',
+          };
+        }
+      }
+      // Provide placeholder templates when typing retire/retirement terms without a number
+      const looksLikeRetire = /\bretir/.test(lower) || /\bretirement?/.test(lower);
+      if (looksLikeRetire) {
+        templateActions.push({
+          kind: 'template',
+          key: 'retire-template',
+          label: 'Retire at [age]',
+          sublabel: 'Type an age and press Enter',
+          templateText: 'retire at ',
+        });
+        templateActions.push({
+          kind: 'template',
+          key: 'retirement-template',
+          label: 'Retirement at [age]',
+          sublabel: 'Type an age and press Enter',
+          templateText: 'retirement at ',
+        });
+      }
+    } catch (e) {
+      // no-op
+    }
     const rank = (item) => {
       if (!item) return -1;
       const base = scoreMatch(item.label, q);
@@ -164,10 +203,19 @@ export default function GlobalSearch({
         if (item.sublabel) boost = Math.max(boost, scoreMatch(item.sublabel, q) - 5);
       } else if (item.kind === 'nav') {
         boost += 10; // nav is short keyword-like terms
+      } else if (item.kind === 'action') {
+        // Intent actions should be quite prominent when query hints at them
+        boost += 25;
+      } else if (item.kind === 'template') {
+        // Template suggestions also prominent while composing
+        boost += 20;
       }
       return base + boost;
     };
-    const pool = [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
+    const poolBase = [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
+    const pool = retireAction
+      ? [retireAction, ...templateActions, ...poolBase]
+      : [...templateActions, ...poolBase];
     const withScores = pool
       .map((item) => ({ item, score: rank(item) }))
       .filter((e) => e.score >= 0)
@@ -198,6 +246,31 @@ export default function GlobalSearch({
 
   const handleSelect = (item) => {
     if (!item) return;
+    // Handle templates by inserting placeholder text and keeping focus
+    if (item.kind === 'template' && item.templateText) {
+      const next = String(item.templateText);
+      setQuery(next);
+      setOpen(true);
+      try {
+        if (inputRef.current && typeof inputRef.current.focus === 'function') {
+          inputRef.current.focus();
+          // Move caret to end on next tick
+          const len = next.length;
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+              try { inputRef.current.setSelectionRange(len, len); } catch (e) { /* ignore */ }
+            });
+          } else {
+            setTimeout(() => {
+              try { inputRef.current.setSelectionRange(len, len); } catch (e) { /* ignore */ }
+            }, 0);
+          }
+        }
+      } catch (e) {
+        // ignore caret errors
+      }
+      return;
+    }
     setOpen(false);
     setQuery('');
     if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
@@ -207,6 +280,9 @@ export default function GlobalSearch({
     } else if (item.kind === 'group' && typeof onSelectAccount === 'function') {
       onSelectAccount(item.key);
     } else if (item.kind === 'nav' && typeof onNavigate === 'function') {
+      onNavigate(item.key);
+    } else if (item.kind === 'action' && typeof onNavigate === 'function') {
+      // Route intent-like actions through onNavigate with a distinct key
       onNavigate(item.key);
     }
   };
@@ -331,6 +407,8 @@ export default function GlobalSearch({
                     {item.kind === 'nav' ? <span className="global-search__badge">NAV</span> : null}
                     {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
                     {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
+                    {item.kind === 'action' ? <span className="global-search__badge">ACTION</span> : null}
+                    {item.kind === 'template' ? <span className="global-search__badge">TPL</span> : null}
                   </div>
                   {item.sublabel ? (
                     <div className="global-search__sublabel">{item.sublabel}</div>

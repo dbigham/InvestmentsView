@@ -3719,6 +3719,7 @@ export default function App() {
     label: null,
     cagrStartDate: null,
     parentAccountId: null,
+    retireAtAge: null,
   });
   const [cashBreakdownCurrency, setCashBreakdownCurrency] = useState(null);
   const [todoState, setTodoState] = useState({ items: [], checked: false, scopeKey: null });
@@ -4997,6 +4998,38 @@ export default function App() {
 
   const handleSearchNavigate = (key) => {
     const k = (key || '').toString().toLowerCase();
+    // Quick intent: retire-at:<age>
+    if (k.startsWith('retire-at:')) {
+      const raw = k.split(':')[1] || '';
+      const ageNum = Number(raw);
+      if (Number.isFinite(ageNum) && ageNum > 0) {
+        // Prefer the account GROUP marked as the main retirement account
+        const primaryGroup = (accountGroups || []).find((g) => g && g.mainRetirementAccount === true);
+        const ageOverride = Math.round(ageNum);
+        if (primaryGroup && typeof primaryGroup.id === 'string' && primaryGroup.id) {
+          const groupId = primaryGroup.id;
+          const isAlreadyInGroup = selectedAccount === groupId;
+          if (!isAlreadyInGroup) {
+            handleAccountChange(groupId);
+          }
+          const label = aggregateAccountLabel || primaryGroup.name || 'Account';
+          const cagrStart = cagrStartDate || null;
+          setProjectionContext({
+            accountKey: groupId,
+            label,
+            cagrStartDate: cagrStart,
+            parentAccountId: null,
+            retireAtAge: ageOverride,
+          });
+          setShowProjectionDialog(true);
+          return;
+        }
+        // Fallback: open projections on current selection with age override
+        setProjectionContext((prev) => ({ ...prev, retireAtAge: ageOverride }));
+        handleShowProjections();
+        return;
+      }
+    }
     if (k === 'positions') {
       setPortfolioViewTab('positions');
       const scroll = () => document.getElementById('portfolio-panel-positions')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -9058,7 +9091,7 @@ export default function App() {
         }
       }
     }
-    setProjectionContext({ accountKey: selectedAccountKey, label, cagrStartDate: cagrStart, parentAccountId });
+    setProjectionContext({ accountKey: selectedAccountKey, label, cagrStartDate: cagrStart, parentAccountId, retireAtAge: null });
     setShowProjectionDialog(true);
   }, [
     selectedAccountKey,
@@ -9070,7 +9103,7 @@ export default function App() {
 
   const handleCloseProjections = useCallback(() => {
     setShowProjectionDialog(false);
-    setProjectionContext({ accountKey: null, label: null, cagrStartDate: null, parentAccountId: null });
+    setProjectionContext({ accountKey: null, label: null, cagrStartDate: null, parentAccountId: null, retireAtAge: null });
   }, []);
 
   const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
@@ -9979,6 +10012,7 @@ export default function App() {
           todayTotalEquity={fundingSummaryForDisplay?.totalEquityCad ?? null}
           todayDate={fundingSummaryForDisplay?.periodEndDate ?? asOf}
           cagrStartDate={projectionContext.cagrStartDate}
+          prefillRetirementAge={projectionContext.retireAtAge}
           onEstimateFutureCagr={handleEstimateFutureCagr}
           childAccounts={childAccountSummaries}
           onSelectAccount={handleAccountChange}

@@ -273,6 +273,7 @@ export default function ProjectionDialog({
   todayTotalEquity,
   todayDate,
   cagrStartDate,
+  prefillRetirementAge,
   onEstimateFutureCagr,
   childAccounts,
   onSelectAccount,
@@ -453,6 +454,23 @@ export default function ProjectionDialog({
     retirementSettings?.retirementBirthDate,
     effectiveRetirementAgeMin,
   ]);
+
+  // Apply explicit prefill for retirement age (e.g., from GlobalSearch intent)
+  useEffect(() => {
+    const n = Number(prefillRetirementAge);
+    if (!Number.isFinite(n)) return;
+    const rounded = Math.round(n);
+    if (!Number.isFinite(rounded)) return;
+    const minAllowed = Number.isFinite(effectiveRetirementAgeMin)
+      ? effectiveRetirementAgeMin
+      : RETIREMENT_AGE_MIN;
+    const clamped = Math.min(RETIREMENT_AGE_MAX, Math.max(minAllowed, rounded));
+    setRetirementAgeChoice(clamped);
+    // Ensure retirement flows are enabled when supported
+    if (retirementSettings?.mainRetirementAccount) {
+      setIncludeRetirementFlows(true);
+    }
+  }, [prefillRetirementAge, effectiveRetirementAgeMin, retirementSettings?.mainRetirementAccount]);
 
   useEffect(() => {
     function handleDocumentClick(event) {
@@ -2070,6 +2088,7 @@ ProjectionDialog.propTypes = {
   todayTotalEquity: PropTypes.number,
   todayDate: PropTypes.string,
   cagrStartDate: PropTypes.string,
+  prefillRetirementAge: PropTypes.number,
   onEstimateFutureCagr: PropTypes.func,
   initialGrowthPercent: PropTypes.number,
   childAccounts: PropTypes.arrayOf(
@@ -2127,6 +2146,7 @@ ProjectionDialog.defaultProps = {
   todayDate: null,
   cagrStartDate: null,
   onEstimateFutureCagr: null,
+  prefillRetirementAge: null,
   initialGrowthPercent: null,
   childAccounts: [],
   onSelectAccount: null,
