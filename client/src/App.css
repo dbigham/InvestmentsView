@@ -3503,31 +3503,35 @@ textarea {
 
 .pnl-heatmap-dialog__control {
   appearance: none;
-  border: none;
-  background: var(--color-surface);
-  color: #440000;
+  border: 1px solid #c9c9c9; /* neutral gray border */
+  background: #e8e8e8;       /* flat light gray (no blue tint) */
+  color: var(--color-text-secondary);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   padding: 6px 14px;
   border-radius: 999px;
   cursor: pointer;
-  transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .pnl-heatmap-dialog__control:hover,
 .pnl-heatmap-dialog__control:focus-visible {
-  color: #111827;
+  color: var(--color-text-primary);
+  background: #fafafa; /* lighten slightly on hover */
+  border-color: #bdbdbd; /* a touch darker for definition */
+  outline: none;
 }
 
 .pnl-heatmap-dialog__control--active {
-  background: rgba(255, 255, 255, 0.9);
-  color: #000000;
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.18);
+  background: #ffffff; /* white */
+  color: #000000;      /* black text */
+  border-color: #666666; /* dark gray border */
+  box-shadow: none;    /* keep the border from looking bold */
 }
 
 .pnl-heatmap-dialog__control--active:focus-visible {
-  outline: 2px solid rgba(148, 163, 184, 0.85);
+  outline: 2px solid rgba(0, 0, 0, 0.35);
   outline-offset: 2px;
 }
 
@@ -4365,6 +4369,16 @@ textarea {
     column-gap: 0;
     row-gap: 12px;
     width: 100%;
+  }
+
+  /* When metrics stack into a single column, add a dotted
+     divider before the first row of the second group so the
+     separation between "Net deposits" and "Total equity" matches
+     other row dividers. */
+  .equity-card__metrics .equity-card__metric-column + .equity-card__metric-column .equity-card__metric-row:first-child {
+    border-top: 1px dotted var(--color-border-strong);
+    /* Restore the standard top padding that is removed for first rows */
+    padding-top: 12px;
   }
 
   .summary-page {

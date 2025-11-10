@@ -980,6 +980,18 @@ export default function SummaryMetrics({
     };
   }, [hoverPoint]);
 
+  // Default action: open Total P&L breakdown when the chart is activated.
+  const handleActivateTotalPnl = useCallback(() => {
+    if (symbolMode) return;
+    if (typeof onShowPnlBreakdown === 'function') {
+      onShowPnlBreakdown('total');
+      return;
+    }
+    if (typeof onShowTotalPnl === 'function') {
+      onShowTotalPnl();
+    }
+  }, [symbolMode, onShowPnlBreakdown, onShowTotalPnl]);
+
     const markerValue =
     totalPnlChartMarker && Number.isFinite(totalPnlChartMarker.chartValue)
       ? totalPnlChartMarker.chartValue
@@ -1610,6 +1622,15 @@ export default function SummaryMetrics({
                   aria-label="Total P&L history"
                   onMouseMove={handleMouseMove}
                   onMouseLeave={handleMouseLeave}
+                  style={{ cursor: 'pointer' }}
+                  onClick={handleActivateTotalPnl}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleActivateTotalPnl();
+                    }
+                  }}
                 >
                   {Number.isFinite(totalPnlChartZeroLine) && (
                     <line
@@ -1731,7 +1752,7 @@ export default function SummaryMetrics({
             extraTooltip={totalExtraPercentTooltip}
             tone={totalTone}
             className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
-            onActivate={onShowTotalPnl}
+            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('total') : onShowTotalPnl)}
             onContextMenuRequest={handleTotalContextMenuRequest}
             contextMenuOpen={totalMenuState.open}
           />
