@@ -123,7 +123,7 @@ textarea {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-pill);
-  padding: 8px 12px 8px 12px;
+  padding: 12px 12px 12px 12px;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
 }
 .global-search__icon {
@@ -137,7 +137,7 @@ textarea {
   outline: none;
   width: 100%;
   font-size: 14px;
-  background: transparent;
+  background: var(--color-surface);
 }
 .global-search__list {
   position: absolute;
@@ -864,7 +864,7 @@ textarea {
 
 .beneficiaries-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 24px;
   line-height: 1;
@@ -912,7 +912,7 @@ textarea {
   /* Keep the close button away from overlaid scrollbars and device safe areas */
   right: max(24px, calc(env(safe-area-inset-right) + 16px));
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 24px;
   line-height: 1;
@@ -1564,7 +1564,7 @@ textarea {
 
 .cash-breakdown-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 24px;
   line-height: 1;
@@ -1732,7 +1732,7 @@ textarea {
 
 .target-proportions-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 26px;
   line-height: 1;
@@ -2011,7 +2011,7 @@ textarea {
 
 .invest-plan-dialog__menu-button {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 22px;
   line-height: 1;
@@ -2052,7 +2052,7 @@ textarea {
   width: 100%;
   padding: 8px 12px;
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   text-align: left;
   font-size: 14px;
   color: var(--color-text-primary);
@@ -2098,7 +2098,7 @@ textarea {
 
 .invest-plan-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 28px;
   line-height: 1;
@@ -2592,7 +2592,7 @@ textarea {
 .invest-plan-copy-button--disabled {
   border-style: dashed;
   color: var(--color-text-muted);
-  background: transparent;
+  background: var(--color-surface);
   cursor: default;
 }
 
@@ -2600,7 +2600,7 @@ textarea {
 .invest-plan-copy-button--disabled:focus-visible {
   border-color: var(--color-divider);
   color: var(--color-text-muted);
-  background: transparent;
+  background: var(--color-surface);
 }
 
 .invest-plan-empty {
@@ -2773,7 +2773,7 @@ textarea {
 
 .equity-card__subtext-button {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   padding: 0;
   margin: 0;
   font: inherit;
@@ -2868,7 +2868,7 @@ textarea {
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface);
   color: var(--color-text-secondary);
-  padding: 6px 16px;
+  padding: 6px 8px;
   border-radius: var(--radius-pill);
   font-size: 13px;
   font-weight: 500;
@@ -2883,12 +2883,137 @@ textarea {
   font-weight: 600;
 }
 
+/* Timeframe chip row tweaks: only change border on active, add spacing below */
+.equity-card__chip-row--timeframe {
+  margin-bottom: 16px;
+}
+.equity-card__chip-row--timeframe button.active {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
 .equity-card__metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 280px));
+  /* Expand columns to fill the same width as the chart while keeping sensible minimums */
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
   column-gap: 48px;
   row-gap: 0;
-  width: min(680px, 100%);
+  width: min(782px, 100%);
+}
+
+.equity-card__total-pnl-chart {
+  margin-top: 12px;
+  width: min(782px, 100%);
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.equity-card__total-pnl-chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.equity-card__total-pnl-chart-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.equity-card__total-pnl-chart-value {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.equity-card__total-pnl-chart-change {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.equity-card__total-pnl-chart-change--positive {
+  color: var(--color-accent);
+}
+
+.equity-card__total-pnl-chart-change--negative {
+  color: var(--color-negative);
+}
+
+.equity-card__total-pnl-chart-body {
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-radius: calc(var(--radius-card) / 2);
+  position: relative;
+}
+
+.equity-card__total-pnl-chart-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.equity-card__total-pnl-chart-path {
+  stroke: var(--color-accent);
+  stroke-linecap: round;
+}
+
+.equity-card__total-pnl-chart-zero-line {
+  stroke: var(--color-border);
+  stroke-dasharray: 2 4;
+}
+
+.equity-card__total-pnl-chart-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.equity-card__total-pnl-chart-message,
+.equity-card__total-pnl-chart-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.equity-card__total-pnl-chart-loading-text {
+  font-weight: 500;
+}
+
+.equity-card__total-pnl-chart-hover-label {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: rgba(255, 255, 255, 0.95);
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.15);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.equity-card__total-pnl-chart-hover-label span:last-child {
+  font-size: 11px;
+  color: var(--color-text-muted);
 }
 
 .equity-card__children {
@@ -3109,7 +3234,7 @@ textarea {
   width: 100%;
   padding: 8px 16px;
   border: 0;
-  background: transparent;
+  background: var(--color-surface);
   text-align: left;
   font-size: 13px;
   color: var(--color-text-primary);
@@ -3331,7 +3456,7 @@ textarea {
 
 .pnl-heatmap-dialog__controls--select {
   padding: 0;
-  background: transparent;
+  background: var(--color-surface);
   box-shadow: none;
   gap: 10px;
 }
@@ -3390,37 +3515,41 @@ textarea {
 
 .pnl-heatmap-dialog__control {
   appearance: none;
-  border: none;
-  background: transparent;
-  color: #440000;
+  border: 1px solid #c9c9c9; /* neutral gray border */
+  background: #e8e8e8;       /* flat light gray (no blue tint) */
+  color: var(--color-text-secondary);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   padding: 6px 14px;
   border-radius: 999px;
   cursor: pointer;
-  transition: color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .pnl-heatmap-dialog__control:hover,
 .pnl-heatmap-dialog__control:focus-visible {
-  color: #111827;
+  color: var(--color-text-primary);
+  background: #fafafa; /* lighten slightly on hover */
+  border-color: #bdbdbd; /* a touch darker for definition */
+  outline: none;
 }
 
 .pnl-heatmap-dialog__control--active {
-  background: rgba(255, 255, 255, 0.9);
-  color: #000000;
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.18);
+  background: #ffffff; /* white */
+  color: #000000;      /* black text */
+  border-color: #666666; /* dark gray border */
+  box-shadow: none;    /* keep the border from looking bold */
 }
 
 .pnl-heatmap-dialog__control--active:focus-visible {
-  outline: 2px solid rgba(148, 163, 184, 0.85);
+  outline: 2px solid rgba(0, 0, 0, 0.35);
   outline-offset: 2px;
 }
 
 .pnl-heatmap-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 28px;
   line-height: 1;
@@ -3467,7 +3596,7 @@ textarea {
   overflow: hidden;
   border: none;
   cursor: pointer;
-  background: transparent;
+  background: var(--color-surface);
   color: inherit;
 }
 
@@ -3682,7 +3811,7 @@ textarea {
   top: 50%;
   transform: translateY(-50%);
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-muted);
   font-size: 18px;
   line-height: 1;
@@ -4005,6 +4134,8 @@ textarea {
   gap: 4px;
   padding: 0;
   border: none;
+  /* Use a transparent background so header labels don't appear on a different
+     shade than the header row background. */
   background: transparent;
   color: inherit;
   font: inherit;
@@ -4252,6 +4383,16 @@ textarea {
     column-gap: 0;
     row-gap: 12px;
     width: 100%;
+  }
+
+  /* When metrics stack into a single column, add a dotted
+     divider before the first row of the second group so the
+     separation between "Net deposits" and "Total equity" matches
+     other row dividers. */
+  .equity-card__metrics .equity-card__metric-column + .equity-card__metric-column .equity-card__metric-row:first-child {
+    border-top: 1px dotted var(--color-border-strong);
+    /* Restore the standard top padding that is removed for first rows */
+    padding-top: 12px;
   }
 
   .summary-page {
@@ -4896,7 +5037,7 @@ button.time-pill:hover .time-pill__icon {
 }
 
 .dividends-card--panel {
-  background: transparent;
+  background: var(--color-surface);
   border: none;
   box-shadow: none;
 }
@@ -5173,7 +5314,7 @@ button.time-pill:hover .time-pill__icon {
 
 .return-breakdown-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 24px;
   line-height: 1;
@@ -5405,7 +5546,7 @@ button.time-pill:hover .time-pill__icon {
 
 .planning-context-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 26px;
   line-height: 1;
@@ -5580,7 +5721,7 @@ button.time-pill:hover .time-pill__icon {
 
 .symbol-notes-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 26px;
   line-height: 1;
@@ -5770,7 +5911,7 @@ button.time-pill:hover .time-pill__icon {
 
 .account-metadata-dialog__close {
   border: none;
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text-secondary);
   font-size: 26px;
   line-height: 1;
@@ -6046,3 +6187,5 @@ button.time-pill:hover .time-pill__icon {
 .projection-tree__rate-placeholder {
   width: 88px;
 }
+
+

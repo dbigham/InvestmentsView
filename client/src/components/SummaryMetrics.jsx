@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import TimePill from './TimePill';
+import usePersistentState from '../hooks/usePersistentState';
 import {
   classifyPnL,
+  formatDate,
   formatMoney,
   formatNumber,
   formatPercent,
   formatSignedMoney,
   formatSignedPercent,
 } from '../utils/formatters';
+import { buildTotalPnlDisplaySeries, parseDateOnly, subtractInterval } from '../../../shared/totalPnlDisplay.js';
+import {
+  CHART_HEIGHT,
+  CHART_WIDTH,
+  PADDING, clampChartX, buildChartMetrics,
+} from './TotalPnlChartUtils';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_YEAR = 365.25;
-
 function parseDateString(value, { assumeDateOnly = false } = {}) {
   if (typeof value !== 'string') {
     return null;
@@ -559,6 +566,9 @@ export default function SummaryMetrics({
   totalPnlRangeOptions,
   selectedTotalPnlRange,
   onTotalPnlRangeChange,
+  totalPnlSeries,
+  totalPnlSeriesStatus,
+  totalPnlSeriesError,
   onAdjustDeployment,
   symbolMode = false,
   childAccounts,
@@ -568,6 +578,19 @@ export default function SummaryMetrics({
   onShowChildPnlBreakdown,
   onShowChildTotalPnl,
 }) {
+  // Local timeframe for the Total P&L chart (Since inception by default)
+  const TIMEFRAME_BUTTONS = useMemo(
+    () => [
+      { value: '15D', label: '15D' },
+      { value: '1M', label: '1M' },
+      { value: '3M', label: '3M' },
+      { value: '6M', label: '6M' },
+      { value: '1Y', label: '1Y' },
+      { value: 'ALL', label: 'Since inception' },
+    ],
+    []
+  );
+  const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
   const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -873,6 +896,214 @@ export default function SummaryMetrics({
       {totalPnlRangeSelector}
     </div>
   ) : null;
+
+  const filteredTotalPnlSeries = useMemo(() => {
+    if (!totalPnlSeries) {
+      return [];
+    }
+    return buildTotalPnlDisplaySeries(totalPnlSeries.points, chartTimeframe, {
+      displayStartDate: totalPnlSeries.displayStartDate,
+      displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
+    });
+  }, [totalPnlSeries, chartTimeframe]);
+
+  const { start: timeframeRangeStart, end: timeframeRangeEnd } = useMemo(() => {
+    const endCandidates = [];
+    if (filteredTotalPnlSeries.length) {
+      const last = filteredTotalPnlSeries[filteredTotalPnlSeries.length - 1];
+      const d = parseDateOnly(last?.date);
+      if (d) endCandidates.push(d);
+    }
+    if (Array.isArray(totalPnlSeries?.points) && totalPnlSeries.points.length) {
+      const lastRaw = totalPnlSeries.points[totalPnlSeries.points.length - 1];
+      const d = parseDateOnly(lastRaw?.date);
+      if (d) endCandidates.push(d);
+    }
+    const endFromPeriod = parseDateOnly(totalPnlSeries?.periodEndDate);
+    if (endFromPeriod) endCandidates.push(endFromPeriod);
+    const resolvedEnd = endCandidates.length ? new Date(Math.max(...endCandidates.map((d) => d.getTime()))) : null;
+    if (!resolvedEnd) {
+      return { start: null, end: null };
+    }
+    if (chartTimeframe && chartTimeframe !== 'ALL') {
+      const start = subtractInterval(resolvedEnd, chartTimeframe);
+      return { start: start ?? null, end: resolvedEnd };
+    }
+    return { start: null, end: null };
+  }, [filteredTotalPnlSeries, totalPnlSeries?.points, totalPnlSeries?.periodEndDate, chartTimeframe]);
+
+  const totalPnlChartMetrics = useMemo(() => {
+    if (!filteredTotalPnlSeries.length) {
+      return null;
+    }
+    return buildChartMetrics(filteredTotalPnlSeries, {
+      rangeStartDate: timeframeRangeStart,
+      rangeEndDate: timeframeRangeEnd,
+    });
+  }, [filteredTotalPnlSeries, timeframeRangeStart, timeframeRangeEnd]);
+
+  const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
+  const totalPnlChartPath = useMemo(() => {
+    if (!totalPnlChartHasSeries || !totalPnlChartMetrics) {
+      return null;
+    }
+    if (totalPnlChartMetrics.points.length === 1) {
+      const point = totalPnlChartMetrics.points[0];
+      return `M${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    }
+    return totalPnlChartMetrics.points
+      .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ');
+  }, [totalPnlChartHasSeries, totalPnlChartMetrics]);
+
+  const totalPnlChartAxis = useMemo(() => {
+    if (!totalPnlChartMetrics) {
+      return [];
+    }
+    return totalPnlChartMetrics.axisTicks.map((value) => ({ value, y: totalPnlChartMetrics.yFor(value) }));
+  }, [totalPnlChartMetrics]);
+
+  const totalPnlChartZeroLine = useMemo(() => {
+    if (!totalPnlChartMetrics) {
+      return null;
+    }
+    if (totalPnlChartMetrics.minDomain > 0 || totalPnlChartMetrics.maxDomain < 0) {
+      return null;
+    }
+    return totalPnlChartMetrics.yFor(0);
+  }, [totalPnlChartMetrics]);
+
+  const totalPnlChartMarker =
+    totalPnlChartMetrics?.points?.[totalPnlChartMetrics.points.length - 1] ?? null;
+  const chartRef = useRef(null);
+  const [hoverX, setHoverX] = useState(null);
+  const resolvePointAtX = useCallback(
+    (x) => {
+      if (!totalPnlChartMetrics || !Number.isFinite(x) || !totalPnlChartMetrics.points.length) {
+        return null;
+      }
+      const clampedX = clampChartX(x);
+      const ratio =
+        totalPnlChartMetrics.innerWidth > 0
+          ? (clampedX - PADDING.left) / totalPnlChartMetrics.innerWidth
+          : 0;
+      const targetIndex = Math.max(
+        0,
+        Math.min(totalPnlChartMetrics.points.length - 1, ratio * (totalPnlChartMetrics.points.length - 1))
+      );
+      const lowerIndex = Math.max(0, Math.floor(targetIndex));
+      const upperIndex = Math.min(totalPnlChartMetrics.points.length - 1, lowerIndex + 1);
+      const t = Math.max(0, Math.min(1, targetIndex - lowerIndex));
+      const lower = totalPnlChartMetrics.points[lowerIndex];
+      const upper = totalPnlChartMetrics.points[upperIndex];
+      if (!lower || !upper) {
+        return lower || upper || null;
+      }
+      const interpolate = (lowerValue, upperValue) => {
+        const lowerFinite = Number.isFinite(lowerValue);
+        const upperFinite = Number.isFinite(upperValue);
+        if (!lowerFinite && !upperFinite) {
+          return undefined;
+        }
+        if (!lowerFinite) {
+          return upperValue;
+        }
+        if (!upperFinite) {
+          return lowerValue;
+        }
+        return lowerValue + (upperValue - lowerValue) * t;
+      };
+      const interpolatedX = clampChartX(lower.x + (upper.x - lower.x) * t);
+      const resolvedX = Number.isFinite(interpolatedX) ? interpolatedX : clampedX;
+      const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
+      const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
+      return {
+        date: t < 0.5 ? lower.date : upper.date,
+        totalPnl: interpolatedTotalPnl,
+        chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
+        x: resolvedX,
+        y: lower.y + (upper.y - lower.y) * t,
+      };
+    },
+    [totalPnlChartMetrics]
+  );
+
+  const hoverPoint = useMemo(() => {
+    if (hoverX === null) {
+      return null;
+    }
+    return resolvePointAtX(hoverX);
+  }, [hoverX, resolvePointAtX]);
+
+  const hoverLabel = useMemo(() => {
+    if (!hoverPoint) {
+      return null;
+    }
+    const amount = hoverPoint.chartValue ?? hoverPoint.totalPnl;
+    if (!Number.isFinite(amount)) {
+      return null;
+    }
+    return {
+      amount: formatMoney(amount),
+      date: hoverPoint.date ? formatDate(hoverPoint.date) : null,
+    };
+  }, [hoverPoint]);
+
+  // Default action: open Total P&L breakdown when the chart is activated.
+  const handleActivateTotalPnl = useCallback(() => {
+    if (symbolMode) return;
+    if (typeof onShowPnlBreakdown === 'function') {
+      onShowPnlBreakdown('total');
+      return;
+    }
+    if (typeof onShowTotalPnl === 'function') {
+      onShowTotalPnl();
+    }
+  }, [symbolMode, onShowPnlBreakdown, onShowTotalPnl]);
+
+    const markerValue =
+    totalPnlChartMarker && Number.isFinite(totalPnlChartMarker.chartValue)
+      ? totalPnlChartMarker.chartValue
+      : totalPnlChartMarker && Number.isFinite(totalPnlChartMarker.totalPnl)
+        ? totalPnlChartMarker.totalPnl
+        : null;
+  const markerLabel = Number.isFinite(markerValue) ? formatMoney(markerValue) : null;
+  const labelPosition = useMemo(() => {
+    const point = hoverPoint || totalPnlChartMarker;
+    if (!point) {
+      return null;
+    }
+    const leftPercent = Math.min(94, Math.max(0, (point.x / CHART_WIDTH) * 100));
+    const offset = 40;
+    let anchorY = point.y - offset;
+    const minAnchor = PADDING.top + 8;
+    const maxAnchor = CHART_HEIGHT - PADDING.bottom - 8;
+    anchorY = Math.min(maxAnchor, Math.max(minAnchor, anchorY));
+    const topPercent = Math.max(4, Math.min(96, (anchorY / CHART_HEIGHT) * 100));
+    return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
+  }, [hoverPoint, totalPnlChartMarker]);
+
+  const handleMouseMove = useCallback(
+    (event) => {
+      if (!chartRef.current) {
+        return;
+      }
+      const rect = chartRef.current.getBoundingClientRect();
+      if (!rect.width) {
+        return;
+      }
+      const scaleX = CHART_WIDTH / rect.width;
+      const x = (event.clientX - rect.left) * scaleX;
+      setHoverX(x);
+    },
+    []
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    setHoverX(null);
+  }, []);
+
+  const showTotalPnlChart = !symbolMode;
 
   const normalizedChildAccounts = Array.isArray(childAccounts)
     ? childAccounts
@@ -1440,6 +1671,136 @@ export default function SummaryMetrics({
         </div>
       </header>
 
+      {showTotalPnlChart && (
+        <div className="equity-card__total-pnl-chart" aria-label="Total P&L history">
+          <div className="equity-card__total-pnl-chart-body qqq-section__chart-container">
+            {totalPnlSeriesStatus === 'loading' ? (
+              <div className="equity-card__total-pnl-chart-loading" role="status" aria-live="polite">
+                <span className="initial-loading__spinner" aria-hidden="true" />
+                <span className="equity-card__total-pnl-chart-loading-text">Loading chart</span>
+              </div>
+            ) : totalPnlSeriesError ? (
+              <div className="equity-card__total-pnl-chart-message">
+                Unable to load Total P&L data.
+              </div>
+            ) : totalPnlChartHasSeries ? (
+              <>
+                <svg
+                  ref={chartRef}
+                  className="qqq-section__chart pnl-dialog__chart"
+                  viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+                  role="img"
+                  aria-label="Total P&L history"
+                  onMouseMove={handleMouseMove}
+                  onMouseLeave={handleMouseLeave}
+                  style={{ cursor: 'pointer' }}
+                  onClick={handleActivateTotalPnl}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleActivateTotalPnl();
+                    }
+                  }}
+                >
+                  {Number.isFinite(totalPnlChartZeroLine) && (
+                    <line
+                      className="qqq-section__line qqq-section__line--base"
+                      x1={PADDING.left}
+                      x2={CHART_WIDTH - PADDING.right}
+                      y1={totalPnlChartZeroLine}
+                      y2={totalPnlChartZeroLine}
+                    />
+                  )}
+                  {totalPnlChartAxis.map((tick) => (
+                    <g key={tick.value}>
+                      <line
+                        className="qqq-section__line qqq-section__line--guide"
+                        x1={CHART_WIDTH - PADDING.right}
+                        x2={CHART_WIDTH - PADDING.right + 6}
+                        y1={tick.y}
+                        y2={tick.y}
+                      />
+                      <text
+                        x={CHART_WIDTH - PADDING.right + 8}
+                        y={tick.y + 3}
+                        className="pnl-dialog__axis-label"
+                        textAnchor="start"
+                      >
+                        {formatMoney(tick.value, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      </text>
+                      <line
+                        className="qqq-section__line qqq-section__line--guide"
+                        x1={PADDING.left}
+                        x2={CHART_WIDTH - PADDING.right}
+                        y1={tick.y}
+                        y2={tick.y}
+                        strokeDasharray="2 4"
+                      />
+                    </g>
+                  ))}
+                  {totalPnlChartPath && (
+                    <path className="qqq-section__series-path" d={totalPnlChartPath} />
+                  )}
+                  {hoverPoint && (
+                    <>
+                      <line
+                        className="pnl-dialog__hover-line"
+                        x1={hoverPoint.x}
+                        x2={hoverPoint.x}
+                        y1={hoverPoint.y}
+                        y2={CHART_HEIGHT - PADDING.bottom}
+                      />
+                      <circle className="pnl-dialog__hover-marker" cx={hoverPoint.x} cy={hoverPoint.y} r="6" />
+                    </>
+                  )}
+                  {totalPnlChartMarker && (
+                    <circle
+                      className="qqq-section__marker"
+                      cx={totalPnlChartMarker.x}
+                      cy={totalPnlChartMarker.y}
+                      r="5"
+                    />
+                  )}
+                </svg>
+                {(hoverLabel || markerLabel) && labelPosition && (
+                  <div className="qqq-section__chart-label" style={labelPosition}>
+                    <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
+                    <span className="pnl-dialog__label-date">
+                      {hoverLabel ? hoverLabel.date : (totalPnlChartMarker?.date ? formatDate(totalPnlChartMarker.date) : null)}
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="equity-card__total-pnl-chart-message">
+                No Total P&L data available.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Timeframe selector for Total P&L chart */}
+      {showTotalPnlChart && (
+        <div className="equity-card__chip-row equity-card__chip-row--timeframe" role="group" aria-label="Total P&L timeframe">
+          {TIMEFRAME_BUTTONS.map((option) => {
+            const isActive = chartTimeframe === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={isActive ? 'active' : ''}
+                onClick={() => setChartTimeframe(option.value)}
+                aria-pressed={isActive}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {currencyOptions.length > 0 && !symbolMode && (
         <div className="equity-card__chip-row" role="group" aria-label="Currency views">
           {currencyOptions.map((option) => {
@@ -1482,7 +1843,7 @@ export default function SummaryMetrics({
             extraTooltip={totalExtraPercentTooltip}
             tone={totalTone}
             className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
-            onActivate={onShowTotalPnl}
+            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('total') : onShowTotalPnl)}
             onContextMenuRequest={handleTotalContextMenuRequest}
             contextMenuOpen={totalMenuState.open}
           />
@@ -1659,6 +2020,34 @@ SummaryMetrics.propTypes = {
     }),
     error: PropTypes.instanceOf(Error),
   }),
+  totalPnlSeries: PropTypes.shape({
+    accountId: PropTypes.string,
+    periodStartDate: PropTypes.string,
+    periodEndDate: PropTypes.string,
+    displayStartDate: PropTypes.string,
+    points: PropTypes.arrayOf(
+      PropTypes.shape({
+        date: PropTypes.string,
+        totalPnlCad: PropTypes.number,
+        totalPnlSinceDisplayStartCad: PropTypes.number,
+        equityCad: PropTypes.number,
+        cumulativeNetDepositsCad: PropTypes.number,
+      })
+    ),
+    summary: PropTypes.shape({
+      netDepositsCad: PropTypes.number,
+      totalPnlCad: PropTypes.number,
+      totalPnlSinceDisplayStartCad: PropTypes.number,
+      totalPnlAllTimeCad: PropTypes.number,
+      displayStartTotals: PropTypes.shape({
+        cumulativeNetDepositsCad: PropTypes.number,
+        equityCad: PropTypes.number,
+        totalPnlCad: PropTypes.number,
+      }),
+    }),
+  }),
+  totalPnlSeriesStatus: PropTypes.oneOf(['idle', 'loading', 'success', 'error']),
+  totalPnlSeriesError: PropTypes.instanceOf(Error),
   totalPnlRangeOptions: PropTypes.arrayOf(
     PropTypes.shape({
       value: PropTypes.string.isRequired,
@@ -1725,6 +2114,9 @@ SummaryMetrics.defaultProps = {
   fundingSummary: null,
   onShowInvestmentModel: null,
   benchmarkComparison: null,
+  totalPnlSeries: null,
+  totalPnlSeriesStatus: 'idle',
+  totalPnlSeriesError: null,
   totalPnlRangeOptions: [],
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,
@@ -1737,3 +2129,8 @@ SummaryMetrics.defaultProps = {
   onShowChildPnlBreakdown: null,
   onShowChildTotalPnl: null,
 };
+
+
+
+
+

@@ -1190,8 +1190,12 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
 
   let netDepositsTotal = 0;
   let netDepositsCount = 0;
+  let netDepositsAllTimeTotal = 0;
+  let netDepositsAllTimeCount = 0;
   let totalPnlTotal = 0;
   let totalPnlCount = 0;
+  let totalPnlAllTimeTotal = 0;
+  let totalPnlAllTimeCount = 0;
   let totalEquityTotal = 0;
   let totalEquityCount = 0;
 
@@ -1205,10 +1209,20 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
       netDepositsTotal += netDepositsCad;
       netDepositsCount += 1;
     }
+    const netDepositsAllTimeCad = entry?.netDeposits?.allTimeCad;
+    if (isFiniteNumber(netDepositsAllTimeCad)) {
+      netDepositsAllTimeTotal += netDepositsAllTimeCad;
+      netDepositsAllTimeCount += 1;
+    }
     const totalPnlCad = entry?.totalPnl?.combinedCad;
     if (isFiniteNumber(totalPnlCad)) {
       totalPnlTotal += totalPnlCad;
       totalPnlCount += 1;
+    }
+    const totalPnlAllTimeCad = entry?.totalPnl?.allTimeCad;
+    if (isFiniteNumber(totalPnlAllTimeCad)) {
+      totalPnlAllTimeTotal += totalPnlAllTimeCad;
+      totalPnlAllTimeCount += 1;
     }
     const totalEquityCad = entry?.totalEquityCad;
     if (isFiniteNumber(totalEquityCad)) {
@@ -1222,15 +1236,22 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
   }
 
   const aggregate = {};
-  if (netDepositsCount > 0) {
-    aggregate.netDeposits = { combinedCad: netDepositsTotal };
+  if (netDepositsCount > 0 || netDepositsAllTimeCount > 0) {
+    aggregate.netDeposits = {};
+    if (netDepositsCount > 0) aggregate.netDeposits.combinedCad = netDepositsTotal;
+    if (netDepositsAllTimeCount > 0) aggregate.netDeposits.allTimeCad = netDepositsAllTimeTotal;
   }
-  if (totalPnlCount > 0) {
-    aggregate.totalPnl = { combinedCad: totalPnlTotal };
-  } else if (netDepositsCount > 0 && totalEquityCount > 0) {
-    const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
-    if (isFiniteNumber(derivedTotalPnl)) {
-      aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+  if (totalPnlCount > 0 || totalPnlAllTimeCount > 0) {
+    aggregate.totalPnl = {};
+    if (totalPnlCount > 0) aggregate.totalPnl.combinedCad = totalPnlTotal;
+    if (totalPnlAllTimeCount > 0) aggregate.totalPnl.allTimeCad = totalPnlAllTimeTotal;
+  } else if ((netDepositsCount > 0 || netDepositsAllTimeCount > 0) && totalEquityCount > 0) {
+    const derivedCombined = netDepositsCount > 0 ? totalEquityTotal - netDepositsTotal : null;
+    const derivedAllTime = netDepositsAllTimeCount > 0 ? totalEquityTotal - netDepositsAllTimeTotal : null;
+    if (isFiniteNumber(derivedCombined) || isFiniteNumber(derivedAllTime)) {
+      aggregate.totalPnl = {};
+      if (isFiniteNumber(derivedCombined)) aggregate.totalPnl.combinedCad = derivedCombined;
+      if (isFiniteNumber(derivedAllTime)) aggregate.totalPnl.allTimeCad = derivedAllTime;
     }
   }
   if (totalEquityCount > 0) {
@@ -1574,14 +1595,6 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
       ? baseData.accountFunding
       : EMPTY_OBJECT;
   let nextAccountFunding = fundingMap;
-  const aggregateFunding = aggregateFundingSummariesForAccounts(fundingMap, orderedAccountIds);
-  if (aggregateFunding) {
-    const shouldAttach =
-      isAccountGroupSelection(normalizedKey) || normalizedKey === 'all' || !fundingMap[normalizedKey];
-    if (shouldAttach) {
-      nextAccountFunding = { ...fundingMap, [normalizedKey]: aggregateFunding };
-    }
-  }
 
   const dividendsMap =
     baseData.accountDividends && typeof baseData.accountDividends === 'object'
@@ -1616,6 +1629,175 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
     const aggregateAll = aggregateTotalPnlEntries(totalPnlAllMap, orderedAccountIds);
     if (aggregateAll) {
       nextTotalPnlAllMap = { ...totalPnlAllMap, [normalizedKey]: aggregateAll };
+    }
+  }
+
+  const totalPnlSeriesMap =
+    baseData.accountTotalPnlSeries && typeof baseData.accountTotalPnlSeries === 'object'
+      ? baseData.accountTotalPnlSeries
+      : null;
+  let nextTotalPnlSeriesMap = null;
+  if (totalPnlSeriesMap) {
+    nextTotalPnlSeriesMap = {};
+    orderedAccountIds.forEach((accountId) => {
+      const entry = totalPnlSeriesMap[accountId];
+      if (entry && typeof entry === 'object') {
+        nextTotalPnlSeriesMap[accountId] = entry;
+      }
+    });
+    // Also include a group/all entry when present so aggregate dialogs can seed instantly
+    if (isAccountGroupSelection(normalizedKey)) {
+      const groupEntry = totalPnlSeriesMap[normalizedKey];
+      if (groupEntry && typeof groupEntry === 'object') {
+        nextTotalPnlSeriesMap[normalizedKey] = groupEntry;
+      }
+    } else if (normalizedKey === 'all' && totalPnlSeriesMap['all']) {
+      nextTotalPnlSeriesMap['all'] = totalPnlSeriesMap['all'];
+    }
+  }
+
+  // Prefer composing group/all funding from per-account series when available so that
+  // the summary pod matches the Total P&L dialog and avoids double counting.
+  if ((isAccountGroupSelection(normalizedKey) || normalizedKey === 'all') && orderedAccountIds.length) {
+    let composed = null;
+    if (nextTotalPnlSeriesMap) {
+      let earliestAllStart = null;
+      let latestAllEnd = null;
+
+      const considerAllSeriesWindow = (seriesObj) => {
+        if (!seriesObj || typeof seriesObj !== 'object') return;
+        const s = typeof seriesObj.periodStartDate === 'string' ? seriesObj.periodStartDate.trim() : '';
+        const e = typeof seriesObj.periodEndDate === 'string' ? seriesObj.periodEndDate.trim() : '';
+        if (s) {
+          if (!earliestAllStart || s < earliestAllStart) earliestAllStart = s;
+        }
+        if (e) {
+          if (!latestAllEnd || e > latestAllEnd) latestAllEnd = e;
+        }
+      };
+      let combinedNetDeposits = 0;
+      let combinedNetDepositsCount = 0;
+      let combinedTotalPnlSinceDisplay = 0;
+      let combinedTotalPnlSinceDisplayCount = 0;
+      let combinedEquitySinceDisplay = 0;
+      let combinedEquitySinceDisplayCount = 0;
+
+      let allTimeNetDeposits = 0;
+      let allTimeNetDepositsCount = 0;
+      let allTimeTotalPnl = 0;
+      let allTimeTotalPnlCount = 0;
+      let allTimeEquity = 0;
+      let allTimeEquityCount = 0;
+
+      orderedAccountIds.forEach((id) => {
+        const key = id === undefined || id === null ? '' : String(id).trim();
+        if (!key) return;
+        const container = nextTotalPnlSeriesMap[key] && typeof nextTotalPnlSeriesMap[key] === 'object' ? nextTotalPnlSeriesMap[key] : null;
+        const cagr = container && container.cagr ? container.cagr : null;
+        const allSeries = container && container.all ? container.all : null;
+        considerAllSeriesWindow(allSeries);
+        const cagrSummary = cagr && typeof cagr.summary === 'object' ? cagr.summary : null;
+        const allSummary = allSeries && typeof allSeries.summary === 'object' ? allSeries.summary : null;
+        if (cagrSummary) {
+          const nd = Number(cagrSummary.netDepositsCad);
+          const tp = Number(cagrSummary.totalPnlSinceDisplayStartCad);
+          const eq = Number(cagrSummary.totalEquitySinceDisplayStartCad);
+          if (Number.isFinite(nd)) { combinedNetDeposits += nd; combinedNetDepositsCount++; }
+          if (Number.isFinite(tp)) { combinedTotalPnlSinceDisplay += tp; combinedTotalPnlSinceDisplayCount++; }
+          if (Number.isFinite(eq)) { combinedEquitySinceDisplay += eq; combinedEquitySinceDisplayCount++; }
+        }
+        if (allSummary) {
+          const ndAll = Number(allSummary.netDepositsAllTimeCad);
+          const tpAll = Number(allSummary.totalPnlAllTimeCad);
+          const eqAll = Number(allSummary.totalEquityCad);
+          if (Number.isFinite(ndAll)) { allTimeNetDeposits += ndAll; allTimeNetDepositsCount++; }
+          if (Number.isFinite(tpAll)) { allTimeTotalPnl += tpAll; allTimeTotalPnlCount++; }
+          if (Number.isFinite(eqAll)) { allTimeEquity += eqAll; allTimeEquityCount++; }
+        }
+      });
+
+      // If a precomputed group/all series exists, prefer its all-time summary for accuracy
+      let overrideAllTime = null;
+      let overrideAllTimeNetDeposits = null;
+      let overrideAllTimeEquity = null;
+      if (isAccountGroupSelection(normalizedKey)) {
+        const groupContainer = nextTotalPnlSeriesMap[normalizedKey];
+        const groupAll = groupContainer && groupContainer.all ? groupContainer.all : null;
+        if (groupAll && groupAll.summary) {
+          const s = groupAll.summary;
+          if (isFiniteNumber(s.totalPnlAllTimeCad)) overrideAllTime = s.totalPnlAllTimeCad;
+          if (isFiniteNumber(s.netDepositsAllTimeCad)) overrideAllTimeNetDeposits = s.netDepositsAllTimeCad;
+          if (isFiniteNumber(s.totalEquityCad)) overrideAllTimeEquity = s.totalEquityCad;
+        }
+        considerAllSeriesWindow(groupAll);
+      } else if (normalizedKey === 'all' && nextTotalPnlSeriesMap['all']) {
+        const container = nextTotalPnlSeriesMap['all'];
+        const seriesAll = container.all || container.cagr;
+        if (seriesAll && seriesAll.summary) {
+          const s = seriesAll.summary;
+          if (isFiniteNumber(s.totalPnlAllTimeCad)) overrideAllTime = s.totalPnlAllTimeCad;
+          if (isFiniteNumber(s.netDepositsAllTimeCad)) overrideAllTimeNetDeposits = s.netDepositsAllTimeCad;
+          if (isFiniteNumber(s.totalEquityCad)) overrideAllTimeEquity = s.totalEquityCad;
+        }
+        considerAllSeriesWindow(seriesAll);
+      }
+
+      const result = {};
+      const netDeposits = {};
+      if (combinedNetDepositsCount > 0) netDeposits.combinedCad = combinedNetDeposits;
+      if (allTimeNetDepositsCount > 0) netDeposits.allTimeCad = allTimeNetDeposits;
+      if (overrideAllTimeNetDeposits !== null) netDeposits.allTimeCad = overrideAllTimeNetDeposits;
+      if (Object.keys(netDeposits).length) result.netDeposits = netDeposits;
+
+      if (combinedTotalPnlSinceDisplayCount > 0) result.totalPnlSinceDisplayStartCad = combinedTotalPnlSinceDisplay;
+      const totalPnl = {};
+      if (combinedTotalPnlSinceDisplayCount > 0) totalPnl.combinedCad = combinedTotalPnlSinceDisplay;
+      if (allTimeTotalPnlCount > 0) totalPnl.allTimeCad = allTimeTotalPnl;
+      if (overrideAllTime !== null) totalPnl.allTimeCad = overrideAllTime;
+      if (Object.keys(totalPnl).length) result.totalPnl = totalPnl;
+
+      if (combinedEquitySinceDisplayCount > 0) result.totalEquitySinceDisplayStartCad = combinedEquitySinceDisplay;
+      if (allTimeEquityCount > 0) result.totalEquityCad = allTimeEquity;
+      if (overrideAllTimeEquity !== null) result.totalEquityCad = overrideAllTimeEquity;
+
+      if (Object.keys(result).length) {
+        if (earliestAllStart) result.periodStartDate = earliestAllStart;
+        if (latestAllEnd) result.periodEndDate = latestAllEnd;
+        composed = result;
+      }
+    }
+
+    // Fallback: aggregate directly from funding map if series unavailable
+    if (!composed) {
+      const aggregateFunding = aggregateFundingSummariesForAccounts(fundingMap, orderedAccountIds);
+      if (aggregateFunding) {
+        composed = aggregateFunding;
+      }
+    }
+
+    if (composed) {
+      const shouldAttach = isAccountGroupSelection(normalizedKey) || normalizedKey === 'all' || !fundingMap[normalizedKey];
+      if (shouldAttach) {
+        const base = nextAccountFunding[normalizedKey] || {};
+        // Merge, preferring composed values for group accuracy
+        const merged = { ...base };
+        if (composed.netDeposits) {
+          merged.netDeposits = Object.assign({}, base.netDeposits || {}, composed.netDeposits);
+        }
+        if (composed.totalPnl) {
+          merged.totalPnl = Object.assign({}, base.totalPnl || {}, composed.totalPnl);
+        }
+        if (Number.isFinite(composed.totalPnlSinceDisplayStartCad)) {
+          merged.totalPnlSinceDisplayStartCad = composed.totalPnlSinceDisplayStartCad;
+        }
+        if (Number.isFinite(composed.totalEquitySinceDisplayStartCad)) {
+          merged.totalEquitySinceDisplayStartCad = composed.totalEquitySinceDisplayStartCad;
+        }
+        if (Number.isFinite(composed.totalEquityCad)) {
+          merged.totalEquityCad = composed.totalEquityCad;
+        }
+        nextAccountFunding = { ...nextAccountFunding, [normalizedKey]: merged };
+      }
     }
   }
 
@@ -1660,6 +1842,7 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
     accountDividends: nextAccountDividends,
     accountTotalPnlBySymbol: nextTotalPnlMap ?? baseData.accountTotalPnlBySymbol ?? null,
     accountTotalPnlBySymbolAll: nextTotalPnlAllMap ?? baseData.accountTotalPnlBySymbolAll ?? null,
+    accountTotalPnlSeries: nextTotalPnlSeriesMap ?? baseData.accountTotalPnlSeries ?? null,
   };
 }
 
@@ -1699,6 +1882,14 @@ function useSummaryData(accountNumber, refreshKey) {
 
     setState((prev) => {
       if (initialData) {
+        // When a manual refresh is triggered, mark as loading while keeping
+        // existing data so the refresh spinner animates.
+        if (refreshChanged) {
+          if (prev.loading === true && prev.data === initialData && !prev.error) {
+            return prev;
+          }
+          return { loading: true, data: initialData, error: null };
+        }
         if (prev.data === initialData && prev.loading === false && !prev.error) {
           return prev;
         }
@@ -1711,6 +1902,7 @@ function useSummaryData(accountNumber, refreshKey) {
     });
 
     let fetchKey = null;
+    let forceFetch = false;
     if (normalizedAccount === 'default') {
       if (refreshChanged || !cachedData) {
         fetchKey = 'default';
@@ -1721,6 +1913,32 @@ function useSummaryData(accountNumber, refreshKey) {
       fetchKey = 'all';
     } else if (!initialData && normalizedAccount === 'all') {
       fetchKey = 'all';
+    } else if (
+      // If viewing a group derived from the superset, fetch the dedicated
+      // group summary when key fields are missing (annualized, period dates,
+      // or preheated group series). This avoids stale/partial data in the UI.
+      isAccountGroupSelection(normalizedAccount)
+    ) {
+      const target = derivedFromSuperset || cachedData || null;
+      const fundingForGroup =
+        target && target.accountFunding && typeof target.accountFunding === 'object'
+          ? target.accountFunding[normalizedAccount]
+          : null;
+      const hasAnnualized = Boolean(
+        (fundingForGroup && fundingForGroup.annualizedReturn &&
+          Number.isFinite(fundingForGroup.annualizedReturn.rate)) ||
+          (fundingForGroup && fundingForGroup.annualizedReturnAllTime &&
+            Number.isFinite(fundingForGroup.annualizedReturnAllTime.rate))
+      );
+      const hasPeriodStart = typeof fundingForGroup?.periodStartDate === 'string' && fundingForGroup.periodStartDate.trim();
+      const seriesMapCandidate = target && target.accountTotalPnlSeries && typeof target.accountTotalPnlSeries === 'object'
+        ? target.accountTotalPnlSeries[normalizedAccount]
+        : null;
+      const hasGroupSeries = Boolean(seriesMapCandidate && (seriesMapCandidate.all || seriesMapCandidate.cagr));
+      if (!hasAnnualized || !hasPeriodStart || !hasGroupSeries) {
+        fetchKey = normalizedAccount;
+        forceFetch = true; // bypass server cache to hydrate missing fields
+      }
     }
 
     if (!fetchKey) {
@@ -1728,7 +1946,7 @@ function useSummaryData(accountNumber, refreshKey) {
     }
 
     let cancelled = false;
-    getSummary(fetchKey)
+    getSummary(fetchKey, { force: refreshChanged || forceFetch })
       .then((summary) => {
         if (cancelled) {
           return;
@@ -5478,9 +5696,6 @@ export default function App() {
 
     const aggregateKey = selectedAccount === 'all' ? 'all' : selectedAccount;
     const directEntry = aggregateKey ? accountFunding[aggregateKey] : null;
-    if (directEntry && typeof directEntry === 'object') {
-      return directEntry;
-    }
 
     const memberAccountIds = (() => {
       if (selectedAccount === 'all') {
@@ -5505,10 +5720,96 @@ export default function App() {
       return null;
     }
 
+    // Prefer composing group funding from per-account series summaries when available
+    const seriesMap = data?.accountTotalPnlSeries && typeof data.accountTotalPnlSeries === 'object'
+      ? data.accountTotalPnlSeries
+      : null;
+    if (seriesMap) {
+      let combinedNetDeposits = 0;
+      let combinedNetDepositsCount = 0;
+      let combinedTotalPnlSinceDisplay = 0;
+      let combinedTotalPnlSinceDisplayCount = 0;
+      let combinedEquitySinceDisplay = 0;
+      let combinedEquitySinceDisplayCount = 0;
+
+      let allTimeNetDeposits = 0;
+      let allTimeNetDepositsCount = 0;
+      let allTimeTotalPnl = 0;
+      let allTimeTotalPnlCount = 0;
+      let allTimeEquity = 0;
+      let allTimeEquityCount = 0;
+
+      let earliestAllStart = null;
+      let latestAllEnd = null;
+
+      memberAccountIds.forEach((id) => {
+        const key = id === undefined || id === null ? '' : String(id).trim();
+        if (!key) return;
+        const container = seriesMap[key] && typeof seriesMap[key] === 'object' ? seriesMap[key] : null;
+        const cagr = container && container.cagr ? container.cagr : null;
+        const allSeries = container && container.all ? container.all : null;
+        const cagrSummary = cagr && typeof cagr.summary === 'object' ? cagr.summary : null;
+        const allSummary = allSeries && typeof allSeries.summary === 'object' ? allSeries.summary : null;
+        if (allSeries && typeof allSeries.periodStartDate === 'string') {
+          const s = allSeries.periodStartDate.trim();
+          if (s && (!earliestAllStart || s < earliestAllStart)) earliestAllStart = s;
+        }
+        if (allSeries && typeof allSeries.periodEndDate === 'string') {
+          const e = allSeries.periodEndDate.trim();
+          if (e && (!latestAllEnd || e > latestAllEnd)) latestAllEnd = e;
+        }
+        if (cagrSummary) {
+          if (isFiniteNumber(cagrSummary.netDepositsCad)) { combinedNetDeposits += cagrSummary.netDepositsCad; combinedNetDepositsCount++; }
+          if (isFiniteNumber(cagrSummary.totalPnlSinceDisplayStartCad)) { combinedTotalPnlSinceDisplay += cagrSummary.totalPnlSinceDisplayStartCad; combinedTotalPnlSinceDisplayCount++; }
+          if (isFiniteNumber(cagrSummary.totalEquitySinceDisplayStartCad)) { combinedEquitySinceDisplay += cagrSummary.totalEquitySinceDisplayStartCad; combinedEquitySinceDisplayCount++; }
+        }
+        if (allSummary) {
+          if (isFiniteNumber(allSummary.netDepositsAllTimeCad)) { allTimeNetDeposits += allSummary.netDepositsAllTimeCad; allTimeNetDepositsCount++; }
+          if (isFiniteNumber(allSummary.totalPnlAllTimeCad)) { allTimeTotalPnl += allSummary.totalPnlAllTimeCad; allTimeTotalPnlCount++; }
+          if (isFiniteNumber(allSummary.totalEquityCad)) { allTimeEquity += allSummary.totalEquityCad; allTimeEquityCount++; }
+        }
+      });
+
+      const result = {};
+      const netDeposits = {};
+      if (combinedNetDepositsCount > 0) netDeposits.combinedCad = combinedNetDeposits;
+      if (allTimeNetDepositsCount > 0) netDeposits.allTimeCad = allTimeNetDeposits;
+      if (Object.keys(netDeposits).length) result.netDeposits = netDeposits;
+
+      if (combinedTotalPnlSinceDisplayCount > 0) result.totalPnlSinceDisplayStartCad = combinedTotalPnlSinceDisplay;
+      const totalPnl = {};
+      if (combinedTotalPnlSinceDisplayCount > 0) totalPnl.combinedCad = combinedTotalPnlSinceDisplay;
+      if (allTimeTotalPnlCount > 0) totalPnl.allTimeCad = allTimeTotalPnl;
+      if (Object.keys(totalPnl).length) result.totalPnl = totalPnl;
+
+      if (combinedEquitySinceDisplayCount > 0) result.totalEquitySinceDisplayStartCad = combinedEquitySinceDisplay;
+      if (allTimeEquityCount > 0) result.totalEquityCad = allTimeEquity;
+
+      if (earliestAllStart) result.periodStartDate = earliestAllStart;
+      if (latestAllEnd) result.periodEndDate = latestAllEnd;
+
+      if (Object.keys(result).length) {
+        // Preserve server-computed annualized details when available
+        if (directEntry && typeof directEntry === 'object') {
+          if (directEntry.annualizedReturn) result.annualizedReturn = directEntry.annualizedReturn;
+          if (directEntry.annualizedReturnAllTime) result.annualizedReturnAllTime = directEntry.annualizedReturnAllTime;
+        }
+        return result;
+      }
+    }
+
+    if (directEntry && typeof directEntry === 'object') {
+      return directEntry;
+    }
+
     let netDepositsTotal = 0;
     let netDepositsCount = 0;
+    let netDepositsAllTimeTotal = 0;
+    let netDepositsAllTimeCount = 0;
     let totalPnlTotal = 0;
     let totalPnlCount = 0;
+    let totalPnlAllTimeTotal = 0;
+    let totalPnlAllTimeCount = 0;
     let totalEquityTotal = 0;
     let totalEquityCount = 0;
 
@@ -5526,10 +5827,20 @@ export default function App() {
         netDepositsTotal += netDepositsCad;
         netDepositsCount += 1;
       }
+      const netDepositsAllTimeCad = entry?.netDeposits?.allTimeCad;
+      if (isFiniteNumber(netDepositsAllTimeCad)) {
+        netDepositsAllTimeTotal += netDepositsAllTimeCad;
+        netDepositsAllTimeCount += 1;
+      }
       const totalPnlCad = entry?.totalPnl?.combinedCad;
       if (isFiniteNumber(totalPnlCad)) {
         totalPnlTotal += totalPnlCad;
         totalPnlCount += 1;
+      }
+      const totalPnlAllTimeCad = entry?.totalPnl?.allTimeCad;
+      if (isFiniteNumber(totalPnlAllTimeCad)) {
+        totalPnlAllTimeTotal += totalPnlAllTimeCad;
+        totalPnlAllTimeCount += 1;
       }
       const totalEquityCad = entry?.totalEquityCad;
       if (isFiniteNumber(totalEquityCad)) {
@@ -5543,15 +5854,22 @@ export default function App() {
     }
 
     const aggregate = {};
-    if (netDepositsCount > 0) {
-      aggregate.netDeposits = { combinedCad: netDepositsTotal };
+    if (netDepositsCount > 0 || netDepositsAllTimeCount > 0) {
+      aggregate.netDeposits = {};
+      if (netDepositsCount > 0) aggregate.netDeposits.combinedCad = netDepositsTotal;
+      if (netDepositsAllTimeCount > 0) aggregate.netDeposits.allTimeCad = netDepositsAllTimeTotal;
     }
-    if (totalPnlCount > 0) {
-      aggregate.totalPnl = { combinedCad: totalPnlTotal };
-    } else if (netDepositsCount > 0 && totalEquityCount > 0) {
-      const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
-      if (isFiniteNumber(derivedTotalPnl)) {
-        aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+    if (totalPnlCount > 0 || totalPnlAllTimeCount > 0) {
+      aggregate.totalPnl = {};
+      if (totalPnlCount > 0) aggregate.totalPnl.combinedCad = totalPnlTotal;
+      if (totalPnlAllTimeCount > 0) aggregate.totalPnl.allTimeCad = totalPnlAllTimeTotal;
+    } else if ((netDepositsCount > 0 || netDepositsAllTimeCount > 0) && totalEquityCount > 0) {
+      const derivedCombined = netDepositsCount > 0 ? totalEquityTotal - netDepositsTotal : null;
+      const derivedAllTime = netDepositsAllTimeCount > 0 ? totalEquityTotal - netDepositsAllTimeTotal : null;
+      if (isFiniteNumber(derivedCombined) || isFiniteNumber(derivedAllTime)) {
+        aggregate.totalPnl = {};
+        if (isFiniteNumber(derivedCombined)) aggregate.totalPnl.combinedCad = derivedCombined;
+        if (isFiniteNumber(derivedAllTime)) aggregate.totalPnl.allTimeCad = derivedAllTime;
       }
     }
     if (totalEquityCount > 0) {
@@ -7275,7 +7593,8 @@ export default function App() {
     const allTimePeriodStart =
       normalizedOriginalPeriodStart || effectiveVariant.periodStartDate;
 
-    const allTimeAnnualized = {
+    // Build all-time annualized details from server-provided values.
+    const baseAllTimeAnnualized = {
       rate: allTimeAnnualizedRaw?.rate ?? effectiveAnnualized.rate ?? null,
       asOf: allTimeAnnualizedRaw?.asOf ?? effectiveAnnualized.asOf ?? null,
       incomplete:
@@ -7288,6 +7607,12 @@ export default function App() {
         effectiveAnnualized.startDate ??
         allTimePeriodStart ??
         null,
+    };
+    const allTimeAnnualized = {
+      rate: baseAllTimeAnnualized.rate,
+      asOf: baseAllTimeAnnualized.asOf,
+      incomplete: baseAllTimeAnnualized.incomplete,
+      startDate: baseAllTimeAnnualized.startDate,
     };
 
     const allTimeVariant = {
@@ -7341,9 +7666,56 @@ export default function App() {
         options.push({ value: 'cagr', label: `From ${formatted.replace(',', '')}` });
       }
     }
-    options.push({ value: 'all', label: 'From start' });
+    // If there is no explicit cagrStartDate, show the concrete
+    // all-time start date instead of a generic "From start".
+    if (!cagrStartDate) {
+      const allStart =
+        fundingSummaryVariants?.allTime?.annualizedReturnStartDate ||
+        fundingSummaryVariants?.allTime?.periodStartDate ||
+        null;
+      const allFormatted = allStart ? formatDate(allStart) : null;
+      if (allFormatted && allFormatted !== '\u2014') {
+        options.push({ value: 'all', label: `From ${allFormatted.replace(',', '')}` });
+      } else {
+        options.push({ value: 'all', label: 'From start' });
+      }
+    } else {
+      options.push({ value: 'all', label: 'From start' });
+    }
     return options;
   }, [fundingSummaryVariants, cagrStartDate]);
+
+  const selectedAccountTotalPnlSeries = useMemo(() => {
+    if (!selectedAccountKey) {
+      return null;
+    }
+    const map =
+      data?.accountTotalPnlSeries && typeof data.accountTotalPnlSeries === 'object'
+        ? data.accountTotalPnlSeries
+        : null;
+    if (!map) {
+      return null;
+    }
+    const entry = map[selectedAccountKey] && typeof map[selectedAccountKey] === 'object' ? map[selectedAccountKey] : null;
+    if (!entry) {
+      return null;
+    }
+    const aggregateMode =
+      selectedAccountKey === 'all' || isAccountGroupSelection(selectedAccountKey);
+    const desiredMode = aggregateMode ? 'all' : totalPnlRange === 'all' ? 'all' : 'cagr';
+    return entry[desiredMode] || entry.cagr || entry.all || null;
+  }, [data?.accountTotalPnlSeries, selectedAccountKey, totalPnlRange]);
+
+  const selectedTotalPnlSeriesStatus =
+    totalPnlSeriesState.accountKey === selectedAccountKey
+      ? totalPnlSeriesState.status
+      : selectedAccountTotalPnlSeries
+        ? 'success'
+        : 'idle';
+  const selectedTotalPnlSeriesError =
+    totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'error'
+      ? totalPnlSeriesState.error
+      : null;
 
   useEffect(() => {
     const currentAccount = selectedAccountKey || null;
@@ -7363,12 +7735,25 @@ export default function App() {
       return;
     }
 
-    if (normalizedCagrStartDate) {
-      setTotalPnlRange('cagr');
-    } else {
-      setTotalPnlRange('all');
+    // For single accounts: honor account cagrStartDate
+    if (!isAggregateSelection) {
+      setTotalPnlRange(normalizedCagrStartDate ? 'cagr' : 'all');
+      return;
     }
-  }, [selectedAccountKey, cagrStartDate]);
+
+    // For groups or All: align with dialog behavior (always 'all')
+    setTotalPnlRange('all');
+  }, [
+    selectedAccountKey,
+    cagrStartDate,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountGroup?.accountIds,
+    accountsInView,
+    filteredAccountIds,
+    accountsById,
+    accountFunding,
+  ]);
 
   const handleTotalPnlRangeChange = useCallback(
     (nextValue) => {
@@ -10113,6 +10498,42 @@ export default function App() {
       ? totalPnlSeriesState.error
       : null;
 
+  useEffect(() => {
+    if (!activeTotalPnlAccountKey) {
+      return;
+    }
+    const seriesMap = data?.accountTotalPnlSeries;
+    const entry = seriesMap && typeof seriesMap === 'object' ? seriesMap[activeTotalPnlAccountKey] : null;
+    const isAggregateSelectionMode =
+      activeTotalPnlAccountKey === 'all' || isAccountGroupSelection(activeTotalPnlAccountKey);
+    const desiredMode = isAggregateSelectionMode ? 'all' : 'cagr';
+    const cachedSeries =
+      entry && typeof entry === 'object'
+        ? entry[desiredMode] || entry.cagr || entry.all || null
+        : null;
+    if (!cachedSeries) {
+      return;
+    }
+    setTotalPnlSeriesState((prev) => {
+      if (
+        prev.accountKey === activeTotalPnlAccountKey &&
+        prev.mode === desiredMode &&
+        prev.status === 'success' &&
+        prev.data === cachedSeries
+      ) {
+        return prev;
+      }
+      return {
+        status: 'success',
+        data: cachedSeries,
+        error: null,
+        accountKey: activeTotalPnlAccountKey,
+        mode: desiredMode,
+        symbol: null,
+      };
+    });
+  }, [activeTotalPnlAccountKey, data?.accountTotalPnlSeries]);
+
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
   const totalPnlDialogData = useMemo(() => {
     if (!focusedSymbol) {
@@ -10435,6 +10856,9 @@ export default function App() {
             totalPnlRangeOptions={focusedSymbol ? [] : totalPnlRangeOptions}
             selectedTotalPnlRange={focusedSymbol ? null : totalPnlRange}
             onTotalPnlRangeChange={focusedSymbol ? null : handleTotalPnlRangeChange}
+            totalPnlSeries={focusedSymbol ? null : selectedAccountTotalPnlSeries}
+            totalPnlSeriesStatus={focusedSymbol ? 'idle' : selectedTotalPnlSeriesStatus}
+            totalPnlSeriesError={focusedSymbol ? null : selectedTotalPnlSeriesError}
             onAdjustDeployment={focusedSymbol ? null : handleOpenDeploymentAdjustment}
             symbolMode={Boolean(focusedSymbol)}
             childAccounts={focusedSymbol ? [] : childAccountSummaries}

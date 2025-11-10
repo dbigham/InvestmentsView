@@ -175,7 +175,27 @@ const SUMMARY_CACHE_TTL_MS = (() => {
   return 2 * 60 * 1000; // default 2 minutes
 })();
 
+const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
+  const value = Number(process.env.TOTAL_PNL_SERIES_CACHE_TTL_MS);
+  if (Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  const minutes = Number(process.env.TOTAL_PNL_SERIES_CACHE_TTL_MINUTES);
+  if (Number.isFinite(minutes) && minutes > 0) {
+    return Math.round(minutes * 60 * 1000);
+  }
+  return 5 * 60 * 1000; // default 5 minutes
+})();
+
 const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
+const PREHEAT_GROUP_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_GROUP_TOTAL_PNL, false);
+const PREHEAT_ACCOUNT_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_ACCOUNT_TOTAL_PNL, false);
+const PREHEAT_MAX_CONCURRENCY = (() => {
+  const v = Number(process.env.PREHEAT_MAX_CONCURRENCY);
+  if (Number.isFinite(v) && v > 0) return v;
+  // Reasonable default: modest concurrency to avoid overwhelming APIs
+  return 4;
+})();
 
 if (DEBUG_SUMMARY_CACHE) {
   const sources = Array.from(loadedEnvPaths);
@@ -189,6 +209,7 @@ if (DEBUG_SUMMARY_CACHE) {
 
 const summaryCacheStore = new Map();
 let supersetSummaryCache = null;
+const totalPnlSeriesCacheStore = new Map();
 
 function nowMs() {
   return Date.now();
@@ -203,6 +224,364 @@ function debugSummaryCache(message, ...args) {
   } catch (error) {
     console.warn('[summary-cache] failed to log message:', error);
   }
+}
+
+function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
+  const normalizedKey = typeof accountKey === 'string' ? accountKey.trim().toLowerCase() : '';
+  if (!normalizedKey) {
+    return null;
+  }
+  const applyCagr = params.applyAccountCagrStartDate !== false;
+  const parts = [normalizedKey, applyCagr ? 'cagr' : 'all'];
+  const startDate = typeof params.startDate === 'string' ? params.startDate.trim() : '';
+  if (startDate) {
+    parts.push(`start:${startDate}`);
+  }
+  const endDate = typeof params.endDate === 'string' ? params.endDate.trim() : '';
+  if (endDate) {
+    parts.push(`end:${endDate}`);
+  }
+  const symbol = typeof params.symbol === 'string' ? params.symbol.trim().toUpperCase() : '';
+  if (symbol) {
+    parts.push(`symbol:${symbol}`);
+  }
+  return parts.join('|');
+}
+
+function getTotalPnlSeriesCacheEntry(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+  const entry = totalPnlSeriesCacheStore.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  if (entry.expiresAt && entry.expiresAt < Date.now()) {
+    totalPnlSeriesCacheStore.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+}
+
+function setTotalPnlSeriesCacheEntry(cacheKey, data) {
+  if (!cacheKey || !data) {
+    return;
+  }
+  totalPnlSeriesCacheStore.set(cacheKey, {
+    data,
+    expiresAt: Date.now() + TOTAL_PNL_SERIES_CACHE_TTL_MS,
+  });
+}
+
+function ensureAccountTotalPnlSeriesEntry(map, accountId) {
+  if (!map || !accountId) {
+    return null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(map, accountId) || !map[accountId] || typeof map[accountId] !== 'object') {
+    map[accountId] = {};
+  }
+  return map[accountId];
+}
+
+function setAccountTotalPnlSeries(map, accountId, mode, series) {
+  const entry = ensureAccountTotalPnlSeriesEntry(map, accountId);
+  if (!entry || !series) {
+    return;
+  }
+  entry[mode] = series;
+}
+
+async function computeAggregateTotalPnlSeriesForContexts(
+  targetContexts,
+  perAccountCombinedBalances,
+  options = {},
+  outputAccountId = 'all',
+  hadAccountFetchFailure = false,
+  resolveActivityContext /* optional: (context) => Promise<ActivityContext>|ActivityContext|null */
+) {
+  if (!Array.isArray(targetContexts) || !targetContexts.length) {
+    return null;
+  }
+  const symbolParam = typeof options.symbol === 'string' && options.symbol.trim() ? options.symbol.trim() : null;
+  const seriesResults = await mapWithConcurrency(
+    targetContexts,
+    MAX_AGGREGATE_FUNDING_CONCURRENCY,
+    async function (context) {
+      try {
+        const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, options);
+        const cached = cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
+        if (cached) {
+          return { context, series: cached };
+        }
+        let activityContext = null;
+        if (typeof resolveActivityContext === 'function') {
+          try {
+            activityContext = await resolveActivityContext(context);
+          } catch (ctxErr) {
+            // ignore; fall back to internal resolution
+            activityContext = null;
+          }
+        }
+        const baseOptions = activityContext ? { ...options, activityContext } : options;
+        const series = symbolParam
+          ? await computeTotalPnlSeriesForSymbol(
+              context.login,
+              context.account,
+              perAccountCombinedBalances,
+              {
+                ...baseOptions,
+                symbol: symbolParam,
+              }
+            )
+          : await computeTotalPnlSeries(
+              context.login,
+              context.account,
+              perAccountCombinedBalances,
+              baseOptions
+            );
+        if (series && cacheKey) {
+          setTotalPnlSeriesCacheEntry(cacheKey, series);
+        }
+        return { context, series };
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn(
+          'Failed to compute total P&L series for account ' + context.account.id + ' in aggregate view:',
+          message
+        );
+        return { context, error };
+      }
+    }
+  );
+
+  const successfulSeries = seriesResults.filter((result) => result && result.series);
+  if (!successfulSeries.length) {
+    return null;
+  }
+
+  const totalsByDate = new Map();
+  const aggregatedIssues = new Set();
+  const aggregatedMissingSymbols = new Set();
+  const summaryTotals = {
+    totalPnlCad: 0,
+    totalPnlAllTimeCad: 0,
+    netDepositsCad: 0,
+    netDepositsAllTimeCad: 0,
+    totalEquityCad: 0,
+    reserveValueCad: 0,
+    deployedValueCad: 0,
+  };
+  const summaryCounts = {
+    totalPnlCad: 0,
+    totalPnlAllTimeCad: 0,
+    netDepositsCad: 0,
+    netDepositsAllTimeCad: 0,
+    totalEquityCad: 0,
+    reserveValueCad: 0,
+    deployedValueCad: 0,
+  };
+  let aggregatedStart = null;
+  let aggregatedEnd = null;
+
+  successfulSeries.forEach(({ series }) => {
+    if (!series) {
+      return;
+    }
+    if (typeof series.periodStartDate === 'string' && series.periodStartDate) {
+      if (!aggregatedStart || series.periodStartDate < aggregatedStart) {
+        aggregatedStart = series.periodStartDate;
+      }
+    }
+    if (typeof series.periodEndDate === 'string' && series.periodEndDate) {
+      if (!aggregatedEnd || series.periodEndDate > aggregatedEnd) {
+        aggregatedEnd = series.periodEndDate;
+      }
+    }
+
+    if (Array.isArray(series.issues)) {
+      series.issues.forEach((issue) => {
+        if (typeof issue === 'string' && issue.trim()) {
+          aggregatedIssues.add(issue.trim());
+        }
+      });
+    }
+    if (Array.isArray(series.missingPriceSymbols)) {
+      series.missingPriceSymbols.forEach((symbol) => {
+        if (typeof symbol === 'string' && symbol.trim()) {
+          aggregatedMissingSymbols.add(symbol.trim());
+        }
+      });
+    }
+
+    if (Array.isArray(series.points)) {
+      series.points.forEach((point) => {
+        const dateKey = point && typeof point.date === 'string' ? point.date : null;
+        if (!dateKey) {
+          return;
+        }
+        let bucket = totalsByDate.get(dateKey);
+        if (!bucket) {
+          bucket = {
+            date: dateKey,
+            equity: 0,
+            equityCount: 0,
+            deposits: 0,
+            depositsCount: 0,
+            pnl: 0,
+            pnlCount: 0,
+            reserve: 0,
+            reserveCount: 0,
+            deployed: 0,
+            deployedCount: 0,
+          };
+          totalsByDate.set(dateKey, bucket);
+        }
+        const equity = Number(point.equityCad);
+        if (Number.isFinite(equity)) {
+          bucket.equity += equity;
+          bucket.equityCount += 1;
+        }
+        const deposits = Number(point.cumulativeNetDepositsCad);
+        if (Number.isFinite(deposits)) {
+          bucket.deposits += deposits;
+          bucket.depositsCount += 1;
+        }
+        const pnl = Number(point.totalPnlCad);
+        if (Number.isFinite(pnl)) {
+          bucket.pnl += pnl;
+          bucket.pnlCount += 1;
+        }
+        const reserveValue = point && Number.isFinite(point.reserveValueCad) ? point.reserveValueCad : null;
+        if (Number.isFinite(reserveValue)) {
+          bucket.reserve += reserveValue;
+          bucket.reserveCount += 1;
+        }
+        const deployedValue = point && Number.isFinite(point.deployedValueCad) ? point.deployedValueCad : null;
+        if (Number.isFinite(deployedValue)) {
+          bucket.deployed += deployedValue;
+          bucket.deployedCount += 1;
+        }
+      });
+    }
+
+    const { summary } = series;
+    if (summary && typeof summary === 'object') {
+      if (Number.isFinite(summary.totalPnlCad)) {
+        summaryTotals.totalPnlCad += summary.totalPnlCad;
+        summaryCounts.totalPnlCad += 1;
+      }
+      if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+        summaryTotals.totalPnlAllTimeCad += summary.totalPnlAllTimeCad;
+        summaryCounts.totalPnlAllTimeCad += 1;
+      }
+      if (Number.isFinite(summary.netDepositsCad)) {
+        summaryTotals.netDepositsCad += summary.netDepositsCad;
+        summaryCounts.netDepositsCad += 1;
+      }
+      if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+        summaryTotals.netDepositsAllTimeCad += summary.netDepositsAllTimeCad;
+        summaryCounts.netDepositsAllTimeCad += 1;
+      }
+      if (Number.isFinite(summary.totalEquityCad)) {
+        summaryTotals.totalEquityCad += summary.totalEquityCad;
+        summaryCounts.totalEquityCad += 1;
+      }
+      if (Number.isFinite(summary.reserveValueCad)) {
+        summaryTotals.reserveValueCad += summary.reserveValueCad;
+        summaryCounts.reserveValueCad += 1;
+      }
+      if (Number.isFinite(summary.deployedValueCad)) {
+        summaryTotals.deployedValueCad += summary.deployedValueCad;
+        summaryCounts.deployedValueCad += 1;
+      }
+    }
+  });
+
+  if (successfulSeries.length !== targetContexts.length || hadAccountFetchFailure) {
+    aggregatedIssues.add('aggregate-partial-data');
+  }
+
+  const sortedDates = Array.from(totalsByDate.keys()).sort();
+  const combinedPoints = sortedDates
+    .map((dateKey) => {
+      const bucket = totalsByDate.get(dateKey);
+      return {
+        date: dateKey,
+        equityCad: bucket && bucket.equityCount > 0 ? bucket.equity : undefined,
+        cumulativeNetDepositsCad: bucket && bucket.depositsCount > 0 ? bucket.deposits : undefined,
+        totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
+        reserveValueCad: bucket && bucket.reserveCount > 0 ? bucket.reserve : undefined,
+        deployedValueCad: bucket && bucket.deployedCount > 0 ? bucket.deployed : undefined,
+        deployedPercent:
+          bucket &&
+          bucket.deployedCount > 0 &&
+          bucket.equityCount > 0 &&
+          Number.isFinite(bucket.deployed) &&
+          Number.isFinite(bucket.equity) &&
+          Math.abs(bucket.equity) > 0.00001
+            ? (bucket.deployed / bucket.equity) * 100
+            : undefined,
+        reservePercent:
+          bucket &&
+          bucket.reserveCount > 0 &&
+          bucket.equityCount > 0 &&
+          Number.isFinite(bucket.reserve) &&
+          Number.isFinite(bucket.equity) &&
+          Math.abs(bucket.equity) > 0.00001
+            ? (bucket.reserve / bucket.equity) * 100
+            : undefined,
+      };
+    })
+    .filter((point) => point && Number.isFinite(point.totalPnlCad));
+
+  if (!combinedPoints.length) {
+    return null;
+  }
+
+  const summaryPayload = {
+    totalPnlCad: summaryCounts.totalPnlCad > 0 ? summaryTotals.totalPnlCad : null,
+    totalPnlAllTimeCad:
+      summaryCounts.totalPnlAllTimeCad > 0
+        ? summaryTotals.totalPnlAllTimeCad
+        : summaryCounts.totalPnlCad > 0
+          ? summaryTotals.totalPnlCad
+          : null,
+    netDepositsCad: summaryCounts.netDepositsCad > 0 ? summaryTotals.netDepositsCad : null,
+    netDepositsAllTimeCad:
+      summaryCounts.netDepositsAllTimeCad > 0
+        ? summaryTotals.netDepositsAllTimeCad
+        : summaryCounts.netDepositsCad > 0
+          ? summaryTotals.netDepositsCad
+          : null,
+    totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
+    reserveValueCad: summaryCounts.reserveValueCad > 0 ? summaryTotals.reserveValueCad : null,
+    deployedValueCad: summaryCounts.deployedValueCad > 0 ? summaryTotals.deployedValueCad : null,
+  };
+
+  if (
+    Number.isFinite(summaryPayload.deployedValueCad) &&
+    Number.isFinite(summaryPayload.totalEquityCad) &&
+    Math.abs(summaryPayload.totalEquityCad) > 0.00001
+  ) {
+    summaryPayload.deployedPercent = (summaryPayload.deployedValueCad / summaryPayload.totalEquityCad) * 100;
+  }
+
+  const payload = {
+    accountId: outputAccountId,
+    periodStartDate: aggregatedStart || combinedPoints[0].date,
+    periodEndDate: aggregatedEnd || combinedPoints[combinedPoints.length - 1].date,
+    points: combinedPoints,
+    summary: summaryPayload,
+  };
+
+  if (aggregatedIssues.size) {
+    payload.issues = Array.from(aggregatedIssues);
+  }
+  if (aggregatedMissingSymbols.size) {
+    payload.missingPriceSymbols = Array.from(aggregatedMissingSymbols);
+  }
+
+  return payload;
 }
 
 function normalizeSummaryRequestKey(rawAccountId) {
@@ -818,8 +1197,12 @@ function aggregateFundingSummariesForAccounts(fundingMap, accountIds) {
 
   let netDepositsTotal = 0;
   let netDepositsCount = 0;
+  let netDepositsAllTimeTotal = 0;
+  let netDepositsAllTimeCount = 0;
   let totalPnlTotal = 0;
   let totalPnlCount = 0;
+  let totalPnlAllTimeTotal = 0;
+  let totalPnlAllTimeCount = 0;
   let totalEquityTotal = 0;
   let totalEquityCount = 0;
 
@@ -833,10 +1216,20 @@ function aggregateFundingSummariesForAccounts(fundingMap, accountIds) {
       netDepositsTotal += netDepositsCad;
       netDepositsCount += 1;
     }
+    const netDepositsAllTimeCad = entry?.netDeposits?.allTimeCad;
+    if (Number.isFinite(netDepositsAllTimeCad)) {
+      netDepositsAllTimeTotal += netDepositsAllTimeCad;
+      netDepositsAllTimeCount += 1;
+    }
     const totalPnlCad = entry?.totalPnl?.combinedCad;
     if (Number.isFinite(totalPnlCad)) {
       totalPnlTotal += totalPnlCad;
       totalPnlCount += 1;
+    }
+    const totalPnlAllTimeCad = entry?.totalPnl?.allTimeCad;
+    if (Number.isFinite(totalPnlAllTimeCad)) {
+      totalPnlAllTimeTotal += totalPnlAllTimeCad;
+      totalPnlAllTimeCount += 1;
     }
     const totalEquityCad = entry?.totalEquityCad;
     if (Number.isFinite(totalEquityCad)) {
@@ -850,15 +1243,22 @@ function aggregateFundingSummariesForAccounts(fundingMap, accountIds) {
   }
 
   const aggregate = {};
-  if (netDepositsCount > 0) {
-    aggregate.netDeposits = { combinedCad: netDepositsTotal };
+  if (netDepositsCount > 0 || netDepositsAllTimeCount > 0) {
+    aggregate.netDeposits = {};
+    if (netDepositsCount > 0) aggregate.netDeposits.combinedCad = netDepositsTotal;
+    if (netDepositsAllTimeCount > 0) aggregate.netDeposits.allTimeCad = netDepositsAllTimeTotal;
   }
-  if (totalPnlCount > 0) {
-    aggregate.totalPnl = { combinedCad: totalPnlTotal };
-  } else if (netDepositsCount > 0 && totalEquityCount > 0) {
-    const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
-    if (Number.isFinite(derivedTotalPnl)) {
-      aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+  if (totalPnlCount > 0 || totalPnlAllTimeCount > 0) {
+    aggregate.totalPnl = {};
+    if (totalPnlCount > 0) aggregate.totalPnl.combinedCad = totalPnlTotal;
+    if (totalPnlAllTimeCount > 0) aggregate.totalPnl.allTimeCad = totalPnlAllTimeTotal;
+  } else if ((netDepositsCount > 0 || netDepositsAllTimeCount > 0) && totalEquityCount > 0) {
+    const derivedCombined = netDepositsCount > 0 ? totalEquityTotal - netDepositsTotal : null;
+    const derivedAllTime = netDepositsAllTimeCount > 0 ? totalEquityTotal - netDepositsAllTimeTotal : null;
+    if (Number.isFinite(derivedCombined) || Number.isFinite(derivedAllTime)) {
+      aggregate.totalPnl = {};
+      if (Number.isFinite(derivedCombined)) aggregate.totalPnl.combinedCad = derivedCombined;
+      if (Number.isFinite(derivedAllTime)) aggregate.totalPnl.allTimeCad = derivedAllTime;
     }
   }
   if (totalEquityCount > 0) {
@@ -1254,6 +1654,13 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     }
   });
 
+  const accountTotalPnlSeries = {};
+  accountIds.forEach((accountId) => {
+    if (superset.accountTotalPnlSeries && superset.accountTotalPnlSeries[accountId]) {
+      accountTotalPnlSeries[accountId] = superset.accountTotalPnlSeries[accountId];
+    }
+  });
+
   const aggregateKey =
     normalizedSelection.type === 'group'
       ? normalizedSelection.requestedId
@@ -1293,6 +1700,78 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     if (aggregateTotalPnlAll) {
       accountTotalPnlBySymbolAll[aggregateKey] = aggregateTotalPnlAll;
     }
+
+    // If we have a precomputed group series, prefer its summary to seed group funding accurately
+    const groupSeriesContainer = accountTotalPnlSeries[aggregateKey];
+    const groupAllSeries = groupSeriesContainer && typeof groupSeriesContainer === 'object' ? groupSeriesContainer.all : null;
+    const groupAllSummary = groupAllSeries && typeof groupAllSeries.summary === 'object' ? groupAllSeries.summary : null;
+    if (groupAllSummary) {
+      const override = accountFunding[aggregateKey] || {};
+      const merged = { ...override };
+      // Only use group 'all' series to populate all-time fields; keep combinedCad from per-account (CAGR) aggregation
+      const netDeposits = Object.assign({}, merged.netDeposits || {});
+      if (Number.isFinite(groupAllSummary.netDepositsAllTimeCad)) {
+        netDeposits.allTimeCad = groupAllSummary.netDepositsAllTimeCad;
+      }
+      if (Object.keys(netDeposits).length) {
+        merged.netDeposits = netDeposits;
+      }
+      const totalPnl = Object.assign({}, merged.totalPnl || {});
+      if (Number.isFinite(groupAllSummary.totalPnlAllTimeCad)) {
+        totalPnl.allTimeCad = groupAllSummary.totalPnlAllTimeCad;
+      }
+      if (Object.keys(totalPnl).length) {
+        merged.totalPnl = totalPnl;
+      }
+      if (Number.isFinite(groupAllSummary.totalEquityCad)) {
+        merged.totalEquityCad = groupAllSummary.totalEquityCad;
+      }
+      if (groupAllSeries.periodStartDate) {
+        merged.periodStartDate = merged.periodStartDate || groupAllSeries.periodStartDate;
+      }
+      if (groupAllSeries.periodEndDate) {
+        merged.periodEndDate = merged.periodEndDate || groupAllSeries.periodEndDate;
+      }
+      accountFunding[aggregateKey] = merged;
+    }
+
+    // Compute group-level since-display deltas by summing per-account since-display fields
+    (function attachSinceDisplayTotals() {
+      if (!Array.isArray(accountIds) || accountIds.length === 0) {
+        return;
+      }
+      let pnlSinceDisplay = 0;
+      let pnlSinceCount = 0;
+      let equitySinceDisplay = 0;
+      let equitySinceCount = 0;
+      accountIds.forEach((accountId) => {
+        const entry = superset.accountFundingSummaries && superset.accountFundingSummaries[accountId];
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const p = Number(entry.totalPnlSinceDisplayStartCad);
+        if (Number.isFinite(p)) {
+          pnlSinceDisplay += p;
+          pnlSinceCount += 1;
+        }
+        const e = Number(entry.totalEquitySinceDisplayStartCad);
+        if (Number.isFinite(e)) {
+          equitySinceDisplay += e;
+          equitySinceCount += 1;
+        }
+      });
+      if (pnlSinceCount > 0 || equitySinceCount > 0) {
+        const merged = Object.assign({}, accountFunding[aggregateKey] || {});
+        if (pnlSinceCount > 0) {
+          merged.totalPnlSinceDisplayStartCad = pnlSinceDisplay;
+          merged.totalPnl = Object.assign({}, merged.totalPnl || {}, { combinedCad: pnlSinceDisplay });
+        }
+        if (equitySinceCount > 0) {
+          merged.totalEquitySinceDisplayStartCad = equitySinceDisplay;
+        }
+        accountFunding[aggregateKey] = merged;
+      }
+    })();
   }
 
   let orderWindowStartIso = null;
@@ -1359,6 +1838,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     accountDividends,
     accountTotalPnlBySymbol,
     accountTotalPnlBySymbolAll,
+    accountTotalPnlSeries,
     asOf: superset.asOf || new Date().toISOString(),
     usdToCadRate: superset.usdToCadRate || null,
   };
@@ -11698,15 +12178,17 @@ app.get('/api/summary', async function (req, res) {
   const configuredDefaultKey = getDefaultAccountId();
   let normalizedSelection = normalizeSummaryRequestKey(requestedAccountId);
   let supersetEntry = null;
+  const forceRefresh = req.query.force === 'true' || req.query.force === '1';
 
   try {
-    let cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
-    if (cached && cached.payload) {
-      debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
-        requestedId: normalizedSelection.requestedId,
-      });
-      return res.json(cached.payload);
-    }
+    if (!forceRefresh) {
+      let cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
+      if (cached && cached.payload) {
+        debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
+          requestedId: normalizedSelection.requestedId,
+        });
+        return res.json(cached.payload);
+      }
 
     if (normalizedSelection.cacheKey !== 'all') {
       supersetEntry = getSupersetCacheEntry();
@@ -11754,6 +12236,7 @@ app.get('/api/summary', async function (req, res) {
             availableGroupKeys: derivationDetails.availableGroupKeys || [],
           });
         }
+      }
       }
     }
   } catch (cacheError) {
@@ -12281,6 +12764,7 @@ app.get('/api/summary', async function (req, res) {
     const accountDividendSummaries = {};
     const accountTotalPnlBySymbol = {};
     const accountTotalPnlBySymbolAll = {};
+    const accountTotalPnlSeries = {};
     if (selectedContexts.length === 1) {
       const context = selectedContexts[0];
       let sharedActivityContext = null;
@@ -12369,6 +12853,13 @@ app.get('/api/summary', async function (req, res) {
               fundingSummary.displayStartTotals = summary.displayStartTotals;
             }
           }
+        }
+        if (totalPnlSeries) {
+          const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, { applyAccountCagrStartDate: true });
+          if (cacheKey) {
+            setTotalPnlSeriesCacheEntry(cacheKey, totalPnlSeries);
+          }
+          setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
         }
       }
 
@@ -12599,6 +13090,87 @@ app.get('/api/summary', async function (req, res) {
           aggregateTotals.incomplete = true;
         }
       });
+
+      // Best-effort: for accounts with a CAGR start date, align funding summary using
+      // the computed Total P&L series summary (handles since-display deltas accurately).
+      const accountsNeedingCagrSeries = selectedContexts.filter(function (context) {
+        const hasCagr = context && context.account && typeof context.account.cagrStartDate === 'string' && context.account.cagrStartDate.trim();
+        return Boolean(hasCagr && accountFundingSummaries[context.account.id]);
+      });
+      if (accountsNeedingCagrSeries.length > 0) {
+        const cagrSeriesOptions = { applyAccountCagrStartDate: true };
+        await mapWithConcurrency(
+          accountsNeedingCagrSeries,
+          Math.min(PREHEAT_MAX_CONCURRENCY, accountsNeedingCagrSeries.length),
+          async function (context) {
+            let activityContext = null;
+            try {
+              activityContext = await ensureAccountActivityContext(context);
+            } catch (activityError) {
+              // Non-fatal
+            }
+            const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, cagrSeriesOptions);
+            let series = cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
+            if (!series) {
+              try {
+                series = await computeTotalPnlSeries(
+                  context.login,
+                  context.account,
+                  perAccountCombinedBalances,
+                  activityContext ? { ...cagrSeriesOptions, activityContext } : cagrSeriesOptions
+                );
+                if (series && cacheKey) {
+                  setTotalPnlSeriesCacheEntry(cacheKey, series);
+                }
+              } catch (err) {
+                series = null;
+              }
+            }
+            if (!series || !series.summary) {
+              return;
+            }
+            const fundingSummary = accountFundingSummaries[context.account.id];
+            if (!fundingSummary || typeof fundingSummary !== 'object') {
+              return;
+            }
+            const summary = series.summary;
+            // Mirror the single-account augmentation logic
+            if (!fundingSummary.totalPnl || typeof fundingSummary.totalPnl !== 'object') {
+              fundingSummary.totalPnl = {};
+            }
+            if (Number.isFinite(summary.totalPnlCad)) {
+              fundingSummary.totalPnl.combinedCad = summary.totalPnlCad;
+            }
+            if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+              fundingSummary.totalPnl.allTimeCad = summary.totalPnlAllTimeCad;
+            }
+            if (Number.isFinite(summary.totalPnlSinceDisplayStartCad)) {
+              fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlSinceDisplayStartCad;
+            }
+            if (Number.isFinite(summary.netDepositsCad)) {
+              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+              if (!Number.isFinite(fundingSummary.netDeposits.combinedCad)) {
+                fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
+              }
+            }
+            if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+              if (!Number.isFinite(fundingSummary.netDeposits.allTimeCad)) {
+                fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
+              }
+            }
+            if (Number.isFinite(summary.totalEquityCad) && !Number.isFinite(fundingSummary.totalEquityCad)) {
+              fundingSummary.totalEquityCad = summary.totalEquityCad;
+            }
+            if (Number.isFinite(summary.totalEquitySinceDisplayStartCad)) {
+              fundingSummary.totalEquitySinceDisplayStartCad = summary.totalEquitySinceDisplayStartCad;
+            }
+            if (summary.displayStartTotals) {
+              fundingSummary.displayStartTotals = summary.displayStartTotals;
+            }
+          }
+        );
+      }
 
       // Aggregate per-symbol totals across accounts in this view
       const perAccountSymbolTotals = await mapWithConcurrency(
@@ -12922,7 +13494,10 @@ app.get('/api/summary', async function (req, res) {
           aggregateEntry.periodEndDate = aggregatePeriodEnd;
         }
         let aggregateRate = null;
-        if (!aggregateTotals.incomplete) {
+        // Compute an aggregate rate whenever we have usable cash flows, even if
+        // some member accounts had incomplete data. We still mark the result
+        // as incomplete to signal caution, but a rate is more useful than none.
+        if (Array.isArray(aggregateTotals.cashFlowsCad) && aggregateTotals.cashFlowsCad.length > 0) {
           const computedRate = computeAccountAnnualizedReturn(aggregateTotals.cashFlowsCad, 'all');
           if (Number.isFinite(computedRate)) {
             aggregateRate = computedRate;
@@ -12965,6 +13540,179 @@ app.get('/api/summary', async function (req, res) {
         if (viewingAllAccountsRequest) {
           accountFundingSummaries.all = aggregateEntry;
         }
+      }
+
+      const aggregateSelectionKey = viewingAccountGroup && selectedAccountGroup
+        ? selectedAccountGroup.id
+        : viewingAllAccountsRequest
+          ? 'all'
+          : null;
+      if (aggregateSelectionKey) {
+        try {
+          const aggregateSeriesOptions = { applyAccountCagrStartDate: false };
+          const aggregatedSeries = await computeAggregateTotalPnlSeriesForContexts(
+            selectedContexts,
+            perAccountCombinedBalances,
+            aggregateSeriesOptions,
+            aggregateSelectionKey,
+            false,
+            async (ctx) => {
+              try {
+                return await ensureAccountActivityContext(ctx);
+              } catch (e) {
+                return null;
+              }
+            }
+          );
+          if (aggregatedSeries) {
+            setAccountTotalPnlSeries(accountTotalPnlSeries, aggregateSelectionKey, 'all', aggregatedSeries);
+            const aggregateCacheKey = buildTotalPnlSeriesCacheKey(aggregateSelectionKey, aggregateSeriesOptions);
+            if (aggregateCacheKey) {
+              setTotalPnlSeriesCacheEntry(aggregateCacheKey, aggregatedSeries);
+            }
+          }
+        } catch (seriesError) {
+          const message =
+            seriesError && seriesError.message ? seriesError.message : String(seriesError);
+          console.warn('Failed to compute aggregate total P&L series for summary cache:', message);
+        }
+      }
+      // Precompute group funding + per-group series when viewing all accounts so group views are instant
+      if (viewingAllAccountsRequest && accountGroupsById instanceof Map) {
+        // 1) Build group-level funding summaries (including annualized) from per-account funding
+        for (const [groupKey, group] of accountGroupsById.entries()) {
+          if (!group || !group.id || !Array.isArray(group.accounts) || !group.accounts.length) {
+            continue;
+          }
+          const accountIds = group.accounts.map((a) => a && a.id).filter(Boolean);
+          const aggregateFunding = aggregateFundingSummariesForAccounts(accountFundingSummaries, accountIds);
+          if (!aggregateFunding) {
+            continue;
+          }
+          // Compute annualized using merged cash flows (no extra API calls)
+          const cashFlows = [];
+          accountIds.forEach((id) => {
+            const f = accountFundingSummaries[id];
+            if (f && Array.isArray(f.cashFlowsCad)) {
+              f.cashFlowsCad.forEach((entry) => {
+                if (entry && typeof entry === 'object' && Number.isFinite(Number(entry.amount)) && entry.date) {
+                  cashFlows.push({ amount: Number(entry.amount), date: entry.date });
+                }
+              });
+            }
+          });
+          if (cashFlows.length > 0) {
+            const asOf = new Date().toISOString();
+            const rate = computeAccountAnnualizedReturn(cashFlows, group.id);
+            if (Number.isFinite(rate)) {
+              const annualized = {
+                rate,
+                method: 'xirr',
+                cashFlowCount: cashFlows.length,
+                asOf,
+              };
+              aggregateFunding.annualizedReturn = annualized;
+              aggregateFunding.annualizedReturnAllTime = Object.assign({}, annualized);
+            } else {
+              aggregateFunding.annualizedReturn = { method: 'xirr', cashFlowCount: cashFlows.length, asOf, incomplete: true };
+              aggregateFunding.annualizedReturnAllTime = Object.assign({}, aggregateFunding.annualizedReturn);
+            }
+          }
+          accountFundingSummaries[group.id] = aggregateFunding;
+        }
+
+        // 2) Precompute group Total P&L series (all-time). Use cached per-account series and activity contexts.
+        for (const [groupKey, group] of accountGroupsById.entries()) {
+          if (!group || !group.id || !Array.isArray(group.accounts) || !group.accounts.length) {
+            continue;
+          }
+          const allowed = new Set(group.accounts.map((a) => a && a.id).filter(Boolean));
+          const groupContexts = selectedContexts.filter((ctx) => allowed.has(ctx.account.id));
+          if (!groupContexts.length) {
+            continue;
+          }
+          try {
+            const options = { applyAccountCagrStartDate: false };
+            const series = await computeAggregateTotalPnlSeriesForContexts(
+              groupContexts,
+              perAccountCombinedBalances,
+              options,
+              group.id,
+              false,
+              async (ctx) => {
+                try {
+                  return await ensureAccountActivityContext(ctx);
+                } catch (e) {
+                  return null;
+                }
+              }
+            );
+            if (series) {
+              setAccountTotalPnlSeries(accountTotalPnlSeries, group.id, 'all', series);
+              const cacheKey = buildTotalPnlSeriesCacheKey(group.id, options);
+              if (cacheKey) {
+                setTotalPnlSeriesCacheEntry(cacheKey, series);
+              }
+              // Ensure group funding has period window and all-time totals aligned with series
+              const merged = Object.assign({}, accountFundingSummaries[group.id] || {});
+              const s = series.summary || {};
+              if (Number.isFinite(s.netDepositsAllTimeCad)) {
+                merged.netDeposits = Object.assign({}, merged.netDeposits || {}, { allTimeCad: s.netDepositsAllTimeCad });
+              }
+              if (Number.isFinite(s.totalPnlAllTimeCad)) {
+                merged.totalPnl = Object.assign({}, merged.totalPnl || {}, { allTimeCad: s.totalPnlAllTimeCad });
+              }
+              if (Number.isFinite(s.totalEquityCad)) {
+                merged.totalEquityCad = s.totalEquityCad;
+              }
+              if (series.periodStartDate && !merged.periodStartDate) {
+                merged.periodStartDate = series.periodStartDate;
+              }
+              if (series.periodEndDate && !merged.periodEndDate) {
+                merged.periodEndDate = series.periodEndDate;
+              }
+              accountFundingSummaries[group.id] = merged;
+              }
+          } catch (groupSeriesError) {
+            const message = groupSeriesError && groupSeriesError.message ? groupSeriesError.message : String(groupSeriesError);
+            console.warn('Failed to compute preheated group Total P&L series for', group.id, message);
+          }
+        }
+      }
+
+      // Precompute per-account series when viewing all accounts so single-account views are instant
+      if (PREHEAT_ACCOUNT_TOTAL_PNL && viewingAllAccountsRequest) {
+        await mapWithConcurrency(
+          selectedContexts,
+          Math.min(PREHEAT_MAX_CONCURRENCY, selectedContexts.length),
+          async function (context) {
+            let activityContext = null;
+            try {
+              activityContext = await ensureAccountActivityContext(context);
+            } catch (activityError) {
+              const msg = activityError && activityError.message ? activityError.message : String(activityError);
+              console.warn('Failed to prepare activity for per-account series', context.account.id, msg);
+            }
+            try {
+              const series = await computeTotalPnlSeries(
+                context.login,
+                context.account,
+                perAccountCombinedBalances,
+                activityContext ? { applyAccountCagrStartDate: true, activityContext } : { applyAccountCagrStartDate: true }
+              );
+              if (series) {
+                setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', series);
+                const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, { applyAccountCagrStartDate: true });
+                if (cacheKey) {
+                  setTotalPnlSeriesCacheEntry(cacheKey, series);
+                }
+              }
+            } catch (seriesError) {
+              const message = seriesError && seriesError.message ? seriesError.message : String(seriesError);
+              console.warn('Failed to compute per-account Total P&L series for', context.account.id, message);
+            }
+          }
+        );
       }
     }
 
@@ -13339,6 +14087,7 @@ app.get('/api/summary', async function (req, res) {
       accountDividends: accountDividendSummaries,
       accountTotalPnlBySymbol,
       accountTotalPnlBySymbolAll,
+      accountTotalPnlSeries,
       asOf: new Date().toISOString(),
       usdToCadRate: latestUsdToCadRate,
     };
@@ -13434,6 +14183,7 @@ app.get('/api/summary', async function (req, res) {
         accountDividendSummaries,
         accountTotalPnlBySymbol,
         accountTotalPnlBySymbolAll,
+        accountTotalPnlSeries,
         investmentModelEvaluations,
         decoratedPositions,
         decoratedOrders,
@@ -13470,17 +14220,35 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
 
   const normalizedKey = rawAccountKey.toLowerCase();
   const isGroupKey = normalizedKey.startsWith('group:');
-  if (normalizedKey === 'all' || isGroupKey) {
+  const symbolParam =
+    typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
+  const startDateParam =
+    typeof req.query.startDate === 'string' && req.query.startDate.trim() ? req.query.startDate.trim() : null;
+  const endDateParam =
+    typeof req.query.endDate === 'string' && req.query.endDate.trim() ? req.query.endDate.trim() : null;
+  let applyAccountCagrStartDate = true;
+  if (req.query.applyAccountCagrStartDate === 'false' || req.query.applyAccountCagrStartDate === '0') {
+    applyAccountCagrStartDate = false;
+  }
+  const isAggregateRequest = normalizedKey === 'all' || isGroupKey;
+  if (isAggregateRequest) {
+    applyAccountCagrStartDate = false;
+  }
+  const queryOptions = {
+    startDate: startDateParam,
+    endDate: endDateParam,
+    applyAccountCagrStartDate,
+    symbol: symbolParam,
+  };
+  const cacheKey = buildTotalPnlSeriesCacheKey(normalizedKey, queryOptions);
+  const cachedSeries = cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
+  if (cachedSeries) {
+    return res.json(cachedSeries);
+  }
+
+  if (isAggregateRequest) {
     try {
-      const aggregateOptions = {};
-      if (typeof req.query.startDate === 'string' && req.query.startDate.trim()) {
-        aggregateOptions.startDate = req.query.startDate.trim();
-      }
-      if (typeof req.query.endDate === 'string' && req.query.endDate.trim()) {
-        aggregateOptions.endDate = req.query.endDate.trim();
-      }
-      aggregateOptions.applyAccountCagrStartDate = false;
-      const symbolParam = typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
+      const aggregateOptions = { ...queryOptions };
 
       const contexts = [];
       let hadAccountFetchFailure = false;
@@ -13548,283 +14316,47 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         }
       }
 
-      const balancesResults = await Promise.all(
-        targetContexts.map((context) => fetchBalances(context.login, context.account.number))
-      );
+      // If we already have cached per-account series for all targets, skip fetching balances.
       const perAccountCombinedBalances = {};
-      balancesResults.forEach((balancesRaw, index) => {
-        const context = targetContexts[index];
-        if (!context) {
-          return;
-        }
-        const summary = summarizeAccountBalances(balancesRaw) || balancesRaw;
-        if (summary) {
-          perAccountCombinedBalances[context.account.id] = summary;
-        }
+      const aggregateOptionsForCache = { ...aggregateOptions };
+      const cacheStatuses = targetContexts.map((context) => {
+        const key = buildTotalPnlSeriesCacheKey(context.account.id, aggregateOptionsForCache);
+        const hit = key ? getTotalPnlSeriesCacheEntry(key) : null;
+        return { context, key, hit };
       });
+      const missing = cacheStatuses.filter((e) => !e.hit).map((e) => e.context);
+      if (missing.length > 0) {
+        const balancesResults = await Promise.all(
+          missing.map((context) => fetchBalances(context.login, context.account.number))
+        );
+        balancesResults.forEach((balancesRaw, index) => {
+          const context = missing[index];
+          if (!context) {
+            return;
+          }
+          const summary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+          if (summary) {
+            perAccountCombinedBalances[context.account.id] = summary;
+          }
+        });
+      }
 
-      const seriesResults = await mapWithConcurrency(
+      const aggregateKey = isGroupKey ? rawAccountKey : 'all';
+      const aggregatedSeries = await computeAggregateTotalPnlSeriesForContexts(
         targetContexts,
-        MAX_AGGREGATE_FUNDING_CONCURRENCY,
-        async function (context) {
-          try {
-            const series = symbolParam
-              ? await computeTotalPnlSeriesForSymbol(
-                  context.login,
-                  context.account,
-                  perAccountCombinedBalances,
-                  { ...aggregateOptions, symbol: symbolParam }
-                )
-              : await computeTotalPnlSeries(
-                  context.login,
-                  context.account,
-                  perAccountCombinedBalances,
-                  aggregateOptions
-                );
-            return { context, series };
-          } catch (error) {
-            const message = error && error.message ? error.message : String(error);
-            console.warn(
-              'Failed to compute total P&L series for account ' + context.account.id + ' in aggregate view:',
-              message
-            );
-            return { context, error };
-          }
-        }
+        perAccountCombinedBalances,
+        aggregateOptions,
+        aggregateKey,
+        hadAccountFetchFailure
       );
-
-      const successfulSeries = seriesResults.filter((result) => result && result.series);
-      if (!successfulSeries.length) {
+      if (!aggregatedSeries) {
         return res.status(503).json({ message: 'Total P&L series unavailable' });
       }
 
-      const totalsByDate = new Map();
-      const aggregatedIssues = new Set();
-      const aggregatedMissingSymbols = new Set();
-      const summaryTotals = {
-        totalPnlCad: 0,
-        totalPnlAllTimeCad: 0,
-        netDepositsCad: 0,
-        netDepositsAllTimeCad: 0,
-        totalEquityCad: 0,
-        reserveValueCad: 0,
-        deployedValueCad: 0,
-      };
-      const summaryCounts = {
-        totalPnlCad: 0,
-        totalPnlAllTimeCad: 0,
-        netDepositsCad: 0,
-        netDepositsAllTimeCad: 0,
-        totalEquityCad: 0,
-        reserveValueCad: 0,
-        deployedValueCad: 0,
-      };
-      let aggregatedStart = null;
-      let aggregatedEnd = null;
-
-      successfulSeries.forEach(({ series }) => {
-        if (!series) {
-          return;
-        }
-        if (typeof series.periodStartDate === 'string' && series.periodStartDate) {
-          if (!aggregatedStart || series.periodStartDate < aggregatedStart) {
-            aggregatedStart = series.periodStartDate;
-          }
-        }
-        if (typeof series.periodEndDate === 'string' && series.periodEndDate) {
-          if (!aggregatedEnd || series.periodEndDate > aggregatedEnd) {
-            aggregatedEnd = series.periodEndDate;
-          }
-        }
-
-        if (Array.isArray(series.issues)) {
-          series.issues.forEach((issue) => {
-            if (typeof issue === 'string' && issue.trim()) {
-              aggregatedIssues.add(issue.trim());
-            }
-          });
-        }
-        if (Array.isArray(series.missingPriceSymbols)) {
-          series.missingPriceSymbols.forEach((symbol) => {
-            if (typeof symbol === 'string' && symbol.trim()) {
-              aggregatedMissingSymbols.add(symbol.trim());
-            }
-          });
-        }
-
-        if (Array.isArray(series.points)) {
-          series.points.forEach((point) => {
-            const dateKey = point && typeof point.date === 'string' ? point.date : null;
-            if (!dateKey) {
-              return;
-            }
-            let bucket = totalsByDate.get(dateKey);
-            if (!bucket) {
-              bucket = {
-                date: dateKey,
-                equity: 0,
-                equityCount: 0,
-                deposits: 0,
-                depositsCount: 0,
-                pnl: 0,
-                pnlCount: 0,
-                reserve: 0,
-                reserveCount: 0,
-                deployed: 0,
-                deployedCount: 0,
-              };
-              totalsByDate.set(dateKey, bucket);
-            }
-            const equity = Number(point.equityCad);
-            if (Number.isFinite(equity)) {
-              bucket.equity += equity;
-              bucket.equityCount += 1;
-            }
-            const deposits = Number(point.cumulativeNetDepositsCad);
-            if (Number.isFinite(deposits)) {
-              bucket.deposits += deposits;
-              bucket.depositsCount += 1;
-            }
-            const pnl = Number(point.totalPnlCad);
-            if (Number.isFinite(pnl)) {
-              bucket.pnl += pnl;
-              bucket.pnlCount += 1;
-            }
-            const reserveValue = point && Number.isFinite(point.reserveValueCad)
-              ? point.reserveValueCad
-              : null;
-            if (Number.isFinite(reserveValue)) {
-              bucket.reserve += reserveValue;
-              bucket.reserveCount += 1;
-            }
-            const deployedValue = point && Number.isFinite(point.deployedValueCad)
-              ? point.deployedValueCad
-              : null;
-            if (Number.isFinite(deployedValue)) {
-              bucket.deployed += deployedValue;
-              bucket.deployedCount += 1;
-            }
-          });
-        }
-
-        const { summary } = series;
-        if (summary && typeof summary === 'object') {
-          if (Number.isFinite(summary.totalPnlCad)) {
-            summaryTotals.totalPnlCad += summary.totalPnlCad;
-            summaryCounts.totalPnlCad += 1;
-          }
-          if (Number.isFinite(summary.totalPnlAllTimeCad)) {
-            summaryTotals.totalPnlAllTimeCad += summary.totalPnlAllTimeCad;
-            summaryCounts.totalPnlAllTimeCad += 1;
-          }
-          if (Number.isFinite(summary.netDepositsCad)) {
-            summaryTotals.netDepositsCad += summary.netDepositsCad;
-            summaryCounts.netDepositsCad += 1;
-          }
-          if (Number.isFinite(summary.netDepositsAllTimeCad)) {
-            summaryTotals.netDepositsAllTimeCad += summary.netDepositsAllTimeCad;
-            summaryCounts.netDepositsAllTimeCad += 1;
-          }
-          if (Number.isFinite(summary.totalEquityCad)) {
-            summaryTotals.totalEquityCad += summary.totalEquityCad;
-            summaryCounts.totalEquityCad += 1;
-          }
-          if (Number.isFinite(summary.reserveValueCad)) {
-            summaryTotals.reserveValueCad += summary.reserveValueCad;
-            summaryCounts.reserveValueCad += 1;
-          }
-          if (Number.isFinite(summary.deployedValueCad)) {
-            summaryTotals.deployedValueCad += summary.deployedValueCad;
-            summaryCounts.deployedValueCad += 1;
-          }
-        }
-      });
-
-      if (successfulSeries.length !== targetContexts.length || hadAccountFetchFailure) {
-        aggregatedIssues.add('aggregate-partial-data');
+      if (cacheKey) {
+        setTotalPnlSeriesCacheEntry(cacheKey, aggregatedSeries);
       }
-
-      const sortedDates = Array.from(totalsByDate.keys()).sort();
-      const combinedPoints = sortedDates
-        .map((dateKey) => {
-          const bucket = totalsByDate.get(dateKey);
-          return {
-            date: dateKey,
-            equityCad: bucket && bucket.equityCount > 0 ? bucket.equity : undefined,
-            cumulativeNetDepositsCad: bucket && bucket.depositsCount > 0 ? bucket.deposits : undefined,
-            totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
-            reserveValueCad: bucket && bucket.reserveCount > 0 ? bucket.reserve : undefined,
-            deployedValueCad: bucket && bucket.deployedCount > 0 ? bucket.deployed : undefined,
-            deployedPercent:
-              bucket &&
-              bucket.deployedCount > 0 &&
-              bucket.equityCount > 0 &&
-              Number.isFinite(bucket.deployed) &&
-              Number.isFinite(bucket.equity) &&
-              Math.abs(bucket.equity) > 0.00001
-                ? (bucket.deployed / bucket.equity) * 100
-                : undefined,
-            reservePercent:
-              bucket &&
-              bucket.reserveCount > 0 &&
-              bucket.equityCount > 0 &&
-              Number.isFinite(bucket.reserve) &&
-              Number.isFinite(bucket.equity) &&
-              Math.abs(bucket.equity) > 0.00001
-                ? (bucket.reserve / bucket.equity) * 100
-                : undefined,
-          };
-        })
-        .filter((point) => point && Number.isFinite(point.totalPnlCad));
-
-      if (!combinedPoints.length) {
-        return res.status(503).json({ message: 'Total P&L series unavailable' });
-      }
-
-      const summaryPayload = {
-        totalPnlCad: summaryCounts.totalPnlCad > 0 ? summaryTotals.totalPnlCad : null,
-        totalPnlAllTimeCad:
-          summaryCounts.totalPnlAllTimeCad > 0
-            ? summaryTotals.totalPnlAllTimeCad
-            : summaryCounts.totalPnlCad > 0
-              ? summaryTotals.totalPnlCad
-              : null,
-        netDepositsCad: summaryCounts.netDepositsCad > 0 ? summaryTotals.netDepositsCad : null,
-        netDepositsAllTimeCad:
-          summaryCounts.netDepositsAllTimeCad > 0
-            ? summaryTotals.netDepositsAllTimeCad
-            : summaryCounts.netDepositsCad > 0
-              ? summaryTotals.netDepositsCad
-              : null,
-        totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
-        reserveValueCad: summaryCounts.reserveValueCad > 0 ? summaryTotals.reserveValueCad : null,
-        deployedValueCad: summaryCounts.deployedValueCad > 0 ? summaryTotals.deployedValueCad : null,
-      };
-
-      if (
-        Number.isFinite(summaryPayload.deployedValueCad) &&
-        Number.isFinite(summaryPayload.totalEquityCad) &&
-        Math.abs(summaryPayload.totalEquityCad) > 0.00001
-      ) {
-        summaryPayload.deployedPercent = (summaryPayload.deployedValueCad / summaryPayload.totalEquityCad) * 100;
-      }
-
-      const payload = {
-        accountId: 'all',
-        periodStartDate: aggregatedStart || combinedPoints[0].date,
-        periodEndDate: aggregatedEnd || combinedPoints[combinedPoints.length - 1].date,
-        points: combinedPoints,
-        summary: summaryPayload,
-      };
-
-      if (aggregatedIssues.size) {
-        payload.issues = Array.from(aggregatedIssues);
-      }
-      if (aggregatedMissingSymbols.size) {
-        payload.missingPriceSymbols = Array.from(aggregatedMissingSymbols);
-      }
-
-      return res.json(payload);
+      return res.json(aggregatedSeries);
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
       console.error('Failed to compute aggregate total P&L series:', message);
@@ -13857,16 +14389,15 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     const perAccountCombinedBalances = { [accountId]: balanceSummary };
 
     const options = {};
-    if (typeof req.query.startDate === 'string' && req.query.startDate.trim()) {
-      options.startDate = req.query.startDate.trim();
+    if (queryOptions.startDate) {
+      options.startDate = queryOptions.startDate;
     }
-    if (typeof req.query.endDate === 'string' && req.query.endDate.trim()) {
-      options.endDate = req.query.endDate.trim();
+    if (queryOptions.endDate) {
+      options.endDate = queryOptions.endDate;
     }
-    if (req.query.applyAccountCagrStartDate === 'false' || req.query.applyAccountCagrStartDate === '0') {
+    if (queryOptions.applyAccountCagrStartDate === false) {
       options.applyAccountCagrStartDate = false;
     }
-    const symbolParam = typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
 
     let series = null;
     if (symbolParam) {
@@ -13881,6 +14412,10 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       return res.status(503).json({ message: 'Total P&L series unavailable' });
     }
 
+    if (cacheKey) {
+      setTotalPnlSeriesCacheEntry(cacheKey, series);
+    }
+
     return res.json(series);
   } catch (error) {
     if (error.response) {
@@ -13889,9 +14424,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     console.error('Failed to compute total P&L series for account ' + rawAccountKey + ':', error.message || error);
     return res.status(500).json({ message: 'Failed to compute total P&L series', details: error.message || String(error) });
   }
-});
-
-app.get('/health', function (req, res) {
+});app.get('/health', function (req, res) {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 

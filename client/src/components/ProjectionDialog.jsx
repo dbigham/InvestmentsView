@@ -1338,7 +1338,13 @@ export default function ProjectionDialog({
                     checked={mode === 'start'}
                     onChange={(e) => setMode(e.target.checked ? 'start' : 'today')}
                   />
-                  <span>{cagrStartDate ? `From ${formatDate(cagrStartDate).replace(',', '')}` : 'From start'}</span>
+                  <span>
+                    {cagrStartDate
+                      ? `From ${formatDate(cagrStartDate).replace(',', '')}`
+                      : (baseStartDate
+                          ? `From ${formatDate(baseStartDate).replace(',', '')}`
+                          : 'From start')}
+                  </span>
                 </label>
                 {mode === 'start' && seriesState.status === 'error' && (
                   <button type="button" className="qqq-section__retry" onClick={loadSeriesForStart}>
