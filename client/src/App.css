@@ -2867,7 +2867,7 @@ textarea {
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface);
   color: var(--color-text-secondary);
-  padding: 6px 16px;
+  padding: 6px 8px;
   border-radius: var(--radius-pill);
   font-size: 13px;
   font-weight: 500;
@@ -2880,6 +2880,17 @@ textarea {
   background: var(--color-accent-soft);
   color: var(--color-accent);
   font-weight: 600;
+}
+
+/* Timeframe chip row tweaks: only change border on active, add spacing below */
+.equity-card__chip-row--timeframe {
+  margin-bottom: 16px;
+}
+.equity-card__chip-row--timeframe button.active {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-weight: 500;
 }
 
 .equity-card__metrics {
@@ -4122,7 +4133,9 @@ textarea {
   gap: 4px;
   padding: 0;
   border: none;
-  background: var(--color-surface);
+  /* Use a transparent background so header labels don't appear on a different
+     shade than the header row background. */
+  background: transparent;
   color: inherit;
   font: inherit;
   cursor: pointer;
@@ -6173,7 +6186,5 @@ button.time-pill:hover .time-pill__icon {
 .projection-tree__rate-placeholder {
   width: 88px;
 }
-
-
 
 

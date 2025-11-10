@@ -7578,7 +7578,22 @@ export default function App() {
         options.push({ value: 'cagr', label: `From ${formatted.replace(',', '')}` });
       }
     }
-    options.push({ value: 'all', label: 'From start' });
+    // If there is no explicit cagrStartDate, show the concrete
+    // all-time start date instead of a generic "From start".
+    if (!cagrStartDate) {
+      const allStart =
+        fundingSummaryVariants?.allTime?.annualizedReturnStartDate ||
+        fundingSummaryVariants?.allTime?.periodStartDate ||
+        null;
+      const allFormatted = allStart ? formatDate(allStart) : null;
+      if (allFormatted && allFormatted !== '\u2014') {
+        options.push({ value: 'all', label: `From ${allFormatted.replace(',', '')}` });
+      } else {
+        options.push({ value: 'all', label: 'From start' });
+      }
+    } else {
+      options.push({ value: 'all', label: 'From start' });
+    }
     return options;
   }, [fundingSummaryVariants, cagrStartDate]);
 

@@ -1,6 +1,7 @@
 export const DELTA_EPSILON = 1e-6;
 
 export const TOTAL_PNL_TIMEFRAME_OPTIONS = Object.freeze([
+  { value: '15D', label: '15 days' },
   { value: '1M', label: '1 month' },
   { value: '3M', label: '3 months' },
   { value: '6M', label: '6 months' },
@@ -31,6 +32,9 @@ export function subtractInterval(date, option) {
   }
   const result = new Date(date.getTime());
   switch (option) {
+    case '15D':
+      result.setDate(result.getDate() - 15);
+      break;
     case '1M':
       result.setMonth(result.getMonth() - 1);
       break;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import TimePill from './TimePill';
+import usePersistentState from '../hooks/usePersistentState';
 import {
   classifyPnL,
   formatDate,
@@ -10,7 +11,7 @@ import {
   formatSignedMoney,
   formatSignedPercent,
 } from '../utils/formatters';
-import { buildTotalPnlDisplaySeries } from '../../../shared/totalPnlDisplay.js';
+import { buildTotalPnlDisplaySeries, parseDateOnly, subtractInterval } from '../../../shared/totalPnlDisplay.js';
 import {
   CHART_HEIGHT,
   CHART_WIDTH,
@@ -547,6 +548,19 @@ export default function SummaryMetrics({
   onShowChildPnlBreakdown,
   onShowChildTotalPnl,
 }) {
+  // Local timeframe for the Total P&L chart (Since inception by default)
+  const TIMEFRAME_BUTTONS = useMemo(
+    () => [
+      { value: '15D', label: '15D' },
+      { value: '1M', label: '1M' },
+      { value: '3M', label: '3M' },
+      { value: '6M', label: '6M' },
+      { value: '1Y', label: '1Y' },
+      { value: 'ALL', label: 'Since inception' },
+    ],
+    []
+  );
+  const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
   const totalPnlRangeId = useId();
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
@@ -857,21 +871,46 @@ export default function SummaryMetrics({
     if (!totalPnlSeries) {
       return [];
     }
-    return buildTotalPnlDisplaySeries(totalPnlSeries.points, 'ALL', {
+    return buildTotalPnlDisplaySeries(totalPnlSeries.points, chartTimeframe, {
       displayStartDate: totalPnlSeries.displayStartDate,
       displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
     });
-  }, [totalPnlSeries]);
+  }, [totalPnlSeries, chartTimeframe]);
+
+  const { start: timeframeRangeStart, end: timeframeRangeEnd } = useMemo(() => {
+    const endCandidates = [];
+    if (filteredTotalPnlSeries.length) {
+      const last = filteredTotalPnlSeries[filteredTotalPnlSeries.length - 1];
+      const d = parseDateOnly(last?.date);
+      if (d) endCandidates.push(d);
+    }
+    if (Array.isArray(totalPnlSeries?.points) && totalPnlSeries.points.length) {
+      const lastRaw = totalPnlSeries.points[totalPnlSeries.points.length - 1];
+      const d = parseDateOnly(lastRaw?.date);
+      if (d) endCandidates.push(d);
+    }
+    const endFromPeriod = parseDateOnly(totalPnlSeries?.periodEndDate);
+    if (endFromPeriod) endCandidates.push(endFromPeriod);
+    const resolvedEnd = endCandidates.length ? new Date(Math.max(...endCandidates.map((d) => d.getTime()))) : null;
+    if (!resolvedEnd) {
+      return { start: null, end: null };
+    }
+    if (chartTimeframe && chartTimeframe !== 'ALL') {
+      const start = subtractInterval(resolvedEnd, chartTimeframe);
+      return { start: start ?? null, end: resolvedEnd };
+    }
+    return { start: null, end: null };
+  }, [filteredTotalPnlSeries, totalPnlSeries?.points, totalPnlSeries?.periodEndDate, chartTimeframe]);
 
   const totalPnlChartMetrics = useMemo(() => {
     if (!filteredTotalPnlSeries.length) {
       return null;
     }
     return buildChartMetrics(filteredTotalPnlSeries, {
-      rangeStartDate: totalPnlSeries?.periodStartDate,
-      rangeEndDate: totalPnlSeries?.periodEndDate,
+      rangeStartDate: timeframeRangeStart,
+      rangeEndDate: timeframeRangeEnd,
     });
-  }, [filteredTotalPnlSeries, totalPnlSeries?.periodStartDate, totalPnlSeries?.periodEndDate]);
+  }, [filteredTotalPnlSeries, timeframeRangeStart, timeframeRangeEnd]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -1707,6 +1746,26 @@ export default function SummaryMetrics({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Timeframe selector for Total P&L chart */}
+      {showTotalPnlChart && (
+        <div className="equity-card__chip-row equity-card__chip-row--timeframe" role="group" aria-label="Total P&L timeframe">
+          {TIMEFRAME_BUTTONS.map((option) => {
+            const isActive = chartTimeframe === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={isActive ? 'active' : ''}
+                onClick={() => setChartTimeframe(option.value)}
+                aria-pressed={isActive}
+              >
+                {option.label}
+              </button>
+            );
+          })}
         </div>
       )}
 
