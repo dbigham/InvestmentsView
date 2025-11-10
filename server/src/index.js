@@ -12460,9 +12460,10 @@ app.get('/api/summary', async function (req, res) {
             );
           }
 
-          let fundingSummary = null;
+          let fundingSummaryAllTime = null;
+          let fundingSummaryWithCagr = null;
           try {
-            fundingSummary = await computeNetDeposits(
+            fundingSummaryAllTime = await computeNetDeposits(
               context.login,
               context.account,
               perAccountCombinedBalances,
@@ -12478,40 +12479,83 @@ app.get('/api/summary', async function (req, res) {
             );
           }
 
-          return { context, fundingSummary };
+          const hasCagrOverride =
+            context &&
+            context.account &&
+            typeof context.account.cagrStartDate === 'string' &&
+            context.account.cagrStartDate.trim();
+
+          if (hasCagrOverride) {
+            try {
+              fundingSummaryWithCagr = await computeNetDeposits(
+                context.login,
+                context.account,
+                perAccountCombinedBalances,
+                activityContext
+                  ? { applyAccountCagrStartDate: true, activityContext }
+                  : { applyAccountCagrStartDate: true }
+              );
+            } catch (fundingErrorCagr) {
+              const message =
+                fundingErrorCagr && fundingErrorCagr.message ? fundingErrorCagr.message : String(fundingErrorCagr);
+              console.warn(
+                'Failed to compute CAGR-aligned net deposits for account ' + context.account.id + ':',
+                message
+              );
+            }
+          } else {
+            fundingSummaryWithCagr = fundingSummaryAllTime;
+          }
+
+          return { context, fundingSummaryAllTime, fundingSummaryWithCagr };
         }
       );
 
       perAccountFunding.forEach(function (result) {
         const context = result && result.context;
-        const fundingSummary = result && result.fundingSummary;
-        if (!context || !fundingSummary) {
+        if (!context) {
           return;
         }
 
-        accountFundingSummaries[context.account.id] = fundingSummary;
+        const fundingSummaryAllTime = result && result.fundingSummaryAllTime ? result.fundingSummaryAllTime : null;
+        const fundingSummaryWithCagr = result ? result.fundingSummaryWithCagr || null : null;
+        const fundingSummaryForAccount = fundingSummaryWithCagr || fundingSummaryAllTime;
+        const fundingSummaryForAggregate = fundingSummaryAllTime || fundingSummaryWithCagr;
+
+        if (fundingSummaryForAccount) {
+          accountFundingSummaries[context.account.id] = fundingSummaryForAccount;
+        }
+
+        if (!fundingSummaryForAggregate) {
+          return;
+        }
+
         const netDepositsCad =
-          fundingSummary && fundingSummary.netDeposits ? fundingSummary.netDeposits.combinedCad : null;
+          fundingSummaryForAggregate && fundingSummaryForAggregate.netDeposits
+            ? fundingSummaryForAggregate.netDeposits.combinedCad
+            : null;
         if (Number.isFinite(netDepositsCad)) {
           aggregateTotals.netDepositsCad += netDepositsCad;
           aggregateTotals.netDepositsCount += 1;
         }
 
         const totalPnlCad =
-          fundingSummary && fundingSummary.totalPnl ? fundingSummary.totalPnl.combinedCad : null;
+          fundingSummaryForAggregate && fundingSummaryForAggregate.totalPnl
+            ? fundingSummaryForAggregate.totalPnl.combinedCad
+            : null;
         if (Number.isFinite(totalPnlCad)) {
           aggregateTotals.totalPnlCad += totalPnlCad;
           aggregateTotals.totalPnlCount += 1;
         }
 
-        const totalEquityCad = fundingSummary ? fundingSummary.totalEquityCad : null;
+        const totalEquityCad = fundingSummaryForAggregate ? fundingSummaryForAggregate.totalEquityCad : null;
         if (Number.isFinite(totalEquityCad)) {
           aggregateTotals.totalEquityCad += totalEquityCad;
           aggregateTotals.totalEquityCount += 1;
         }
 
-        if (Array.isArray(fundingSummary.cashFlowsCad)) {
-          fundingSummary.cashFlowsCad.forEach((entry) => {
+        if (Array.isArray(fundingSummaryForAggregate.cashFlowsCad)) {
+          fundingSummaryForAggregate.cashFlowsCad.forEach((entry) => {
             if (!entry || typeof entry !== 'object') {
               return;
             }
@@ -12542,12 +12586,15 @@ app.get('/api/summary', async function (req, res) {
           });
         }
 
-        if (fundingSummary.annualizedReturn && fundingSummary.annualizedReturn.incomplete) {
+        if (
+          fundingSummaryForAggregate.annualizedReturn &&
+          fundingSummaryForAggregate.annualizedReturn.incomplete
+        ) {
           aggregateTotals.incomplete = true;
         }
         if (
-          fundingSummary.annualizedReturnAllTime &&
-          fundingSummary.annualizedReturnAllTime.incomplete
+          fundingSummaryForAggregate.annualizedReturnAllTime &&
+          fundingSummaryForAggregate.annualizedReturnAllTime.incomplete
         ) {
           aggregateTotals.incomplete = true;
         }
