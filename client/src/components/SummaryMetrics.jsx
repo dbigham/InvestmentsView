@@ -852,7 +852,7 @@ export default function SummaryMetrics({
 
   const hasDetailLines = detailLines.length > 0;
 
-  const totalDetailBlock = hasDetailLines ? (
+  const totalDetailBlock = hasDetailLines && !symbolMode ? (
     <div className="total-pnl-details">
       {detailLines.map((line, index) => (
         <span key={`total-detail-line-${index}`} className="total-pnl-details__line">
@@ -1481,7 +1481,7 @@ export default function SummaryMetrics({
             extra={totalExtraPercent}
             extraTooltip={totalExtraPercentTooltip}
             tone={totalTone}
-            className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
+            className={totalDetailBlock ? 'equity-card__metric-row--total-with-details' : ''}
             onActivate={onShowTotalPnl}
             onContextMenuRequest={handleTotalContextMenuRequest}
             contextMenuOpen={totalMenuState.open}

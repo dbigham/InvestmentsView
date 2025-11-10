@@ -8335,20 +8335,25 @@ export default function App() {
         normalizedOptions.label ?? resolveAccountLabelByKey(normalizedKey) ?? normalizedKey;
       const resolvedCagrStart =
         normalizedOptions.cagrStartDate ?? resolveCagrStartDateForKey(normalizedKey) ?? null;
-      const supportsCagrToggle =
+      let supportsCagrToggle =
         typeof normalizedOptions.supportsCagrToggle === 'boolean'
           ? normalizedOptions.supportsCagrToggle
           : normalizedKey !== 'all' && Boolean(resolvedCagrStart);
-      const preferredMode =
+      let preferredMode =
         normalizedOptions.mode === 'all' || normalizedOptions.mode === 'cagr'
           ? normalizedOptions.mode
           : null;
+      if (focusedSymbol) {
+        supportsCagrToggle = false;
+        preferredMode = 'all';
+      }
       const desiredMode = supportsCagrToggle ? preferredMode ?? 'cagr' : 'all';
+      const contextCagrStart = supportsCagrToggle ? resolvedCagrStart : null;
       setTotalPnlDialogContext({
         accountKey: normalizedKey,
         label: resolvedLabel,
         supportsCagrToggle: Boolean(supportsCagrToggle),
-        cagrStartDate: resolvedCagrStart,
+        cagrStartDate: contextCagrStart,
       });
       setShowTotalPnlDialog(true);
       if (
@@ -8358,7 +8363,8 @@ export default function App() {
         totalPnlSeriesState.status === 'error' ||
         totalPnlSeriesState.status === 'idle'
       ) {
-        const fetchOpts = { applyAccountCagrStartDate: desiredMode !== 'all' };
+        const applyAccountCagrStartDate = !focusedSymbol && desiredMode !== 'all';
+        const fetchOpts = { applyAccountCagrStartDate };
         if (focusedSymbol) fetchOpts.symbol = focusedSymbol;
         fetchTotalPnlSeries(normalizedKey, fetchOpts);
       }
