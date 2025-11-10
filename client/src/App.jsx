@@ -7582,6 +7582,38 @@ export default function App() {
     return options;
   }, [fundingSummaryVariants, cagrStartDate]);
 
+  const selectedAccountTotalPnlSeries = useMemo(() => {
+    if (!selectedAccountKey) {
+      return null;
+    }
+    const map =
+      data?.accountTotalPnlSeries && typeof data.accountTotalPnlSeries === 'object'
+        ? data.accountTotalPnlSeries
+        : null;
+    if (!map) {
+      return null;
+    }
+    const entry = map[selectedAccountKey] && typeof map[selectedAccountKey] === 'object' ? map[selectedAccountKey] : null;
+    if (!entry) {
+      return null;
+    }
+    const aggregateMode =
+      selectedAccountKey === 'all' || isAccountGroupSelection(selectedAccountKey);
+    const desiredMode = aggregateMode ? 'all' : totalPnlRange === 'all' ? 'all' : 'cagr';
+    return entry[desiredMode] || entry.cagr || entry.all || null;
+  }, [data?.accountTotalPnlSeries, selectedAccountKey, totalPnlRange]);
+
+  const selectedTotalPnlSeriesStatus =
+    totalPnlSeriesState.accountKey === selectedAccountKey
+      ? totalPnlSeriesState.status
+      : selectedAccountTotalPnlSeries
+        ? 'success'
+        : 'idle';
+  const selectedTotalPnlSeriesError =
+    totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'error'
+      ? totalPnlSeriesState.error
+      : null;
+
   useEffect(() => {
     const currentAccount = selectedAccountKey || null;
     const normalizedCagrStartDate = cagrStartDate || null;
@@ -10713,6 +10745,9 @@ export default function App() {
             totalPnlRangeOptions={focusedSymbol ? [] : totalPnlRangeOptions}
             selectedTotalPnlRange={focusedSymbol ? null : totalPnlRange}
             onTotalPnlRangeChange={focusedSymbol ? null : handleTotalPnlRangeChange}
+            totalPnlSeries={focusedSymbol ? null : selectedAccountTotalPnlSeries}
+            totalPnlSeriesStatus={focusedSymbol ? 'idle' : selectedTotalPnlSeriesStatus}
+            totalPnlSeriesError={focusedSymbol ? null : selectedTotalPnlSeriesError}
             onAdjustDeployment={focusedSymbol ? null : handleOpenDeploymentAdjustment}
             symbolMode={Boolean(focusedSymbol)}
             childAccounts={focusedSymbol ? [] : childAccountSummaries}
