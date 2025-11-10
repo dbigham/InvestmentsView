@@ -5702,6 +5702,235 @@ export default function App() {
     setPortfolioViewTab('positions');
   }, []);
 
+  const openAccountMetadataEditorForSource = useCallback(
+    (target) => {
+      if (!target || typeof target !== 'object') {
+        return false;
+      }
+
+      if (target.type === 'account') {
+        const account = target.source;
+        if (!account) {
+          return false;
+        }
+        const accountLabel = getAccountLabel(account) || 'Selected account';
+        const models = resolveAccountModelsForDisplay(account);
+        const accountKey = resolveAccountMetadataKey(account);
+        if (!accountKey) {
+          return false;
+        }
+        const pendingOverrideKey = String(accountKey);
+        const pendingOverride = pendingMetadataOverrides.get(pendingOverrideKey) || null;
+        const initialBase = {
+          displayName:
+            (account.displayName && account.displayName.trim()) ||
+            (account.name && account.name.trim()) ||
+            '',
+          accountGroup: (account.accountGroup && account.accountGroup) || '',
+          portalAccountId: (account.portalAccountId && account.portalAccountId) || '',
+          chatURL: (account.chatURL && account.chatURL) || '',
+          cagrStartDate: (account.cagrStartDate && account.cagrStartDate) || '',
+          rebalancePeriod:
+            account.rebalancePeriod !== undefined && account.rebalancePeriod !== null
+              ? account.rebalancePeriod
+              : '',
+          ignoreSittingCash:
+            account.ignoreSittingCash !== undefined && account.ignoreSittingCash !== null
+              ? account.ignoreSittingCash
+              : '',
+          mainRetirementAccount: account.mainRetirementAccount === true,
+          retirementAge:
+            account.retirementAge !== undefined && account.retirementAge !== null
+              ? account.retirementAge
+              : '',
+          retirementYear:
+            account.retirementYear !== undefined && account.retirementYear !== null
+              ? account.retirementYear
+              : '',
+          retirementIncome:
+            account.retirementIncome !== undefined && account.retirementIncome !== null
+              ? account.retirementIncome
+              : '',
+          retirementLivingExpenses:
+            account.retirementLivingExpenses !== undefined && account.retirementLivingExpenses !== null
+              ? account.retirementLivingExpenses
+              : '',
+          retirementBirthDate: (account.retirementBirthDate && account.retirementBirthDate) || '',
+          retirementInflationPercent:
+            account.retirementInflationPercent !== undefined && account.retirementInflationPercent !== null
+              ? account.retirementInflationPercent
+              : '',
+          retirementHouseholdType:
+            (account.retirementHouseholdType && account.retirementHouseholdType) || 'single',
+          retirementBirthDate1:
+            (account.retirementBirthDate1 && account.retirementBirthDate1) || (account.retirementBirthDate || ''),
+          retirementBirthDate2: (account.retirementBirthDate2 && account.retirementBirthDate2) || '',
+          retirementCppYearsContributed1:
+            account.retirementCppYearsContributed1 !== undefined && account.retirementCppYearsContributed1 !== null
+              ? account.retirementCppYearsContributed1
+              : '',
+          retirementCppAvgEarningsPctOfYMPE1:
+            account.retirementCppAvgEarningsPctOfYMPE1 !== undefined && account.retirementCppAvgEarningsPctOfYMPE1 !== null
+              ? account.retirementCppAvgEarningsPctOfYMPE1
+              : '',
+          retirementCppStartAge1:
+            account.retirementCppStartAge1 !== undefined && account.retirementCppStartAge1 !== null
+              ? account.retirementCppStartAge1
+              : '',
+          retirementOasYearsResident1:
+            account.retirementOasYearsResident1 !== undefined && account.retirementOasYearsResident1 !== null
+              ? account.retirementOasYearsResident1
+              : '',
+          retirementOasStartAge1:
+            account.retirementOasStartAge1 !== undefined && account.retirementOasStartAge1 !== null
+              ? account.retirementOasStartAge1
+              : '',
+          retirementCppYearsContributed2:
+            account.retirementCppYearsContributed2 !== undefined && account.retirementCppYearsContributed2 !== null
+              ? account.retirementCppYearsContributed2
+              : '',
+          retirementCppAvgEarningsPctOfYMPE2:
+            account.retirementCppAvgEarningsPctOfYMPE2 !== undefined && account.retirementCppAvgEarningsPctOfYMPE2 !== null
+              ? account.retirementCppAvgEarningsPctOfYMPE2
+              : '',
+          retirementCppStartAge2:
+            account.retirementCppStartAge2 !== undefined && account.retirementCppStartAge2 !== null
+              ? account.retirementCppStartAge2
+              : '',
+          retirementOasYearsResident2:
+            account.retirementOasYearsResident2 !== undefined && account.retirementOasYearsResident2 !== null
+              ? account.retirementOasYearsResident2
+              : '',
+          retirementOasStartAge2:
+            account.retirementOasStartAge2 !== undefined && account.retirementOasStartAge2 !== null
+              ? account.retirementOasStartAge2
+              : '',
+          retirementCppMaxAt65Annual:
+            account.retirementCppMaxAt65Annual !== undefined && account.retirementCppMaxAt65Annual !== null
+              ? account.retirementCppMaxAt65Annual
+              : '',
+          retirementOasFullAt65Annual:
+            account.retirementOasFullAt65Annual !== undefined && account.retirementOasFullAt65Annual !== null
+              ? account.retirementOasFullAt65Annual
+              : '',
+        };
+        const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
+        setAccountMetadataEditor({
+          accountKey,
+          accountLabel,
+          targetType: 'account',
+          initial,
+          models,
+        });
+        return true;
+      }
+
+      if (target.type === 'group') {
+        const group = target.source;
+        if (!group) {
+          return false;
+        }
+        const groupLabel = group.name || 'Selected group';
+        const accountKey = resolveGroupMetadataKey(group);
+        if (!accountKey) {
+          return false;
+        }
+        const pendingOverrideKey = String(accountKey);
+        const pendingOverride = pendingMetadataOverrides.get(pendingOverrideKey) || null;
+        const initialBase = {
+          displayName: groupLabel,
+          accountGroup: '',
+          portalAccountId: '',
+          chatURL: '',
+          cagrStartDate: '',
+          rebalancePeriod: '',
+          ignoreSittingCash: '',
+          mainRetirementAccount: group.mainRetirementAccount === true,
+          retirementAge:
+            group.retirementAge !== undefined && group.retirementAge !== null ? group.retirementAge : '',
+          retirementYear:
+            group.retirementYear !== undefined && group.retirementYear !== null ? group.retirementYear : '',
+          retirementIncome:
+            group.retirementIncome !== undefined && group.retirementIncome !== null ? group.retirementIncome : '',
+          retirementLivingExpenses:
+            group.retirementLivingExpenses !== undefined && group.retirementLivingExpenses !== null
+              ? group.retirementLivingExpenses
+              : '',
+          retirementBirthDate: (group.retirementBirthDate && group.retirementBirthDate) || '',
+          retirementInflationPercent:
+            group.retirementInflationPercent !== undefined && group.retirementInflationPercent !== null
+              ? group.retirementInflationPercent
+              : '',
+          retirementHouseholdType:
+            (group.retirementHouseholdType && group.retirementHouseholdType) || 'single',
+          retirementBirthDate1:
+            (group.retirementBirthDate1 && group.retirementBirthDate1) || (group.retirementBirthDate || ''),
+          retirementBirthDate2: (group.retirementBirthDate2 && group.retirementBirthDate2) || '',
+          retirementCppYearsContributed1:
+            group.retirementCppYearsContributed1 !== undefined && group.retirementCppYearsContributed1 !== null
+              ? group.retirementCppYearsContributed1
+              : '',
+          retirementCppAvgEarningsPctOfYMPE1:
+            group.retirementCppAvgEarningsPctOfYMPE1 !== undefined && group.retirementCppAvgEarningsPctOfYMPE1 !== null
+              ? group.retirementCppAvgEarningsPctOfYMPE1
+              : '',
+          retirementCppStartAge1:
+            group.retirementCppStartAge1 !== undefined && group.retirementCppStartAge1 !== null
+              ? group.retirementCppStartAge1
+              : '',
+          retirementOasYearsResident1:
+            group.retirementOasYearsResident1 !== undefined && group.retirementOasYearsResident1 !== null
+              ? group.retirementOasYearsResident1
+              : '',
+          retirementOasStartAge1:
+            group.retirementOasStartAge1 !== undefined && group.retirementOasStartAge1 !== null
+              ? group.retirementOasStartAge1
+              : '',
+          retirementCppYearsContributed2:
+            group.retirementCppYearsContributed2 !== undefined && group.retirementCppYearsContributed2 !== null
+              ? group.retirementCppYearsContributed2
+              : '',
+          retirementCppAvgEarningsPctOfYMPE2:
+            group.retirementCppAvgEarningsPctOfYMPE2 !== undefined && group.retirementCppAvgEarningsPctOfYMPE2 !== null
+              ? group.retirementCppAvgEarningsPctOfYMPE2
+              : '',
+          retirementCppStartAge2:
+            group.retirementCppStartAge2 !== undefined && group.retirementCppStartAge2 !== null
+              ? group.retirementCppStartAge2
+              : '',
+          retirementOasYearsResident2:
+            group.retirementOasYearsResident2 !== undefined && group.retirementOasYearsResident2 !== null
+              ? group.retirementOasYearsResident2
+              : '',
+          retirementOasStartAge2:
+            group.retirementOasStartAge2 !== undefined && group.retirementOasStartAge2 !== null
+              ? group.retirementOasStartAge2
+              : '',
+          retirementCppMaxAt65Annual:
+            group.retirementCppMaxAt65Annual !== undefined && group.retirementCppMaxAt65Annual !== null
+              ? group.retirementCppMaxAt65Annual
+              : '',
+          retirementOasFullAt65Annual:
+            group.retirementOasFullAt65Annual !== undefined && group.retirementOasFullAt65Annual !== null
+              ? group.retirementOasFullAt65Annual
+              : '',
+        };
+        const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
+        setAccountMetadataEditor({
+          accountKey,
+          accountLabel: groupLabel,
+          targetType: 'group',
+          initial,
+          models: [],
+        });
+        return true;
+      }
+
+      return false;
+    },
+    [pendingMetadataOverrides, setAccountMetadataEditor]
+  );
+
   const handleSearchNavigate = (key) => {
     const k = (key || '').toString().toLowerCase();
     // Quick intent: retire-at:<age>
@@ -5812,6 +6041,24 @@ export default function App() {
       if (showingAggregateAccounts) {
         handleShowInvestmentModelDialog();
       }
+    } else if (k === 'retirement-settings') {
+      const primaryGroup = Array.isArray(accountGroups)
+        ? accountGroups.find((group) => group && group.mainRetirementAccount === true)
+        : null;
+      if (primaryGroup) {
+        openAccountMetadataEditorForSource({ type: 'group', source: primaryGroup });
+        return;
+      }
+      const primaryAccount = Array.isArray(accounts)
+        ? accounts.find((account) => account && account.mainRetirementAccount === true)
+        : null;
+      if (primaryAccount) {
+        openAccountMetadataEditorForSource({ type: 'account', source: primaryAccount });
+        return;
+      }
+      window.alert(
+        'No main retirement account is configured yet. Edit an account or account group and enable “Main retirement account” to access retirement settings.'
+      );
     } else if (k === 'copy-summary') {
       handleCopySummary();
     } else if (k === 'estimate-cagr') {
@@ -9427,219 +9674,21 @@ export default function App() {
 
   const handleOpenAccountMetadata = useCallback(() => {
     if (selectedAccountInfo) {
-      const accountLabel = getAccountLabel(selectedAccountInfo) || 'Selected account';
-      const models = resolveAccountModelsForDisplay(selectedAccountInfo);
-      const accountKey = resolveAccountMetadataKey(selectedAccountInfo);
-      const pendingOverride = accountKey ? pendingMetadataOverrides.get(accountKey) : null;
-      const initialBase = {
-        displayName:
-          (selectedAccountInfo.displayName && selectedAccountInfo.displayName.trim()) ||
-          (selectedAccountInfo.name && selectedAccountInfo.name.trim()) ||
-          '',
-        accountGroup: (selectedAccountInfo.accountGroup && selectedAccountInfo.accountGroup) || '',
-        portalAccountId: (selectedAccountInfo.portalAccountId && selectedAccountInfo.portalAccountId) || '',
-        chatURL: (selectedAccountInfo.chatURL && selectedAccountInfo.chatURL) || '',
-        cagrStartDate: (selectedAccountInfo.cagrStartDate && selectedAccountInfo.cagrStartDate) || '',
-        rebalancePeriod:
-          selectedAccountInfo.rebalancePeriod !== undefined && selectedAccountInfo.rebalancePeriod !== null
-            ? selectedAccountInfo.rebalancePeriod
-            : '',
-        ignoreSittingCash:
-          selectedAccountInfo.ignoreSittingCash !== undefined && selectedAccountInfo.ignoreSittingCash !== null
-            ? selectedAccountInfo.ignoreSittingCash
-            : '',
-        mainRetirementAccount: selectedAccountInfo.mainRetirementAccount === true,
-        retirementAge:
-          selectedAccountInfo.retirementAge !== undefined && selectedAccountInfo.retirementAge !== null
-            ? selectedAccountInfo.retirementAge
-            : '',
-        retirementYear:
-          selectedAccountInfo.retirementYear !== undefined && selectedAccountInfo.retirementYear !== null
-            ? selectedAccountInfo.retirementYear
-            : '',
-        retirementIncome:
-          selectedAccountInfo.retirementIncome !== undefined && selectedAccountInfo.retirementIncome !== null
-            ? selectedAccountInfo.retirementIncome
-            : '',
-        retirementLivingExpenses:
-          selectedAccountInfo.retirementLivingExpenses !== undefined && selectedAccountInfo.retirementLivingExpenses !== null
-            ? selectedAccountInfo.retirementLivingExpenses
-            : '',
-        retirementBirthDate:
-          (selectedAccountInfo.retirementBirthDate && selectedAccountInfo.retirementBirthDate) || '',
-        retirementInflationPercent:
-          selectedAccountInfo.retirementInflationPercent !== undefined && selectedAccountInfo.retirementInflationPercent !== null
-            ? selectedAccountInfo.retirementInflationPercent
-            : '',
-        retirementHouseholdType:
-          (selectedAccountInfo.retirementHouseholdType && selectedAccountInfo.retirementHouseholdType) || 'single',
-        retirementBirthDate1:
-          (selectedAccountInfo.retirementBirthDate1 && selectedAccountInfo.retirementBirthDate1) || (selectedAccountInfo.retirementBirthDate || ''),
-        retirementBirthDate2:
-          (selectedAccountInfo.retirementBirthDate2 && selectedAccountInfo.retirementBirthDate2) || '',
-        retirementCppYearsContributed1:
-          selectedAccountInfo.retirementCppYearsContributed1 !== undefined && selectedAccountInfo.retirementCppYearsContributed1 !== null
-            ? selectedAccountInfo.retirementCppYearsContributed1
-            : '',
-        retirementCppAvgEarningsPctOfYMPE1:
-          selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE1 !== undefined && selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE1 !== null
-            ? selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE1
-            : '',
-        retirementCppStartAge1:
-          selectedAccountInfo.retirementCppStartAge1 !== undefined && selectedAccountInfo.retirementCppStartAge1 !== null
-            ? selectedAccountInfo.retirementCppStartAge1
-            : '',
-        retirementOasYearsResident1:
-          selectedAccountInfo.retirementOasYearsResident1 !== undefined && selectedAccountInfo.retirementOasYearsResident1 !== null
-            ? selectedAccountInfo.retirementOasYearsResident1
-            : '',
-        retirementOasStartAge1:
-          selectedAccountInfo.retirementOasStartAge1 !== undefined && selectedAccountInfo.retirementOasStartAge1 !== null
-            ? selectedAccountInfo.retirementOasStartAge1
-            : '',
-        retirementCppYearsContributed2:
-          selectedAccountInfo.retirementCppYearsContributed2 !== undefined && selectedAccountInfo.retirementCppYearsContributed2 !== null
-            ? selectedAccountInfo.retirementCppYearsContributed2
-            : '',
-        retirementCppAvgEarningsPctOfYMPE2:
-          selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE2 !== undefined && selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE2 !== null
-            ? selectedAccountInfo.retirementCppAvgEarningsPctOfYMPE2
-            : '',
-        retirementCppStartAge2:
-          selectedAccountInfo.retirementCppStartAge2 !== undefined && selectedAccountInfo.retirementCppStartAge2 !== null
-            ? selectedAccountInfo.retirementCppStartAge2
-            : '',
-        retirementOasYearsResident2:
-          selectedAccountInfo.retirementOasYearsResident2 !== undefined && selectedAccountInfo.retirementOasYearsResident2 !== null
-            ? selectedAccountInfo.retirementOasYearsResident2
-            : '',
-        retirementOasStartAge2:
-          selectedAccountInfo.retirementOasStartAge2 !== undefined && selectedAccountInfo.retirementOasStartAge2 !== null
-            ? selectedAccountInfo.retirementOasStartAge2
-            : '',
-        retirementCppMaxAt65Annual:
-          selectedAccountInfo.retirementCppMaxAt65Annual !== undefined && selectedAccountInfo.retirementCppMaxAt65Annual !== null
-            ? selectedAccountInfo.retirementCppMaxAt65Annual
-            : '',
-        retirementOasFullAt65Annual:
-          selectedAccountInfo.retirementOasFullAt65Annual !== undefined && selectedAccountInfo.retirementOasFullAt65Annual !== null
-            ? selectedAccountInfo.retirementOasFullAt65Annual
-            : '',
-      };
-      const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
-      setAccountMetadataEditor({
-        accountKey,
-        accountLabel,
-        targetType: 'account',
-        initial,
-        models,
-      });
-      return;
+      const opened = openAccountMetadataEditorForSource({ type: 'account', source: selectedAccountInfo });
+      if (opened) {
+        return;
+      }
     }
     if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
-      const groupLabel = selectedAccountGroup.name || 'Selected group';
-      const accountKey = resolveGroupMetadataKey(selectedAccountGroup);
-      const pendingOverride = accountKey ? pendingMetadataOverrides.get(accountKey) : null;
-      const initialBase = {
-        displayName: groupLabel,
-        accountGroup: '',
-        portalAccountId: '',
-        chatURL: '',
-        cagrStartDate: '',
-        rebalancePeriod: '',
-        ignoreSittingCash: '',
-        mainRetirementAccount: selectedAccountGroup.mainRetirementAccount === true,
-        retirementAge:
-          selectedAccountGroup.retirementAge !== undefined && selectedAccountGroup.retirementAge !== null
-            ? selectedAccountGroup.retirementAge
-            : '',
-        retirementYear:
-          selectedAccountGroup.retirementYear !== undefined && selectedAccountGroup.retirementYear !== null
-            ? selectedAccountGroup.retirementYear
-            : '',
-        retirementIncome:
-          selectedAccountGroup.retirementIncome !== undefined && selectedAccountGroup.retirementIncome !== null
-            ? selectedAccountGroup.retirementIncome
-            : '',
-        retirementLivingExpenses:
-          selectedAccountGroup.retirementLivingExpenses !== undefined &&
-          selectedAccountGroup.retirementLivingExpenses !== null
-            ? selectedAccountGroup.retirementLivingExpenses
-            : '',
-        retirementBirthDate:
-          (selectedAccountGroup.retirementBirthDate && selectedAccountGroup.retirementBirthDate) || '',
-        retirementInflationPercent:
-          selectedAccountGroup.retirementInflationPercent !== undefined &&
-          selectedAccountGroup.retirementInflationPercent !== null
-            ? selectedAccountGroup.retirementInflationPercent
-            : '',
-        retirementHouseholdType:
-          (selectedAccountGroup.retirementHouseholdType && selectedAccountGroup.retirementHouseholdType) || 'single',
-        retirementBirthDate1:
-          (selectedAccountGroup.retirementBirthDate1 && selectedAccountGroup.retirementBirthDate1) || (selectedAccountGroup.retirementBirthDate || ''),
-        retirementBirthDate2:
-          (selectedAccountGroup.retirementBirthDate2 && selectedAccountGroup.retirementBirthDate2) || '',
-        retirementCppYearsContributed1:
-          selectedAccountGroup.retirementCppYearsContributed1 !== undefined && selectedAccountGroup.retirementCppYearsContributed1 !== null
-            ? selectedAccountGroup.retirementCppYearsContributed1
-            : '',
-        retirementCppAvgEarningsPctOfYMPE1:
-          selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE1 !== undefined && selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE1 !== null
-            ? selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE1
-            : '',
-        retirementCppStartAge1:
-          selectedAccountGroup.retirementCppStartAge1 !== undefined && selectedAccountGroup.retirementCppStartAge1 !== null
-            ? selectedAccountGroup.retirementCppStartAge1
-            : '',
-        retirementOasYearsResident1:
-          selectedAccountGroup.retirementOasYearsResident1 !== undefined && selectedAccountGroup.retirementOasYearsResident1 !== null
-            ? selectedAccountGroup.retirementOasYearsResident1
-            : '',
-        retirementOasStartAge1:
-          selectedAccountGroup.retirementOasStartAge1 !== undefined && selectedAccountGroup.retirementOasStartAge1 !== null
-            ? selectedAccountGroup.retirementOasStartAge1
-            : '',
-        retirementCppYearsContributed2:
-          selectedAccountGroup.retirementCppYearsContributed2 !== undefined && selectedAccountGroup.retirementCppYearsContributed2 !== null
-            ? selectedAccountGroup.retirementCppYearsContributed2
-            : '',
-        retirementCppAvgEarningsPctOfYMPE2:
-          selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE2 !== undefined && selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE2 !== null
-            ? selectedAccountGroup.retirementCppAvgEarningsPctOfYMPE2
-            : '',
-        retirementCppStartAge2:
-          selectedAccountGroup.retirementCppStartAge2 !== undefined && selectedAccountGroup.retirementCppStartAge2 !== null
-            ? selectedAccountGroup.retirementCppStartAge2
-            : '',
-        retirementOasYearsResident2:
-          selectedAccountGroup.retirementOasYearsResident2 !== undefined && selectedAccountGroup.retirementOasYearsResident2 !== null
-            ? selectedAccountGroup.retirementOasYearsResident2
-            : '',
-        retirementOasStartAge2:
-          selectedAccountGroup.retirementOasStartAge2 !== undefined && selectedAccountGroup.retirementOasStartAge2 !== null
-            ? selectedAccountGroup.retirementOasStartAge2
-            : '',
-        retirementCppMaxAt65Annual:
-          selectedAccountGroup.retirementCppMaxAt65Annual !== undefined && selectedAccountGroup.retirementCppMaxAt65Annual !== null
-            ? selectedAccountGroup.retirementCppMaxAt65Annual
-            : '',
-        retirementOasFullAt65Annual:
-          selectedAccountGroup.retirementOasFullAt65Annual !== undefined && selectedAccountGroup.retirementOasFullAt65Annual !== null
-            ? selectedAccountGroup.retirementOasFullAt65Annual
-            : '',
-      };
-      const initial = pendingOverride ? { ...initialBase, ...pendingOverride } : initialBase;
-      setAccountMetadataEditor({
-        accountKey,
-        accountLabel: groupLabel,
-        targetType: 'group',
-        initial,
-        models: [],
-      });
+      openAccountMetadataEditorForSource({ type: 'group', source: selectedAccountGroup });
     }
-  }, [selectedAccountInfo, selectedAccountGroup, isAccountGroupSelection, pendingMetadataOverrides]);
-
-
+  }, [
+    selectedAccountInfo,
+    selectedAccount,
+    selectedAccountGroup,
+    isAccountGroupSelection,
+    openAccountMetadataEditorForSource,
+  ]);
   const handleCloseAccountMetadata = useCallback(() => {
     setAccountMetadataEditor(null);
   }, []);
@@ -10121,6 +10170,7 @@ export default function App() {
                 { key: 'total-pnl', label: 'Total P&L' },
                 { key: 'projections', label: 'Projections' },
                 { key: 'retirement-projections', label: 'Retirement Projections' },
+                { key: 'retirement-settings', label: 'Retirement settings' },
                 { key: 'deployment', label: 'Deployment' },
               ];
 
