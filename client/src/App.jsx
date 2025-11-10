@@ -8335,7 +8335,7 @@ export default function App() {
         normalizedOptions.label ?? resolveAccountLabelByKey(normalizedKey) ?? normalizedKey;
       const resolvedCagrStart =
         normalizedOptions.cagrStartDate ?? resolveCagrStartDateForKey(normalizedKey) ?? null;
-      const supportsCagrToggle =
+      const baseSupportsCagrToggle =
         typeof normalizedOptions.supportsCagrToggle === 'boolean'
           ? normalizedOptions.supportsCagrToggle
           : normalizedKey !== 'all' && Boolean(resolvedCagrStart);
@@ -8343,23 +8343,30 @@ export default function App() {
         normalizedOptions.mode === 'all' || normalizedOptions.mode === 'cagr'
           ? normalizedOptions.mode
           : null;
-      const desiredMode = supportsCagrToggle ? preferredMode ?? 'cagr' : 'all';
+      const symbolOverride = Boolean(focusedSymbol);
+      const desiredMode = baseSupportsCagrToggle ? preferredMode ?? 'cagr' : 'all';
+      const effectiveMode = symbolOverride ? 'all' : desiredMode;
+      const contextCagrStart = symbolOverride ? null : resolvedCagrStart;
       setTotalPnlDialogContext({
         accountKey: normalizedKey,
         label: resolvedLabel,
-        supportsCagrToggle: Boolean(supportsCagrToggle),
-        cagrStartDate: resolvedCagrStart,
+        supportsCagrToggle: symbolOverride ? false : Boolean(baseSupportsCagrToggle),
+        cagrStartDate: contextCagrStart,
       });
       setShowTotalPnlDialog(true);
+      const expectedSymbol = symbolOverride ? focusedSymbol : null;
       if (
         totalPnlSeriesState.accountKey !== normalizedKey ||
-        totalPnlSeriesState.mode !== desiredMode ||
-        (totalPnlSeriesState.symbol || null) !== (focusedSymbol || null) ||
+        totalPnlSeriesState.mode !== effectiveMode ||
+        (totalPnlSeriesState.symbol || null) !== (expectedSymbol || null) ||
         totalPnlSeriesState.status === 'error' ||
         totalPnlSeriesState.status === 'idle'
       ) {
-        const fetchOpts = { applyAccountCagrStartDate: desiredMode !== 'all' };
-        if (focusedSymbol) fetchOpts.symbol = focusedSymbol;
+        const applyAccountCagrStartDate = !symbolOverride && effectiveMode !== 'all';
+        const fetchOpts = { applyAccountCagrStartDate };
+        if (symbolOverride && expectedSymbol) {
+          fetchOpts.symbol = expectedSymbol;
+        }
         fetchTotalPnlSeries(normalizedKey, fetchOpts);
       }
     },
@@ -10104,12 +10111,20 @@ export default function App() {
   }
 
   const activeTotalPnlAccountKey = totalPnlDialogContext.accountKey || selectedAccountKey;
+  const activeTotalPnlSymbol = focusedSymbol || null;
   const totalPnlDialogDataBase =
-    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey ? totalPnlSeriesState.data : null;
+    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey &&
+    (totalPnlSeriesState.symbol || null) === (activeTotalPnlSymbol || null)
+      ? totalPnlSeriesState.data
+      : null;
   const totalPnlDialogLoading =
-    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey && totalPnlSeriesState.status === 'loading';
+    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey &&
+    (totalPnlSeriesState.symbol || null) === (activeTotalPnlSymbol || null) &&
+    totalPnlSeriesState.status === 'loading';
   const totalPnlDialogError =
-    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey && totalPnlSeriesState.status === 'error'
+    totalPnlSeriesState.accountKey === activeTotalPnlAccountKey &&
+    (totalPnlSeriesState.symbol || null) === (activeTotalPnlSymbol || null) &&
+    totalPnlSeriesState.status === 'error'
       ? totalPnlSeriesState.error
       : null;
 
