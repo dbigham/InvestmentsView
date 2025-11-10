@@ -43,6 +43,22 @@ Validation succeeded.
 
 If the diff exceeds the threshold the script prints the last five data points to help you diagnose where the series diverged and exits with status code `1` so it can be wired into CI.
 
+## `validate-group-total-pnl`
+
+Use this command to validate an aggregate (account group or "All") Total P&L. It computes the group’s all‑time Total P&L series by summing per‑account series and cross‑checks the final value against the sum of per‑account funding summaries (all‑time). If the absolute CAD difference exceeds your threshold, the script fails with exit code `1` and prints a short trailing preview.
+
+```bash
+cd server
+npm run validate-group-total-pnl -- --group <name|group:id> [--threshold <cad>]
+```
+
+Examples:
+
+- `npm run validate-group-total-pnl -- --group RRSP`
+- `npm run validate-group-total-pnl -- --group group:rrsp --threshold 0.25`
+
+This is useful to ensure the value shown in the Total P&L dialog (from the aggregated series) matches the summary’s all‑time P&L for the same group.
+
 ## `print-total-pnl-series`
 
 Use this helper to inspect the computed Total P&L series. It prints a high-level summary and a preview table so you can spot gaps in funding data or missing price history before running the validation step.
