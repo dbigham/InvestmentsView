@@ -579,12 +579,17 @@ export default function TotalPnlDialog({
     return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
   }, [marker, hoverPoint]);
 
+  const hoverValue = hoverPoint
+    ? useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue)
+      ? hoverPoint.chartValue
+      : hoverPoint.totalPnl
+    : null;
+  const hoverTone = Number.isFinite(hoverValue) ? classifyPnL(hoverValue) : null;
   const hoverLabel = hoverPoint
     ? {
-        amount: formatMoney(
-          useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue) ? hoverPoint.chartValue : hoverPoint.totalPnl
-        ),
+        amount: formatSignedMoney(hoverValue),
         date: formatDate(hoverPoint.date),
+        tone: hoverTone,
       }
     : null;
 
@@ -682,6 +687,10 @@ export default function TotalPnlDialog({
   const selectionRect = selectionRange ? selectionRange : null;
   const showHoverMarker = Boolean(hoverPoint && !selectionRange?.isActive);
   const shouldShowChartLabel = Boolean((hoverLabel || markerLabel) && !selectionSummary);
+  const chartLabelClassNames = ['pnl-dialog__label-amount'];
+  if (hoverLabel?.tone === 'positive' || hoverLabel?.tone === 'negative') {
+    chartLabelClassNames.push(`pnl-dialog__label-amount--${hoverLabel.tone}`);
+  }
 
   const formattedAxis = useMemo(() => {
     if (!hasChart) {
@@ -983,7 +992,9 @@ export default function TotalPnlDialog({
                     )}
                     {shouldShowChartLabel && (
                       <div className="qqq-section__chart-label" style={labelPosition}>
-                        <span className="pnl-dialog__label-amount">{hoverLabel ? hoverLabel.amount : markerLabel}</span>
+                        <span className={chartLabelClassNames.join(' ')}>
+                          {hoverLabel ? hoverLabel.amount : markerLabel}
+                        </span>
                         <span className="pnl-dialog__label-date">
                           {hoverLabel ? hoverLabel.date : formatDate(marker?.date)}
                         </span>
