@@ -10,7 +10,34 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
 const { getProxyForUrl } = require('proxy-from-env');
-require('dotenv').config();
+const dotenv = require('dotenv');
+dotenv.config();
+
+const additionalEnvPaths = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), 'server.env'),
+  path.join(__dirname, '..', '.env'),
+  path.join(__dirname, '..', 'server.env'),
+];
+
+const loadedEnvPaths = new Set();
+additionalEnvPaths.forEach((candidate) => {
+  try {
+    if (!candidate || loadedEnvPaths.has(candidate)) {
+      return;
+    }
+    if (!fs.existsSync(candidate)) {
+      return;
+    }
+    dotenv.config({ path: candidate, override: false });
+    loadedEnvPaths.add(candidate);
+  } catch (envError) {
+    if (envError && envError.code !== 'ENOENT') {
+      console.warn('Failed to load environment file', candidate, envError.message || envError);
+    }
+  }
+});
+
 const accountNamesModule = require('./accountNames');
 const {
   getAccountNameOverrides,
@@ -28,7 +55,7 @@ const {
   getAccountGroupMetadata,
   updateAccountMetadata,
 } = require('./accountNames');
-const { assignAccountGroups } = require('./grouping');
+const { assignAccountGroups, slugifyAccountGroupKey } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
@@ -39,6 +66,34 @@ const {
   normalizeCashFlowsForXirr,
   computeAnnualizedReturnFromCashFlows,
 } = require('./xirr');
+
+function parseBooleanEnv(value, defaultValue = false) {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) {
+      return defaultValue;
+    }
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return defaultValue;
+    }
+    if (['1', 'true', 'yes', 'on', 'y', 't'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'off', 'n', 'f'].includes(normalized)) {
+      return false;
+    }
+  }
+  return defaultValue;
+}
 
 const RETURN_BREAKDOWN_PERIODS = [
   { key: 'ten_year', months: 120 },
@@ -107,6 +162,1209 @@ const MODEL_PRICING_PER_MTOK = {
   'gpt-5-nano': { input: 0.05, output: 0.4 },
   'gpt-5-pro': { input: 15.0, output: 120.0 },
 };
+
+const SUMMARY_CACHE_TTL_MS = (() => {
+  const value = Number(process.env.SUMMARY_CACHE_TTL_MS);
+  if (Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  const minutes = Number(process.env.SUMMARY_CACHE_TTL_MINUTES);
+  if (Number.isFinite(minutes) && minutes > 0) {
+    return Math.round(minutes * 60 * 1000);
+  }
+  return 2 * 60 * 1000; // default 2 minutes
+})();
+
+const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
+
+if (DEBUG_SUMMARY_CACHE) {
+  const sources = Array.from(loadedEnvPaths);
+  const suffix = sources.length ? ` (env sources: ${sources.join(', ')})` : '';
+  console.log(`[summary-cache] debug logging enabled${suffix}`);
+} else {
+  console.log(
+    '[summary-cache] debug logging disabled. Set DEBUG_SUMMARY_CACHE=true in server/.env (or export it) before starting the server to enable diagnostics.'
+  );
+}
+
+const summaryCacheStore = new Map();
+let supersetSummaryCache = null;
+
+function nowMs() {
+  return Date.now();
+}
+
+function debugSummaryCache(message, ...args) {
+  if (!DEBUG_SUMMARY_CACHE) {
+    return;
+  }
+  try {
+    console.log('[summary-cache]', message, ...args);
+  } catch (error) {
+    console.warn('[summary-cache] failed to log message:', error);
+  }
+}
+
+function normalizeSummaryRequestKey(rawAccountId) {
+  const trimmed = typeof rawAccountId === 'string' ? rawAccountId.trim() : '';
+  if (!trimmed || trimmed.toLowerCase() === 'all') {
+    return {
+      cacheKey: 'all',
+      type: 'all',
+      requestedId: trimmed || 'all',
+      originalRequestedId: trimmed || null,
+    };
+  }
+  const lower = trimmed.toLowerCase();
+  if (lower === 'default') {
+    return {
+      cacheKey: 'default',
+      type: 'default',
+      requestedId: trimmed,
+      originalRequestedId: trimmed,
+    };
+  }
+  if (lower.startsWith('group:')) {
+    return {
+      cacheKey: lower,
+      type: 'group',
+      requestedId: trimmed,
+      groupId: trimmed,
+      groupCacheKey: lower,
+      originalRequestedId: trimmed,
+    };
+  }
+  return {
+    cacheKey: trimmed,
+    type: 'account',
+    requestedId: trimmed,
+    originalRequestedId: trimmed,
+  };
+}
+
+function pruneSummaryCache() {
+  const now = nowMs();
+  for (const [key, entry] of summaryCacheStore.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      summaryCacheStore.delete(key);
+    }
+  }
+  if (supersetSummaryCache && supersetSummaryCache.expiresAt <= now) {
+    supersetSummaryCache = null;
+  }
+}
+
+function getSummaryCacheEntry(cacheKey) {
+  pruneSummaryCache();
+  const entry = summaryCacheStore.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  return entry;
+}
+
+function setSummaryCacheEntry(cacheKey, payload, metadata = {}) {
+  if (!cacheKey) {
+    return;
+  }
+  const timestamp = nowMs();
+  const entry = {
+    payload,
+    metadata,
+    timestamp,
+    expiresAt: timestamp + SUMMARY_CACHE_TTL_MS,
+  };
+  summaryCacheStore.set(cacheKey, entry);
+  debugSummaryCache('cache stored', cacheKey, {
+    expiresAt: new Date(entry.expiresAt).toISOString(),
+    metadata,
+  });
+  return entry;
+}
+
+function clearSummaryCache() {
+  summaryCacheStore.clear();
+}
+
+function getSupersetCacheEntry() {
+  pruneSummaryCache();
+  return supersetSummaryCache;
+}
+
+function setSupersetCacheEntry(entry) {
+  if (!entry) {
+    supersetSummaryCache = null;
+    return;
+  }
+  supersetSummaryCache = entry;
+  debugSummaryCache('superset cache stored', {
+    expiresAt: new Date(entry.expiresAt).toISOString(),
+    accounts: Array.isArray(entry.allAccountIds) ? entry.allAccountIds.length : 0,
+  });
+}
+
+function registerGroupLookupKey(lookupMap, rawKey, groupId) {
+  if (!lookupMap || !rawKey || !groupId) {
+    return;
+  }
+  const key = typeof rawKey === 'string' ? rawKey.trim() : String(rawKey || '');
+  if (!key) {
+    return;
+  }
+  const id = typeof groupId === 'string' ? groupId : String(groupId || '');
+  if (!id) {
+    return;
+  }
+  if (!lookupMap.has(key)) {
+    lookupMap.set(key, id);
+  }
+  const lower = key.toLowerCase();
+  if (lower && !lookupMap.has(lower)) {
+    lookupMap.set(lower, id);
+  }
+}
+
+function buildGroupLookupMap(accountGroupsById) {
+  const lookup = new Map();
+  if (!accountGroupsById || typeof accountGroupsById.forEach !== 'function') {
+    return lookup;
+  }
+
+  accountGroupsById.forEach((group, key) => {
+    if (!group || typeof group !== 'object') {
+      return;
+    }
+
+    const canonicalId = typeof group.id === 'string' && group.id ? group.id : null;
+    if (canonicalId) {
+      registerGroupLookupKey(lookup, canonicalId, canonicalId);
+      registerGroupLookupKey(lookup, canonicalId.toLowerCase(), canonicalId);
+    }
+
+    if (typeof key === 'string' && key) {
+      registerGroupLookupKey(lookup, key, canonicalId || key);
+      registerGroupLookupKey(lookup, key.toLowerCase(), canonicalId || key);
+      if (key.startsWith('group:')) {
+        const withoutPrefix = key.slice('group:'.length);
+        if (withoutPrefix) {
+          registerGroupLookupKey(lookup, withoutPrefix, canonicalId || key);
+          registerGroupLookupKey(lookup, withoutPrefix.toLowerCase(), canonicalId || key);
+        }
+      }
+    }
+
+    const name = typeof group.name === 'string' ? group.name.trim() : '';
+    if (name) {
+      registerGroupLookupKey(lookup, name, canonicalId || name);
+      registerGroupLookupKey(lookup, name.toLowerCase(), canonicalId || name);
+      const slug = slugifyAccountGroupKey ? slugifyAccountGroupKey(name) : null;
+      if (slug) {
+        registerGroupLookupKey(lookup, slug, canonicalId || `group:${slug}`);
+        registerGroupLookupKey(lookup, `group:${slug}`, canonicalId || `group:${slug}`);
+      }
+    }
+  });
+
+  return lookup;
+}
+
+function cloneJsonSafe(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch (error) {
+      // fall through to JSON fallback
+    }
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function createEmptyDividendSummary() {
+  return {
+    entries: [],
+    totalsByCurrency: {},
+    totalCad: 0,
+    totalCount: 0,
+    conversionIncomplete: false,
+    startDate: null,
+    endDate: null,
+  };
+}
+
+function resolveDividendSummaryForTimeframe(summary, timeframeKey) {
+  if (!summary || typeof summary !== 'object') {
+    return null;
+  }
+  const normalizedKey = typeof timeframeKey === 'string' && timeframeKey ? timeframeKey : 'all';
+  if (normalizedKey === 'all') {
+    return summary;
+  }
+  const timeframes =
+    summary.timeframes && typeof summary.timeframes === 'object' && !Array.isArray(summary.timeframes)
+      ? summary.timeframes
+      : null;
+  if (timeframes) {
+    const match = timeframes[normalizedKey];
+    if (match && typeof match === 'object') {
+      return match;
+    }
+    const fallback = timeframes.all;
+    if (fallback && typeof fallback === 'object') {
+      return fallback;
+    }
+  }
+  return summary;
+}
+
+function parseDateLike(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey = 'all') {
+  if (!dividendsByAccount || typeof dividendsByAccount !== 'object') {
+    return createEmptyDividendSummary();
+  }
+
+  const seenIds = new Set();
+  const normalizedIds = [];
+  if (Array.isArray(accountIds)) {
+    accountIds.forEach((accountId) => {
+      if (accountId === null || accountId === undefined) {
+        return;
+      }
+      const key = String(accountId);
+      if (!key || seenIds.has(key)) {
+        return;
+      }
+      seenIds.add(key);
+      normalizedIds.push(key);
+    });
+  }
+
+  if (!normalizedIds.length) {
+    return createEmptyDividendSummary();
+  }
+
+  const entryMap = new Map();
+  const totalsByCurrency = new Map();
+  let totalCad = 0;
+  let totalCadHasValue = false;
+  let totalCount = 0;
+  let conversionIncomplete = false;
+  let aggregateStart = null;
+  let aggregateEnd = null;
+  let processedSummary = false;
+
+  const normalizeCurrencyKey = (currency) => {
+    if (typeof currency === 'string' && currency.trim()) {
+      return currency.trim().toUpperCase();
+    }
+    return '';
+  };
+
+  normalizedIds.forEach((accountId) => {
+    const container = dividendsByAccount[accountId];
+    const summary = resolveDividendSummaryForTimeframe(container, timeframeKey);
+    if (!summary || typeof summary !== 'object') {
+      return;
+    }
+    processedSummary = true;
+
+    const summaryTotals =
+      summary.totalsByCurrency && typeof summary.totalsByCurrency === 'object'
+        ? summary.totalsByCurrency
+        : {};
+
+    Object.entries(summaryTotals).forEach(([currency, value]) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        return;
+      }
+      const key = normalizeCurrencyKey(currency);
+      const current = totalsByCurrency.get(key) || 0;
+      totalsByCurrency.set(key, current + numeric);
+    });
+
+    if (Number.isFinite(summary.totalCad)) {
+      totalCad += summary.totalCad;
+      totalCadHasValue = true;
+    }
+
+    if (Number.isFinite(summary.totalCount)) {
+      totalCount += summary.totalCount;
+    }
+
+    if (summary.conversionIncomplete) {
+      conversionIncomplete = true;
+    }
+
+    const summaryStart = parseDateLike(summary.startDate);
+    if (summaryStart && (!aggregateStart || summaryStart < aggregateStart)) {
+      aggregateStart = summaryStart;
+    }
+    const summaryEnd = parseDateLike(summary.endDate);
+    if (summaryEnd && (!aggregateEnd || summaryEnd > aggregateEnd)) {
+      aggregateEnd = summaryEnd;
+    }
+
+    const entries = Array.isArray(summary.entries) ? summary.entries : [];
+    entries.forEach((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+
+      const canonicalSymbol =
+        typeof entry.symbol === 'string' && entry.symbol.trim() ? entry.symbol.trim() : '';
+      const displaySymbol =
+        typeof entry.displaySymbol === 'string' && entry.displaySymbol.trim()
+          ? entry.displaySymbol.trim()
+          : '';
+      const description =
+        typeof entry.description === 'string' && entry.description.trim()
+          ? entry.description.trim()
+          : '';
+      const rawSymbolsArray = Array.isArray(entry.rawSymbols) ? entry.rawSymbols : [];
+      const rawSymbolLabel = rawSymbolsArray
+        .map((raw) => (typeof raw === 'string' ? raw.trim() : ''))
+        .filter(Boolean)
+        .join('|');
+
+      const entryKey =
+        canonicalSymbol || displaySymbol || rawSymbolLabel || description || `entry-${entryMap.size}`;
+
+      let aggregateEntry = entryMap.get(entryKey);
+      if (!aggregateEntry) {
+        aggregateEntry = {
+          symbol: canonicalSymbol || null,
+          displaySymbol: displaySymbol || canonicalSymbol || null,
+          rawSymbols: new Set(),
+          description: description || null,
+          currencyTotals: new Map(),
+          cadAmount: 0,
+          cadAmountHasValue: false,
+          conversionIncomplete: false,
+          activityCount: 0,
+          firstDate: null,
+          lastDate: null,
+          lastTimestamp: null,
+          lastAmount: null,
+          lastCurrency: null,
+          lastDateKey: null,
+          lastDateTotals: new Map(),
+        };
+        entryMap.set(entryKey, aggregateEntry);
+      } else {
+        if (!aggregateEntry.symbol && canonicalSymbol) {
+          aggregateEntry.symbol = canonicalSymbol;
+        }
+        if (!aggregateEntry.displaySymbol && (displaySymbol || canonicalSymbol)) {
+          aggregateEntry.displaySymbol = displaySymbol || canonicalSymbol;
+        }
+        if (!aggregateEntry.description && description) {
+          aggregateEntry.description = description;
+        }
+      }
+
+      rawSymbolsArray.forEach((raw) => {
+        if (typeof raw === 'string' && raw.trim()) {
+          aggregateEntry.rawSymbols.add(raw.trim());
+        }
+      });
+
+      const entryTotals =
+        entry.currencyTotals && typeof entry.currencyTotals === 'object'
+          ? entry.currencyTotals
+          : {};
+      Object.entries(entryTotals).forEach(([currency, value]) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          return;
+        }
+        const key = normalizeCurrencyKey(currency);
+        const current = aggregateEntry.currencyTotals.get(key) || 0;
+        aggregateEntry.currencyTotals.set(key, current + numeric);
+      });
+
+      const cadAmount = Number(entry.cadAmount);
+      if (Number.isFinite(cadAmount)) {
+        aggregateEntry.cadAmount += cadAmount;
+        aggregateEntry.cadAmountHasValue = true;
+      }
+
+      if (entry.conversionIncomplete) {
+        aggregateEntry.conversionIncomplete = true;
+      }
+
+      const activityCount = Number(entry.activityCount);
+      if (Number.isFinite(activityCount)) {
+        aggregateEntry.activityCount += activityCount;
+      }
+
+      const entryFirst = parseDateLike(entry.firstDate || entry.startDate);
+      if (entryFirst && (!aggregateEntry.firstDate || entryFirst < aggregateEntry.firstDate)) {
+        aggregateEntry.firstDate = entryFirst;
+      }
+
+      const entryLast = parseDateLike(entry.lastDate || entry.endDate);
+      if (entryLast && (!aggregateEntry.lastDate || entryLast > aggregateEntry.lastDate)) {
+        aggregateEntry.lastDate = entryLast;
+      }
+
+      const entryTimestamp = parseDateLike(entry.lastTimestamp || entry.lastDate || entry.endDate);
+      const entryDateKey = entryTimestamp
+        ? entryTimestamp.toISOString().slice(0, 10)
+        : typeof entry.lastDate === 'string' && entry.lastDate.trim()
+        ? entry.lastDate.trim().slice(0, 10)
+        : null;
+      const normalizedLastAmount = Number(entry.lastAmount);
+      const hasNormalizedAmount = Number.isFinite(normalizedLastAmount);
+      const normalizedLastCurrency =
+        typeof entry.lastCurrency === 'string' && entry.lastCurrency.trim()
+          ? entry.lastCurrency.trim().toUpperCase()
+          : null;
+
+      const isLaterTimestamp =
+        entryTimestamp && (!aggregateEntry.lastTimestamp || entryTimestamp > aggregateEntry.lastTimestamp);
+      const isLaterDateKey =
+        !entryTimestamp &&
+        entryDateKey &&
+        (!aggregateEntry.lastDateKey || entryDateKey > aggregateEntry.lastDateKey);
+
+      if (isLaterTimestamp || isLaterDateKey) {
+        if (isLaterTimestamp) {
+          aggregateEntry.lastTimestamp = entryTimestamp;
+        } else if (!aggregateEntry.lastTimestamp && entryTimestamp) {
+          aggregateEntry.lastTimestamp = entryTimestamp;
+        }
+        const computedDateKey = entryDateKey || (entryTimestamp ? entryTimestamp.toISOString().slice(0, 10) : null);
+        const shouldResetTotals =
+          !computedDateKey ||
+          !(aggregateEntry.lastDateTotals instanceof Map) ||
+          aggregateEntry.lastDateKey !== computedDateKey;
+        aggregateEntry.lastDateKey = computedDateKey;
+        aggregateEntry.lastAmount = hasNormalizedAmount ? normalizedLastAmount : null;
+        aggregateEntry.lastCurrency = normalizedLastCurrency || null;
+        if (shouldResetTotals) {
+          aggregateEntry.lastDateTotals = new Map();
+        }
+      } else if (!aggregateEntry.lastTimestamp && entryTimestamp) {
+        aggregateEntry.lastTimestamp = entryTimestamp;
+      }
+
+      if (entryDateKey && aggregateEntry.lastDateKey === entryDateKey && hasNormalizedAmount) {
+        if (!(aggregateEntry.lastDateTotals instanceof Map)) {
+          aggregateEntry.lastDateTotals = new Map();
+        }
+        const currencyKey = normalizedLastCurrency || '';
+        const current = aggregateEntry.lastDateTotals.get(currencyKey) || 0;
+        aggregateEntry.lastDateTotals.set(currencyKey, current + normalizedLastAmount);
+        if (!aggregateEntry.lastCurrency && normalizedLastCurrency) {
+          aggregateEntry.lastCurrency = normalizedLastCurrency;
+        }
+        if (!Number.isFinite(aggregateEntry.lastAmount) || aggregateEntry.lastAmount === null) {
+          aggregateEntry.lastAmount = normalizedLastAmount;
+        }
+      }
+    });
+  });
+
+  if (!processedSummary) {
+    return createEmptyDividendSummary();
+  }
+
+  let computedStart = aggregateStart;
+  let computedEnd = aggregateEnd;
+
+  const finalEntries = Array.from(entryMap.values()).map((entry) => {
+    if (entry.firstDate && (!computedStart || entry.firstDate < computedStart)) {
+      computedStart = entry.firstDate;
+    }
+    if (entry.lastDate && (!computedEnd || entry.lastDate > computedEnd)) {
+      computedEnd = entry.lastDate;
+    }
+
+    const rawSymbols = Array.from(entry.rawSymbols);
+    const currencyTotalsObject = {};
+    entry.currencyTotals.forEach((value, currency) => {
+      currencyTotalsObject[currency] = value;
+    });
+
+    const cadAmount = entry.cadAmountHasValue ? entry.cadAmount : null;
+    const magnitude =
+      cadAmount !== null
+        ? Math.abs(cadAmount)
+        : Array.from(entry.currencyTotals.values()).reduce((sum, value) => sum + Math.abs(value), 0);
+
+    const lastDateTotalsMap =
+      entry.lastDateKey && entry.lastDateTotals instanceof Map ? entry.lastDateTotals : null;
+    let lastAmount = Number.isFinite(entry.lastAmount) ? entry.lastAmount : null;
+    let lastCurrency = entry.lastCurrency || null;
+    if (lastDateTotalsMap && lastDateTotalsMap.size > 0) {
+      const preferredKey = lastCurrency || '';
+      if (preferredKey && lastDateTotalsMap.has(preferredKey)) {
+        const summed = lastDateTotalsMap.get(preferredKey);
+        if (Number.isFinite(summed)) {
+          lastAmount = summed;
+        }
+      } else if (!preferredKey && lastDateTotalsMap.has('')) {
+        const summed = lastDateTotalsMap.get('');
+        if (Number.isFinite(summed)) {
+          lastAmount = summed;
+        }
+      } else if (lastDateTotalsMap.size === 1) {
+        const [currencyKey, summed] = lastDateTotalsMap.entries().next().value;
+        if (Number.isFinite(summed)) {
+          lastAmount = summed;
+          lastCurrency = currencyKey || null;
+        }
+      } else {
+        const firstValid = Array.from(lastDateTotalsMap.entries()).find(([, value]) =>
+          Number.isFinite(value)
+        );
+        if (firstValid) {
+          const [currencyKey, summed] = firstValid;
+          lastAmount = summed;
+          if (currencyKey) {
+            lastCurrency = currencyKey;
+          }
+        }
+      }
+    }
+
+    return {
+      symbol: entry.symbol || null,
+      displaySymbol:
+        entry.displaySymbol || entry.symbol || (rawSymbols.length ? rawSymbols[0] : null) || null,
+      rawSymbols: rawSymbols.length ? rawSymbols : undefined,
+      description: entry.description || null,
+      currencyTotals: currencyTotalsObject,
+      cadAmount,
+      conversionIncomplete: entry.conversionIncomplete || undefined,
+      activityCount: entry.activityCount,
+      firstDate: entry.firstDate ? entry.firstDate.toISOString().slice(0, 10) : null,
+      lastDate: entry.lastDate ? entry.lastDate.toISOString().slice(0, 10) : null,
+      lastTimestamp: entry.lastTimestamp ? entry.lastTimestamp.toISOString() : null,
+      lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
+      lastCurrency: lastCurrency || null,
+      _magnitude: magnitude,
+    };
+  });
+
+  finalEntries.sort((a, b) => (b._magnitude || 0) - (a._magnitude || 0));
+
+  const cleanedEntries = finalEntries.map((entry) => {
+    const cleaned = { ...entry };
+    delete cleaned._magnitude;
+    if (!cleaned.rawSymbols) {
+      delete cleaned.rawSymbols;
+    }
+    if (!cleaned.conversionIncomplete) {
+      delete cleaned.conversionIncomplete;
+    }
+    return cleaned;
+  });
+
+  const totalsByCurrencyObject = {};
+  totalsByCurrency.forEach((value, currency) => {
+    totalsByCurrencyObject[currency] = value;
+  });
+
+  return {
+    entries: cleanedEntries,
+    totalsByCurrency: totalsByCurrencyObject,
+    totalCad: totalCadHasValue ? totalCad : null,
+    totalCount,
+    conversionIncomplete: conversionIncomplete || undefined,
+    startDate: computedStart ? computedStart.toISOString().slice(0, 10) : null,
+    endDate: computedEnd ? computedEnd.toISOString().slice(0, 10) : null,
+  };
+}
+
+function aggregateFundingSummariesForAccounts(fundingMap, accountIds) {
+  if (!fundingMap || typeof fundingMap !== 'object') {
+    return null;
+  }
+
+  const uniqueIds = Array.from(
+    new Set(
+      (Array.isArray(accountIds) ? accountIds : [])
+        .map((id) => (id === undefined || id === null ? '' : String(id)))
+        .filter(Boolean)
+    )
+  );
+
+  if (!uniqueIds.length) {
+    return null;
+  }
+
+  let netDepositsTotal = 0;
+  let netDepositsCount = 0;
+  let totalPnlTotal = 0;
+  let totalPnlCount = 0;
+  let totalEquityTotal = 0;
+  let totalEquityCount = 0;
+
+  uniqueIds.forEach((accountId) => {
+    const entry = fundingMap[accountId];
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const netDepositsCad = entry?.netDeposits?.combinedCad;
+    if (Number.isFinite(netDepositsCad)) {
+      netDepositsTotal += netDepositsCad;
+      netDepositsCount += 1;
+    }
+    const totalPnlCad = entry?.totalPnl?.combinedCad;
+    if (Number.isFinite(totalPnlCad)) {
+      totalPnlTotal += totalPnlCad;
+      totalPnlCount += 1;
+    }
+    const totalEquityCad = entry?.totalEquityCad;
+    if (Number.isFinite(totalEquityCad)) {
+      totalEquityTotal += totalEquityCad;
+      totalEquityCount += 1;
+    }
+  });
+
+  if (!netDepositsCount && !totalPnlCount && !totalEquityCount) {
+    return null;
+  }
+
+  const aggregate = {};
+  if (netDepositsCount > 0) {
+    aggregate.netDeposits = { combinedCad: netDepositsTotal };
+  }
+  if (totalPnlCount > 0) {
+    aggregate.totalPnl = { combinedCad: totalPnlTotal };
+  } else if (netDepositsCount > 0 && totalEquityCount > 0) {
+    const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
+    if (Number.isFinite(derivedTotalPnl)) {
+      aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+    }
+  }
+  if (totalEquityCount > 0) {
+    aggregate.totalEquityCad = totalEquityTotal;
+  }
+
+  return Object.keys(aggregate).length ? aggregate : null;
+}
+
+function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
+  if (!totalPnlMap || typeof totalPnlMap !== 'object') {
+    return null;
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(accountIds) ? accountIds : [])
+        .map((id) => (id === undefined || id === null ? '' : String(id).trim()))
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalizedIds.length) {
+    return null;
+  }
+
+  const aggregateEntries = new Map();
+  const aggregateEntriesNoFx = new Map();
+  let fxEffectTotal = 0;
+  let fxEffectHasValue = false;
+  let latestAsOf = null;
+
+  const addEntryToMap = (bucket, sourceEntry) => {
+    const key =
+      sourceEntry && typeof sourceEntry.symbol === 'string' && sourceEntry.symbol.trim()
+        ? sourceEntry.symbol.trim().toUpperCase()
+        : null;
+    if (!key) {
+      return;
+    }
+    const existing = bucket.get(key);
+    if (!existing) {
+      const clone = cloneJsonSafe(sourceEntry) || {};
+      bucket.set(key, clone);
+      return;
+    }
+    Object.entries(sourceEntry).forEach(([field, value]) => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        const current = typeof existing[field] === 'number' && Number.isFinite(existing[field]) ? existing[field] : 0;
+        existing[field] = current + value;
+      } else if (existing[field] === undefined) {
+        existing[field] = value;
+      }
+    });
+  };
+
+  normalizedIds.forEach((accountId) => {
+    const entry = totalPnlMap[accountId];
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    if (Array.isArray(entry.entries)) {
+      entry.entries.forEach((symbolEntry) => addEntryToMap(aggregateEntries, symbolEntry));
+    }
+    if (Array.isArray(entry.entriesNoFx)) {
+      entry.entriesNoFx.forEach((symbolEntry) => addEntryToMap(aggregateEntriesNoFx, symbolEntry));
+    }
+    const fx = entry.fxEffectCad;
+    if (Number.isFinite(fx)) {
+      fxEffectTotal += fx;
+      fxEffectHasValue = true;
+    }
+    const asOf = typeof entry.asOf === 'string' ? entry.asOf : null;
+    if (asOf && (!latestAsOf || asOf > latestAsOf)) {
+      latestAsOf = asOf;
+    }
+  });
+
+  const aggregateEntriesArray = Array.from(aggregateEntries.values()).filter((entry) => entry && typeof entry === 'object');
+  const aggregateEntriesNoFxArray = Array.from(aggregateEntriesNoFx.values()).filter(
+    (entry) => entry && typeof entry === 'object'
+  );
+
+  aggregateEntriesArray.sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+  aggregateEntriesNoFxArray.sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+
+  const aggregated = {};
+  if (aggregateEntriesArray.length) {
+    aggregated.entries = aggregateEntriesArray;
+  }
+  if (aggregateEntriesNoFxArray.length) {
+    aggregated.entriesNoFx = aggregateEntriesNoFxArray;
+  }
+  if (fxEffectHasValue) {
+    aggregated.fxEffectCad = fxEffectTotal;
+  }
+  if (latestAsOf) {
+    aggregated.asOf = latestAsOf;
+  }
+
+  return Object.keys(aggregated).length ? aggregated : null;
+}
+
+function reinterpretSelectionWithSuperset(selection, superset) {
+  if (!selection || !superset) {
+    return selection;
+  }
+  if (selection.type === 'group' || selection.type === 'all' || selection.type === 'default') {
+    return selection;
+  }
+
+  const lookup = superset.groupLookup instanceof Map ? superset.groupLookup : null;
+  const rawRequested =
+    typeof selection.originalRequestedId === 'string' && selection.originalRequestedId
+      ? selection.originalRequestedId
+      : selection.requestedId;
+  if (!rawRequested || typeof rawRequested !== 'string') {
+    return selection;
+  }
+
+  const candidates = new Set();
+  const pushCandidate = (value) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    candidates.add(trimmed);
+    const lower = trimmed.toLowerCase();
+    if (lower && lower !== trimmed) {
+      candidates.add(lower);
+    }
+  };
+
+  pushCandidate(selection.requestedId);
+  pushCandidate(rawRequested);
+
+  const ensurePrefixed = (value) => {
+    if (!value) {
+      return null;
+    }
+    return value.startsWith('group:') ? value : `group:${value}`;
+  };
+
+  Array.from(candidates).forEach((candidate) => {
+    const prefixed = ensurePrefixed(candidate);
+    if (prefixed) {
+      pushCandidate(prefixed);
+    }
+  });
+
+  const allGroups = [];
+  if (Array.isArray(superset.accountGroups)) {
+    superset.accountGroups.forEach((group) => {
+      if (group && typeof group === 'object') {
+        allGroups.push(group);
+      }
+    });
+  }
+  if (Array.isArray(superset.payload?.accountGroups)) {
+    superset.payload.accountGroups.forEach((group) => {
+      if (group && typeof group === 'object') {
+        allGroups.push(group);
+      }
+    });
+  }
+
+  let resolvedGroupId = null;
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (lookup && lookup.has(candidate)) {
+      resolvedGroupId = lookup.get(candidate);
+      break;
+    }
+    for (const group of allGroups) {
+      const groupId = typeof group.id === 'string' ? group.id : null;
+      const groupIdLower = groupId ? groupId.toLowerCase() : null;
+      const groupName = typeof group.name === 'string' ? group.name.trim() : '';
+      const groupNameLower = groupName ? groupName.toLowerCase() : null;
+      if (
+        (groupId && candidate === groupId) ||
+        (groupIdLower && candidate === groupIdLower) ||
+        (groupName && candidate === groupName) ||
+        (groupNameLower && candidate === groupNameLower)
+      ) {
+        resolvedGroupId = groupId || candidate;
+        break;
+      }
+      if (groupName) {
+        const slug = slugifyAccountGroupKey ? slugifyAccountGroupKey(groupName) : null;
+        if (slug) {
+          if (candidate === slug || candidate === `group:${slug}`) {
+            resolvedGroupId = groupId || `group:${slug}`;
+            break;
+          }
+        }
+      }
+    }
+    if (resolvedGroupId) {
+      break;
+    }
+  }
+
+  if (!resolvedGroupId) {
+    return selection;
+  }
+
+  const normalizedGroupId = String(resolvedGroupId).trim();
+  if (!normalizedGroupId) {
+    return selection;
+  }
+
+  const groupCacheKey = normalizedGroupId.toLowerCase();
+  return {
+    cacheKey: groupCacheKey,
+    type: 'group',
+    requestedId: normalizedGroupId,
+    groupId: normalizedGroupId,
+    groupCacheKey,
+    originalRequestedId: selection.originalRequestedId || selection.requestedId,
+  };
+}
+
+function resolveAccountIdsForSelection(superset, normalizedSelection) {
+  if (!superset || !normalizedSelection) {
+    return [];
+  }
+  if (normalizedSelection.type === 'all') {
+    return Array.isArray(superset.allAccountIds) ? superset.allAccountIds.slice() : [];
+  }
+  if (normalizedSelection.type === 'default') {
+    return superset.defaultAccountId ? [superset.defaultAccountId] : [];
+  }
+  if (normalizedSelection.type === 'group') {
+    const key = normalizedSelection.groupCacheKey || normalizedSelection.groupId || '';
+    if (!key) {
+      return [];
+    }
+    const lowerKey = key.toLowerCase();
+    const match =
+      superset.groupAccountIds?.get(key) ||
+      superset.groupAccountIds?.get(lowerKey);
+    if (Array.isArray(match) && match.length) {
+      return match
+        .map((value) => (value !== undefined && value !== null ? String(value).trim() : ''))
+        .filter(Boolean);
+    }
+
+    const collected = new Set();
+    const considerGroup = (group) => {
+      if (!group || typeof group !== 'object') {
+        return;
+      }
+      const groupId = typeof group.id === 'string' ? group.id : '';
+      if (!groupId) {
+        return;
+      }
+      if (groupId === key || groupId.toLowerCase() === lowerKey) {
+        const ids = Array.isArray(group.accountIds)
+          ? group.accountIds
+          : Array.isArray(group.accounts)
+            ? group.accounts.map((account) => account && account.id)
+            : [];
+        ids.forEach((value) => {
+          if (value !== undefined && value !== null) {
+            const normalized = String(value).trim();
+            if (normalized) {
+              collected.add(normalized);
+            }
+          }
+        });
+      }
+    };
+
+    if (Array.isArray(superset.accountGroups)) {
+      superset.accountGroups.forEach(considerGroup);
+    }
+    if (Array.isArray(superset.payload?.accountGroups)) {
+      superset.payload.accountGroups.forEach(considerGroup);
+    }
+    if (collected.size) {
+      return Array.from(collected);
+    }
+    return [];
+  }
+  const accountId = normalizedSelection.requestedId;
+  if (accountId && superset.accountsById?.has(accountId)) {
+    return [accountId];
+  }
+  const byNumber = superset.accountsByNumber?.get(accountId);
+  if (byNumber && superset.accountsById?.has(byNumber)) {
+    return [byNumber];
+  }
+  return [];
+}
+
+function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) {
+  if (!superset || !normalizedSelection) {
+    if (debugDetails) {
+      debugDetails.reason = 'missing-input';
+    }
+    return null;
+  }
+
+  const accountIds = resolveAccountIdsForSelection(superset, normalizedSelection);
+  if (!accountIds.length) {
+    if (debugDetails) {
+      debugDetails.reason = 'no-account-ids';
+      debugDetails.selectionType = normalizedSelection.type;
+      debugDetails.requestedId = normalizedSelection.requestedId;
+      debugDetails.originalRequestedId = normalizedSelection.originalRequestedId || null;
+      if (superset.groupLookup instanceof Map) {
+        debugDetails.availableGroupKeys = Array.from(superset.groupLookup.keys()).slice(0, 20);
+      }
+    }
+    return null;
+  }
+
+  if (debugDetails) {
+    debugDetails.accountIdsResolved = accountIds.slice(0, 20);
+    debugDetails.totalAccountIds = accountIds.length;
+  }
+
+  const accountIdSet = new Set(accountIds);
+
+  const decoratedPositions = Array.isArray(superset.decoratedPositions)
+    ? superset.decoratedPositions.filter((position) =>
+        position && accountIdSet.has(position.accountId || position.accountNumber)
+      )
+    : [];
+
+  const flattenedPositions = Array.isArray(superset.flattenedPositions)
+    ? superset.flattenedPositions.filter((position) =>
+        position && accountIdSet.has(position.accountId || position.accountNumber)
+      )
+    : [];
+
+  const decoratedOrders = Array.isArray(superset.decoratedOrders)
+    ? superset.decoratedOrders.filter((order) => order && accountIdSet.has(order.accountId || order.accountNumber))
+    : [];
+
+  const balancesRaw = accountIds
+    .map((accountId) => superset.balancesRawByAccountId?.get(accountId))
+    .filter(Boolean);
+  const balancesSummary = mergeBalances(balancesRaw);
+  finalizeBalances(balancesSummary);
+
+  const pnl = mergePnL(flattenedPositions);
+
+  const accountBalances = {};
+  accountIds.forEach((accountId) => {
+    if (superset.perAccountCombinedBalances && superset.perAccountCombinedBalances[accountId]) {
+      accountBalances[accountId] = superset.perAccountCombinedBalances[accountId];
+    }
+  });
+
+  const investmentModelEvaluations = {};
+  accountIds.forEach((accountId) => {
+    if (superset.investmentModelEvaluations && superset.investmentModelEvaluations[accountId]) {
+      investmentModelEvaluations[accountId] = superset.investmentModelEvaluations[accountId];
+    }
+  });
+
+  const accountFunding = {};
+  accountIds.forEach((accountId) => {
+    if (superset.accountFundingSummaries && superset.accountFundingSummaries[accountId]) {
+      accountFunding[accountId] = superset.accountFundingSummaries[accountId];
+    }
+  });
+
+  const accountDividends = {};
+  accountIds.forEach((accountId) => {
+    if (superset.accountDividendSummaries && superset.accountDividendSummaries[accountId]) {
+      accountDividends[accountId] = superset.accountDividendSummaries[accountId];
+    }
+  });
+
+  const accountTotalPnlBySymbol = {};
+  accountIds.forEach((accountId) => {
+    if (superset.accountTotalPnlBySymbol && superset.accountTotalPnlBySymbol[accountId]) {
+      accountTotalPnlBySymbol[accountId] = superset.accountTotalPnlBySymbol[accountId];
+    }
+  });
+
+  const accountTotalPnlBySymbolAll = {};
+  accountIds.forEach((accountId) => {
+    if (superset.accountTotalPnlBySymbolAll && superset.accountTotalPnlBySymbolAll[accountId]) {
+      accountTotalPnlBySymbolAll[accountId] = superset.accountTotalPnlBySymbolAll[accountId];
+    }
+  });
+
+  const aggregateKey =
+    normalizedSelection.type === 'group'
+      ? normalizedSelection.requestedId
+      : normalizedSelection.type === 'all'
+        ? 'all'
+        : accountIds.length > 1
+          ? normalizedSelection.requestedId || 'all'
+          : null;
+
+  if (aggregateKey) {
+    const aggregateFunding = aggregateFundingSummariesForAccounts(
+      superset.accountFundingSummaries,
+      accountIds
+    );
+    if (aggregateFunding) {
+      accountFunding[aggregateKey] = aggregateFunding;
+    }
+
+    const aggregateDividends = aggregateDividendSummaries(
+      superset.accountDividendSummaries,
+      accountIds,
+      'all'
+    );
+    if (aggregateDividends) {
+      accountDividends[aggregateKey] = aggregateDividends;
+    }
+
+    const aggregateTotalPnl = aggregateTotalPnlEntries(superset.accountTotalPnlBySymbol, accountIds);
+    if (aggregateTotalPnl) {
+      accountTotalPnlBySymbol[aggregateKey] = aggregateTotalPnl;
+    }
+
+    const aggregateTotalPnlAll = aggregateTotalPnlEntries(
+      superset.accountTotalPnlBySymbolAll,
+      accountIds
+    );
+    if (aggregateTotalPnlAll) {
+      accountTotalPnlBySymbolAll[aggregateKey] = aggregateTotalPnlAll;
+    }
+  }
+
+  let orderWindowStartIso = null;
+  let orderWindowEndIso = null;
+  accountIds.forEach((accountId) => {
+    const window = superset.orderWindowsByAccountId?.get(accountId);
+    if (!window) {
+      return;
+    }
+    if (window.start && (!orderWindowStartIso || window.start < orderWindowStartIso)) {
+      orderWindowStartIso = window.start;
+    }
+    if (window.end && (!orderWindowEndIso || window.end > orderWindowEndIso)) {
+      orderWindowEndIso = window.end;
+    }
+  });
+
+  if (!orderWindowStartIso) {
+    orderWindowStartIso = superset.payload?.ordersWindow?.start || superset.asOf || new Date().toISOString();
+  }
+  if (!orderWindowEndIso) {
+    orderWindowEndIso = superset.payload?.ordersWindow?.end || superset.asOf || new Date().toISOString();
+  }
+
+  const resolvedAccounts = superset.accountsById || new Map();
+  let resolvedAccountId = null;
+  let resolvedAccountNumber = null;
+  if (normalizedSelection.type === 'group') {
+    resolvedAccountId = normalizedSelection.requestedId;
+  } else if (normalizedSelection.type === 'all') {
+    resolvedAccountId = 'all';
+  } else {
+    resolvedAccountId = accountIds.length === 1 ? accountIds[0] : normalizedSelection.requestedId;
+    if (accountIds.length === 1 && resolvedAccounts.has(accountIds[0])) {
+      const account = resolvedAccounts.get(accountIds[0]);
+      resolvedAccountNumber =
+        (account && typeof account.number === 'string' && account.number.trim()) ||
+        (account && account.number != null ? String(account.number).trim() : null);
+    }
+  }
+
+  const payload = {
+    accounts: superset.accounts || [],
+    accountGroups: superset.accountGroups || [],
+    groupRelations: superset.groupRelations || {},
+    accountNamesFilePath: superset.accountNamesFilePath || null,
+    filteredAccountIds: accountIds,
+    defaultAccountId: superset.defaultAccountId || null,
+    defaultAccountNumber: superset.defaultAccountNumber || null,
+    resolvedAccountId,
+    resolvedAccountNumber,
+    requestedAccountId:
+      normalizedSelection.type === 'all' && (!normalizedSelection.requestedId || normalizedSelection.requestedId === 'all')
+        ? null
+        : normalizedSelection.requestedId,
+    positions: decoratedPositions,
+    orders: decoratedOrders,
+    ordersWindow: { start: orderWindowStartIso, end: orderWindowEndIso },
+    pnl,
+    balances: balancesSummary,
+    accountBalances,
+    investmentModelEvaluations,
+    accountFunding,
+    accountDividends,
+    accountTotalPnlBySymbol,
+    accountTotalPnlBySymbolAll,
+    asOf: superset.asOf || new Date().toISOString(),
+    usdToCadRate: superset.usdToCadRate || null,
+  };
+
+  return payload;
+}
 
 function getNewsModelPricing(modelName) {
   // Highest priority: explicit env overrides
@@ -10438,6 +11696,69 @@ app.get('/api/summary', async function (req, res) {
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
   const isDefaultRequested = requestedAccountId === 'default';
   const configuredDefaultKey = getDefaultAccountId();
+  let normalizedSelection = normalizeSummaryRequestKey(requestedAccountId);
+  let supersetEntry = null;
+
+  try {
+    let cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
+    if (cached && cached.payload) {
+      debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
+        requestedId: normalizedSelection.requestedId,
+      });
+      return res.json(cached.payload);
+    }
+
+    if (normalizedSelection.cacheKey !== 'all') {
+      supersetEntry = getSupersetCacheEntry();
+      if (supersetEntry) {
+        const reinterpretedSelection = reinterpretSelectionWithSuperset(normalizedSelection, supersetEntry);
+        if (reinterpretedSelection && reinterpretedSelection.cacheKey !== normalizedSelection.cacheKey) {
+          debugSummaryCache('selection reinterpreted via superset metadata', normalizedSelection.cacheKey, {
+            requestedId: normalizedSelection.requestedId,
+            reinterpretedKey: reinterpretedSelection.cacheKey,
+            reinterpretedId: reinterpretedSelection.requestedId,
+          });
+          normalizedSelection = reinterpretedSelection;
+          cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
+          if (cached && cached.payload) {
+            debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
+              requestedId: normalizedSelection.requestedId,
+            });
+            return res.json(cached.payload);
+          }
+        }
+      }
+
+      if (supersetEntry && supersetEntry.payload) {
+        const derivationDetails = DEBUG_SUMMARY_CACHE ? {} : null;
+        const derived = deriveSummaryFromSuperset(supersetEntry, normalizedSelection, derivationDetails);
+        if (derived) {
+          setSummaryCacheEntry(normalizedSelection.cacheKey, derived, {
+            requestedId: normalizedSelection.requestedId,
+            source: 'superset',
+            originalRequestedId: normalizedSelection.originalRequestedId || null,
+          });
+          debugSummaryCache('served from superset cache', normalizedSelection.cacheKey, {
+            requestedId: normalizedSelection.requestedId,
+            originalRequestedId: normalizedSelection.originalRequestedId || null,
+          });
+          return res.json(derived);
+        }
+        if (derivationDetails) {
+          debugSummaryCache('superset derivation unavailable', normalizedSelection.cacheKey, {
+            requestedId: normalizedSelection.requestedId,
+            originalRequestedId: normalizedSelection.originalRequestedId || null,
+            reason: derivationDetails.reason || 'no-account-ids',
+            accountIdsResolved: derivationDetails.accountIdsResolved || [],
+            totalAccountIds: derivationDetails.totalAccountIds || 0,
+            availableGroupKeys: derivationDetails.availableGroupKeys || [],
+          });
+        }
+      }
+    }
+  } catch (cacheError) {
+    debugSummaryCache('cache lookup failed', normalizedSelection.cacheKey, cacheError?.message || cacheError);
+  }
 
   try {
     const accountNameOverrides = getAccountNameOverrides();
@@ -11270,7 +12591,64 @@ app.get('/api/summary', async function (req, res) {
       let aggregateAsOfAll = null;
       let aggregateFxEffectCad = 0;
       let aggregateFxEffectCadAll = 0;
+      const cloneSymbolEntries = function cloneSymbolEntries(list) {
+        if (!Array.isArray(list) || list.length === 0) {
+          return [];
+        }
+        return list
+          .map(function (symbolEntry) {
+            if (!symbolEntry || typeof symbolEntry !== 'object') {
+              return null;
+            }
+            const clone = { ...symbolEntry };
+            if (Array.isArray(symbolEntry.components)) {
+              clone.components = symbolEntry.components
+                .map(function (component) {
+                  return component && typeof component === 'object' ? { ...component } : null;
+                })
+                .filter(Boolean);
+            }
+            return clone;
+          })
+          .filter(Boolean);
+      };
+
+      const storePerAccountSymbolTotals = function storePerAccountSymbolTotals(target, accountId, source) {
+        if (!target || !accountId || !source || typeof source !== 'object') {
+          return;
+        }
+        const entries = cloneSymbolEntries(source.entries);
+        const entriesNoFx = cloneSymbolEntries(source.entriesNoFx);
+        const payload = {};
+        if (entries.length) {
+          payload.entries = entries;
+        }
+        if (entriesNoFx.length) {
+          payload.entriesNoFx = entriesNoFx;
+        }
+        if (Number.isFinite(source.fxEffectCad)) {
+          payload.fxEffectCad = source.fxEffectCad;
+        }
+        const asOf = typeof source.endDate === 'string' && source.endDate ? source.endDate : null;
+        if (asOf) {
+          payload.asOf = asOf;
+        }
+        if (Object.keys(payload).length === 0) {
+          return;
+        }
+        target[accountId] = payload;
+      };
+
       perAccountSymbolTotals.forEach(function (entry) {
+        const accountId = entry && entry.context && entry.context.account && entry.context.account.id;
+        if (accountId) {
+          if (entry && entry.result) {
+            storePerAccountSymbolTotals(accountTotalPnlBySymbol, accountId, entry.result);
+          }
+          if (entry && entry.resultAll) {
+            storePerAccountSymbolTotals(accountTotalPnlBySymbolAll, accountId, entry.resultAll);
+          }
+        }
         if (!entry || !entry.result || !Array.isArray(entry.result.entries)) {
           // keep going; maybe resultAll is present
         } else {
@@ -11889,7 +13267,7 @@ app.get('/api/summary', async function (req, res) {
       latestUsdToCadRate = null;
     }
 
-    res.json({
+    const responsePayload = {
       accounts: responseAccounts,
       accountGroups: responseAccountGroups,
       // Debug aid: shows inferred group-of-group relations from config
@@ -11916,7 +13294,119 @@ app.get('/api/summary', async function (req, res) {
       accountTotalPnlBySymbolAll,
       asOf: new Date().toISOString(),
       usdToCadRate: latestUsdToCadRate,
+    };
+
+    if (includeAllAccounts) {
+      clearSummaryCache();
+    }
+
+    setSummaryCacheEntry(normalizedSelection.cacheKey, responsePayload, {
+      requestedId: normalizedSelection.requestedId,
+      source: 'live',
+      originalRequestedId: normalizedSelection.originalRequestedId || null,
     });
+
+    if (includeAllAccounts) {
+      const balancesRawByAccountId = new Map();
+      selectedContexts.forEach(function (context, index) {
+        if (context && context.account && context.account.id) {
+          balancesRawByAccountId.set(context.account.id, balancesResults[index]);
+        }
+      });
+
+      const orderWindowsByAccountId = new Map();
+      orderFetchResults.forEach(function (result) {
+        const accountId = result && result.context && result.context.account && result.context.account.id;
+        if (!accountId) {
+          return;
+        }
+        orderWindowsByAccountId.set(accountId, {
+          start: result.start || null,
+          end: result.end || null,
+        });
+      });
+
+      const accountsById = new Map();
+      const accountsByNumber = new Map();
+      responseAccounts.forEach(function (account) {
+        if (!account || !account.id) {
+          return;
+        }
+        accountsById.set(account.id, account);
+        const numberKey =
+          account.number !== undefined && account.number !== null
+            ? String(account.number).trim()
+            : '';
+        if (numberKey) {
+          accountsByNumber.set(numberKey, account.id);
+        }
+      });
+
+      const groupAccountIds = new Map();
+      if (accountGroupsById && typeof accountGroupsById.forEach === 'function') {
+        accountGroupsById.forEach(function (group, key) {
+          if (!group || !group.id) {
+            return;
+          }
+          const ids = Array.isArray(group.accounts)
+            ? group.accounts
+                .map(function (acc) {
+                  return acc && acc.id ? acc.id : null;
+                })
+                .filter(Boolean)
+            : [];
+          const normalizedKey = typeof group.id === 'string' ? group.id.toLowerCase() : String(group.id || '');
+          if (normalizedKey) {
+            groupAccountIds.set(normalizedKey, ids);
+          }
+          groupAccountIds.set(group.id, ids);
+          if (typeof key === 'string' && key) {
+            groupAccountIds.set(key.toLowerCase(), ids);
+          }
+        });
+      }
+
+      const groupLookup = buildGroupLookupMap(accountGroupsById);
+
+      const supersetTimestamp = nowMs();
+      const supersetEntry = {
+        cacheKey: normalizedSelection.cacheKey,
+        payload: responsePayload,
+        timestamp: supersetTimestamp,
+        expiresAt: supersetTimestamp + SUMMARY_CACHE_TTL_MS,
+        accounts: responseAccounts,
+        accountGroups: responseAccountGroups,
+        accountsById,
+        accountsByNumber,
+        groupAccountIds,
+        groupLookup,
+        groupRelations,
+        accountNamesFilePath: accountNamesModule.accountNamesFilePath,
+        perAccountCombinedBalances,
+        accountFundingSummaries,
+        accountDividendSummaries,
+        accountTotalPnlBySymbol,
+        accountTotalPnlBySymbolAll,
+        investmentModelEvaluations,
+        decoratedPositions,
+        decoratedOrders,
+        flattenedPositions,
+        balancesRawByAccountId,
+        orderWindowsByAccountId,
+        allAccountIds: selectedContexts.map(function (context) {
+          return context.account.id;
+        }),
+        defaultAccountId,
+        defaultAccountNumber: defaultAccount ? defaultAccount.number : null,
+        usdToCadRate: latestUsdToCadRate,
+        asOf: responsePayload.asOf,
+        filteredAccountIds: responsePayload.filteredAccountIds,
+      };
+
+      setSupersetCacheEntry(supersetEntry);
+    }
+
+    res.json(responsePayload);
   } catch (error) {
     if (error.response) {
       return res.status(error.response.status).json({ message: 'Questrade API error', details: error.response.data });

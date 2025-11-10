@@ -1042,35 +1042,741 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
   };
 }
 
+const BALANCE_AGGREGATE_FIELDS = [
+  'totalEquity',
+  'marketValue',
+  'cash',
+  'buyingPower',
+  'maintenanceExcess',
+  'dayPnl',
+  'openPnl',
+  'totalPnl',
+  'totalCost',
+  'realizedPnl',
+  'unrealizedPnl',
+];
+
+function aggregateAccountBalanceSummaries(accountBalances, accountIds) {
+  if (!accountBalances || typeof accountBalances !== 'object') {
+    return null;
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(accountIds) ? accountIds : [])
+        .map((id) => (id === undefined || id === null ? '' : String(id).trim()))
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalizedIds.length) {
+    return null;
+  }
+
+  const combinedAccumulators = Object.create(null);
+  const perCurrencyAccumulators = Object.create(null);
+
+  const ensureBucket = (container, currency) => {
+    const key = currency || '';
+    if (!container[key]) {
+      container[key] = {
+        currency: currency || null,
+        isRealTime: false,
+        __counts: Object.create(null),
+      };
+    }
+    return container[key];
+  };
+
+  normalizedIds.forEach((accountId) => {
+    const summary = normalizeAccountBalanceSummary(accountBalances[accountId]);
+    if (!summary) {
+      return;
+    }
+
+    const combine = (source, target) => {
+      if (!source || typeof source !== 'object') {
+        return;
+      }
+      Object.entries(source).forEach(([currencyKey, entry]) => {
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const bucket = ensureBucket(target, currencyKey);
+        BALANCE_AGGREGATE_FIELDS.forEach((field) => {
+          const raw = entry[field];
+          const value = typeof raw === 'number' ? raw : Number(raw);
+          if (Number.isFinite(value)) {
+            const current = typeof bucket[field] === 'number' ? bucket[field] : 0;
+            bucket[field] = current + value;
+            bucket.__counts[field] = (bucket.__counts[field] || 0) + 1;
+          }
+        });
+        if (entry.isRealTime) {
+          bucket.isRealTime = true;
+        }
+      });
+    };
+
+    combine(summary.combined, combinedAccumulators);
+    combine(summary.perCurrency, perCurrencyAccumulators);
+  });
+
+  const finalize = (container) => {
+    const entries = Object.entries(container)
+      .map(([currencyKey, entry]) => {
+        const result = {};
+        if (entry.currency !== undefined) {
+          result.currency = entry.currency;
+        } else if (currencyKey) {
+          result.currency = currencyKey;
+        }
+        if (entry.isRealTime) {
+          result.isRealTime = true;
+        }
+        BALANCE_AGGREGATE_FIELDS.forEach((field) => {
+          if (entry.__counts[field] > 0) {
+            result[field] = entry[field];
+          }
+        });
+        return [currencyKey, result];
+      })
+      .filter(([, value]) => Object.keys(value).length > 0);
+
+    if (!entries.length) {
+      return null;
+    }
+
+    return entries.reduce((acc, [key, value]) => {
+      acc[key] = value;
+      return acc;
+    }, {});
+  };
+
+  const combined = finalize(combinedAccumulators);
+  const perCurrency = finalize(perCurrencyAccumulators);
+
+  if (!combined && !perCurrency) {
+    return null;
+  }
+
+  const summary = {};
+  if (combined) {
+    summary.combined = combined;
+  }
+  if (perCurrency) {
+    summary.perCurrency = perCurrency;
+  }
+  return summary;
+}
+
+function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
+  if (!accountFunding || typeof accountFunding !== 'object') {
+    return null;
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(accountIds) ? accountIds : [])
+        .map((id) => (id === undefined || id === null ? '' : String(id).trim()))
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalizedIds.length) {
+    return null;
+  }
+
+  let netDepositsTotal = 0;
+  let netDepositsCount = 0;
+  let totalPnlTotal = 0;
+  let totalPnlCount = 0;
+  let totalEquityTotal = 0;
+  let totalEquityCount = 0;
+
+  normalizedIds.forEach((accountId) => {
+    const entry = accountFunding[accountId];
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const netDepositsCad = entry?.netDeposits?.combinedCad;
+    if (isFiniteNumber(netDepositsCad)) {
+      netDepositsTotal += netDepositsCad;
+      netDepositsCount += 1;
+    }
+    const totalPnlCad = entry?.totalPnl?.combinedCad;
+    if (isFiniteNumber(totalPnlCad)) {
+      totalPnlTotal += totalPnlCad;
+      totalPnlCount += 1;
+    }
+    const totalEquityCad = entry?.totalEquityCad;
+    if (isFiniteNumber(totalEquityCad)) {
+      totalEquityTotal += totalEquityCad;
+      totalEquityCount += 1;
+    }
+  });
+
+  if (netDepositsCount === 0 && totalPnlCount === 0 && totalEquityCount === 0) {
+    return null;
+  }
+
+  const aggregate = {};
+  if (netDepositsCount > 0) {
+    aggregate.netDeposits = { combinedCad: netDepositsTotal };
+  }
+  if (totalPnlCount > 0) {
+    aggregate.totalPnl = { combinedCad: totalPnlTotal };
+  } else if (netDepositsCount > 0 && totalEquityCount > 0) {
+    const derivedTotalPnl = totalEquityTotal - netDepositsTotal;
+    if (isFiniteNumber(derivedTotalPnl)) {
+      aggregate.totalPnl = { combinedCad: derivedTotalPnl };
+    }
+  }
+  if (totalEquityCount > 0) {
+    aggregate.totalEquityCad = totalEquityTotal;
+  }
+
+  return Object.keys(aggregate).length > 0 ? aggregate : null;
+}
+
+function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
+  if (!totalPnlMap || typeof totalPnlMap !== 'object') {
+    return null;
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(accountIds) ? accountIds : [])
+        .map((id) => (id === undefined || id === null ? '' : String(id).trim()))
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalizedIds.length) {
+    return null;
+  }
+
+  const aggregateEntries = new Map();
+  const aggregateEntriesNoFx = new Map();
+  let fxEffectTotal = 0;
+  let fxEffectHasValue = false;
+  let latestAsOf = null;
+
+  const addEntryToMap = (bucket, sourceEntry) => {
+    const key =
+      typeof sourceEntry?.symbol === 'string' && sourceEntry.symbol.trim()
+        ? sourceEntry.symbol.trim().toUpperCase()
+        : null;
+    if (!key) {
+      return;
+    }
+    const existing = bucket.get(key);
+    if (!existing) {
+      const clone = {};
+      Object.entries(sourceEntry).forEach(([field, value]) => {
+        if (value !== undefined) {
+          if (typeof value === 'number') {
+            clone[field] = Number.isFinite(value) ? value : value;
+          } else if (Array.isArray(value)) {
+            clone[field] = value.slice();
+          } else if (value && typeof value === 'object') {
+            clone[field] = { ...value };
+          } else {
+            clone[field] = value;
+          }
+        }
+      });
+      bucket.set(key, clone);
+      return;
+    }
+    Object.entries(sourceEntry).forEach(([field, value]) => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        const current = typeof existing[field] === 'number' && Number.isFinite(existing[field]) ? existing[field] : 0;
+        existing[field] = current + value;
+      } else if (existing[field] === undefined) {
+        existing[field] = value;
+      }
+    });
+  };
+
+  normalizedIds.forEach((accountId) => {
+    const entry = totalPnlMap[accountId];
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    if (Array.isArray(entry.entries)) {
+      entry.entries.forEach((symbolEntry) => addEntryToMap(aggregateEntries, symbolEntry));
+    }
+    if (Array.isArray(entry.entriesNoFx)) {
+      entry.entriesNoFx.forEach((symbolEntry) => addEntryToMap(aggregateEntriesNoFx, symbolEntry));
+    }
+    const fx = entry.fxEffectCad;
+    if (Number.isFinite(fx)) {
+      fxEffectTotal += fx;
+      fxEffectHasValue = true;
+    }
+    const asOf = typeof entry.asOf === 'string' ? entry.asOf : null;
+    if (asOf && (!latestAsOf || asOf > latestAsOf)) {
+      latestAsOf = asOf;
+    }
+  });
+
+  const entries = Array.from(aggregateEntries.values()).sort((a, b) => {
+    const aMagnitude = Math.abs(Number(a.totalPnlCad) || 0);
+    const bMagnitude = Math.abs(Number(b.totalPnlCad) || 0);
+    if (aMagnitude !== bMagnitude) {
+      return bMagnitude - aMagnitude;
+    }
+    const aSymbol = typeof a.symbol === 'string' ? a.symbol : '';
+    const bSymbol = typeof b.symbol === 'string' ? b.symbol : '';
+    return aSymbol.localeCompare(bSymbol);
+  });
+
+  const entriesNoFx = Array.from(aggregateEntriesNoFx.values()).sort((a, b) => {
+    const aMagnitude = Math.abs(Number(a.totalPnlCad) || 0);
+    const bMagnitude = Math.abs(Number(b.totalPnlCad) || 0);
+    if (aMagnitude !== bMagnitude) {
+      return bMagnitude - aMagnitude;
+    }
+    const aSymbol = typeof a.symbol === 'string' ? a.symbol : '';
+    const bSymbol = typeof b.symbol === 'string' ? b.symbol : '';
+    return aSymbol.localeCompare(bSymbol);
+  });
+
+  if (!entries.length && !entriesNoFx.length && !fxEffectHasValue) {
+    return null;
+  }
+
+  const payload = {};
+  if (entries.length) {
+    payload.entries = entries;
+  }
+  if (entriesNoFx.length) {
+    payload.entriesNoFx = entriesNoFx;
+  }
+  if (fxEffectHasValue) {
+    payload.fxEffectCad = fxEffectTotal;
+  }
+  if (latestAsOf) {
+    payload.asOf = latestAsOf;
+  }
+  return payload;
+}
+
+function summaryRepresentsAllAccounts(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return false;
+  }
+
+  const resolvedAccountId =
+    typeof summary.resolvedAccountId === 'string' ? summary.resolvedAccountId.trim() : '';
+  if (resolvedAccountId === 'all') {
+    return true;
+  }
+
+  const requestedAccountId =
+    typeof summary.requestedAccountId === 'string' ? summary.requestedAccountId.trim() : '';
+  if (requestedAccountId === 'all') {
+    return true;
+  }
+
+  const accounts = Array.isArray(summary.accounts) ? summary.accounts : [];
+  const filteredAccountIds = Array.isArray(summary.filteredAccountIds)
+    ? summary.filteredAccountIds
+    : [];
+
+  if (!accounts.length || !filteredAccountIds.length) {
+    return false;
+  }
+
+  const normalizedAccountIds = accounts
+    .map((account) => {
+      if (!account || typeof account !== 'object') {
+        return '';
+      }
+      if (account.id !== undefined && account.id !== null) {
+        return String(account.id).trim();
+      }
+      return '';
+    })
+    .filter(Boolean);
+
+  if (!normalizedAccountIds.length) {
+    return false;
+  }
+
+  const normalizedFilteredIds = filteredAccountIds
+    .map((value) => (value !== undefined && value !== null ? String(value).trim() : ''))
+    .filter(Boolean);
+
+  if (normalizedFilteredIds.length < normalizedAccountIds.length) {
+    return false;
+  }
+
+  const filteredSet = new Set(normalizedFilteredIds);
+
+  return normalizedAccountIds.every((accountId) => filteredSet.has(accountId));
+}
+
+function deriveSummaryFromSuperset(baseData, selectionKey) {
+  if (!baseData || typeof baseData !== 'object') {
+    return null;
+  }
+
+  const normalizedKey = typeof selectionKey === 'string' ? selectionKey.trim() : '';
+  if (!normalizedKey || normalizedKey === 'default') {
+    return null;
+  }
+  if (normalizedKey === 'all') {
+    return baseData;
+  }
+
+  const allAccounts = Array.isArray(baseData.accounts) ? baseData.accounts : [];
+  const accountIdSet = new Set();
+  const accountNumberSet = new Set();
+
+  if (isAccountGroupSelection(normalizedKey)) {
+    const groups = Array.isArray(baseData.accountGroups) ? baseData.accountGroups : [];
+    const group = groups.find((entry) => entry && entry.id === normalizedKey);
+    if (!group) {
+      return null;
+    }
+    (Array.isArray(group.accountIds) ? group.accountIds : []).forEach((value) => {
+      if (value !== undefined && value !== null) {
+        const key = String(value).trim();
+        if (key) {
+          accountIdSet.add(key);
+        }
+      }
+    });
+    (Array.isArray(group.accountNumbers) ? group.accountNumbers : []).forEach((value) => {
+      if (value !== undefined && value !== null) {
+        const key = String(value).trim();
+        if (key) {
+          accountNumberSet.add(key);
+        }
+      }
+    });
+  } else {
+    accountIdSet.add(normalizedKey);
+  }
+
+  allAccounts.forEach((account) => {
+    if (!account || typeof account !== 'object') {
+      return;
+    }
+    const id = account.id !== undefined && account.id !== null ? String(account.id) : null;
+    const numberRaw =
+      account.number !== undefined && account.number !== null
+        ? account.number
+        : account.accountNumber !== undefined && account.accountNumber !== null
+          ? account.accountNumber
+          : null;
+    const number = numberRaw !== undefined && numberRaw !== null ? String(numberRaw) : null;
+    if (normalizedKey === number) {
+      if (id) {
+        accountIdSet.add(id);
+      }
+      if (number) {
+        accountNumberSet.add(number);
+      }
+    }
+    if (accountNumberSet.has(number) && id) {
+      accountIdSet.add(id);
+    }
+  });
+
+  const normalizedAccountIds = Array.from(accountIdSet);
+  const normalizedAccountNumbers = Array.from(accountNumberSet);
+  if (!normalizedAccountIds.length && !normalizedAccountNumbers.length) {
+    return null;
+  }
+
+  const matchesSelection = (idCandidate, numberCandidate) => {
+    const idKey = idCandidate !== undefined && idCandidate !== null ? String(idCandidate).trim() : '';
+    const numberKey = numberCandidate !== undefined && numberCandidate !== null ? String(numberCandidate).trim() : '';
+    if (idKey && normalizedAccountIds.includes(idKey)) {
+      return true;
+    }
+    if (numberKey && normalizedAccountNumbers.includes(numberKey)) {
+      return true;
+    }
+    return false;
+  };
+
+  const positions = Array.isArray(baseData.positions)
+    ? baseData.positions.filter((position) =>
+        matchesSelection(position?.accountId, position?.accountNumber)
+      )
+    : [];
+
+  const orderedAccountIds = [];
+  const seenAccounts = new Set();
+  const pushAccountId = (value) => {
+    const key = value === undefined || value === null ? '' : String(value).trim();
+    if (!key || seenAccounts.has(key)) {
+      return;
+    }
+    seenAccounts.add(key);
+    orderedAccountIds.push(key);
+  };
+
+  normalizedAccountIds.forEach(pushAccountId);
+  positions.forEach((position) => {
+    if (position && position.accountId !== undefined && position.accountId !== null) {
+      pushAccountId(position.accountId);
+    }
+  });
+
+  if (!orderedAccountIds.length && normalizedAccountNumbers.length) {
+    normalizedAccountNumbers.forEach((numberKey) => {
+      const match = allAccounts.find((account) => {
+        const accountNumber =
+          account && account.number !== undefined && account.number !== null
+            ? String(account.number)
+            : account && account.accountNumber !== undefined && account.accountNumber !== null
+              ? String(account.accountNumber)
+              : '';
+        return accountNumber === numberKey;
+      });
+      if (match && match.id !== undefined && match.id !== null) {
+        pushAccountId(match.id);
+      }
+    });
+  }
+
+  if (!orderedAccountIds.length) {
+    normalizedAccountIds.forEach(pushAccountId);
+  }
+
+  if (!orderedAccountIds.length) {
+    return null;
+  }
+
+  const orders = Array.isArray(baseData.orders)
+    ? baseData.orders.filter((order) => matchesSelection(order?.accountId, order?.accountNumber))
+    : [];
+
+  let balances = null;
+  if (orderedAccountIds.length === 1) {
+    const primaryId = orderedAccountIds[0];
+    balances = normalizeAccountBalanceSummary(
+      baseData.accountBalances && baseData.accountBalances[primaryId]
+    );
+  }
+  if (!balances) {
+    balances = aggregateAccountBalanceSummaries(baseData.accountBalances, orderedAccountIds);
+  }
+
+  const fundingMap =
+    baseData.accountFunding && typeof baseData.accountFunding === 'object'
+      ? baseData.accountFunding
+      : EMPTY_OBJECT;
+  let nextAccountFunding = fundingMap;
+  const aggregateFunding = aggregateFundingSummariesForAccounts(fundingMap, orderedAccountIds);
+  if (aggregateFunding) {
+    const shouldAttach =
+      isAccountGroupSelection(normalizedKey) || normalizedKey === 'all' || !fundingMap[normalizedKey];
+    if (shouldAttach) {
+      nextAccountFunding = { ...fundingMap, [normalizedKey]: aggregateFunding };
+    }
+  }
+
+  const dividendsMap =
+    baseData.accountDividends && typeof baseData.accountDividends === 'object'
+      ? baseData.accountDividends
+      : EMPTY_OBJECT;
+  let nextAccountDividends = dividendsMap;
+  if (isAccountGroupSelection(normalizedKey) || orderedAccountIds.length > 1) {
+    const aggregateDividends = aggregateDividendSummaries(dividendsMap, orderedAccountIds, 'all');
+    if (aggregateDividends && (!dividendsMap[normalizedKey] || isAccountGroupSelection(normalizedKey))) {
+      nextAccountDividends = { ...dividendsMap, [normalizedKey]: aggregateDividends };
+    }
+  }
+
+  const totalPnlMap =
+    baseData.accountTotalPnlBySymbol && typeof baseData.accountTotalPnlBySymbol === 'object'
+      ? baseData.accountTotalPnlBySymbol
+      : null;
+  let nextTotalPnlMap = totalPnlMap;
+  if (totalPnlMap && (isAccountGroupSelection(normalizedKey) || orderedAccountIds.length > 1)) {
+    const aggregate = aggregateTotalPnlEntries(totalPnlMap, orderedAccountIds);
+    if (aggregate) {
+      nextTotalPnlMap = { ...totalPnlMap, [normalizedKey]: aggregate };
+    }
+  }
+
+  const totalPnlAllMap =
+    baseData.accountTotalPnlBySymbolAll && typeof baseData.accountTotalPnlBySymbolAll === 'object'
+      ? baseData.accountTotalPnlBySymbolAll
+      : null;
+  let nextTotalPnlAllMap = totalPnlAllMap;
+  if (totalPnlAllMap && (isAccountGroupSelection(normalizedKey) || orderedAccountIds.length > 1)) {
+    const aggregateAll = aggregateTotalPnlEntries(totalPnlAllMap, orderedAccountIds);
+    if (aggregateAll) {
+      nextTotalPnlAllMap = { ...totalPnlAllMap, [normalizedKey]: aggregateAll };
+    }
+  }
+
+  const resolvedAccountId = (function resolveAccountId() {
+    if (isAccountGroupSelection(normalizedKey)) {
+      return normalizedKey;
+    }
+    if (orderedAccountIds.length === 1) {
+      return orderedAccountIds[0];
+    }
+    return normalizedKey;
+  })();
+
+  const resolvedAccountNumber = (function resolveAccountNumber() {
+    if (orderedAccountIds.length !== 1) {
+      return null;
+    }
+    const primaryId = orderedAccountIds[0];
+    const match = allAccounts.find((account) => String(account?.id) === primaryId);
+    if (!match) {
+      return null;
+    }
+    const raw =
+      match.number !== undefined && match.number !== null
+        ? match.number
+        : match.accountNumber !== undefined && match.accountNumber !== null
+          ? match.accountNumber
+          : null;
+    return raw !== undefined && raw !== null ? String(raw) : null;
+  })();
+
+  return {
+    ...baseData,
+    requestedAccountId: normalizedKey,
+    resolvedAccountId: resolvedAccountId || null,
+    resolvedAccountNumber: resolvedAccountNumber || null,
+    filteredAccountIds: orderedAccountIds,
+    positions,
+    orders,
+    balances: balances || null,
+    accountFunding: nextAccountFunding,
+    accountDividends: nextAccountDividends,
+    accountTotalPnlBySymbol: nextTotalPnlMap ?? baseData.accountTotalPnlBySymbol ?? null,
+    accountTotalPnlBySymbolAll: nextTotalPnlAllMap ?? baseData.accountTotalPnlBySymbolAll ?? null,
+  };
+}
+
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
-  const lastAccountRef = useRef();
+  const cacheRef = useRef(new Map());
+  const refreshTrackerRef = useRef(refreshKey);
 
   useEffect(() => {
-    let cancelled = false;
-    const previousAccount = lastAccountRef.current;
-    const isSameAccount = previousAccount === accountNumber;
-    lastAccountRef.current = accountNumber;
+    const previousRefreshKey = refreshTrackerRef.current;
+    const refreshChanged = refreshKey !== previousRefreshKey;
+    refreshTrackerRef.current = refreshKey;
+
+    const normalizedAccount =
+      typeof accountNumber === 'string' && accountNumber.trim() ? accountNumber.trim() : 'all';
+
+    const supersetEntry = cacheRef.current.get('all');
+    const supersetData = supersetEntry ? supersetEntry.data : null;
+    const derivedFromSuperset =
+      normalizedAccount !== 'default' && supersetData
+        ? deriveSummaryFromSuperset(supersetData, normalizedAccount)
+        : null;
+    const cachedEntry = cacheRef.current.get(normalizedAccount);
+    const cachedData = cachedEntry ? cachedEntry.data : null;
+    const initialData = derivedFromSuperset || cachedData || null;
+
+    if (
+      derivedFromSuperset &&
+      normalizedAccount !== 'default' &&
+      normalizedAccount !== 'all'
+    ) {
+      const existing = cacheRef.current.get(normalizedAccount);
+      if (!existing || existing.data !== derivedFromSuperset) {
+        cacheRef.current.set(normalizedAccount, { data: derivedFromSuperset, refreshKey });
+      }
+    }
 
     setState((prev) => {
-      const nextData = isSameAccount ? prev.data : null;
-      return { loading: true, data: nextData, error: null };
+      if (initialData) {
+        if (prev.data === initialData && prev.loading === false && !prev.error) {
+          return prev;
+        }
+        return { loading: false, data: initialData, error: null };
+      }
+      if (!prev.loading || prev.data !== null || prev.error) {
+        return { loading: true, data: prev.data, error: null };
+      }
+      return prev;
     });
 
-    getSummary(accountNumber)
+    let fetchKey = null;
+    if (normalizedAccount === 'default') {
+      if (refreshChanged || !cachedData) {
+        fetchKey = 'default';
+      }
+    } else if (refreshChanged) {
+      fetchKey = 'all';
+    } else if (!supersetData) {
+      fetchKey = 'all';
+    } else if (!initialData && normalizedAccount === 'all') {
+      fetchKey = 'all';
+    }
+
+    if (!fetchKey) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    getSummary(fetchKey)
       .then((summary) => {
-        if (!cancelled) {
-          setState({ loading: false, data: summary, error: null });
+        if (cancelled) {
+          return;
         }
+        const storeEntry = (key, data) => {
+          if (!key || !data) {
+            return;
+          }
+          cacheRef.current.set(key, { data, refreshKey });
+        };
+
+        const representsAllAccounts = summaryRepresentsAllAccounts(summary);
+
+        if (fetchKey === 'all' || representsAllAccounts) {
+          storeEntry(fetchKey, summary);
+          if (representsAllAccounts) {
+            storeEntry('all', summary);
+          }
+
+          if (normalizedAccount === fetchKey || (representsAllAccounts && normalizedAccount === 'default')) {
+            setState({ loading: false, data: summary, error: null });
+            return;
+          }
+
+          if (normalizedAccount === 'all') {
+            setState({ loading: false, data: summary, error: null });
+            return;
+          }
+
+          const derived = deriveSummaryFromSuperset(summary, normalizedAccount);
+          if (derived) {
+            storeEntry(normalizedAccount, derived);
+            setState({ loading: false, data: derived, error: null });
+          } else {
+            setState({ loading: false, data: summary, error: null });
+          }
+          return;
+        }
+
+        storeEntry(normalizedAccount, summary);
+        setState({ loading: false, data: summary, error: null });
       })
       .catch((error) => {
-        if (!cancelled) {
-          setState((prev) => ({
-            loading: false,
-            data: isSameAccount ? prev.data : null,
-            error,
-          }));
+        if (cancelled) {
+          return;
         }
+        const normalizedError =
+          error instanceof Error ? error : new Error('Failed to load summary data');
+        setState((prev) => ({ loading: false, data: prev.data, error: normalizedError }));
       });
 
     return () => {
