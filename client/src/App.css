@@ -4691,6 +4691,14 @@ button.time-pill:hover .time-pill__icon {
   white-space: nowrap;
 }
 
+.pnl-dialog__label-amount--positive {
+  color: var(--color-accent);
+}
+
+.pnl-dialog__label-amount--negative {
+  color: var(--color-negative);
+}
+
 .pnl-dialog__label-delta {
   font-size: 0.75rem;
   white-space: nowrap;
