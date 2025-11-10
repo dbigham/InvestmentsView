@@ -157,6 +157,7 @@ function ActionMenu({
   onShowProjections,
   onEstimateCagr,
   onPlanInvestEvenly,
+  onExplainMovement,
   onMarkRebalanced,
   onSetPlanningContext,
   onEditTargetProportions,
@@ -174,6 +175,7 @@ function ActionMenu({
   const hasProjectionsAction = typeof onShowProjections === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
+  const hasExplainMovementAction = typeof onExplainMovement === 'function';
   const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
   const hasPlanningContextAction = typeof onSetPlanningContext === 'function';
   const hasTargetProportionAction = typeof onEditTargetProportions === 'function';
@@ -293,6 +295,18 @@ function ActionMenu({
     }
   };
 
+  const handleExplainMovement = async () => {
+    if (!onExplainMovement || disabled || busy) {
+      return;
+    }
+    setOpen(false);
+    try {
+      await onExplainMovement();
+    } catch (error) {
+      console.error('Failed to launch explain movement prompt', error);
+    }
+  };
+
   const handleMarkAsRebalanced = async () => {
     if (!onMarkRebalanced || disabled || busy) {
       return;
@@ -380,6 +394,19 @@ function ActionMenu({
                 disabled={busy}
               >
                 Projections
+              </button>
+            </li>
+          )}
+          {hasExplainMovementAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleExplainMovement}
+                disabled={busy}
+              >
+                Explain movement
               </button>
             </li>
           )}
@@ -472,6 +499,7 @@ ActionMenu.propTypes = {
   onShowProjections: PropTypes.func,
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onExplainMovement: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
@@ -485,6 +513,7 @@ ActionMenu.defaultProps = {
   onShowProjections: null,
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
+  onExplainMovement: null,
   onMarkRebalanced: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,
@@ -518,6 +547,7 @@ export default function SummaryMetrics({
   onShowProjections,
   onMarkRebalanced,
   onPlanInvestEvenly,
+  onExplainMovement,
   onSetPlanningContext,
   onEditTargetProportions,
   onEditAccountDetails,
@@ -1382,6 +1412,7 @@ export default function SummaryMetrics({
             onShowProjections ||
             onEstimateFutureCagr ||
             onPlanInvestEvenly ||
+            onExplainMovement ||
             onMarkRebalanced ||
             onSetPlanningContext ||
             onEditTargetProportions ||
@@ -1393,6 +1424,7 @@ export default function SummaryMetrics({
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
               onMarkRebalanced={onMarkRebalanced}
+              onExplainMovement={onExplainMovement}
               onSetPlanningContext={onSetPlanningContext}
               onEditTargetProportions={onEditTargetProportions}
               onEditAccountDetails={onEditAccountDetails}
@@ -1575,6 +1607,7 @@ SummaryMetrics.propTypes = {
   onShowProjections: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onExplainMovement: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
   onEditAccountDetails: PropTypes.func,
@@ -1682,6 +1715,7 @@ SummaryMetrics.defaultProps = {
   onShowProjections: null,
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
+  onExplainMovement: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,
   onEditAccountDetails: null,

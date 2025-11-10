@@ -221,6 +221,7 @@ textarea {
 .symbol-view__metric--total {
   cursor: pointer;
 }
+.symbol-view__action,
 .symbol-view__clear {
   border: 1px solid var(--color-border);
   background: var(--color-surface-alt);

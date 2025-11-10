@@ -40,7 +40,7 @@ import AccountMetadataDialog from './components/AccountMetadataDialog';
 import { formatMoney, formatNumber, formatDate, formatSignedMoney } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
-import { buildAccountSummaryUrl } from './utils/questrade';
+import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
 import {
   buildAccountViewUrl,
   readAccountIdFromLocation,
@@ -48,6 +48,7 @@ import {
   readTodoReminderFromLocation,
   readSymbolFromLocation,
 } from './utils/navigation';
+import { buildExplainMovementPrompt, resolveAccountForPosition } from './utils/positions';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 
@@ -6023,6 +6024,93 @@ export default function App() {
     return { list: prepared.positions, total: prepared.totalMarketValue };
   }, [focusedSymbol, positions, rawPositions, positionsWithShare, isAggregateSelection, currencyRates, baseCurrency, totalMarketValue]);
 
+  const findFocusedSymbolPosition = useCallback(() => {
+    if (!focusedSymbol) {
+      return null;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      return null;
+    }
+    const list = Array.isArray(symbolFilteredPositions.list) ? symbolFilteredPositions.list : [];
+    const matchFromList = list.find(
+      (entry) => (entry?.symbol || '').toString().trim().toUpperCase() === key
+    );
+    if (matchFromList) {
+      return matchFromList;
+    }
+    const fallback = Array.isArray(positionsWithShare)
+      ? positionsWithShare.find(
+          (entry) => (entry?.symbol || '').toString().trim().toUpperCase() === key
+        )
+      : null;
+    return fallback || null;
+  }, [focusedSymbol, symbolFilteredPositions, positionsWithShare]);
+
+  const handleFocusedSymbolBuySell = useCallback(async () => {
+    if (!focusedSymbol) {
+      return;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      return;
+    }
+
+    const position = findFocusedSymbolPosition();
+    if (position) {
+      const account = resolveAccountForPosition(position, accountsById);
+      if (account) {
+        openAccountSummary(account);
+      }
+    }
+
+    try {
+      await copyTextToClipboard(key);
+    } catch (error) {
+      console.error('Failed to copy symbol to clipboard', error);
+    }
+  }, [focusedSymbol, findFocusedSymbolPosition, accountsById]);
+
+  const handleExplainMovementForSymbol = useCallback(async () => {
+    if (!focusedSymbol) {
+      return;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      return;
+    }
+
+    const position = findFocusedSymbolPosition();
+    const description = (() => {
+      if (position && typeof position.description === 'string' && position.description.trim()) {
+        return position.description.trim();
+      }
+      if (typeof focusedSymbolDescription === 'string' && focusedSymbolDescription.trim()) {
+        return focusedSymbolDescription.trim();
+      }
+      if (position && typeof position.symbol === 'string' && position.symbol.trim()) {
+        return position.symbol.trim();
+      }
+      return key;
+    })();
+
+    openChatGpt();
+
+    const promptSource = position
+      ? { ...position, symbol: key, description }
+      : { symbol: key, description };
+    const prompt = buildExplainMovementPrompt(promptSource);
+    if (!prompt) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy explain movement prompt', error);
+    }
+  }, [focusedSymbol, findFocusedSymbolPosition, focusedSymbolDescription]);
+
   // Compute quick symbol-level P&L summary for the focused symbol
   const focusedSymbolPnl = useMemo(() => {
     if (!focusedSymbol) return null;
@@ -10191,6 +10279,13 @@ export default function App() {
               <div className="symbol-view__spacer" />
               <button
                 type="button"
+                className="symbol-view__action"
+                onClick={handleFocusedSymbolBuySell}
+              >
+                Buy/sell
+              </button>
+              <button
+                type="button"
                 className="symbol-view__clear"
                 onClick={() => {
                   setFocusedSymbol(null);
@@ -10324,11 +10419,12 @@ export default function App() {
             onShowProjections={handleShowProjections}
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
-          onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
-          onEditAccountDetails={canEditAccountDetails ? handleOpenAccountMetadata : null}
-          onEditTargetProportions={
-            !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
-          }
+            onExplainMovement={focusedSymbol ? handleExplainMovementForSymbol : null}
+            onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
+            onEditAccountDetails={canEditAccountDetails ? handleOpenAccountMetadata : null}
+            onEditTargetProportions={
+              !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
+            }
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAggregateAccounts}
             qqqSummary={qqqSummary}
@@ -10464,6 +10560,7 @@ export default function App() {
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
                 onShowNotes={handleShowSymbolNotes}
                 onShowOrders={handleShowSymbolOrders}
+                onFocusSymbol={handleSearchSelectSymbol}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
                 showPortfolioShare={!focusedSymbol}
                 showAccountColumn={Boolean(focusedSymbol) && isAggregateSelection}
