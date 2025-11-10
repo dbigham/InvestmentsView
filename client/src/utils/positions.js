@@ -59,6 +59,103 @@ export function derivePercentages(position) {
   return { dayPnlPercent, openPnlPercent };
 }
 
+export function resolveAccountForPosition(position, accountsById) {
+  if (!position) {
+    return null;
+  }
+
+  const rawPortalAccountId =
+    position.portalAccountId ||
+    position.accountPortalId ||
+    position.portalId ||
+    position.accountPortalUuid ||
+    null;
+
+  if (rawPortalAccountId !== null && rawPortalAccountId !== undefined) {
+    const portalAccountId = String(rawPortalAccountId).trim();
+    if (portalAccountId) {
+      return { portalAccountId };
+    }
+  }
+
+  if (!accountsById || typeof accountsById.has !== 'function') {
+    return null;
+  }
+
+  const matches = new Map();
+
+  const addMatch = (account) => {
+    if (!account) {
+      return;
+    }
+    const id = account.id != null ? String(account.id) : null;
+    if (!id || matches.has(id)) {
+      return;
+    }
+    matches.set(id, account);
+  };
+
+  const tryMatchById = (rawId) => {
+    if (rawId == null) {
+      return;
+    }
+    const normalized = String(rawId);
+    if (!normalized || !accountsById.has(normalized)) {
+      return;
+    }
+    addMatch(accountsById.get(normalized));
+  };
+
+  const tryMatchByNumber = (rawNumber) => {
+    if (!rawNumber && rawNumber !== 0) {
+      return;
+    }
+    const normalizedNumber = String(rawNumber).trim();
+    if (!normalizedNumber) {
+      return;
+    }
+    if (typeof accountsById.values !== 'function') {
+      return;
+    }
+    for (const account of accountsById.values()) {
+      const accountNumber =
+        account?.number != null ? String(account.number).trim() : '';
+      if (accountNumber && accountNumber === normalizedNumber) {
+        addMatch(account);
+      }
+    }
+  };
+
+  const candidateEntries = [
+    { accountId: position.accountId, accountNumber: position.accountNumber },
+  ];
+
+  if (Array.isArray(position.accountNotes) && position.accountNotes.length) {
+    position.accountNotes.forEach((entry) => {
+      candidateEntries.push({
+        accountId: entry?.accountId,
+        accountNumber: entry?.accountNumber,
+      });
+    });
+  }
+
+  candidateEntries.forEach((entry) => {
+    tryMatchById(entry.accountId);
+  });
+  if (matches.size === 1) {
+    return matches.values().next().value;
+  }
+
+  candidateEntries.forEach((entry) => {
+    tryMatchByNumber(entry.accountNumber);
+  });
+  if (matches.size === 1) {
+    return matches.values().next().value;
+  }
+
+  return null;
+}
+
 function formatPromptValue(value, { fallback = 'Not available', currency } = {}) {
   if (value === null || value === undefined) {
     return fallback;

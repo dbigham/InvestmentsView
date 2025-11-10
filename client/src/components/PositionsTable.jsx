@@ -4,7 +4,13 @@ import { classifyPnL, formatMoney, formatNumber, formatSignedMoney, formatSigned
 import { buildQuoteUrl, openQuote } from '../utils/quotes';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
-import { buildExplainMovementPrompt, derivePercentages, formatQuantity, formatShare } from '../utils/positions';
+import {
+  buildExplainMovementPrompt,
+  derivePercentages,
+  formatQuantity,
+  formatShare,
+  resolveAccountForPosition,
+} from '../utils/positions';
 import { openAccountSummary } from '../utils/questrade';
 // Logo column uses Logo.dev ticker endpoint when a publishable key is present
 
@@ -220,6 +226,7 @@ function PositionsTable({
   onShowInvestmentModel = null,
   onShowNotes = null,
   onShowOrders = null,
+  onFocusSymbol = null,
   forceShowTargetColumn = false,
   showPortfolioShare = true,
   showAccountColumn = false,
@@ -410,91 +417,6 @@ function PositionsTable({
     []
   );
 
-  const resolveAccountForPosition = useCallback(
-    (position) => {
-      if (!position) {
-        return null;
-      }
-
-      const portalAccountId =
-        position.portalAccountId || position.accountPortalId || position.portalId || position.accountPortalUuid || null;
-      if (portalAccountId) {
-        return { portalAccountId };
-      }
-
-      if (!accountsById || typeof accountsById.has !== 'function') {
-        return null;
-      }
-
-      const matches = new Map();
-      const addMatch = (account) => {
-        if (!account) {
-          return;
-        }
-        const id = account.id != null ? String(account.id) : null;
-        if (!id || matches.has(id)) {
-          return;
-        }
-        matches.set(id, account);
-      };
-
-      const tryMatchById = (rawId) => {
-        if (rawId == null) {
-          return;
-        }
-        const normalized = String(rawId);
-        if (!normalized || !accountsById.has(normalized)) {
-          return;
-        }
-        addMatch(accountsById.get(normalized));
-      };
-
-      const tryMatchByNumber = (rawNumber) => {
-        if (!rawNumber && rawNumber !== 0) {
-          return;
-        }
-        const normalizedNumber = String(rawNumber).trim();
-        if (!normalizedNumber) {
-          return;
-        }
-        if (typeof accountsById.values !== 'function') {
-          return;
-        }
-        for (const account of accountsById.values()) {
-          const accountNumber = account?.number != null ? String(account.number).trim() : '';
-          if (accountNumber && accountNumber === normalizedNumber) {
-            addMatch(account);
-          }
-        }
-      };
-
-      const candidateEntries = [];
-      candidateEntries.push({ accountId: position.accountId, accountNumber: position.accountNumber });
-      if (Array.isArray(position.accountNotes) && position.accountNotes.length) {
-        position.accountNotes.forEach((entry) => {
-          candidateEntries.push({ accountId: entry?.accountId, accountNumber: entry?.accountNumber });
-        });
-      }
-
-      candidateEntries.forEach((entry) => {
-        tryMatchById(entry.accountId);
-      });
-      if (matches.size === 1) {
-        return matches.values().next().value;
-      }
-
-      candidateEntries.forEach((entry) => {
-        tryMatchByNumber(entry.accountNumber);
-      });
-      if (matches.size === 1) {
-        return matches.values().next().value;
-      }
-
-      return null;
-    },
-    [accountsById]
-  );
-
   const handleExplainMovement = useCallback(async () => {
     const targetPosition = contextMenuState.position;
     closeContextMenu();
@@ -541,7 +463,7 @@ function PositionsTable({
       return;
     }
 
-    const account = resolveAccountForPosition(targetPosition);
+    const account = resolveAccountForPosition(targetPosition, accountsById);
     if (account) {
       openAccountSummary(account);
     }
@@ -556,7 +478,27 @@ function PositionsTable({
     } catch (error) {
       console.error('Failed to copy symbol to clipboard', error);
     }
-  }, [closeContextMenu, contextMenuState.position, resolveAccountForPosition]);
+  }, [closeContextMenu, contextMenuState.position, accountsById]);
+
+  const handleOpenDetails = useCallback(() => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition || typeof onFocusSymbol !== 'function') {
+      return;
+    }
+
+    const rawSymbol = (targetPosition.symbol || '').toString().trim();
+    if (!rawSymbol) {
+      return;
+    }
+
+    const description =
+      typeof targetPosition.description === 'string' && targetPosition.description.trim()
+        ? targetPosition.description.trim()
+        : null;
+
+    onFocusSymbol(rawSymbol, { description });
+  }, [closeContextMenu, contextMenuState.position, onFocusSymbol]);
 
   const handleNotesIndicatorClick = useCallback(
     (event, targetPosition) => {
@@ -947,6 +889,16 @@ function PositionsTable({
             type="button"
             className="positions-table__context-menu-item"
             role="menuitem"
+            onClick={handleOpenDetails}
+          >
+            Details
+          </button>
+        </li>
+        <li role="none">
+          <button
+            type="button"
+            className="positions-table__context-menu-item"
+            role="menuitem"
             onClick={handleOpenBuySell}
           >
             Buy/sell
@@ -1076,6 +1028,7 @@ PositionsTable.propTypes = {
   onShowInvestmentModel: PropTypes.func,
   onShowNotes: PropTypes.func,
   onShowOrders: PropTypes.func,
+  onFocusSymbol: PropTypes.func,
   forceShowTargetColumn: PropTypes.bool,
   showPortfolioShare: PropTypes.bool,
   showAccountColumn: PropTypes.bool,
@@ -1095,6 +1048,7 @@ PositionsTable.defaultProps = {
   onShowInvestmentModel: null,
   onShowNotes: null,
   onShowOrders: null,
+  onFocusSymbol: null,
   forceShowTargetColumn: false,
   showPortfolioShare: true,
   showAccountColumn: false,
