@@ -1881,6 +1881,14 @@ function useSummaryData(accountNumber, refreshKey) {
 
     setState((prev) => {
       if (initialData) {
+        // When a manual refresh is triggered, mark as loading while keeping
+        // existing data so the refresh spinner animates.
+        if (refreshChanged) {
+          if (prev.loading === true && prev.data === initialData && !prev.error) {
+            return prev;
+          }
+          return { loading: true, data: initialData, error: null };
+        }
         if (prev.data === initialData && prev.loading === false && !prev.error) {
           return prev;
         }
