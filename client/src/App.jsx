@@ -10868,10 +10868,37 @@ export default function App() {
           <section className="symbol-view" aria-label="Symbol focus">
             <div className="symbol-view__row">
               <div className="symbol-view__title">
-                Viewing: <strong>{focusedSymbol}</strong>
-                {focusedSymbolDescription ? (
-                  <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
-                ) : null}
+                <span className="symbol-view__icon" aria-hidden="true">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M4 4V20H20"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M7 14L11.5 9.5L14.5 12.5L20 7"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+                <span className="symbol-view__text">
+                  Viewing:{' '}
+                  <strong>{focusedSymbol}</strong>
+                  {focusedSymbolDescription ? (
+                    <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
+                  ) : null}
+                </span>
               </div>
               <div className="symbol-view__spacer" />
               <button
