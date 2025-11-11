@@ -218,6 +218,8 @@ if (DEBUG_SUMMARY_CACHE) {
 const summaryCacheStore = new Map();
 let supersetSummaryCache = null;
 const totalPnlSeriesCacheStore = new Map();
+// Cache for Questrade candle lookups to avoid duplicate provider calls for identical ranges
+const questradeCandleCache = new Map();
 // Track the current client-driven refresh key to support manual cache invalidation
 let activeRefreshKey = null;
 
@@ -350,7 +352,25 @@ async function computeAggregateTotalPnlSeriesForContexts(
             activityContext = null;
           }
         }
-        const baseOptions = activityContext ? { ...options, activityContext } : options;
+        const baseOptions = activityContext ? { ...options, activityContext } : { ...options };
+        // If caller supplied a positions map, pass per-account positions downward to avoid refetch
+        try {
+          const positionsMap = options && options.positionsByAccountId ? options.positionsByAccountId : null;
+          if (positionsMap) {
+            const accountId = context && context.account && context.account.id;
+            let providedPositions = null;
+            if (accountId && positionsMap instanceof Map) {
+              providedPositions = positionsMap.get(accountId) || null;
+            } else if (accountId && typeof positionsMap === 'object') {
+              providedPositions = positionsMap[accountId] || null;
+            }
+            if (Array.isArray(providedPositions)) {
+              baseOptions.providedPositions = providedPositions;
+            }
+          }
+        } catch (_) {
+          // non-fatal: proceed without provided positions
+        }
         const series = symbolParam
           ? await computeTotalPnlSeriesForSymbol(
               context.login,
@@ -8769,6 +8789,16 @@ async function fetchQuestradePriceHistorySeries(login, symbolId, startDate, excl
     return [];
   }
 
+  // Avoid duplicate network calls for identical candle windows
+  try {
+    const ck = `${symbolId}|${startDate.toISOString()}|${exclusiveEnd.toISOString()}`;
+    if (questradeCandleCache.has(ck)) {
+      return questradeCandleCache.get(ck) || [];
+    }
+  } catch (_) {
+    // ignore cache read errors
+  }
+
   const params = {
     startTime: startDate.toISOString(),
     endTime: exclusiveEnd.toISOString(),
@@ -8792,7 +8822,14 @@ async function fetchQuestradePriceHistorySeries(login, symbolId, startDate, excl
   }
 
   const candles = data && Array.isArray(data.candles) ? data.candles : [];
-  return normalizeQuestradeCandles(candles);
+  const normalized = normalizeQuestradeCandles(candles);
+  try {
+    const ck = `${symbolId}|${startDate.toISOString()}|${exclusiveEnd.toISOString()}`;
+    questradeCandleCache.set(ck, normalized);
+  } catch (_) {
+    // ignore cache write errors
+  }
+  return normalized;
 }
 
 async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options = {}) {
@@ -9430,7 +9467,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   let closingPositions = [];
   const canFetchPositions =
     login && typeof login === 'object' && (login.refreshToken || login.accessToken || login.sessionToken);
-  if (canFetchPositions && accountNumber) {
+  // Prefer caller-provided positions to avoid duplicate provider requests within the same flow
+  if (Array.isArray(options.providedPositions)) {
+    closingPositions = options.providedPositions;
+  } else if (canFetchPositions && accountNumber) {
     try {
       closingPositions = await fetchPositions(login, accountNumber);
     } catch (positionError) {
@@ -12608,6 +12648,20 @@ app.get('/api/summary', async function (req, res) {
       positionsPromise,
       balancesPromise,
     ]);
+    const positionsByAccountId = {};
+    try {
+      selectedContexts.forEach(function (context, index) {
+        if (!context || !context.account || !context.account.id) {
+          return;
+        }
+        const arr = Array.isArray(positionsResults && positionsResults[index])
+          ? positionsResults[index]
+          : [];
+        positionsByAccountId[context.account.id] = arr;
+      });
+    } catch (_) {
+      // non-fatal; proceed without explicit mapping
+    }
     const perAccountCombinedBalances = {};
     selectedContexts.forEach(function (context, index) {
       const summary = summarizeAccountBalances(balancesResults[index]);
@@ -13263,11 +13317,18 @@ app.get('/api/summary', async function (req, res) {
             let series = cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
             if (!series) {
               try {
+                const providedPositions = positionsByAccountId && positionsByAccountId[context.account.id];
+                const computedOptions = activityContext
+                  ? { ...cagrSeriesOptions, activityContext }
+                  : { ...cagrSeriesOptions };
+                if (Array.isArray(providedPositions)) {
+                  computedOptions.providedPositions = providedPositions;
+                }
                 series = await computeTotalPnlSeries(
                   context.login,
                   context.account,
                   perAccountCombinedBalances,
-                  activityContext ? { ...cagrSeriesOptions, activityContext } : cagrSeriesOptions
+                  computedOptions
                 );
                 if (series && cacheKey) {
                   setTotalPnlSeriesCacheEntry(cacheKey, series);
@@ -13692,14 +13753,14 @@ app.get('/api/summary', async function (req, res) {
         }
       }
 
-      const aggregateSelectionKey = viewingAccountGroup && selectedAccountGroup
-        ? selectedAccountGroup.id
-        : viewingAllAccountsRequest
-          ? 'all'
-          : null;
-      if (aggregateSelectionKey) {
-        try {
-          const aggregateSeriesOptions = { applyAccountCagrStartDate: false };
+          const aggregateSelectionKey = viewingAccountGroup && selectedAccountGroup
+            ? selectedAccountGroup.id
+            : viewingAllAccountsRequest
+              ? 'all'
+              : null;
+          if (aggregateSelectionKey) {
+            try {
+          const aggregateSeriesOptions = { applyAccountCagrStartDate: false, positionsByAccountId };
           const aggregatedSeries = await computeAggregateTotalPnlSeriesForContexts(
             selectedContexts,
             perAccountCombinedBalances,
@@ -13782,7 +13843,7 @@ app.get('/api/summary', async function (req, res) {
             continue;
           }
           try {
-            const options = { applyAccountCagrStartDate: false };
+            const options = { applyAccountCagrStartDate: false, positionsByAccountId };
             const series = await computeAggregateTotalPnlSeriesForContexts(
               groupContexts,
               perAccountCombinedBalances,
@@ -14619,10 +14680,34 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         }
       };
 
+      // Reuse superset-cached positions (from the last summary response) to avoid refetching
+      let positionsByAccountIdForAgg = null;
+      try {
+        const superset = getSupersetCacheEntry();
+        const flattened = superset && superset.payload && Array.isArray(superset.payload.flattenedPositions)
+          ? superset.payload.flattenedPositions
+          : null;
+        if (flattened) {
+          const map = {};
+          flattened.forEach((p) => {
+            if (!p || !p.accountId) return;
+            if (!Array.isArray(map[p.accountId])) map[p.accountId] = [];
+            map[p.accountId].push(p);
+          });
+          positionsByAccountIdForAgg = map;
+        }
+      } catch (_) {
+        positionsByAccountIdForAgg = null;
+      }
+
+      const aggregateOptionsWithPositions = positionsByAccountIdForAgg
+        ? { ...aggregateOptions, positionsByAccountId: positionsByAccountIdForAgg }
+        : aggregateOptions;
+
       const aggregatedSeries = await computeAggregateTotalPnlSeriesForContexts(
         targetContexts,
         perAccountCombinedBalances,
-        aggregateOptions,
+        aggregateOptionsWithPositions,
         aggregateKey,
         hadAccountFetchFailure,
         resolver
