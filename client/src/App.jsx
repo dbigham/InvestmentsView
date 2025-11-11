@@ -1860,7 +1860,7 @@ function loadSummary(fetchKey, options = {}) {
     return existing;
   }
 
-  const request = getSummary(fetchKey, { force: normalizedForce });
+  const request = getSummary(fetchKey, { force: normalizedForce, refreshKey: normalizedRefreshKey });
   inflightSummaryRequests.set(requestKey, request);
   request.finally(() => {
     if (inflightSummaryRequests.get(requestKey) === request) {
@@ -8654,8 +8654,8 @@ export default function App() {
       : null;
     const normalizedOptions =
       options && typeof options === 'object'
-        ? { ...options, applyAccountCagrStartDate: applyCagr }
-        : { applyAccountCagrStartDate: applyCagr };
+        ? { ...options, applyAccountCagrStartDate: applyCagr, refreshKey }
+        : { applyAccountCagrStartDate: applyCagr, refreshKey };
     setTotalPnlSeriesState((prev) => ({
       status: 'loading',
       data:
@@ -8674,7 +8674,7 @@ export default function App() {
       const normalized = err instanceof Error ? err : new Error('Failed to load Total P&L series');
       setTotalPnlSeriesState({ status: 'error', data: null, error: normalized, accountKey, mode, symbol });
     }
-  }, []);
+  }, [refreshKey]);
 
   // When a symbol is focused, proactively fetch its Total P&L series for the
   // current selection using earliest-hold start (no account CAGR shift),

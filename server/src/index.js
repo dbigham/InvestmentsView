@@ -194,6 +194,8 @@ const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
 })();
 
 const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
+// Max valid JS Date timestamp in ms is ±8.64e15; use slightly below as a pinned expiry
+const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
 const PREHEAT_GROUP_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_GROUP_TOTAL_PNL, false);
 const PREHEAT_ACCOUNT_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_ACCOUNT_TOTAL_PNL, false);
 const PREHEAT_MAX_CONCURRENCY = (() => {
@@ -216,6 +218,8 @@ if (DEBUG_SUMMARY_CACHE) {
 const summaryCacheStore = new Map();
 let supersetSummaryCache = null;
 const totalPnlSeriesCacheStore = new Map();
+// Track the current client-driven refresh key to support manual cache invalidation
+let activeRefreshKey = null;
 
 function nowMs() {
   return Date.now();
@@ -229,6 +233,19 @@ function debugSummaryCache(message, ...args) {
     console.log('[summary-cache]', message, ...args);
   } catch (error) {
     console.warn('[summary-cache] failed to log message:', error);
+  }
+}
+
+function formatExpiryIso(ms) {
+  try {
+    const d = new Date(ms);
+    const t = d.getTime();
+    if (!Number.isFinite(t)) {
+      return 'pinned';
+    }
+    return d.toISOString();
+  } catch {
+    return 'pinned';
   }
 }
 
@@ -250,6 +267,10 @@ function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
   const symbol = typeof params.symbol === 'string' ? params.symbol.trim().toUpperCase() : '';
   if (symbol) {
     parts.push(`symbol:${symbol}`);
+  }
+  const rk = params && params.refreshKey !== undefined && params.refreshKey !== null ? String(params.refreshKey) : '';
+  if (rk) {
+    parts.unshift(`rk:${rk}`);
   }
   return parts.join('|');
 }
@@ -273,9 +294,10 @@ function setTotalPnlSeriesCacheEntry(cacheKey, data) {
   if (!cacheKey || !data) {
     return;
   }
+  const pinned = typeof cacheKey === 'string' && cacheKey.startsWith('rk:');
   totalPnlSeriesCacheStore.set(cacheKey, {
     data,
-    expiresAt: Date.now() + TOTAL_PNL_SERIES_CACHE_TTL_MS,
+    expiresAt: pinned ? PINNED_EXPIRY_MS : Date.now() + TOTAL_PNL_SERIES_CACHE_TTL_MS,
   });
 }
 
@@ -653,17 +675,20 @@ function setSummaryCacheEntry(cacheKey, payload, metadata = {}) {
     return;
   }
   const timestamp = nowMs();
+  const pinned = metadata && metadata.cacheScope && metadata.cacheScope.pinned === true;
   const entry = {
     payload,
     metadata,
     timestamp,
-    expiresAt: timestamp + SUMMARY_CACHE_TTL_MS,
+    expiresAt: pinned ? PINNED_EXPIRY_MS : timestamp + SUMMARY_CACHE_TTL_MS,
   };
   summaryCacheStore.set(cacheKey, entry);
-  debugSummaryCache('cache stored', cacheKey, {
-    expiresAt: new Date(entry.expiresAt).toISOString(),
-    metadata,
-  });
+  try {
+    const expiresAtIso = formatExpiryIso(entry.expiresAt);
+    debugSummaryCache('cache stored', cacheKey, { expiresAt: expiresAtIso, metadata });
+  } catch {
+    // ignore logging errors
+  }
   return entry;
 }
 
@@ -682,10 +707,15 @@ function setSupersetCacheEntry(entry) {
     return;
   }
   supersetSummaryCache = entry;
-  debugSummaryCache('superset cache stored', {
-    expiresAt: new Date(entry.expiresAt).toISOString(),
-    accounts: Array.isArray(entry.allAccountIds) ? entry.allAccountIds.length : 0,
-  });
+  try {
+    const expiresAtIso = formatExpiryIso(entry.expiresAt);
+    debugSummaryCache('superset cache stored', {
+      expiresAt: expiresAtIso,
+      accounts: Array.isArray(entry.allAccountIds) ? entry.allAccountIds.length : 0,
+    });
+  } catch {
+    // ignore logging errors
+  }
 }
 
 function registerGroupLookupKey(lookupMap, rawKey, groupId) {
@@ -12278,6 +12308,24 @@ app.get('/api/summary', async function (req, res) {
   let normalizedSelection = normalizeSummaryRequestKey(requestedAccountId);
   let supersetEntry = null;
   const forceRefresh = req.query.force === 'true' || req.query.force === '1';
+  const refreshKeyParam = typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim() ? req.query.refreshKey.trim() : '';
+
+  // When the client increments refreshKey, treat as manual cache invalidation
+  if (refreshKeyParam && refreshKeyParam !== activeRefreshKey) {
+    activeRefreshKey = refreshKeyParam;
+    try {
+      summaryCacheStore.clear();
+      totalPnlSeriesCacheStore.clear();
+      supersetSummaryCache = null;
+      debugSummaryCache('manual refreshKey changed; caches cleared', activeRefreshKey);
+    } catch (_) {
+      // ignore cleanup errors
+    }
+  }
+
+  // Scope cache keys to the provided refreshKey (if any)
+  const cacheKeyPrefix = refreshKeyParam ? `rk:${refreshKeyParam}::` : 'rk:0::';
+  normalizedSelection.cacheKey = `${cacheKeyPrefix}${normalizedSelection.cacheKey}`;
 
   try {
     if (!forceRefresh) {
@@ -12300,6 +12348,8 @@ app.get('/api/summary', async function (req, res) {
             reinterpretedId: reinterpretedSelection.requestedId,
           });
           normalizedSelection = reinterpretedSelection;
+          // Re-scope the cache key with the current refreshKey prefix
+          normalizedSelection.cacheKey = `${cacheKeyPrefix}${normalizedSelection.cacheKey}`;
           cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
           if (cached && cached.payload) {
             debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
@@ -12318,6 +12368,7 @@ app.get('/api/summary', async function (req, res) {
             requestedId: normalizedSelection.requestedId,
             source: 'superset',
             originalRequestedId: normalizedSelection.originalRequestedId || null,
+            cacheScope: refreshKeyParam ? { refreshKey: refreshKeyParam, pinned: true } : undefined,
           });
           debugSummaryCache('served from superset cache', normalizedSelection.cacheKey, {
             requestedId: normalizedSelection.requestedId,
@@ -14250,6 +14301,7 @@ app.get('/api/summary', async function (req, res) {
       requestedId: normalizedSelection.requestedId,
       source: 'live',
       originalRequestedId: normalizedSelection.originalRequestedId || null,
+      cacheScope: refreshKeyParam ? { refreshKey: refreshKeyParam, pinned: true } : undefined,
     });
 
     if (includeAllAccounts) {
@@ -14314,16 +14366,16 @@ app.get('/api/summary', async function (req, res) {
 
       const groupLookup = buildGroupLookupMap(accountGroupsById);
 
-      const supersetTimestamp = nowMs();
-      const supersetEntry = {
-        cacheKey: normalizedSelection.cacheKey,
-        payload: responsePayload,
-        timestamp: supersetTimestamp,
-        expiresAt: supersetTimestamp + SUMMARY_CACHE_TTL_MS,
-        accounts: responseAccounts,
-        accountGroups: responseAccountGroups,
-        accountsById,
-        accountsByNumber,
+    const supersetTimestamp = nowMs();
+    const supersetEntry = {
+      cacheKey: normalizedSelection.cacheKey,
+      payload: responsePayload,
+      timestamp: supersetTimestamp,
+    expiresAt: refreshKeyParam ? PINNED_EXPIRY_MS : supersetTimestamp + SUMMARY_CACHE_TTL_MS,
+      accounts: responseAccounts,
+      accountGroups: responseAccountGroups,
+      accountsById,
+      accountsByNumber,
         groupAccountIds,
         groupLookup,
         groupRelations,
@@ -14399,6 +14451,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
 
   const normalizedKey = rawAccountKey.toLowerCase();
   const isGroupKey = normalizedKey.startsWith('group:');
+  const refreshKeyParam = typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim() ? req.query.refreshKey.trim() : '';
   const symbolParam =
     typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
   const startDateParam =
@@ -14418,6 +14471,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     endDate: endDateParam,
     applyAccountCagrStartDate,
     symbol: symbolParam,
+    refreshKey: refreshKeyParam,
   };
   const cacheKey = buildTotalPnlSeriesCacheKey(normalizedKey, queryOptions);
   const cachedSeries = cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;

@@ -9,6 +9,9 @@ function buildUrl(accountId, options = {}) {
   if (options && options.force === true) {
     url.searchParams.set('force', 'true');
   }
+  if (options && options.refreshKey !== undefined && options.refreshKey !== null) {
+    url.searchParams.set('refreshKey', String(options.refreshKey));
+  }
   return url.toString();
 }
 
@@ -140,6 +143,9 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   }
   if (params && typeof params.symbol === 'string' && params.symbol.trim()) {
     url.searchParams.set('symbol', params.symbol.trim());
+  }
+  if (params && params.refreshKey !== undefined && params.refreshKey !== null) {
+    url.searchParams.set('refreshKey', String(params.refreshKey));
   }
   return url.toString();
 }
