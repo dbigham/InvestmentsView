@@ -10946,7 +10946,7 @@ export default function App() {
                   )}
                 </span>
                 <span className="symbol-view__text">
-                  Viewing:{' '}
+                  {' '}
                   <strong>{focusedSymbol}</strong>
                   {focusedSymbolDescription ? (
                     <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
