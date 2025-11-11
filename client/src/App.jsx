@@ -52,6 +52,8 @@ import { buildExplainMovementPrompt, resolveAccountForPosition } from './utils/p
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 
+const inflightSummaryRequests = new Map();
+
 const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
 const MODEL_CHART_DEFAULT_START_DATE = '1980-01-01';
@@ -1663,6 +1665,25 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
   };
 }
 
+function loadSummary(fetchKey, refreshKey) {
+  const normalizedRefreshKey =
+    refreshKey === undefined || refreshKey === null ? '' : String(refreshKey);
+  const requestKey = `${fetchKey}::${normalizedRefreshKey}`;
+  const existing = inflightSummaryRequests.get(requestKey);
+  if (existing) {
+    return existing;
+  }
+
+  const request = getSummary(fetchKey);
+  inflightSummaryRequests.set(requestKey, request);
+  request.finally(() => {
+    if (inflightSummaryRequests.get(requestKey) === request) {
+      inflightSummaryRequests.delete(requestKey);
+    }
+  });
+  return request;
+}
+
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const cacheRef = useRef(new Map());
@@ -1728,7 +1749,7 @@ function useSummaryData(accountNumber, refreshKey) {
     }
 
     let cancelled = false;
-    getSummary(fetchKey)
+    loadSummary(fetchKey, refreshKey)
       .then((summary) => {
         if (cancelled) {
           return;
