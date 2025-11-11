@@ -218,6 +218,14 @@ textarea {
   border: 1px solid rgba(56, 155, 60, 0.28);
   color: var(--color-accent);
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.symbol-view__icon-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .symbol-view__icon svg {
@@ -6215,5 +6223,4 @@ button.time-pill:hover .time-pill__icon {
 .projection-tree__rate-placeholder {
   width: 88px;
 }
-
 

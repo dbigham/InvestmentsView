@@ -6455,6 +6455,47 @@ export default function App() {
     return fallback || null;
   }, [focusedSymbol, symbolFilteredPositions, positionsWithShare]);
 
+  const focusedSymbolLogoUrl = useMemo(() => {
+    if (!focusedSymbol) {
+      return null;
+    }
+    const symbol = String(focusedSymbol).trim().toUpperCase();
+    if (!symbol) {
+      return null;
+    }
+    const publishableKey =
+      import.meta && import.meta.env && import.meta.env.VITE_LOGO_DEV_PUBLISHABLE_KEY
+        ? import.meta.env.VITE_LOGO_DEV_PUBLISHABLE_KEY
+        : null;
+    if (!publishableKey) {
+      return null;
+    }
+    const base = 'https://img.logo.dev/ticker';
+    const params = new URLSearchParams({
+      token: publishableKey,
+      size: '64',
+      format: 'png',
+    });
+    return `${base}/${encodeURIComponent(symbol)}?${params.toString()}`;
+  }, [focusedSymbol]);
+
+  const focusedSymbolLogoAlt = useMemo(() => {
+    if (!focusedSymbol) {
+      return null;
+    }
+    const symbol = String(focusedSymbol).trim().toUpperCase();
+    if (!symbol) {
+      return null;
+    }
+    if (typeof focusedSymbolDescription === 'string') {
+      const trimmed = focusedSymbolDescription.trim();
+      if (trimmed) {
+        return `${trimmed} logo`;
+      }
+    }
+    return `${symbol} logo`;
+  }, [focusedSymbol, focusedSymbolDescription]);
+
   const handleFocusedSymbolBuySell = useCallback(async () => {
     if (!focusedSymbol) {
       return;
@@ -10869,31 +10910,43 @@ export default function App() {
             <div className="symbol-view__row">
               <div className="symbol-view__title">
                 <span className="symbol-view__icon" aria-hidden="true">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    <path
-                      d="M4 4V20H20"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                  {focusedSymbolLogoUrl ? (
+                    <img
+                      className="symbol-view__icon-image"
+                      src={focusedSymbolLogoUrl}
+                      alt={focusedSymbolLogoAlt || undefined}
+                      width={28}
+                      height={28}
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
                     />
-                    <path
-                      d="M7 14L11.5 9.5L14.5 12.5L20 7"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  ) : (
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        d="M4 4V20H20"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M7 14L11.5 9.5L14.5 12.5L20 7"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
                 </span>
                 <span className="symbol-view__text">
-                  Viewing:{' '}
+                  {' '}
                   <strong>{focusedSymbol}</strong>
                   {focusedSymbolDescription ? (
                     <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
