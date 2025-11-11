@@ -112,6 +112,8 @@ const DEFAULT_TEMPERATURE_CHART_START_DATE = '1980-01-01';
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const DEBUG_QUESTRADE_API = parseBooleanEnv(process.env.DEBUG_QUESTRADE_API, false);
+const DEBUG_API_REQUESTS = parseBooleanEnv(process.env.DEBUG_API_REQUESTS, false);
+const DEBUG_QUESTRADE_REFRESH = parseBooleanEnv(process.env.DEBUG_QUESTRADE_REFRESH, false);
 // Shorter HTTP timeouts so requests fail fast instead of hanging for minutes.
 // Adjustable via env if needed.
 const HTTP_HEADERS_TIMEOUT_MS = (() => {
@@ -2038,6 +2040,13 @@ async function fetchYahooHistorical(symbol, queryOptions) {
   if (!yahooSymbol) {
     return null;
   }
+  if (DEBUG_API_REQUESTS) {
+    try {
+      // Compact synthetic log for yahoo-finance2 (library performs its own HTTP)
+      const params = Object.keys(queryOptions || {}).length ? ' params=' + JSON.stringify(queryOptions) : '';
+      console.log('[api-req]', `[yahoo] GET historical ${yahooSymbol}${params}`);
+    } catch (_) { /* ignore */ }
+  }
   const { dispatcher } = getDispatcherForUrl(YAHOO_CHART_BASE_URL, { reuse: true });
   return finance.historical(yahooSymbol, queryOptions, {
     fetchOptions: { dispatcher },
@@ -2049,6 +2058,11 @@ async function fetchYahooQuote(symbol) {
   const yahooSymbol = resolveYahooSymbol(symbol);
   if (!yahooSymbol) {
     return null;
+  }
+  if (DEBUG_API_REQUESTS) {
+    try {
+      console.log('[api-req]', `[yahoo] GET quote ${yahooSymbol}`);
+    } catch (_) { /* ignore */ }
   }
   const { dispatcher } = getDispatcherForUrl(YAHOO_QUOTE_BASE_URL, { reuse: true });
   return finance.quote(yahooSymbol, undefined, {
@@ -2295,6 +2309,14 @@ const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
 const priceHistoryCache = new Map();
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
+// Cache of Questrade symbol details keyed by `${loginId}|${symbolId}` to avoid
+// repeated /v1/symbols lookups when data was already fetched during summary.
+const symbolDetailsCache = new Map();
+
+function getSymbolDetailsCacheKey(loginId, symbolId) {
+  if (!loginId || !Number.isFinite(symbolId)) return null;
+  return `${loginId}|${symbolId}`;
+}
 
 function getPriceHistoryCacheKey(symbol, startDate, endDate) {
   if (!symbol || !startDate || !endDate) {
@@ -4489,7 +4511,7 @@ async function refreshAccessToken(login) {
 
   const { dispatcher, proxyUri, shouldClose } = getDispatcherForUrl(tokenUrl);
 
-  console.log('[Questrade][refresh] Starting refresh for login', resolveLoginDisplay(login), {
+  if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh] Starting refresh for login', resolveLoginDisplay(login), {
     token: maskTokenForLog(login.refreshToken),
     proxy: proxyUri || false,
   });
@@ -4512,7 +4534,7 @@ async function refreshAccessToken(login) {
         headers.Cookie = cookieHeader;
       }
 
-      console.log('[Questrade][refresh]', {
+      if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh]', {
         step: 'request',
         attempt: attempt + 1,
         url: requestUrl,
@@ -4530,7 +4552,7 @@ async function refreshAccessToken(login) {
           bodyTimeout: HTTP_BODY_TIMEOUT_MS,
         });
       } catch (error) {
-        console.error('[Questrade][refresh] Network error during refresh', {
+        if (DEBUG_QUESTRADE_REFRESH) console.error('[Questrade][refresh] Network error during refresh', {
           login: resolveLoginDisplay(login),
           attempt: attempt + 1,
           message: error.message,
@@ -4551,7 +4573,7 @@ async function refreshAccessToken(login) {
         try {
           data = JSON.parse(decodedBody || '{}');
         } catch (parseError) {
-          console.warn('[Questrade][refresh] Failed to parse JSON response', {
+          if (DEBUG_QUESTRADE_REFRESH) console.warn('[Questrade][refresh] Failed to parse JSON response', {
             message: parseError.message,
           });
         }
@@ -4561,7 +4583,7 @@ async function refreshAccessToken(login) {
       const setCookieHeader = headersObject['set-cookie'];
       const inboundCookieNames = summarizeCookieHeader(setCookieHeader);
 
-      console.log('[Questrade][refresh]', {
+      if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh]', {
         step: 'response',
         attempt: attempt + 1,
         status,
@@ -4573,7 +4595,7 @@ async function refreshAccessToken(login) {
         try {
           await jar.setCookie(cookie, requestUrl);
         } catch (cookieError) {
-          console.warn('[Questrade][refresh] Failed to persist response cookie', {
+          if (DEBUG_QUESTRADE_REFRESH) console.warn('[Questrade][refresh] Failed to persist response cookie', {
             message: cookieError.message,
           });
         }
@@ -4581,7 +4603,7 @@ async function refreshAccessToken(login) {
 
       if (status >= 300 && status < 400 && headersObject.location) {
         const nextUrl = new URL(headersObject.location, requestUrl).toString();
-        console.log('[Questrade][refresh]', {
+        if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh]', {
           step: 'redirect',
           attempt: attempt + 1,
           nextUrl,
@@ -4603,7 +4625,7 @@ async function refreshAccessToken(login) {
       try {
         await dispatcher.close();
       } catch (closeError) {
-        console.warn('[Questrade][refresh] Failed to close dispatcher', { message: closeError.message });
+        if (DEBUG_QUESTRADE_REFRESH) console.warn('[Questrade][refresh] Failed to close dispatcher', { message: closeError.message });
       }
     }
   }
@@ -4631,7 +4653,7 @@ async function refreshAccessToken(login) {
     updateLoginRefreshToken(login, tokenData.refresh_token);
   }
 
-  console.log('[Questrade][refresh] Completed refresh for login', resolveLoginDisplay(login), {
+  if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh] Completed refresh for login', resolveLoginDisplay(login), {
     expiresIn: tokenData.expires_in,
     apiServer: tokenData.api_server,
     refreshTokenRotated: refreshRotated ? maskTokenForLog(tokenData.refresh_token) : false,
@@ -4645,7 +4667,7 @@ async function getTokenContext(login) {
   const cached = tokenCache.get(cacheKey);
   if (cached) {
     if (DEBUG_QUESTRADE_API) {
-      console.log('[Questrade][token-cache] Using cached access token for login', resolveLoginDisplay(login), {
+      if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][token-cache] Using cached access token for login', resolveLoginDisplay(login), {
         acquiredAt: new Date(cached.acquiredAt).toISOString(),
         expiresIn: cached.expiresIn,
         apiServer: cached.apiServer,
@@ -4654,7 +4676,7 @@ async function getTokenContext(login) {
     return cached;
   }
   if (DEBUG_QUESTRADE_API) {
-    console.log('[Questrade][token-cache] Cache miss for login', resolveLoginDisplay(login));
+    if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][token-cache] Cache miss for login', resolveLoginDisplay(login));
   }
   return refreshAccessToken(login);
 }
@@ -4757,6 +4779,31 @@ async function performUndiciApiRequest(config) {
 
   while (redirectCount <= maxRedirects) {
     const { dispatcher } = getDispatcherForUrl(currentUrl, { reuse: true });
+
+    // Compact request logging (requests only; no responses)
+    if (DEBUG_API_REQUESTS) {
+      try {
+        const parsed = new URL(currentUrl);
+        const host = parsed.host || '';
+        const path = parsed.pathname || '/';
+        // Redact sensitive query params
+        const redacted = new URL(parsed.toString());
+        const redactKeys = ['api_key', 'apikey', 'access_token', 'token', 'refresh_token', 'code'];
+        redactKeys.forEach((k) => { if (redacted.searchParams.has(k)) redacted.searchParams.set(k, '***'); });
+        const qs = redacted.search ? redacted.search : '';
+        const bodyLen = body ? Buffer.byteLength(typeof body === 'string' ? body : String(body)) : 0;
+        let provider = 'api';
+        if (/questrade/i.test(host)) provider = 'questrade';
+        else if (/stlouisfed\.org/i.test(host)) provider = 'fred';
+        else if (/finance\.yahoo\.com/i.test(host)) provider = 'yahoo';
+        else if (/news\.google\.com/i.test(host)) provider = 'google-news';
+        else if (/openai\.com|api\.openai\.com/i.test(host)) provider = 'openai';
+        const compact = `[${provider}] ${method} ${host}${path}${qs} ${bodyLen ? `(body ${bodyLen}b)` : ''}`.trim();
+        console.log('[api-req]', compact);
+      } catch (_e) {
+        // ignore logging errors
+      }
+    }
 
     let rawResponse;
     try {
@@ -8745,6 +8792,33 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
 
   let normalized = [];
   for (const candidate of candidates) {
+    // Use any existing cached range that fully covers the requested window
+    try {
+      const covering = (function findCoveringRange() {
+        for (const [key, value] of priceHistoryCache.entries()) {
+          if (!key || !value) continue;
+          const parts = String(key).split('|');
+          if (parts.length !== 3) continue;
+          const [kSym, kStart, kEnd] = parts;
+          if (String(kSym).toUpperCase() !== String(candidate).toUpperCase()) continue;
+          if (typeof kStart === 'string' && typeof kEnd === 'string' && kStart <= startDateKey && kEnd >= endDateKey) {
+            return value;
+          }
+        }
+        return null;
+      })();
+      if (Array.isArray(covering) && covering.length) {
+        return covering;
+      }
+    } catch (_) { /* ignore */ }
+    // Reuse in-memory cached normalized history when available
+    try {
+      const cacheKey = getPriceHistoryCacheKey(candidate, startDateKey, endDateKey);
+      const cached = getCachedPriceHistory(cacheKey);
+      if (cached && cached.hit) {
+        return cached.value;
+      }
+    } catch (_) { /* ignore cache errors */ }
     let history = null;
     try {
       history = await fetchYahooHistorical(candidate, {
@@ -8757,6 +8831,10 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     }
     normalized = normalizeYahooHistoricalEntries(history);
     if (normalized.length) {
+      try {
+        const cacheKey = getPriceHistoryCacheKey(candidate, startDateKey, endDateKey);
+        setCachedPriceHistory(cacheKey, normalized);
+      } catch (_) { /* ignore cache errors */ }
       break;
     }
   }
@@ -10969,18 +11047,35 @@ async function fetchSymbolsDetails(login, symbolIds) {
     return {};
   }
 
-  const batches = [];
-  const BATCH_SIZE = 50;
-  for (let i = 0; i < symbolIds.length; i += BATCH_SIZE) {
-    batches.push(symbolIds.slice(i, i + BATCH_SIZE));
+  const results = {};
+  const toFetch = [];
+  // Fill from cache and track which to fetch
+  for (const idRaw of symbolIds) {
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) continue;
+    const cacheKey = getSymbolDetailsCacheKey(login.id, id);
+    if (cacheKey && symbolDetailsCache.has(cacheKey)) {
+      results[id] = symbolDetailsCache.get(cacheKey);
+    } else {
+      toFetch.push(id);
+    }
   }
 
-  const results = {};
-  for (const batch of batches) {
+  if (toFetch.length === 0) {
+    return results;
+  }
+
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
+    const batch = toFetch.slice(i, i + BATCH_SIZE);
     const idsParam = batch.join(',');
     const data = await questradeRequest(login, '/v1/symbols', { params: { ids: idsParam } });
     (data.symbols || []).forEach(function (symbol) {
       results[symbol.symbolId] = symbol;
+      const cacheKey = getSymbolDetailsCacheKey(login.id, Number(symbol.symbolId));
+      if (cacheKey) {
+        symbolDetailsCache.set(cacheKey, symbol);
+      }
     });
   }
   return results;
@@ -14258,6 +14353,35 @@ app.get('/api/summary', async function (req, res) {
       setSupersetCacheEntry(supersetEntry);
     }
 
+    // Build a superset cache entry to allow subsequent symbol-series requests to avoid
+    // re-fetching activities from providers. We persist resolved activity contexts
+    // and the per-account balance summaries alongside the payload we already cache.
+    try {
+      const resolvedActivityContexts = {};
+      for (const [accountId, promise] of accountActivityContextCache.entries()) {
+        try {
+          const ctx = await Promise.resolve(promise);
+          if (ctx && ctx.accountId) {
+            resolvedActivityContexts[accountId] = ctx;
+          }
+        } catch (e) {
+          // Ignore individual context failures
+        }
+      }
+      // Merge with any existing superset entry so fields like `accounts` remain available.
+      const previous = getSupersetCacheEntry() || {};
+      const supersetEntry = Object.assign({}, previous, {
+        payload: responsePayload,
+        perAccountCombinedBalances,
+        activityContextsByAccountId: resolvedActivityContexts,
+        asOf: responsePayload.asOf,
+      });
+      setSupersetCacheEntry(supersetEntry);
+    } catch (cacheError) {
+      // If we fail to persist the superset cache, continue with the response
+      debugSummaryCache('failed to persist superset extras', cacheError?.message || cacheError);
+    }
+
     res.json(responsePayload);
   } catch (error) {
     if (error.response) {
@@ -14304,51 +14428,74 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
   if (isAggregateRequest) {
     try {
       const aggregateOptions = { ...queryOptions };
-
-      const contexts = [];
+      let contexts = [];
       let hadAccountFetchFailure = false;
-      for (const login of allLogins) {
-        let fetchedAccounts = [];
-        try {
-          fetchedAccounts = await fetchAccounts(login);
-        } catch (error) {
-          const message = error && error.message ? error.message : String(error);
-          console.warn('Failed to fetch accounts for aggregate Total P&L:', message);
-          hadAccountFetchFailure = true;
-          continue;
-        }
-        fetchedAccounts.forEach((account, index) => {
-          if (!account) {
-            return;
-          }
-          const rawNumber =
-            account.number != null
-              ? account.number
-              : account.accountNumber != null
-                ? account.accountNumber
-                : account.id != null
-                  ? account.id
-                  : index;
-          const normalizedNumber = rawNumber != null ? String(rawNumber).trim() : String(index);
-          const number = normalizedNumber || String(index);
-          const compositeId = `${login.id}:${number}`;
-          const normalizedAccount = Object.assign({}, account, {
-            id: compositeId,
-            number,
-            accountNumber: number,
-            loginId: login.id,
-          });
-          const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
-          const effectiveAccount = Object.assign({}, accountWithOverrides, {
-            id: compositeId,
-            number: accountWithOverrides.number || number,
-          });
-          contexts.push({ login, account: effectiveAccount });
-        });
-      }
 
-      if (!contexts.length) {
-        return res.status(404).json({ message: 'No accounts available for aggregation' });
+      const superset = getSupersetCacheEntry();
+      if (symbolParam && superset && Array.isArray(superset.accounts) && superset.accounts.length) {
+        // Build contexts from superset (no provider calls)
+        contexts = superset.accounts
+          .map((acc) => {
+            const login = getLoginById(acc.loginId);
+            if (!login) return null;
+            const normalizedAccount = Object.assign({}, acc, {
+              id: acc.id,
+              number: acc.number,
+              accountNumber: acc.number,
+              loginId: login.id,
+            });
+            const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
+            const effectiveAccount = Object.assign({}, accountWithOverrides, {
+              id: acc.id,
+              number: accountWithOverrides.number || acc.number,
+            });
+            return { login, account: effectiveAccount };
+          })
+          .filter(Boolean);
+      } else {
+        // Fallback: fetch from provider
+        for (const login of allLogins) {
+          let fetchedAccounts = [];
+          try {
+            fetchedAccounts = await fetchAccounts(login);
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error);
+            console.warn('Failed to fetch accounts for aggregate Total P&L:', message);
+            hadAccountFetchFailure = true;
+            continue;
+          }
+          fetchedAccounts.forEach((account, index) => {
+            if (!account) {
+              return;
+            }
+            const rawNumber =
+              account.number != null
+                ? account.number
+                : account.accountNumber != null
+                  ? account.accountNumber
+                  : account.id != null
+                    ? account.id
+                    : index;
+            const normalizedNumber = rawNumber != null ? String(rawNumber).trim() : String(index);
+            const number = normalizedNumber || String(index);
+            const compositeId = `${login.id}:${number}`;
+            const normalizedAccount = Object.assign({}, account, {
+              id: compositeId,
+              number,
+              accountNumber: number,
+              loginId: login.id,
+            });
+            const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
+            const effectiveAccount = Object.assign({}, accountWithOverrides, {
+              id: compositeId,
+              number: accountWithOverrides.number || number,
+            });
+            contexts.push({ login, account: effectiveAccount });
+          });
+        }
+        if (!contexts.length) {
+          return res.status(404).json({ message: 'No accounts available for aggregation' });
+        }
       }
 
       const groupRelations = getAccountGroupRelations();
@@ -14371,38 +14518,60 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         }
       }
 
-      // If we already have cached per-account series for all targets, skip fetching balances.
-      const perAccountCombinedBalances = {};
-      const aggregateOptionsForCache = { ...aggregateOptions };
-      const cacheStatuses = targetContexts.map((context) => {
-        const key = buildTotalPnlSeriesCacheKey(context.account.id, aggregateOptionsForCache);
-        const hit = key ? getTotalPnlSeriesCacheEntry(key) : null;
-        return { context, key, hit };
-      });
-      const missing = cacheStatuses.filter((e) => !e.hit).map((e) => e.context);
-      if (missing.length > 0) {
-        const balancesResults = await Promise.all(
-          missing.map((context) => fetchBalances(context.login, context.account.number))
-        );
-        balancesResults.forEach((balancesRaw, index) => {
-          const context = missing[index];
-          if (!context) {
-            return;
-          }
-          const summary = summarizeAccountBalances(balancesRaw) || balancesRaw;
-          if (summary) {
-            perAccountCombinedBalances[context.account.id] = summary;
-          }
+      // Per-account balances: reuse superset cache when available for symbol queries; otherwise fetch as before
+      let perAccountCombinedBalances = {};
+      if (symbolParam && superset && superset.perAccountCombinedBalances) {
+        perAccountCombinedBalances = superset.perAccountCombinedBalances || {};
+      } else {
+        const aggregateOptionsForCache = { ...aggregateOptions };
+        const cacheStatuses = targetContexts.map((context) => {
+          const key = buildTotalPnlSeriesCacheKey(context.account.id, aggregateOptionsForCache);
+          const hit = key ? getTotalPnlSeriesCacheEntry(key) : null;
+          return { context, key, hit };
         });
+        const missing = cacheStatuses.filter((e) => !e.hit).map((e) => e.context);
+        if (missing.length > 0) {
+          const balancesResults = await Promise.all(
+            missing.map((context) => fetchBalances(context.login, context.account.number))
+          );
+          balancesResults.forEach((balancesRaw, index) => {
+            const context = missing[index];
+            if (!context) {
+              return;
+            }
+            const summary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+            if (summary) {
+              perAccountCombinedBalances[context.account.id] = summary;
+            }
+          });
+        }
       }
 
       const aggregateKey = isGroupKey ? rawAccountKey : 'all';
+
+      // Prefer using prewarmed activity contexts from the superset cache to avoid
+      // additional provider API calls when computing symbol-specific series.
+      const activityContextMap =
+        superset && superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
+          ? superset.activityContextsByAccountId
+          : null;
+      const resolver = async (ctx) => {
+        try {
+          const key = ctx && ctx.account && ctx.account.id;
+          if (!key || !activityContextMap) return null;
+          return activityContextMap[key] || null;
+        } catch (_) {
+          return null;
+        }
+      };
+
       const aggregatedSeries = await computeAggregateTotalPnlSeriesForContexts(
         targetContexts,
         perAccountCombinedBalances,
         aggregateOptions,
         aggregateKey,
-        hadAccountFetchFailure
+        hadAccountFetchFailure,
+        resolver
       );
       if (!aggregatedSeries) {
         return res.status(503).json({ message: 'Total P&L series unavailable' });
@@ -14439,9 +14608,19 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       number: accountWithOverrides.number || normalizedAccount.number || rawAccountKey,
     });
 
-    const balancesRaw = await fetchBalances(login, effectiveAccount.number);
-    const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
-    const perAccountCombinedBalances = { [accountId]: balanceSummary };
+    let perAccountCombinedBalances = {};
+    // For symbol series, reuse superset balances if available to avoid provider calls
+    if (symbolParam) {
+      const superset = getSupersetCacheEntry();
+      if (superset && superset.perAccountCombinedBalances) {
+        perAccountCombinedBalances = superset.perAccountCombinedBalances;
+      }
+    }
+    if (!symbolParam) {
+      const balancesRaw = await fetchBalances(login, effectiveAccount.number);
+      const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+      perAccountCombinedBalances = { [accountId]: balanceSummary };
+    }
 
     const options = {};
     if (queryOptions.startDate) {
@@ -14456,10 +14635,20 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
 
     let series = null;
     if (symbolParam) {
-      series = await computeTotalPnlSeriesForSymbol(login, effectiveAccount, perAccountCombinedBalances, {
-        ...options,
-        symbol: symbolParam,
-      });
+      // If the superset cache contains a prepared activity context for this account,
+      // reuse it to avoid hitting provider APIs again while rendering the chart.
+      const superset = getSupersetCacheEntry();
+      const activityCtx =
+        superset && superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
+          ? superset.activityContextsByAccountId[accountId]
+          : null;
+      const computedOptions = activityCtx ? { ...options, activityContext: activityCtx, symbol: symbolParam } : { ...options, symbol: symbolParam };
+      series = await computeTotalPnlSeriesForSymbol(
+        login,
+        effectiveAccount,
+        perAccountCombinedBalances,
+        computedOptions
+      );
     } else {
       series = await computeTotalPnlSeries(login, effectiveAccount, perAccountCombinedBalances, options);
     }

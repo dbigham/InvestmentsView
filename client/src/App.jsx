@@ -8676,6 +8676,28 @@ export default function App() {
     }
   }, []);
 
+  // When a symbol is focused, proactively fetch its Total P&L series for the
+  // current selection using earliest-hold start (no account CAGR shift),
+  // avoiding extra user actions to see the chart.
+  useEffect(() => {
+    if (!focusedSymbol) {
+      return;
+    }
+    const targetKey = selectedAccountKey;
+    if (!targetKey) {
+      return;
+    }
+    const alreadyActive =
+      totalPnlSeriesState.accountKey === targetKey &&
+      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
+      (totalPnlSeriesState.status === 'loading' || totalPnlSeriesState.status === 'success');
+    if (alreadyActive) {
+      return;
+    }
+    // For symbol series, start from the first date any relevant account held the symbol.
+    fetchTotalPnlSeries(targetKey, { symbol: focusedSymbol, applyAccountCagrStartDate: false });
+  }, [focusedSymbol, selectedAccountKey, totalPnlSeriesState.accountKey, totalPnlSeriesState.symbol, totalPnlSeriesState.status, fetchTotalPnlSeries]);
+
   const resolveAccountLabelByKey = useCallback(
     (accountKey) => {
       if (!accountKey) {
@@ -8767,7 +8789,7 @@ export default function App() {
         totalPnlSeriesState.status === 'error' ||
         totalPnlSeriesState.status === 'idle'
       ) {
-        const fetchOpts = { applyAccountCagrStartDate: desiredMode !== 'all' };
+        const fetchOpts = { applyAccountCagrStartDate: focusedSymbol ? false : desiredMode !== 'all' };
         if (focusedSymbol) fetchOpts.symbol = focusedSymbol;
         fetchTotalPnlSeries(normalizedKey, fetchOpts);
       }
@@ -8794,7 +8816,7 @@ export default function App() {
       return;
     }
     const applyCagr = totalPnlSeriesState.mode !== 'all';
-    const opts = { applyAccountCagrStartDate: applyCagr };
+    const opts = { applyAccountCagrStartDate: focusedSymbol ? false : applyCagr };
     if (focusedSymbol) opts.symbol = focusedSymbol;
     fetchTotalPnlSeries(targetKey, opts);
   }, [
@@ -10558,6 +10580,70 @@ export default function App() {
     });
   }, [activeTotalPnlAccountKey, data?.accountTotalPnlSeries]);
 
+  // Resolve symbol Total P&L series for header chart (when focusing a symbol)
+  const selectedSymbolTotalPnlSeries = useMemo(() => {
+    if (!focusedSymbol || !selectedAccountKey) return null;
+    if (
+      totalPnlSeriesState.accountKey === selectedAccountKey &&
+      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
+      totalPnlSeriesState.status === 'success'
+    ) {
+      return totalPnlSeriesState.data || null;
+    }
+    return null;
+  }, [focusedSymbol, selectedAccountKey, totalPnlSeriesState.accountKey, totalPnlSeriesState.symbol, totalPnlSeriesState.status, totalPnlSeriesState.data]);
+
+  // For symbol charts, start on the first date the symbol is actually held
+  const selectedSymbolTotalPnlSeriesForChart = useMemo(() => {
+    const series = selectedSymbolTotalPnlSeries;
+    if (!series || !Array.isArray(series.points) || !series.points.length) return series;
+    try {
+      const findFirstActiveDate = () => {
+        for (let i = 0; i < series.points.length; i += 1) {
+          const p = series.points[i] || {};
+          const e = Number(p.equityCad);
+          const n = Number(p.cumulativeNetDepositsCad);
+          const t = Number(p.totalPnlCad);
+          const has = (Number.isFinite(e) && Math.abs(e) > 1e-6) || (Number.isFinite(n) && Math.abs(n) > 1e-6) || (Number.isFinite(t) && Math.abs(t) > 1e-6);
+          if (has && typeof p.date === 'string' && p.date) {
+            return p.date;
+          }
+        }
+        return null;
+      };
+      const start = findFirstActiveDate();
+      if (start && series.displayStartDate !== start) {
+        return { ...series, displayStartDate: start };
+      }
+    } catch (e) {
+      // ignore
+    }
+    return series;
+  }, [selectedSymbolTotalPnlSeries]);
+
+  const selectedSymbolTotalPnlSeriesStatus = useMemo(() => {
+    if (!focusedSymbol || !selectedAccountKey) return 'idle';
+    if (
+      totalPnlSeriesState.accountKey === selectedAccountKey &&
+      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null)
+    ) {
+      return totalPnlSeriesState.status;
+    }
+    return 'idle';
+  }, [focusedSymbol, selectedAccountKey, totalPnlSeriesState.accountKey, totalPnlSeriesState.symbol, totalPnlSeriesState.status]);
+
+  const selectedSymbolTotalPnlSeriesError = useMemo(() => {
+    if (!focusedSymbol || !selectedAccountKey) return null;
+    if (
+      totalPnlSeriesState.accountKey === selectedAccountKey &&
+      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
+      totalPnlSeriesState.status === 'error'
+    ) {
+      return totalPnlSeriesState.error || null;
+    }
+    return null;
+  }, [focusedSymbol, selectedAccountKey, totalPnlSeriesState.accountKey, totalPnlSeriesState.symbol, totalPnlSeriesState.status, totalPnlSeriesState.error]);
+
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
   const totalPnlDialogData = useMemo(() => {
     if (!focusedSymbol) {
@@ -10880,9 +10966,9 @@ export default function App() {
             totalPnlRangeOptions={focusedSymbol ? [] : totalPnlRangeOptions}
             selectedTotalPnlRange={focusedSymbol ? null : totalPnlRange}
             onTotalPnlRangeChange={focusedSymbol ? null : handleTotalPnlRangeChange}
-            totalPnlSeries={focusedSymbol ? null : selectedAccountTotalPnlSeries}
-            totalPnlSeriesStatus={focusedSymbol ? 'idle' : selectedTotalPnlSeriesStatus}
-            totalPnlSeriesError={focusedSymbol ? null : selectedTotalPnlSeriesError}
+            totalPnlSeries={focusedSymbol ? selectedSymbolTotalPnlSeriesForChart : selectedAccountTotalPnlSeries}
+            totalPnlSeriesStatus={focusedSymbol ? selectedSymbolTotalPnlSeriesStatus : selectedTotalPnlSeriesStatus}
+            totalPnlSeriesError={focusedSymbol ? selectedSymbolTotalPnlSeriesError : selectedTotalPnlSeriesError}
             onAdjustDeployment={focusedSymbol ? null : handleOpenDeploymentAdjustment}
             symbolMode={Boolean(focusedSymbol)}
             childAccounts={focusedSymbol ? [] : childAccountSummaries}

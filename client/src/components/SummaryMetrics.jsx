@@ -632,6 +632,21 @@ export default function SummaryMetrics({
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
   const formattedTotal = formatSignedMoney(totalPnlValue);
   const qqqStatus = qqqSummary?.status || 'loading';
+
+  // Delay the header Total P&L chart spinner to avoid brief flicker on fast loads
+  const [showChartSpinner, setShowChartSpinner] = useState(false);
+  useEffect(() => {
+    let timer = null;
+    if (totalPnlSeriesStatus === 'loading') {
+      setShowChartSpinner(false);
+      timer = setTimeout(() => setShowChartSpinner(true), 750);
+    } else {
+      setShowChartSpinner(false);
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [totalPnlSeriesStatus]);
   const hasQqqTemperature = Number.isFinite(qqqSummary?.temperature);
   let qqqLabel = 'QQQ temperature: Loading…';
   if ((qqqStatus === 'ready' || qqqStatus === 'refreshing') && hasQqqTemperature) {
@@ -1107,7 +1122,8 @@ export default function SummaryMetrics({
     setHoverX(null);
   }, []);
 
-  const showTotalPnlChart = !symbolMode;
+  // Always allow the Total P&L chart to render; caller controls series and status.
+  const showTotalPnlChart = true;
 
   const normalizedChildAccounts = Array.isArray(childAccounts)
     ? childAccounts
@@ -1680,8 +1696,7 @@ export default function SummaryMetrics({
           <div className="equity-card__total-pnl-chart-body qqq-section__chart-container">
             {totalPnlSeriesStatus === 'loading' ? (
               <div className="equity-card__total-pnl-chart-loading" role="status" aria-live="polite">
-                <span className="initial-loading__spinner" aria-hidden="true" />
-                <span className="equity-card__total-pnl-chart-loading-text">Loading chart</span>
+                {showChartSpinner ? <span className="initial-loading__spinner" aria-hidden="true" /> : null}
               </div>
             ) : totalPnlSeriesError ? (
               <div className="equity-card__total-pnl-chart-message">
@@ -1776,11 +1791,9 @@ export default function SummaryMetrics({
                   </div>
                 )}
               </>
-            ) : (
-              <div className="equity-card__total-pnl-chart-message">
-                No Total P&L data available.
-              </div>
-            )}
+            ) : totalPnlSeriesStatus === 'success' ? (
+              <div className="equity-card__total-pnl-chart-message">No Total P&L data available.</div>
+            ) : null}
           </div>
         </div>
       )}
@@ -2133,7 +2146,3 @@ SummaryMetrics.defaultProps = {
   onShowChildPnlBreakdown: null,
   onShowChildTotalPnl: null,
 };
-
-
-
-

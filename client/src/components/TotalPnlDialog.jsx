@@ -63,6 +63,7 @@ export default function TotalPnlDialog({
   onShowBreakdown,
 }) {
   const headingId = useId();
+  const [showSpinner, setShowSpinner] = useState(false);
   const [timeframe, setTimeframe] = useState('ALL');
   const [hover, setHover] = useState(null);
   const [selectionState, setSelectionState] = useState({
@@ -123,6 +124,20 @@ export default function TotalPnlDialog({
     setTimeframe('ALL');
     resetSelection();
   }, [data?.accountId, mode, resetSelection]);
+
+  // Delay showing the loading spinner to avoid brief flicker on fast loads
+  useEffect(() => {
+    let timer = null;
+    if (loading) {
+      setShowSpinner(false);
+      timer = setTimeout(() => setShowSpinner(true), 750);
+    } else {
+      setShowSpinner(false);
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [loading]);
 
   useEffect(() => {
     function handleDocumentClick(event) {
@@ -597,7 +612,7 @@ export default function TotalPnlDialog({
 
             {loading ? (
               <div className="pnl-dialog__loading" role="status" aria-live="polite">
-                <span className="pnl-dialog__spinner" aria-hidden="true" />
+                {showSpinner ? <span className="pnl-dialog__spinner" aria-hidden="true" /> : null}
                 <span className="visually-hidden">Loading Total P&amp;L…</span>
               </div>
             ) : (
