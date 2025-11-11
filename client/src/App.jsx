@@ -5360,6 +5360,72 @@ export default function App() {
     [setActiveAccountId, setSelectedAccountState, setSelectedRebalanceReminder]
   );
 
+  const handleGoToAccountFromSymbol = useCallback(
+    (position, account) => {
+      let targetAccountId = null;
+
+      if (account && account.id !== null && account.id !== undefined) {
+        targetAccountId = String(account.id);
+      }
+
+      if (
+        !targetAccountId &&
+        position &&
+        position.accountId !== null &&
+        position.accountId !== undefined &&
+        accountsById &&
+        typeof accountsById.has === 'function'
+      ) {
+        const candidateId = String(position.accountId);
+        if (candidateId && accountsById.has(candidateId)) {
+          targetAccountId = candidateId;
+        }
+      }
+
+      if (
+        !targetAccountId &&
+        position &&
+        position.accountNumber !== null &&
+        position.accountNumber !== undefined
+      ) {
+        const normalizedNumber = String(position.accountNumber).trim();
+        if (normalizedNumber && accountsById && typeof accountsById.values === 'function') {
+          for (const entry of accountsById.values()) {
+            if (!entry) {
+              continue;
+            }
+            const entryNumber =
+              entry.number !== null && entry.number !== undefined
+                ? String(entry.number).trim()
+                : '';
+            if (entryNumber && entryNumber === normalizedNumber && entry.id !== null && entry.id !== undefined) {
+              targetAccountId = String(entry.id);
+              break;
+            }
+          }
+        }
+      }
+
+      if (!targetAccountId) {
+        return;
+      }
+
+      handleAccountChange(targetAccountId);
+      setFocusedSymbol(null);
+      setFocusedSymbolDescription(null);
+      setOrdersFilter('');
+      setPortfolioViewTab('positions');
+    },
+    [
+      accountsById,
+      handleAccountChange,
+      setFocusedSymbol,
+      setFocusedSymbolDescription,
+      setOrdersFilter,
+      setPortfolioViewTab,
+    ]
+  );
+
   const handleTodoSelect = useCallback(
     (item, event) => {
       if (!item || !isAggregateSelection) {
@@ -11095,6 +11161,7 @@ export default function App() {
                 onShowNotes={handleShowSymbolNotes}
                 onShowOrders={handleShowSymbolOrders}
                 onFocusSymbol={handleSearchSelectSymbol}
+                onGoToAccount={focusedSymbol ? handleGoToAccountFromSymbol : null}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
                 showPortfolioShare={!focusedSymbol}
                 showAccountColumn={Boolean(focusedSymbol) && isAggregateSelection}

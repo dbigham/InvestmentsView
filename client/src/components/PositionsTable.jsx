@@ -227,6 +227,7 @@ function PositionsTable({
   onShowNotes = null,
   onShowOrders = null,
   onFocusSymbol = null,
+  onGoToAccount = null,
   forceShowTargetColumn = false,
   showPortfolioShare = true,
   showAccountColumn = false,
@@ -499,6 +500,17 @@ function PositionsTable({
 
     onFocusSymbol(rawSymbol, { description });
   }, [closeContextMenu, contextMenuState.position, onFocusSymbol]);
+
+  const handleGoToAccountFromMenu = useCallback(() => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition || typeof onGoToAccount !== 'function') {
+      return;
+    }
+
+    const account = resolveAccountForPosition(targetPosition, accountsById);
+    onGoToAccount(targetPosition, account);
+  }, [closeContextMenu, contextMenuState.position, onGoToAccount, accountsById]);
 
   const handleNotesIndicatorClick = useCallback(
     (event, targetPosition) => {
@@ -904,6 +916,18 @@ function PositionsTable({
             Buy/sell
           </button>
         </li>
+        {typeof onGoToAccount === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleGoToAccountFromMenu}
+            >
+              Go to account
+            </button>
+          </li>
+        ) : null}
         {typeof onShowOrders === 'function' ? (
           <li role="none">
             <button
@@ -1029,6 +1053,7 @@ PositionsTable.propTypes = {
   onShowNotes: PropTypes.func,
   onShowOrders: PropTypes.func,
   onFocusSymbol: PropTypes.func,
+  onGoToAccount: PropTypes.func,
   forceShowTargetColumn: PropTypes.bool,
   showPortfolioShare: PropTypes.bool,
   showAccountColumn: PropTypes.bool,
@@ -1049,6 +1074,7 @@ PositionsTable.defaultProps = {
   onShowNotes: null,
   onShowOrders: null,
   onFocusSymbol: null,
+  onGoToAccount: null,
   forceShowTargetColumn: false,
   showPortfolioShare: true,
   showAccountColumn: false,
