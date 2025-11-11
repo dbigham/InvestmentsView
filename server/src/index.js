@@ -13684,7 +13684,58 @@ app.get('/api/summary', async function (req, res) {
         }
       }
 
-      // Precompute per-account series when viewing all accounts so single-account views are instant
+      // Populate per-account series map without requiring PREHEAT
+      // We prefer cached series generated during aggregate computation; as a fallback,
+      // we will derive a minimal "cagr" view by attaching displayStartDate to the
+      // existing all-time series. This avoids new external API calls.
+      if (viewingAllAccountsRequest) {
+        const contextById = new Map();
+        selectedContexts.forEach((ctx) => {
+          if (ctx && ctx.account && ctx.account.id) {
+            contextById.set(ctx.account.id, ctx);
+          }
+        });
+
+        selectedContexts.forEach((ctx) => {
+          const accountId = ctx && ctx.account && ctx.account.id;
+          if (!accountId) return;
+
+          const entry = ensureAccountTotalPnlSeriesEntry(accountTotalPnlSeries, accountId);
+
+          // Attach per-account all-time series from cache, if available
+          if (!entry.all) {
+            const allKey = buildTotalPnlSeriesCacheKey(accountId, { applyAccountCagrStartDate: false });
+            const allSeries = allKey ? getTotalPnlSeriesCacheEntry(allKey) : null;
+            if (allSeries) {
+              entry.all = allSeries;
+            }
+          }
+
+          // If a CAGR start date exists, expose a "cagr" view without recomputing
+          const funding = accountFundingSummaries[accountId] || {};
+          const cagrStart = (typeof funding.cagrStartDate === 'string' && funding.cagrStartDate.trim())
+            ? funding.cagrStartDate.trim()
+            : (typeof ctx.account.cagrStartDate === 'string' && ctx.account.cagrStartDate.trim())
+              ? ctx.account.cagrStartDate.trim()
+              : null;
+
+          if (cagrStart && !entry.cagr) {
+            // Prefer cached CAGR series if present
+            const cagrKey = buildTotalPnlSeriesCacheKey(accountId, { applyAccountCagrStartDate: true });
+            const cachedCagr = cagrKey ? getTotalPnlSeriesCacheEntry(cagrKey) : null;
+            if (cachedCagr) {
+              entry.cagr = cachedCagr;
+            } else if (entry.all) {
+              // Derive a minimal CAGR variant by annotating the all-time series
+              // with a displayStartDate. Points are reused as-is which is sufficient
+              // for the deployment chart in the UI and avoids any new API calls.
+              entry.cagr = Object.assign({}, entry.all, { displayStartDate: cagrStart });
+            }
+          }
+        });
+      }
+
+      // Precompute per-account series for performance if enabled
       if (PREHEAT_ACCOUNT_TOTAL_PNL && viewingAllAccountsRequest) {
         await mapWithConcurrency(
           selectedContexts,

@@ -936,11 +936,15 @@ export default function SummaryMetrics({
     if (!filteredTotalPnlSeries.length) {
       return null;
     }
+    // When the series carries a displayStartDate, interpret values as deltas
+    // from that baseline so the chart starts at 0 for CAGR views.
+    const useDisplayStartDelta = Boolean(totalPnlSeries?.displayStartDate);
     return buildChartMetrics(filteredTotalPnlSeries, {
+      useDisplayStartDelta,
       rangeStartDate: timeframeRangeStart,
       rangeEndDate: timeframeRangeEnd,
     });
-  }, [filteredTotalPnlSeries, timeframeRangeStart, timeframeRangeEnd]);
+  }, [filteredTotalPnlSeries, timeframeRangeStart, timeframeRangeEnd, totalPnlSeries?.displayStartDate]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -2129,7 +2133,6 @@ SummaryMetrics.defaultProps = {
   onShowChildPnlBreakdown: null,
   onShowChildTotalPnl: null,
 };
-
 
 
 
