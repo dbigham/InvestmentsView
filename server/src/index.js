@@ -13,10 +13,11 @@ const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 dotenv.config();
 
+const serverEnvPath = path.join(__dirname, '..', '.env');
 const additionalEnvPaths = [
   path.resolve(process.cwd(), '.env'),
   path.resolve(process.cwd(), 'server.env'),
-  path.join(__dirname, '..', '.env'),
+  serverEnvPath,
   path.join(__dirname, '..', 'server.env'),
 ];
 
@@ -29,7 +30,10 @@ additionalEnvPaths.forEach((candidate) => {
     if (!fs.existsSync(candidate)) {
       return;
     }
-    dotenv.config({ path: candidate, override: false });
+    // Ensure server/.env can override any pre-set env vars so toggles like
+    // DEBUG_QUESTRADE_API=false always take effect when running the server.
+    const shouldOverride = candidate === serverEnvPath;
+    dotenv.config({ path: candidate, override: shouldOverride });
     loadedEnvPaths.add(candidate);
   } catch (envError) {
     if (envError && envError.code !== 'ENOENT') {
@@ -107,7 +111,7 @@ const DEFAULT_TEMPERATURE_CHART_START_DATE = '1980-01-01';
 
 const PORT = process.env.PORT || 4000;
 const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-const DEBUG_QUESTRADE_API = process.env.DEBUG_QUESTRADE_API === 'true';
+const DEBUG_QUESTRADE_API = parseBooleanEnv(process.env.DEBUG_QUESTRADE_API, false);
 // Shorter HTTP timeouts so requests fail fast instead of hanging for minutes.
 // Adjustable via env if needed.
 const HTTP_HEADERS_TIMEOUT_MS = (() => {
