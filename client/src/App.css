@@ -202,6 +202,26 @@ textarea {
 }
 .symbol-view__title {
   font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.symbol-view__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: rgba(56, 155, 60, 0.12);
+  border: 1px solid rgba(56, 155, 60, 0.28);
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.symbol-view__icon svg {
+  display: block;
 }
 .symbol-view__desc {
   color: var(--color-text-muted);
