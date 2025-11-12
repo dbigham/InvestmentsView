@@ -114,3 +114,7 @@ Notes:
 ## Rotating tokens
 
 Use `npm run seed-token -- <refreshToken> --id=<loginId>` any time you generate a fresh token in the Questrade portal. The script exchanges it, updates the matching login inside `server/token-store.json`, and preserves the other stored logins. Add `--label` and `--email` to refresh the display metadata when needed.
+
+## Acknowledgements
+
+- Company logos provided by [Logo.dev](https://logo.dev).
