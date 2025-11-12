@@ -1,4 +1,5 @@
 import { parseDateOnly } from '../../../shared/totalPnlDisplay.js';
+import { classifyPnL, formatDate, formatSignedMoney } from '../utils/formatters';
 
 export const CHART_WIDTH = 782;
 export const CHART_HEIGHT = 260;
@@ -192,5 +193,29 @@ export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeS
     innerWidth,
     innerHeight,
     axisTicks: ticks,
+  };
+}
+
+// Shared helper for building a hover label that matches dialog styling
+export function buildHoverLabel(point, { useDisplayStartDelta = false } = {}) {
+  if (!point) {
+    return null;
+  }
+  let value = null;
+  if (useDisplayStartDelta && Number.isFinite(point?.chartValue)) {
+    value = point.chartValue;
+  } else if (Number.isFinite(point?.totalPnl)) {
+    value = point.totalPnl;
+  } else if (Number.isFinite(point?.chartValue)) {
+    value = point.chartValue;
+  }
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  const tone = classifyPnL(value);
+  return {
+    amount: formatSignedMoney(value),
+    date: point?.date ? formatDate(point.date) : null,
+    tone,
   };
 }

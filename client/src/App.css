@@ -1238,13 +1238,25 @@ textarea {
 }
 
 .pnl-dialog__selection-rect {
-  fill: rgba(56, 155, 60, 0.16);
-  stroke: var(--color-accent);
+  fill: rgba(56, 155, 60, 0.10);
+  stroke: rgba(56, 155, 60, 0.35);
   stroke-width: 1.25;
 }
 
 .pnl-dialog__selection-rect--active {
-  fill: rgba(56, 155, 60, 0.22);
+  fill: rgba(56, 155, 60, 0.10);
+}
+
+/* Show arrow-style values; hide old Start/End labels */
+.pnl-dialog__selection-values {
+  display: none;
+}
+
+.pnl-dialog__selection-values-alt {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .pnl-dialog__selection-summary {
@@ -1302,6 +1314,7 @@ textarea {
   font-size: 0.85rem;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .pnl-dialog__selection-summary--positive .pnl-dialog__selection-change {
@@ -1325,11 +1338,16 @@ textarea {
   border: none;
   background: none;
   color: var(--color-text-secondary);
-  font-size: 1.1rem;
+  font-size: 0;
   line-height: 1;
   padding: 2px 4px;
   border-radius: var(--radius-pill);
   cursor: pointer;
+}
+
+.pnl-dialog__selection-clear::before {
+  content: 'x';
+  font-size: 1.1rem;
 }
 
 .pnl-dialog__selection-clear:hover,
@@ -1347,14 +1365,7 @@ textarea {
 }
 
 .pnl-dialog__selection-values {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 0.74rem;
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
+  display: none;
 }
 
 .pnl-dialog__chart-summary {
@@ -4652,12 +4663,21 @@ button.time-pill:hover .time-pill__icon {
 
 .qqq-section__chart-container {
   position: relative;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
 }
 
 .qqq-section__chart {
   width: 100%;
   height: auto;
   display: block;
+}
+
+.qqq-section__chart:focus,
+.qqq-section__chart:focus-visible {
+  outline: none;
 }
 
 .qqq-section__chart-surface {
@@ -6223,4 +6243,3 @@ button.time-pill:hover .time-pill__icon {
 .projection-tree__rate-placeholder {
   width: 88px;
 }
-

@@ -6993,23 +6993,18 @@ export default function App() {
       return { items: [], parentTotal: null, parents: [] };
     }
 
+    // When a group is selected, we show its children. For individual accounts,
+    // we don't infer children (to avoid showing siblings), but we still want
+    // to show that account's parent group(s).
     const parentKeys = new Set();
     let selectedGroupKey = null;
 
-    // Only show child accounts when a group is selected. For individual accounts,
-    // do not infer children from the parent group (avoids showing siblings as children).
     if (isAccountGroupSelection(selectedAccount) && selectedAccountGroup) {
       const groupKey = normalizeAccountGroupKey(selectedAccountGroup.name);
       if (groupKey) {
         selectedGroupKey = groupKey;
         parentKeys.add(groupKey);
       }
-    } else {
-      return { items: [], parentTotal: null, parents: [] };
-    }
-
-    if (!parentKeys.size) {
-      return { items: [], parentTotal: null, parents: [] };
     }
 
     const excludeAccountIds = new Set();
@@ -7101,40 +7096,59 @@ export default function App() {
     };
 
     const buildParentGroupItems = () => {
-      if (!selectedGroupKey) {
+      // If a group is selected, show its parent groups (one level up).
+      if (selectedGroupKey) {
+        const parentSet = accountGroupParentsMap.get(selectedGroupKey);
+        if (!parentSet || !parentSet.size) {
+          return [];
+        }
+        const seenParentIds = new Set();
+        const parents = [];
+        parentSet.forEach((parentKey) => {
+          if (!parentKey || parentKey === selectedGroupKey) {
+            return;
+          }
+          const parentGroup = accountGroupsByNormalizedName.get(parentKey) || null;
+          const parentId =
+            parentGroup && parentGroup.id !== undefined && parentGroup.id !== null
+              ? String(parentGroup.id).trim()
+              : null;
+          if (parentId && seenParentIds.has(parentId)) {
+            return;
+          }
+          if (parentId) {
+            seenParentIds.add(parentId);
+          }
+          const displayName = accountGroupNamesByKey.get(parentKey) || parentId || parentKey;
+          const href = parentId ? buildAccountViewUrl(parentId) || null : null;
+          parents.push({
+            id: parentId || parentKey,
+            label: displayName,
+            href,
+          });
+        });
+        parents.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+        return parents;
+      }
+
+      // If a concrete account is selected, show its immediate parent: the
+      // account's own accountGroup from accounts.json (not the group's parent).
+      const rawGroup = selectedAccountInfo?.accountGroup;
+      const key = normalizeAccountGroupKey(rawGroup);
+      if (!key) {
         return [];
       }
-      const parentSet = accountGroupParentsMap.get(selectedGroupKey);
-      if (!parentSet || !parentSet.size) {
-        return [];
-      }
-      const seenParentIds = new Set();
-      const parents = [];
-      parentSet.forEach((parentKey) => {
-        if (!parentKey || parentKey === selectedGroupKey) {
-          return;
-        }
-        const parentGroup = accountGroupsByNormalizedName.get(parentKey) || null;
-        const parentId =
-          parentGroup && parentGroup.id !== undefined && parentGroup.id !== null
-            ? String(parentGroup.id).trim()
-            : null;
-        if (parentId && seenParentIds.has(parentId)) {
-          return;
-        }
-        if (parentId) {
-          seenParentIds.add(parentId);
-        }
-        const displayName = accountGroupNamesByKey.get(parentKey) || parentId || parentKey;
-        const href = parentId ? buildAccountViewUrl(parentId) || null : null;
-        parents.push({
-          id: parentId || parentKey,
+      const group = accountGroupsByNormalizedName.get(key) || null;
+      const groupId = group && group.id !== undefined && group.id !== null ? String(group.id).trim() : null;
+      const displayName = accountGroupNamesByKey.get(key) || groupId || key;
+      const href = groupId ? buildAccountViewUrl(groupId) || null : null;
+      return [
+        {
+          id: groupId || key,
           label: displayName,
           href,
-        });
-      });
-      parents.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
-      return parents;
+        },
+      ];
     };
 
     const items = [];
@@ -7271,8 +7285,10 @@ export default function App() {
       });
     });
 
+    // Build parent group list even when there are no child items (e.g. concrete account selected).
+    const parentGroupItems = buildParentGroupItems();
+
     if (!items.length) {
-      const parentGroupItems = buildParentGroupItems();
       return { items: [], parentTotal: null, parents: parentGroupItems };
     }
 
@@ -7284,8 +7300,6 @@ export default function App() {
       }
       return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
     });
-
-    const parentGroupItems = buildParentGroupItems();
 
     let parentTotal = null;
     if (isFiniteNumber(selectedAccountFunding?.totalEquityCad)) {

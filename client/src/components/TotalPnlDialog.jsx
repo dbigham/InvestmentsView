@@ -13,6 +13,7 @@ import {
   PADDING,
   clampChartX,
   buildChartMetrics,
+  buildHoverLabel,
 } from './TotalPnlChartUtils';
 
 function formatIssues(issues, missingPriceSymbols) {
@@ -406,19 +407,10 @@ export default function TotalPnlDialog({
     return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
   }, [marker, hoverPoint]);
 
-  const hoverValue = hoverPoint
-    ? useDisplayStartDelta && Number.isFinite(hoverPoint.chartValue)
-      ? hoverPoint.chartValue
-      : hoverPoint.totalPnl
-    : null;
-  const hoverTone = Number.isFinite(hoverValue) ? classifyPnL(hoverValue) : null;
-  const hoverLabel = hoverPoint
-    ? {
-        amount: formatSignedMoney(hoverValue),
-        date: formatDate(hoverPoint.date),
-        tone: hoverTone,
-      }
-    : null;
+  const hoverLabel = useMemo(
+    () => buildHoverLabel(hoverPoint, { useDisplayStartDelta }),
+    [hoverPoint, useDisplayStartDelta]
+  );
 
   const selectionRange = useMemo(() => {
     if (selectionState.active) {
@@ -498,7 +490,8 @@ export default function TotalPnlDialog({
     const margin = 70;
     const clampedCenter = Math.max(margin, Math.min(CHART_WIDTH - margin, center));
     const leftPercent = (clampedCenter / CHART_WIDTH) * 100;
-    return { left: `${leftPercent}%`, top: '12px', transform: 'translate(-50%, 0)' };
+    // Position above the chart so it doesn't obscure the line
+    return { left: `${leftPercent}%`, top: '0px', transform: 'translate(-50%, -100%)' };
   }, [selectionSummary]);
   const selectionStartDateLabel = selectionSummary ? formatDate(selectionSummary.startPoint.date) : null;
   const selectionEndDateLabel = selectionSummary ? formatDate(selectionSummary.endPoint.date) : null;
@@ -805,6 +798,11 @@ export default function TotalPnlDialog({
                           >
                             ×
                           </button>
+                        </div>
+                        <div className="pnl-dialog__selection-values-alt">
+                          <span>
+                            {selectionStartValueLabel} → {selectionEndValueLabel}
+                          </span>
                         </div>
                         <div className="pnl-dialog__selection-dates">
                           {selectionStartDateLabel && selectionEndDateLabel
