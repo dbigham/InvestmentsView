@@ -11572,20 +11572,23 @@ export default function App() {
       ? Number(focusedSymbolQuote.changePercent)
       : null;
   const quoteChangeDisplay =
-    quoteChangePercent !== null ? formatSignedPercent(quoteChangePercent, 2) : '—';
+    quoteChangePercent !== null ? formatSignedPercent(quoteChangePercent, 2) : null;
   const quoteChangeTone = quoteChangePercent > 0 ? 'positive' : quoteChangePercent < 0 ? 'negative' : 'neutral';
-  const quotePeDisplay =
+  const quotePeValue =
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
       ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-      : '—';
-  const quoteMarketCapDisplay = formatQuoteMoney(focusedSymbolQuote?.marketCap, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  });
-  const quoteDividendDisplay =
-    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.dividendYieldPercent)
+      : null;
+  const quoteMarketCapValue = (() => {
+    const formatted = formatQuoteMoney(focusedSymbolQuote?.marketCap, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+    return formatted === '—' ? null : formatted;
+  })();
+  const quoteDividendValue =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.dividendYieldPercent) && focusedSymbolQuote.dividendYieldPercent > 0
       ? formatPercent(focusedSymbolQuote.dividendYieldPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      : '—';
+      : null;
   const quoteMessage = (() => {
     if (focusedSymbolQuoteStatus === 'loading' && !focusedSymbolQuote) {
       return 'Loading quote…';
@@ -11688,78 +11691,89 @@ export default function App() {
                 onContextMenu={handleFocusedSymbolContextMenu}
                 title={summaryButtonTitle}
               >
-                <span className="symbol-view__title">
-                  <span className="symbol-view__icon" aria-hidden="true">
-                    {focusedSymbolLogoUrl ? (
-                      <img
-                        className="symbol-view__icon-image"
-                        src={focusedSymbolLogoUrl}
-                        alt={focusedSymbolLogoAlt || undefined}
-                        width={28}
-                        height={28}
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                      />
+                <div className="symbol-view__summary-content">
+                  <div className="symbol-view__primary">
+                    <span className="symbol-view__title">
+                      <span className="symbol-view__icon" aria-hidden="true">
+                        {focusedSymbolLogoUrl ? (
+                          <img
+                            className="symbol-view__icon-image"
+                            src={focusedSymbolLogoUrl}
+                            alt={focusedSymbolLogoAlt || undefined}
+                            width={28}
+                            height={28}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                          >
+                            <path
+                              d="M4 4V20H20"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <path
+                              d="M7 14L11.5 9.5L14.5 12.5L20 7"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        )}
+                      </span>
+                      <span className="symbol-view__text">
+                        <strong>{focusedSymbol}</strong>
+                        {focusedSymbolDescription ? (
+                          <span className="symbol-view__desc">— {focusedSymbolDescription}</span>
+                        ) : null}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="symbol-view__details">
+                    {quoteMessage ? (
+                      <span className="symbol-view__detail symbol-view__detail--message">{quoteMessage}</span>
                     ) : (
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        xmlns="http://www.w3.org/2000/svg"
-                      >
-                        <path
-                          d="M4 4V20H20"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                        <path
-                          d="M7 14L11.5 9.5L14.5 12.5L20 7"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                  </span>
-                  <span className="symbol-view__text">
-                    <strong>{focusedSymbol}</strong>
-                    {focusedSymbolDescription ? (
-                      <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
-                    ) : null}
-                  </span>
-                </span>
-                <div className="symbol-view__metrics">
-                  {quoteMessage ? (
-                    <span className="symbol-view__metric symbol-view__metric--message">{quoteMessage}</span>
-                  ) : (
-                    <>
-                      <span className="symbol-view__metric">
-                        <span className="symbol-view__metric-label">Price</span>
-                        <span className="symbol-view__metric-value">{quotePriceDisplay}</span>
-                        <span
-                          className={`symbol-view__metric-change symbol-view__metric-change--${quoteChangeTone}`}
-                        >
-                          {quoteChangeDisplay}
+                      <>
+                        <span className="symbol-view__detail symbol-view__detail--price">
+                          <span className="symbol-view__detail-price">{quotePriceDisplay}</span>
+                          {quoteChangeDisplay ? (
+                            <span
+                              className={`symbol-view__detail-change symbol-view__detail-change--${quoteChangeTone}`}
+                            >
+                              ({quoteChangeDisplay})
+                            </span>
+                          ) : null}
                         </span>
-                      </span>
-                      <span className="symbol-view__metric">
-                        <span className="symbol-view__metric-label">P/E</span>
-                        <span className="symbol-view__metric-value">{quotePeDisplay}</span>
-                      </span>
-                      <span className="symbol-view__metric">
-                        <span className="symbol-view__metric-label">Market cap</span>
-                        <span className="symbol-view__metric-value">{quoteMarketCapDisplay}</span>
-                      </span>
-                      <span className="symbol-view__metric">
-                        <span className="symbol-view__metric-label">Dividend yield</span>
-                        <span className="symbol-view__metric-value">{quoteDividendDisplay}</span>
-                      </span>
-                    </>
-                  )}
+                        {quotePeValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">P/E</span>
+                            <span className="symbol-view__detail-value">{quotePeValue}</span>
+                          </span>
+                        ) : null}
+                        {quoteMarketCapValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">Market cap</span>
+                            <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                          </span>
+                        ) : null}
+                        {quoteDividendValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">Dividend yield</span>
+                            <span className="symbol-view__detail-value">{quoteDividendValue}</span>
+                          </span>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
                 </div>
               </button>
               <div className="symbol-view__spacer" />
