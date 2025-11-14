@@ -200,18 +200,9 @@ textarea {
 .symbol-view__summary {
   flex: 1;
   display: flex;
-  border: none;
-  background: none;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-  color: inherit;
-  font: inherit;
+  min-width: 0;
 }
-.symbol-view__summary:focus-visible {
-  outline: none;
-}
-.symbol-view__summary:focus-visible .symbol-view__summary-content {
+.symbol-view__summary:focus-within .symbol-view__summary-content {
   box-shadow: 0 0 0 2px var(--color-accent);
 }
 .symbol-view__summary-content {
@@ -224,12 +215,29 @@ textarea {
   overflow: hidden;
   background: var(--color-accent-soft);
 }
+.symbol-view__summary-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.symbol-view__summary-main:focus-visible {
+  outline: none;
+}
 .symbol-view__primary {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
   min-width: 0;
+}
+.symbol-view__primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .symbol-view__title {
   font-size: 14px;

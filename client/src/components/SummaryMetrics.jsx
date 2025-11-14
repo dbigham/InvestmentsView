@@ -1887,7 +1887,7 @@ export default function SummaryMetrics({
 
       {showTotalPnlChart && symbolMode && (
         <div className="equity-card__total-pnl-chart-caption" aria-hidden="true">
-          Account Total P&amp;L
+          Total P&amp;L
         </div>
       )}
       {showTotalPnlChart && (

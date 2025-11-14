@@ -11709,60 +11709,83 @@ export default function App() {
         {focusedSymbol ? (
           <section className="symbol-view" aria-label="Symbol focus">
             <div className="symbol-view__row">
-              <button
-                type="button"
-                className="symbol-view__summary"
-                onClick={handleFocusedSymbolSummaryClick}
-                onKeyDown={handleFocusedSymbolSummaryKeyDown}
-                onContextMenu={handleFocusedSymbolContextMenu}
-                title={summaryButtonTitle}
-              >
+              <div className="symbol-view__summary">
                 <div className="symbol-view__summary-content">
                   <div className="symbol-view__primary">
-                    <span className="symbol-view__title">
-                      <span className="symbol-view__icon" aria-hidden="true">
-                        {focusedSymbolLogoUrl ? (
-                          <img
-                            className="symbol-view__icon-image"
-                            src={focusedSymbolLogoUrl}
-                            alt={focusedSymbolLogoAlt || undefined}
-                            width={28}
-                            height={28}
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <svg
-                            width="16"
-                            height="16"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            xmlns="http://www.w3.org/2000/svg"
-                          >
-                            <path
-                              d="M4 4V20H20"
-                              stroke="currentColor"
-                              strokeWidth="1.8"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
+                    <div
+                      className="symbol-view__summary-main"
+                      role="button"
+                      tabIndex={0}
+                      onClick={handleFocusedSymbolSummaryClick}
+                      onKeyDown={handleFocusedSymbolSummaryKeyDown}
+                      onContextMenu={handleFocusedSymbolContextMenu}
+                      title={summaryButtonTitle}
+                    >
+                      <span className="symbol-view__title">
+                        <span className="symbol-view__icon" aria-hidden="true">
+                          {focusedSymbolLogoUrl ? (
+                            <img
+                              className="symbol-view__icon-image"
+                              src={focusedSymbolLogoUrl}
+                              alt={focusedSymbolLogoAlt || undefined}
+                              width={28}
+                              height={28}
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
                             />
-                            <path
-                              d="M7 14L11.5 9.5L14.5 12.5L20 7"
-                              stroke="currentColor"
-                              strokeWidth="1.8"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        )}
+                          ) : (
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M4 4V20H20"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              <path
+                                d="M7 14L11.5 9.5L14.5 12.5L20 7"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          )}
+                        </span>
+                        <span className="symbol-view__text">
+                          <strong>{focusedSymbol}</strong>
+                          {focusedSymbolDescription ? (
+                            <span className="symbol-view__desc">— {focusedSymbolDescription}</span>
+                          ) : null}
+                        </span>
                       </span>
-                      <span className="symbol-view__text">
-                        <strong>{focusedSymbol}</strong>
-                        {focusedSymbolDescription ? (
-                          <span className="symbol-view__desc">— {focusedSymbolDescription}</span>
-                        ) : null}
-                      </span>
-                    </span>
+                    </div>
+                    <div className="symbol-view__primary-actions">
+                      <button
+                        type="button"
+                        className="symbol-view__action"
+                        onClick={handleFocusedSymbolBuySell}
+                      >
+                        Buy/sell
+                      </button>
+                      <button
+                        type="button"
+                        className="symbol-view__clear"
+                        onClick={() => {
+                          setFocusedSymbol(null);
+                          setFocusedSymbolDescription(null);
+                          setOrdersFilter('');
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
                   <div className="symbol-view__details">
                     {quoteMessage ? (
@@ -11801,25 +11824,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              </button>
-              <button
-                type="button"
-                className="symbol-view__action"
-                onClick={handleFocusedSymbolBuySell}
-              >
-                Buy/sell
-              </button>
-              <button
-                type="button"
-                className="symbol-view__clear"
-                onClick={() => {
-                  setFocusedSymbol(null);
-                  setFocusedSymbolDescription(null);
-                  setOrdersFilter('');
-                }}
-              >
-                Clear
-              </button>
+              </div>
             </div>
             {focusedSymbolMenuState.open ? (
               <div
