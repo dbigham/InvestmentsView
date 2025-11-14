@@ -1005,6 +1005,7 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
           lastCurrency: null,
           lastDateKey: null,
           lastDateTotals: new Map(),
+          lineItems: [],
         };
         entryMap.set(entryKey, aggregateEntry);
       } else {
@@ -1119,6 +1120,29 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
           aggregateEntry.lastAmount = normalizedLastAmount;
         }
       }
+
+      const lineItems = Array.isArray(entry.lineItems) ? entry.lineItems : [];
+      lineItems.forEach((lineItem, lineIndex) => {
+        if (!lineItem || typeof lineItem !== 'object') {
+          return;
+        }
+
+        const normalizedLineItem = { ...lineItem };
+        if (!normalizedLineItem.symbol && canonicalSymbol) {
+          normalizedLineItem.symbol = canonicalSymbol;
+        }
+        if (!normalizedLineItem.displaySymbol && (displaySymbol || canonicalSymbol)) {
+          normalizedLineItem.displaySymbol = displaySymbol || canonicalSymbol;
+        }
+        if (!normalizedLineItem.description && description) {
+          normalizedLineItem.description = description;
+        }
+        if (!normalizedLineItem.lineItemId) {
+          normalizedLineItem.lineItemId = `${entryKey}:${lineIndex}`;
+        }
+
+        aggregateEntry.lineItems.push(normalizedLineItem);
+      });
     });
   });
 
@@ -1185,6 +1209,92 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
       }
     }
 
+    const normalizedLineItems = Array.isArray(entry.lineItems)
+      ? entry.lineItems
+          .map((lineItem) => {
+            if (!lineItem || typeof lineItem !== 'object') {
+              return null;
+            }
+
+            const rawLineSymbols = Array.isArray(lineItem.rawSymbols)
+              ? lineItem.rawSymbols
+                  .map((value) => (typeof value === 'string' ? value.trim() : ''))
+                  .filter(Boolean)
+              : rawSymbols;
+
+            const lineCurrencyTotals = {};
+            if (lineItem.currencyTotals && typeof lineItem.currencyTotals === 'object') {
+              Object.entries(lineItem.currencyTotals).forEach(([currency, value]) => {
+                const numeric = Number(value);
+                if (!Number.isFinite(numeric)) {
+                  return;
+                }
+                const key = normalizeCurrencyKey(currency);
+                lineCurrencyTotals[key] = (lineCurrencyTotals[key] || 0) + numeric;
+              });
+            }
+            if (!Object.keys(lineCurrencyTotals).length) {
+              const fallbackAmount = Number(lineItem.amount);
+              if (Number.isFinite(fallbackAmount)) {
+                const fallbackCurrency = normalizeCurrencyKey(lineItem.currency);
+                lineCurrencyTotals[fallbackCurrency] = (lineCurrencyTotals[fallbackCurrency] || 0) + fallbackAmount;
+              }
+            }
+
+            const firstDate =
+              (typeof lineItem.firstDate === 'string' && lineItem.firstDate.trim()) ||
+              (typeof lineItem.startDate === 'string' && lineItem.startDate.trim()) ||
+              (typeof lineItem.date === 'string' && lineItem.date.trim()) ||
+              null;
+            const lastDate =
+              (typeof lineItem.lastDate === 'string' && lineItem.lastDate.trim()) ||
+              (typeof lineItem.endDate === 'string' && lineItem.endDate.trim()) ||
+              firstDate;
+            const timestamp =
+              (typeof lineItem.lastTimestamp === 'string' && lineItem.lastTimestamp.trim()) ||
+              (typeof lineItem.timestamp === 'string' && lineItem.timestamp.trim()) ||
+              null;
+            const lastAmount = Number.isFinite(lineItem.lastAmount)
+              ? lineItem.lastAmount
+              : Number.isFinite(lineItem.amount)
+              ? lineItem.amount
+              : null;
+            const lastCurrency = normalizeCurrencyKey(
+              (typeof lineItem.lastCurrency === 'string' && lineItem.lastCurrency.trim()) ||
+                (typeof lineItem.currency === 'string' && lineItem.currency.trim()) ||
+                null
+            );
+
+            return {
+              symbol: lineItem.symbol || entry.symbol || null,
+              displaySymbol:
+                lineItem.displaySymbol ||
+                lineItem.symbol ||
+                entry.displaySymbol ||
+                entry.symbol ||
+                (rawLineSymbols && rawLineSymbols.length ? rawLineSymbols[0] : null) ||
+                null,
+              rawSymbols: rawLineSymbols && rawLineSymbols.length ? rawLineSymbols : undefined,
+              description: lineItem.description || entry.description || null,
+              currencyTotals: lineCurrencyTotals,
+              cadAmount: Number.isFinite(lineItem.cadAmount) ? lineItem.cadAmount : null,
+              conversionIncomplete: lineItem.conversionIncomplete ? true : undefined,
+              activityCount: Number.isFinite(lineItem.activityCount) ? lineItem.activityCount : 1,
+              firstDate,
+              lastDate,
+              lastTimestamp: timestamp,
+              lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
+              lastCurrency,
+              lineItemId:
+                (typeof lineItem.lineItemId === 'string' && lineItem.lineItemId.trim()) ||
+                (typeof lineItem.id === 'string' && lineItem.id.trim()) ||
+                null,
+              accountId: lineItem.accountId || null,
+            };
+          })
+          .filter(Boolean)
+      : [];
+
     return {
       symbol: entry.symbol || null,
       displaySymbol:
@@ -1201,6 +1311,7 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
       lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
       lastCurrency: lastCurrency || null,
       _magnitude: magnitude,
+      lineItems: normalizedLineItems.length ? normalizedLineItems : undefined,
     };
   });
 
@@ -8444,6 +8555,8 @@ async function computeDividendBreakdown(login, account, options = {}) {
   let earliest = null;
   let latest = null;
 
+  let lineItemCounter = 0;
+
   for (const activity of filteredDividendActivities) {
     const details = resolveActivityAmountDetails(activity);
     if (!details) {
@@ -8484,6 +8597,7 @@ async function computeDividendBreakdown(login, account, options = {}) {
         latestCurrency: null,
         latestDateKey: null,
         totalsByDate: new Map(),
+        lineItems: [],
       };
       totalsBySymbol.set(entryKey, entry);
     }
@@ -8557,6 +8671,38 @@ async function computeDividendBreakdown(login, account, options = {}) {
       entry.cadAmount += cadContribution;
       totalCad += cadContribution;
     }
+
+    const normalizedCurrency = normalizeCurrency(currency) || '';
+    const lineItemId = `${accountKey || 'acct'}:${lineItemCounter += 1}`;
+    const dateKey = timestamp ? formatDateOnly(timestamp) : null;
+    const lineCurrencyTotals = {};
+    if (Number.isFinite(amount)) {
+      lineCurrencyTotals[normalizedCurrency] = amount;
+    }
+    const activityDescription =
+      typeof activity.description === 'string' && activity.description.trim()
+        ? activity.description.trim()
+        : null;
+
+    entry.lineItems.push({
+      lineItemId,
+      symbol: symbolInfo.canonical || null,
+      displaySymbol: symbolInfo.display || symbolInfo.canonical || symbolInfo.raw || null,
+      rawSymbols: symbolInfo.raw ? [symbolInfo.raw] : undefined,
+      description: activityDescription,
+      currencyTotals: lineCurrencyTotals,
+      amount,
+      currency: normalizedCurrency,
+      cadAmount: Number.isFinite(cadContribution) ? cadContribution : null,
+      conversionIncomplete: !Number.isFinite(cadContribution),
+      activityCount: 1,
+      firstDate: dateKey,
+      lastDate: dateKey,
+      lastTimestamp: timestamp ? timestamp.toISOString() : null,
+      lastAmount: Number.isFinite(amount) ? amount : null,
+      lastCurrency: normalizedCurrency || null,
+      accountId: accountKey || null,
+    });
   }
 
   const toCurrencyTotalsObject = (map) => {
@@ -8612,6 +8758,90 @@ async function computeDividendBreakdown(login, account, options = {}) {
         }
       }
     }
+
+    const normalizedLineItems = Array.isArray(entry.lineItems)
+      ? entry.lineItems
+          .map((item) => {
+            if (!item || typeof item !== 'object') {
+              return null;
+            }
+
+            const itemCurrencyTotals = {};
+            if (item.currencyTotals && typeof item.currencyTotals === 'object') {
+              for (const [key, value] of Object.entries(item.currencyTotals)) {
+                const numeric = Number(value);
+                if (!Number.isFinite(numeric)) {
+                  continue;
+                }
+                const normalizedKey = normalizeCurrency(key) || '';
+                itemCurrencyTotals[normalizedKey] = (itemCurrencyTotals[normalizedKey] || 0) + numeric;
+              }
+            }
+            if (!Object.keys(itemCurrencyTotals).length) {
+              const numericAmount = Number(item.amount);
+              if (Number.isFinite(numericAmount)) {
+                const normalizedKey = normalizeCurrency(item.currency) || '';
+                itemCurrencyTotals[normalizedKey] = (itemCurrencyTotals[normalizedKey] || 0) + numericAmount;
+              }
+            }
+
+            const resolvedFirstDate =
+              (typeof item.firstDate === 'string' && item.firstDate.trim()) ||
+              (typeof item.startDate === 'string' && item.startDate.trim()) ||
+              (typeof item.date === 'string' && item.date.trim()) ||
+              (typeof item.lastTimestamp === 'string' && item.lastTimestamp.trim())
+                ? item.lastTimestamp.trim().slice(0, 10)
+                : null;
+            const resolvedLastDate =
+              (typeof item.lastDate === 'string' && item.lastDate.trim()) ||
+              (typeof item.endDate === 'string' && item.endDate.trim()) ||
+              resolvedFirstDate;
+            const timestamp =
+              (typeof item.lastTimestamp === 'string' && item.lastTimestamp.trim()) ||
+              (typeof item.timestamp === 'string' && item.timestamp.trim()) ||
+              null;
+            const resolvedLastAmount = Number.isFinite(item.lastAmount)
+              ? item.lastAmount
+              : Number.isFinite(item.amount)
+              ? item.amount
+              : null;
+            const resolvedLastCurrency =
+              normalizeCurrency(item.lastCurrency) || normalizeCurrency(item.currency) || null;
+
+            const rawLineSymbols = Array.isArray(item.rawSymbols)
+              ? item.rawSymbols
+                  .map((value) => (typeof value === 'string' ? value.trim() : ''))
+                  .filter(Boolean)
+              : rawSymbols;
+
+            return {
+              symbol: item.symbol || entry.canonical || null,
+              displaySymbol:
+                item.displaySymbol ||
+                item.symbol ||
+                displaySymbol ||
+                (rawLineSymbols && rawLineSymbols.length ? rawLineSymbols[0] : null) ||
+                null,
+              rawSymbols: rawLineSymbols && rawLineSymbols.length ? rawLineSymbols : undefined,
+              description: item.description || entry.description || null,
+              currencyTotals: itemCurrencyTotals,
+              cadAmount: Number.isFinite(item.cadAmount) ? item.cadAmount : null,
+              conversionIncomplete: item.conversionIncomplete ? true : undefined,
+              activityCount: Number.isFinite(item.activityCount) ? item.activityCount : 1,
+              firstDate: resolvedFirstDate,
+              lastDate: resolvedLastDate,
+              lastTimestamp: timestamp,
+              lastAmount: Number.isFinite(resolvedLastAmount) ? resolvedLastAmount : null,
+              lastCurrency: resolvedLastCurrency,
+              lineItemId:
+                (typeof item.lineItemId === 'string' && item.lineItemId.trim()) ||
+                (typeof item.id === 'string' && item.id.trim()) ||
+                null,
+              accountId: item.accountId || null,
+            };
+          })
+          .filter(Boolean)
+      : [];
     return {
       symbol: entry.canonical || null,
       displaySymbol: displaySymbol || null,
@@ -8630,6 +8860,7 @@ async function computeDividendBreakdown(login, account, options = {}) {
         cadAmount,
         currencyTotals,
       }),
+      lineItems: normalizedLineItems.length ? normalizedLineItems : undefined,
     };
   });
 
