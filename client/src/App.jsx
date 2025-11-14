@@ -6211,7 +6211,156 @@ export default function App() {
     let startDate = null;
     let endDate = null;
     let conversionIncomplete = false;
-    const expandedEntries = [];
+    const aggregatedByDate = new Map();
+    const aggregatedWrappers = [];
+    let aggregateInsertionIndex = 0;
+
+    const mergeAggregatedEntry = (target, source) => {
+      if (source?.currencyTotals && typeof source.currencyTotals === 'object') {
+        if (!target.currencyTotals || typeof target.currencyTotals !== 'object') {
+          target.currencyTotals = {};
+        }
+        Object.entries(source.currencyTotals).forEach(([cur, val]) => {
+          const numeric = Number(val);
+          if (!Number.isFinite(numeric)) {
+            return;
+          }
+          const key = normalizeCurrencyKey(cur);
+          const existing = Number(target.currencyTotals[key]);
+          target.currencyTotals[key] = (Number.isFinite(existing) ? existing : 0) + numeric;
+        });
+      }
+
+      if (Number.isFinite(source?.cadAmount)) {
+        const existing = Number(target.cadAmount);
+        const current = Number.isFinite(existing) ? existing : 0;
+        target.cadAmount = current + source.cadAmount;
+      }
+
+      if (source?.conversionIncomplete) {
+        target.conversionIncomplete = true;
+      }
+
+      const sourceCount = Number.isFinite(source?.activityCount) ? Math.round(source.activityCount) : 0;
+      const targetCount = Number.isFinite(target.activityCount) ? Math.round(target.activityCount) : 0;
+      target.activityCount = targetCount + sourceCount;
+
+      const sourceFirstDate = source?.firstDate || source?.lastDate || null;
+      const sourceLastDate = source?.lastDate || source?.firstDate || null;
+      if (sourceFirstDate && (!target.firstDate || sourceFirstDate < target.firstDate)) {
+        target.firstDate = sourceFirstDate;
+      }
+      if (sourceLastDate && (!target.lastDate || sourceLastDate > target.lastDate)) {
+        target.lastDate = sourceLastDate;
+      }
+
+      const sourceTimestamp = source?.lastTimestamp || null;
+      const targetTimestamp = target.lastTimestamp || null;
+      if (sourceTimestamp && (!targetTimestamp || sourceTimestamp > targetTimestamp)) {
+        target.lastTimestamp = sourceTimestamp;
+        target.lastAmount = Number.isFinite(source?.lastAmount) ? source.lastAmount : target.lastAmount;
+        target.lastCurrency = source?.lastCurrency || target.lastCurrency || null;
+      } else if (!targetTimestamp && Number.isFinite(target.lastAmount) === false) {
+        if (Number.isFinite(source?.lastAmount)) {
+          target.lastAmount = source.lastAmount;
+          target.lastCurrency = source?.lastCurrency || target.lastCurrency || null;
+        }
+      } else if (!Number.isFinite(target.lastAmount) && Number.isFinite(source?.lastAmount)) {
+        target.lastAmount = source.lastAmount;
+        target.lastCurrency = source?.lastCurrency || target.lastCurrency || null;
+      }
+
+      if (!target.description && source?.description) {
+        target.description = source.description;
+      }
+      if (!target.displaySymbol && source?.displaySymbol) {
+        target.displaySymbol = source.displaySymbol;
+      }
+      if (!target.symbol && source?.symbol) {
+        target.symbol = source.symbol;
+      }
+      const targetRawSymbols = Array.isArray(target.rawSymbols) ? target.rawSymbols : null;
+      const sourceRawSymbols = Array.isArray(source?.rawSymbols) ? source.rawSymbols : null;
+      if ((!targetRawSymbols || !targetRawSymbols.length) && sourceRawSymbols && sourceRawSymbols.length) {
+        target.rawSymbols = sourceRawSymbols;
+      }
+
+      if (source?.lineItemId) {
+        if (!target.lineItemId) {
+          target.lineItemId = source.lineItemId;
+        } else if (target.lineItemId !== source.lineItemId) {
+          const collectIds = (value) =>
+            String(value)
+              .split('|')
+              .map((part) => part.trim())
+              .filter(Boolean);
+          const existingIds = new Set(collectIds(target.lineItemId));
+          collectIds(source.lineItemId).forEach((id) => existingIds.add(id));
+          target.lineItemId = Array.from(existingIds).join('|');
+        }
+      }
+    };
+
+    const resolveEntryGroupDate = (entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      if (typeof entry.lastDate === 'string' && entry.lastDate.trim()) {
+        return entry.lastDate.trim();
+      }
+      if (typeof entry.firstDate === 'string' && entry.firstDate.trim()) {
+        return entry.firstDate.trim();
+      }
+      if (typeof entry.lastTimestamp === 'string' && entry.lastTimestamp.trim()) {
+        return entry.lastTimestamp.trim().slice(0, 10);
+      }
+      return null;
+    };
+
+    const appendAggregatedEntry = (entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const groupDate = resolveEntryGroupDate(entry);
+      if (groupDate) {
+        let wrapper = aggregatedByDate.get(groupDate);
+        if (!wrapper) {
+          const aggregatedEntry = { ...entry };
+          aggregatedEntry.lineItemId =
+            aggregatedEntry.lineItemId || `${groupDate}-${aggregateInsertionIndex}`;
+          wrapper = {
+            entry: aggregatedEntry,
+            sortDate: aggregatedEntry.lastDate || aggregatedEntry.firstDate || groupDate,
+            sortTimestamp: aggregatedEntry.lastTimestamp || null,
+            firstIndex: aggregateInsertionIndex,
+          };
+          aggregateInsertionIndex += 1;
+          aggregatedByDate.set(groupDate, wrapper);
+          aggregatedWrappers.push(wrapper);
+        } else {
+          mergeAggregatedEntry(wrapper.entry, entry);
+          const entrySortDate = entry.lastDate || entry.firstDate || groupDate;
+          if (entrySortDate && (!wrapper.sortDate || entrySortDate > wrapper.sortDate)) {
+            wrapper.sortDate = entrySortDate;
+          }
+          const entryTimestamp = entry.lastTimestamp || null;
+          if (entryTimestamp && (!wrapper.sortTimestamp || entryTimestamp > wrapper.sortTimestamp)) {
+            wrapper.sortTimestamp = entryTimestamp;
+          }
+        }
+      } else {
+        const aggregatedEntry = { ...entry };
+        aggregatedEntry.lineItemId =
+          aggregatedEntry.lineItemId || `dividend-${aggregateInsertionIndex}`;
+        aggregatedWrappers.push({
+          entry: aggregatedEntry,
+          sortDate: null,
+          sortTimestamp: aggregatedEntry.lastTimestamp || null,
+          firstIndex: aggregateInsertionIndex,
+        });
+        aggregateInsertionIndex += 1;
+      }
+    };
 
     matched.forEach((entry, entryIndex) => {
       const baseSymbol = (entry?.symbol || '').toString();
@@ -6324,13 +6473,52 @@ export default function App() {
             `${entryIndex}-${itemIndex}`,
         };
 
-        expandedEntries.push(expandedEntry);
+        appendAggregatedEntry(expandedEntry);
       });
+    });
+
+    aggregatedWrappers.sort((a, b) => {
+      const aDate = typeof a.sortDate === 'string' ? a.sortDate : null;
+      const bDate = typeof b.sortDate === 'string' ? b.sortDate : null;
+      if (aDate && bDate && aDate !== bDate) {
+        return bDate.localeCompare(aDate);
+      }
+      if (aDate && !bDate) {
+        return -1;
+      }
+      if (!aDate && bDate) {
+        return 1;
+      }
+      const aTimestamp = typeof a.sortTimestamp === 'string' ? a.sortTimestamp : null;
+      const bTimestamp = typeof b.sortTimestamp === 'string' ? b.sortTimestamp : null;
+      if (aTimestamp && bTimestamp && aTimestamp !== bTimestamp) {
+        return bTimestamp.localeCompare(aTimestamp);
+      }
+      if (aTimestamp && !bTimestamp) {
+        return -1;
+      }
+      if (!aTimestamp && bTimestamp) {
+        return 1;
+      }
+      return a.firstIndex - b.firstIndex;
+    });
+
+    const groupedEntries = aggregatedWrappers.map((wrapper) => {
+      const entry = wrapper.entry;
+      if (!Number.isFinite(entry?.cadAmount)) {
+        entry.cadAmount = null;
+      }
+      if (!Number.isFinite(entry?.activityCount)) {
+        entry.activityCount = null;
+      } else {
+        entry.activityCount = Math.round(entry.activityCount);
+      }
+      return entry;
     });
 
     return {
       ...selectedAccountDividends,
-      entries: expandedEntries,
+      entries: groupedEntries,
       totalsByCurrency,
       totalCad: totalCadHasValue ? totalCad : null,
       totalCount,

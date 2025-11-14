@@ -155,6 +155,9 @@ function DividendBreakdown({ summary, variant }) {
                   : '—';
                 const lastPaymentLabel = formatLastPayment(entry);
                 const rowKey =
+                  (entry.lineItemId && `dividend-${entry.lineItemId}`) ||
+                  (entry.lastDate && `${entry.symbol || entry.displaySymbol || 'dividend'}-${entry.lastDate}`) ||
+                  (entry.firstDate && `${entry.symbol || entry.displaySymbol || 'dividend'}-${entry.firstDate}`) ||
                   entry.symbol ||
                   (rawSymbols.length ? rawSymbols.join('|') : null) ||
                   entry.displaySymbol ||
