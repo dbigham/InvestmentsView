@@ -6526,6 +6526,7 @@ export default function App() {
         conversionIncomplete || selectedAccountDividends.conversionIncomplete ? true : undefined,
       startDate: startDate || selectedAccountDividends.startDate || null,
       endDate: endDate || selectedAccountDividends.endDate || null,
+      groupingMode: 'date',
     };
   }, [focusedSymbol, selectedAccountDividends]);
   const showDividendsPanel = hasDividendSummary && portfolioViewTab === 'dividends';
