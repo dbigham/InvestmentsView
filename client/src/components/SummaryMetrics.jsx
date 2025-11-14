@@ -596,6 +596,31 @@ export default function SummaryMetrics({
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
+  const usdCurrencyFormatter = useMemo(
+    () => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }),
+    []
+  );
+  const resolvedTotalEquityValue = useMemo(() => {
+    const value = displayTotalEquity ?? totalEquity;
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : null;
+  }, [displayTotalEquity, totalEquity]);
+  const totalEquityUsdTooltip = useMemo(() => {
+    if (
+      typeof usdToCadRate !== 'number' ||
+      !Number.isFinite(usdToCadRate) ||
+      usdToCadRate <= 0 ||
+      typeof resolvedTotalEquityValue !== 'number' ||
+      !Number.isFinite(resolvedTotalEquityValue)
+    ) {
+      return null;
+    }
+    const usdValue = resolvedTotalEquityValue / usdToCadRate;
+    return `≈ ${usdCurrencyFormatter.format(usdValue)} USD`;
+  }, [resolvedTotalEquityValue, usdCurrencyFormatter, usdToCadRate]);
   const deploymentAvailable =
     deploymentSummary &&
     (Number.isFinite(deploymentSummary.deployedValue) ||
@@ -1770,7 +1795,12 @@ export default function SummaryMetrics({
       <header className="equity-card__header">
         <div className="equity-card__heading">
           <h2 className="equity-card__title">{title}</h2>
-          <p className="equity-card__value">{formatMoney(displayTotalEquity ?? totalEquity)}</p>
+          <p
+            className="equity-card__value"
+            title={totalEquityUsdTooltip ?? undefined}
+          >
+            {formatMoney(displayTotalEquity ?? totalEquity)}
+          </p>
           {usdToCadRate !== null && (
             <p className="equity-card__subtext">
               <a
