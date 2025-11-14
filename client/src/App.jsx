@@ -816,6 +816,7 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
           lastCurrency: null,
           lastDateKey: null,
           lastDateTotals: new Map(),
+          lineItems: [],
         };
         entryMap.set(entryKey, aggregateEntry);
       } else {
@@ -930,6 +931,29 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
           aggregateEntry.lastAmount = normalizedLastAmount;
         }
       }
+
+      const lineItems = Array.isArray(entry.lineItems) ? entry.lineItems : [];
+      lineItems.forEach((lineItem, lineIndex) => {
+        if (!lineItem || typeof lineItem !== 'object') {
+          return;
+        }
+
+        const normalizedLineItem = { ...lineItem };
+        if (!normalizedLineItem.symbol && canonicalSymbol) {
+          normalizedLineItem.symbol = canonicalSymbol;
+        }
+        if (!normalizedLineItem.displaySymbol && (displaySymbol || canonicalSymbol)) {
+          normalizedLineItem.displaySymbol = displaySymbol || canonicalSymbol;
+        }
+        if (!normalizedLineItem.description && description) {
+          normalizedLineItem.description = description;
+        }
+        if (!normalizedLineItem.lineItemId) {
+          normalizedLineItem.lineItemId = `${entryKey}:${lineIndex}`;
+        }
+
+        aggregateEntry.lineItems.push(normalizedLineItem);
+      });
     });
   });
 
@@ -996,6 +1020,93 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
       }
     }
 
+    const normalizedLineItems = Array.isArray(entry.lineItems)
+      ? entry.lineItems
+          .map((lineItem) => {
+            if (!lineItem || typeof lineItem !== 'object') {
+              return null;
+            }
+
+            const rawLineSymbols = Array.isArray(lineItem.rawSymbols)
+              ? lineItem.rawSymbols
+                  .map((value) => (typeof value === 'string' ? value.trim() : ''))
+                  .filter(Boolean)
+              : null;
+            const lineCurrencyTotals = {};
+            if (lineItem && typeof lineItem.currencyTotals === 'object' && lineItem.currencyTotals) {
+              Object.entries(lineItem.currencyTotals).forEach(([currency, value]) => {
+                const numeric = Number(value);
+                if (!Number.isFinite(numeric)) {
+                  return;
+                }
+                const key = normalizeCurrencyKey(currency);
+                lineCurrencyTotals[key] = (lineCurrencyTotals[key] || 0) + numeric;
+              });
+            }
+            if (!Object.keys(lineCurrencyTotals).length) {
+              const fallbackAmount = Number(lineItem.amount);
+              if (Number.isFinite(fallbackAmount)) {
+                const fallbackCurrency = normalizeCurrencyKey(lineItem.currency);
+                lineCurrencyTotals[fallbackCurrency] = (lineCurrencyTotals[fallbackCurrency] || 0) + fallbackAmount;
+              }
+            }
+
+            const firstDate =
+              (typeof lineItem.firstDate === 'string' && lineItem.firstDate.trim()) ||
+              (typeof lineItem.startDate === 'string' && lineItem.startDate.trim()) ||
+              (typeof lineItem.date === 'string' && lineItem.date.trim()) ||
+              null;
+            const lastDate =
+              (typeof lineItem.lastDate === 'string' && lineItem.lastDate.trim()) ||
+              (typeof lineItem.endDate === 'string' && lineItem.endDate.trim()) ||
+              firstDate;
+            const timestamp =
+              lineItem.lastTimestamp || lineItem.timestamp ||
+              (lastDate ? `${lastDate}T00:00:00.000Z` : null);
+            const lastAmount = Number.isFinite(lineItem.lastAmount)
+              ? lineItem.lastAmount
+              : Number.isFinite(lineItem.amount)
+              ? lineItem.amount
+              : null;
+            const cadAmount = Number.isFinite(lineItem.cadAmount) ? lineItem.cadAmount : null;
+
+            return {
+              symbol: lineItem.symbol || entry.symbol || null,
+              displaySymbol:
+                lineItem.displaySymbol ||
+                lineItem.symbol ||
+                entry.displaySymbol ||
+                entry.symbol ||
+                (rawLineSymbols && rawLineSymbols.length ? rawLineSymbols[0] : null) ||
+                null,
+              rawSymbols: rawLineSymbols && rawLineSymbols.length ? rawLineSymbols : undefined,
+              description: lineItem.description || entry.description || null,
+              currencyTotals: lineCurrencyTotals,
+              cadAmount,
+              conversionIncomplete: lineItem.conversionIncomplete ? true : undefined,
+              activityCount: Number.isFinite(lineItem.activityCount) ? lineItem.activityCount : 1,
+              firstDate,
+              lastDate,
+              lastTimestamp: typeof timestamp === 'string' ? timestamp : null,
+              lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
+              lastCurrency: (function resolveLineItemCurrency() {
+                const candidate =
+                  (typeof lineItem.lastCurrency === 'string' && lineItem.lastCurrency.trim()) ||
+                  (typeof lineItem.currency === 'string' && lineItem.currency.trim()) ||
+                  null;
+                return candidate ? normalizeCurrencyKey(candidate) : null;
+              })(),
+              lineItemId:
+                (typeof lineItem.lineItemId === 'string' && lineItem.lineItemId.trim()) ||
+                (typeof lineItem.id === 'string' && lineItem.id.trim()) ||
+                null,
+              accountId: lineItem.accountId || null,
+              accountLabel: lineItem.accountLabel || null,
+            };
+          })
+          .filter(Boolean)
+      : [];
+
     return {
       symbol: entry.symbol || null,
       displaySymbol:
@@ -1012,6 +1123,7 @@ function aggregateDividendSummaries(dividendsByAccount, accountIds, timeframeKey
       lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
       lastCurrency: lastCurrency || null,
       _magnitude: magnitude,
+      lineItems: normalizedLineItems.length ? normalizedLineItems : undefined,
     };
   });
 
@@ -6054,32 +6166,364 @@ export default function App() {
         conversionIncomplete: false,
       };
     }
+    const normalizeCurrencyKey = (value) =>
+      typeof value === 'string' && value.trim() ? value.trim().toUpperCase() : '';
+    const shouldExpandLineItems = matched.some(
+      (entry) => Array.isArray(entry?.lineItems) && entry.lineItems.length > 0
+    );
+    if (!shouldExpandLineItems) {
+      const totalsByCurrency = {};
+      let totalCad = 0;
+      let totalCount = 0;
+      let startDate = null;
+      let endDate = null;
+      matched.forEach((e) => {
+        if (e?.currencyTotals && typeof e.currencyTotals === 'object') {
+          Object.entries(e.currencyTotals).forEach(([cur, val]) => {
+            const n = Number(val);
+            if (!Number.isFinite(n)) return;
+            const key = normalizeCurrencyKey(cur);
+            totalsByCurrency[key] = (totalsByCurrency[key] || 0) + n;
+          });
+        }
+        if (Number.isFinite(e?.cadAmount)) totalCad += e.cadAmount;
+        if (Number.isFinite(e?.activityCount)) totalCount += Math.round(e.activityCount);
+        const s = e?.firstDate || e?.startDate || null;
+        const en = e?.lastDate || e?.endDate || null;
+        if (s && (!startDate || s < startDate)) startDate = s;
+        if (en && (!endDate || en > endDate)) endDate = en;
+      });
+      return {
+        ...selectedAccountDividends,
+        entries: matched,
+        totalsByCurrency,
+        totalCad,
+        totalCount,
+        startDate: startDate || selectedAccountDividends.startDate || null,
+        endDate: endDate || selectedAccountDividends.endDate || null,
+      };
+    }
+
     const totalsByCurrency = {};
     let totalCad = 0;
+    let totalCadHasValue = false;
     let totalCount = 0;
     let startDate = null;
     let endDate = null;
-    matched.forEach((e) => {
-      if (e?.currencyTotals && typeof e.currencyTotals === 'object') {
-        Object.entries(e.currencyTotals).forEach(([cur, val]) => {
-          const n = Number(val);
-          if (!Number.isFinite(n)) return;
-          totalsByCurrency[cur] = (totalsByCurrency[cur] || 0) + n;
+    let conversionIncomplete = false;
+    const aggregatedByDate = new Map();
+    const aggregatedWrappers = [];
+    let aggregateInsertionIndex = 0;
+
+    const mergeAggregatedEntry = (target, source) => {
+      if (source?.currencyTotals && typeof source.currencyTotals === 'object') {
+        if (!target.currencyTotals || typeof target.currencyTotals !== 'object') {
+          target.currencyTotals = {};
+        }
+        Object.entries(source.currencyTotals).forEach(([cur, val]) => {
+          const numeric = Number(val);
+          if (!Number.isFinite(numeric)) {
+            return;
+          }
+          const key = normalizeCurrencyKey(cur);
+          const existing = Number(target.currencyTotals[key]);
+          target.currencyTotals[key] = (Number.isFinite(existing) ? existing : 0) + numeric;
         });
       }
-      if (Number.isFinite(e?.cadAmount)) totalCad += e.cadAmount;
-      if (Number.isFinite(e?.activityCount)) totalCount += Math.round(e.activityCount);
-      const s = e?.firstDate || e?.startDate || null;
-      const en = e?.lastDate || e?.endDate || null;
-      if (s && (!startDate || s < startDate)) startDate = s;
-      if (en && (!endDate || en > endDate)) endDate = en;
+
+      if (Number.isFinite(source?.cadAmount)) {
+        const existing = Number(target.cadAmount);
+        const current = Number.isFinite(existing) ? existing : 0;
+        target.cadAmount = current + source.cadAmount;
+      }
+
+      if (source?.conversionIncomplete) {
+        target.conversionIncomplete = true;
+      }
+
+      const sourceCount = Number.isFinite(source?.activityCount) ? Math.round(source.activityCount) : 0;
+      const targetCount = Number.isFinite(target.activityCount) ? Math.round(target.activityCount) : 0;
+      target.activityCount = targetCount + sourceCount;
+
+      const sourceFirstDate = source?.firstDate || source?.lastDate || null;
+      const sourceLastDate = source?.lastDate || source?.firstDate || null;
+      if (sourceFirstDate && (!target.firstDate || sourceFirstDate < target.firstDate)) {
+        target.firstDate = sourceFirstDate;
+      }
+      if (sourceLastDate && (!target.lastDate || sourceLastDate > target.lastDate)) {
+        target.lastDate = sourceLastDate;
+      }
+
+      const sourceTimestamp = source?.lastTimestamp || null;
+      const targetTimestamp = target.lastTimestamp || null;
+      if (sourceTimestamp && (!targetTimestamp || sourceTimestamp > targetTimestamp)) {
+        target.lastTimestamp = sourceTimestamp;
+        target.lastAmount = Number.isFinite(source?.lastAmount) ? source.lastAmount : target.lastAmount;
+        target.lastCurrency = source?.lastCurrency || target.lastCurrency || null;
+      } else if (!targetTimestamp && Number.isFinite(target.lastAmount) === false) {
+        if (Number.isFinite(source?.lastAmount)) {
+          target.lastAmount = source.lastAmount;
+          target.lastCurrency = source?.lastCurrency || target.lastCurrency || null;
+        }
+      } else if (!Number.isFinite(target.lastAmount) && Number.isFinite(source?.lastAmount)) {
+        target.lastAmount = source.lastAmount;
+        target.lastCurrency = source?.lastCurrency || target.lastCurrency || null;
+      }
+
+      if (!target.description && source?.description) {
+        target.description = source.description;
+      }
+      if (!target.displaySymbol && source?.displaySymbol) {
+        target.displaySymbol = source.displaySymbol;
+      }
+      if (!target.symbol && source?.symbol) {
+        target.symbol = source.symbol;
+      }
+      const targetRawSymbols = Array.isArray(target.rawSymbols) ? target.rawSymbols : null;
+      const sourceRawSymbols = Array.isArray(source?.rawSymbols) ? source.rawSymbols : null;
+      if ((!targetRawSymbols || !targetRawSymbols.length) && sourceRawSymbols && sourceRawSymbols.length) {
+        target.rawSymbols = sourceRawSymbols;
+      }
+
+      if (source?.lineItemId) {
+        if (!target.lineItemId) {
+          target.lineItemId = source.lineItemId;
+        } else if (target.lineItemId !== source.lineItemId) {
+          const collectIds = (value) =>
+            String(value)
+              .split('|')
+              .map((part) => part.trim())
+              .filter(Boolean);
+          const existingIds = new Set(collectIds(target.lineItemId));
+          collectIds(source.lineItemId).forEach((id) => existingIds.add(id));
+          target.lineItemId = Array.from(existingIds).join('|');
+        }
+      }
+    };
+
+    const resolveEntryGroupDate = (entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      if (typeof entry.lastDate === 'string' && entry.lastDate.trim()) {
+        return entry.lastDate.trim();
+      }
+      if (typeof entry.firstDate === 'string' && entry.firstDate.trim()) {
+        return entry.firstDate.trim();
+      }
+      if (typeof entry.lastTimestamp === 'string' && entry.lastTimestamp.trim()) {
+        return entry.lastTimestamp.trim().slice(0, 10);
+      }
+      return null;
+    };
+
+    const appendAggregatedEntry = (entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const groupDate = resolveEntryGroupDate(entry);
+      if (groupDate) {
+        let wrapper = aggregatedByDate.get(groupDate);
+        if (!wrapper) {
+          const aggregatedEntry = { ...entry };
+          aggregatedEntry.lineItemId =
+            aggregatedEntry.lineItemId || `${groupDate}-${aggregateInsertionIndex}`;
+          wrapper = {
+            entry: aggregatedEntry,
+            sortDate: aggregatedEntry.lastDate || aggregatedEntry.firstDate || groupDate,
+            sortTimestamp: aggregatedEntry.lastTimestamp || null,
+            firstIndex: aggregateInsertionIndex,
+          };
+          aggregateInsertionIndex += 1;
+          aggregatedByDate.set(groupDate, wrapper);
+          aggregatedWrappers.push(wrapper);
+        } else {
+          mergeAggregatedEntry(wrapper.entry, entry);
+          const entrySortDate = entry.lastDate || entry.firstDate || groupDate;
+          if (entrySortDate && (!wrapper.sortDate || entrySortDate > wrapper.sortDate)) {
+            wrapper.sortDate = entrySortDate;
+          }
+          const entryTimestamp = entry.lastTimestamp || null;
+          if (entryTimestamp && (!wrapper.sortTimestamp || entryTimestamp > wrapper.sortTimestamp)) {
+            wrapper.sortTimestamp = entryTimestamp;
+          }
+        }
+      } else {
+        const aggregatedEntry = { ...entry };
+        aggregatedEntry.lineItemId =
+          aggregatedEntry.lineItemId || `dividend-${aggregateInsertionIndex}`;
+        aggregatedWrappers.push({
+          entry: aggregatedEntry,
+          sortDate: null,
+          sortTimestamp: aggregatedEntry.lastTimestamp || null,
+          firstIndex: aggregateInsertionIndex,
+        });
+        aggregateInsertionIndex += 1;
+      }
+    };
+
+    matched.forEach((entry, entryIndex) => {
+      const baseSymbol = (entry?.symbol || '').toString();
+      const baseDisplay = (entry?.displaySymbol || baseSymbol || '').toString();
+      const baseDescription = typeof entry?.description === 'string' ? entry.description : null;
+      const baseRawSymbols = Array.isArray(entry?.rawSymbols)
+        ? entry.rawSymbols
+            .map((value) => (typeof value === 'string' ? value.trim() : ''))
+            .filter(Boolean)
+        : null;
+      const lineItems = Array.isArray(entry?.lineItems) ? entry.lineItems : [];
+
+      lineItems.forEach((item, itemIndex) => {
+        if (!item || typeof item !== 'object') {
+          return;
+        }
+
+        const lineCurrencyTotals = {};
+        if (item.currencyTotals && typeof item.currencyTotals === 'object') {
+          Object.entries(item.currencyTotals).forEach(([cur, val]) => {
+            const n = Number(val);
+            if (!Number.isFinite(n)) return;
+            const key = normalizeCurrencyKey(cur);
+            lineCurrencyTotals[key] = (lineCurrencyTotals[key] || 0) + n;
+            totalsByCurrency[key] = (totalsByCurrency[key] || 0) + n;
+          });
+        }
+        if (!Object.keys(lineCurrencyTotals).length) {
+          const amount = Number(item.amount);
+          if (Number.isFinite(amount)) {
+            const currencyKey = normalizeCurrencyKey(item.currency);
+            lineCurrencyTotals[currencyKey] = (lineCurrencyTotals[currencyKey] || 0) + amount;
+            totalsByCurrency[currencyKey] = (totalsByCurrency[currencyKey] || 0) + amount;
+          }
+        }
+
+        const cadAmount = Number(item.cadAmount);
+        if (Number.isFinite(cadAmount)) {
+          totalCad += cadAmount;
+          totalCadHasValue = true;
+        }
+        if (item.conversionIncomplete || entry.conversionIncomplete) {
+          conversionIncomplete = true;
+        }
+
+        const count = Number(item.activityCount);
+        totalCount += Number.isFinite(count) ? Math.round(count) : 1;
+
+        const firstDate =
+          (typeof item.firstDate === 'string' && item.firstDate.trim()) ||
+          (typeof item.startDate === 'string' && item.startDate.trim()) ||
+          (typeof item.date === 'string' && item.date.trim()) ||
+          null;
+        const lastDate =
+          (typeof item.lastDate === 'string' && item.lastDate.trim()) ||
+          (typeof item.endDate === 'string' && item.endDate.trim()) ||
+          firstDate;
+        if (firstDate && (!startDate || firstDate < startDate)) {
+          startDate = firstDate;
+        }
+        if (lastDate && (!endDate || lastDate > endDate)) {
+          endDate = lastDate;
+        }
+
+        const timestamp =
+          (typeof item.lastTimestamp === 'string' && item.lastTimestamp.trim()) ||
+          (typeof item.timestamp === 'string' && item.timestamp.trim()) ||
+          null;
+        const lastAmount = Number.isFinite(item.lastAmount)
+          ? item.lastAmount
+          : Number.isFinite(item.amount)
+          ? item.amount
+          : null;
+        const lastCurrency =
+          (typeof item.lastCurrency === 'string' && item.lastCurrency.trim()) ||
+          (typeof item.currency === 'string' && item.currency.trim()) ||
+          null;
+
+        const itemRawSymbols = Array.isArray(item.rawSymbols)
+          ? item.rawSymbols
+              .map((value) => (typeof value === 'string' ? value.trim() : ''))
+              .filter(Boolean)
+          : baseRawSymbols;
+
+        const expandedEntry = {
+          symbol: (typeof item.symbol === 'string' && item.symbol.trim()) || baseSymbol || null,
+          displaySymbol:
+            (typeof item.displaySymbol === 'string' && item.displaySymbol.trim()) ||
+            (typeof item.symbol === 'string' && item.symbol.trim()) ||
+            baseDisplay ||
+            null,
+          rawSymbols: itemRawSymbols && itemRawSymbols.length ? itemRawSymbols : undefined,
+          description:
+            (typeof item.description === 'string' && item.description.trim()) || baseDescription || null,
+          currencyTotals: lineCurrencyTotals,
+          cadAmount: Number.isFinite(cadAmount) ? cadAmount : null,
+          conversionIncomplete:
+            item.conversionIncomplete || (!Number.isFinite(cadAmount) && Object.keys(lineCurrencyTotals).length > 0)
+              ? true
+              : undefined,
+          activityCount: Number.isFinite(count) ? Math.round(count) : 1,
+          firstDate: firstDate || lastDate || null,
+          lastDate: lastDate || firstDate || null,
+          lastTimestamp: timestamp || null,
+          lastAmount: Number.isFinite(lastAmount) ? lastAmount : null,
+          lastCurrency: lastCurrency ? normalizeCurrencyKey(lastCurrency) : null,
+          lineItemId:
+            (typeof item.lineItemId === 'string' && item.lineItemId.trim()) ||
+            (typeof item.id === 'string' && item.id.trim()) ||
+            `${entryIndex}-${itemIndex}`,
+        };
+
+        appendAggregatedEntry(expandedEntry);
+      });
     });
+
+    aggregatedWrappers.sort((a, b) => {
+      const aDate = typeof a.sortDate === 'string' ? a.sortDate : null;
+      const bDate = typeof b.sortDate === 'string' ? b.sortDate : null;
+      if (aDate && bDate && aDate !== bDate) {
+        return bDate.localeCompare(aDate);
+      }
+      if (aDate && !bDate) {
+        return -1;
+      }
+      if (!aDate && bDate) {
+        return 1;
+      }
+      const aTimestamp = typeof a.sortTimestamp === 'string' ? a.sortTimestamp : null;
+      const bTimestamp = typeof b.sortTimestamp === 'string' ? b.sortTimestamp : null;
+      if (aTimestamp && bTimestamp && aTimestamp !== bTimestamp) {
+        return bTimestamp.localeCompare(aTimestamp);
+      }
+      if (aTimestamp && !bTimestamp) {
+        return -1;
+      }
+      if (!aTimestamp && bTimestamp) {
+        return 1;
+      }
+      return a.firstIndex - b.firstIndex;
+    });
+
+    const groupedEntries = aggregatedWrappers.map((wrapper) => {
+      const entry = wrapper.entry;
+      if (!Number.isFinite(entry?.cadAmount)) {
+        entry.cadAmount = null;
+      }
+      if (!Number.isFinite(entry?.activityCount)) {
+        entry.activityCount = null;
+      } else {
+        entry.activityCount = Math.round(entry.activityCount);
+      }
+      return entry;
+    });
+
     return {
       ...selectedAccountDividends,
-      entries: matched,
+      entries: groupedEntries,
       totalsByCurrency,
-      totalCad,
+      totalCad: totalCadHasValue ? totalCad : null,
       totalCount,
+      conversionIncomplete:
+        conversionIncomplete || selectedAccountDividends.conversionIncomplete ? true : undefined,
       startDate: startDate || selectedAccountDividends.startDate || null,
       endDate: endDate || selectedAccountDividends.endDate || null,
     };

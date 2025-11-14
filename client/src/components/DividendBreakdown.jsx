@@ -155,6 +155,9 @@ function DividendBreakdown({ summary, variant }) {
                   : '—';
                 const lastPaymentLabel = formatLastPayment(entry);
                 const rowKey =
+                  (entry.lineItemId && `dividend-${entry.lineItemId}`) ||
+                  (entry.lastDate && `${entry.symbol || entry.displaySymbol || 'dividend'}-${entry.lastDate}`) ||
+                  (entry.firstDate && `${entry.symbol || entry.displaySymbol || 'dividend'}-${entry.firstDate}`) ||
                   entry.symbol ||
                   (rawSymbols.length ? rawSymbols.join('|') : null) ||
                   entry.displaySymbol ||
@@ -220,6 +223,29 @@ DividendBreakdown.propTypes = {
         lastTimestamp: PropTypes.string,
         lastAmount: PropTypes.number,
         lastCurrency: PropTypes.string,
+        lineItemId: PropTypes.string,
+        accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+        accountLabel: PropTypes.string,
+      })
+    ),
+    lineItems: PropTypes.arrayOf(
+      PropTypes.shape({
+        symbol: PropTypes.string,
+        displaySymbol: PropTypes.string,
+        rawSymbols: PropTypes.arrayOf(PropTypes.string),
+        description: PropTypes.string,
+        currencyTotals: PropTypes.objectOf(PropTypes.number),
+        cadAmount: PropTypes.number,
+        conversionIncomplete: PropTypes.bool,
+        activityCount: PropTypes.number,
+        firstDate: PropTypes.string,
+        lastDate: PropTypes.string,
+        lastTimestamp: PropTypes.string,
+        lastAmount: PropTypes.number,
+        lastCurrency: PropTypes.string,
+        lineItemId: PropTypes.string,
+        accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+        accountLabel: PropTypes.string,
       })
     ),
     totalsByCurrency: PropTypes.objectOf(PropTypes.number),
