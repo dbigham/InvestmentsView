@@ -202,9 +202,6 @@ textarea {
   display: flex;
   min-width: 0;
 }
-.symbol-view__summary:focus-within .symbol-view__summary-content {
-  box-shadow: 0 0 0 2px var(--color-accent);
-}
 .symbol-view__summary-content {
   display: flex;
   flex-direction: column;
@@ -214,6 +211,9 @@ textarea {
   border-radius: var(--radius-card);
   overflow: hidden;
   background: var(--color-accent-soft);
+}
+.symbol-view__summary-content[data-focus-visible='true'] {
+  box-shadow: 0 0 0 2px var(--color-focus-outline);
 }
 .symbol-view__summary-main {
   display: flex;

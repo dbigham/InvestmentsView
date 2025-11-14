@@ -4853,12 +4853,14 @@ export default function App() {
     data: null,
     error: null,
   });
+  const [focusedSymbolSummaryFocusVisible, setFocusedSymbolSummaryFocusVisible] = useState(false);
   const [focusedSymbolMenuState, setFocusedSymbolMenuState] = useState({
     open: false,
     x: 0,
     y: 0,
   });
   const focusedSymbolMenuRef = useRef(null);
+  const positionsCardRef = useRef(null);
 
   const closeFocusedSymbolMenu = useCallback(() => {
     setFocusedSymbolMenuState((state) => (state.open ? { ...state, open: false } : state));
@@ -4906,6 +4908,10 @@ export default function App() {
     setOrdersFilter(up);
     setPortfolioViewTab('positions');
   }, [initialSymbolFromUrl]);
+
+  useEffect(() => {
+    setFocusedSymbolSummaryFocusVisible(false);
+  }, [focusedSymbol]);
 
   // (moved) Resolve missing symbol description later, once data is available
   const [totalPnlRange, setTotalPnlRange] = useState('all');
@@ -6989,6 +6995,19 @@ export default function App() {
     },
     [focusedSymbol]
   );
+
+  const handleFocusedSymbolSummaryFocus = useCallback((event) => {
+    if (!(event?.currentTarget instanceof Element)) {
+      setFocusedSymbolSummaryFocusVisible(false);
+      return;
+    }
+    const isFocusVisible = event.currentTarget.matches(':focus-visible');
+    setFocusedSymbolSummaryFocusVisible(isFocusVisible);
+  }, []);
+
+  const handleFocusedSymbolSummaryBlur = useCallback(() => {
+    setFocusedSymbolSummaryFocusVisible(false);
+  }, []);
 
   const handleFocusedSymbolContextMenu = useCallback(
     (event) => {
@@ -10597,6 +10616,18 @@ export default function App() {
     [accountsById]
   );
 
+  const scrollPositionsCardIntoView = useCallback(() => {
+    const target = positionsCardRef.current;
+    if (!target || typeof target.scrollIntoView !== 'function') {
+      return;
+    }
+    try {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (error) {
+      target.scrollIntoView();
+    }
+  }, [positionsCardRef]);
+
   const handleShowSymbolOrders = useCallback(
     (position) => {
       if (!position || typeof position.symbol !== 'string') {
@@ -10608,8 +10639,15 @@ export default function App() {
       }
       setPortfolioViewTab('orders');
       setOrdersFilter(trimmedSymbol);
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => {
+          scrollPositionsCardIntoView();
+        });
+      } else {
+        scrollPositionsCardIntoView();
+      }
     },
-    [setOrdersFilter, setPortfolioViewTab]
+    [scrollPositionsCardIntoView, setOrdersFilter, setPortfolioViewTab]
   );
 
   const handleFocusedSymbolMenuDetails = useCallback(() => {
@@ -10634,6 +10672,9 @@ export default function App() {
   const handleFocusedSymbolMenuGoToAccount = useCallback(() => {
     const position = findFocusedSymbolPosition();
     closeFocusedSymbolMenu();
+    if (focusedSymbolHasMultipleAccounts) {
+      return;
+    }
     if (!position) {
       return;
     }
@@ -10642,6 +10683,7 @@ export default function App() {
   }, [
     accountsById,
     closeFocusedSymbolMenu,
+    focusedSymbolHasMultipleAccounts,
     findFocusedSymbolPosition,
     handleGoToAccountFromSymbol,
   ]);
@@ -11629,7 +11671,67 @@ export default function App() {
   const summaryButtonTitle = focusedSymbolQuoteError
     ? `${summaryButtonTitleBase} Quote status: ${focusedSymbolQuoteError.message || 'Failed to refresh quote.'}`
     : summaryButtonTitleBase;
+  const focusedSymbolAccountCount = useMemo(() => {
+    if (!focusedSymbol) {
+      return 0;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      return 0;
+    }
+    const source = Array.isArray(rawPositions) ? rawPositions : [];
+    if (!source.length) {
+      return 0;
+    }
+    const accountKeys = new Set();
+    source.forEach((position) => {
+      if (!position || (position.symbol || '').toString().trim().toUpperCase() !== key) {
+        return;
+      }
+      const account = resolveAccountForPosition(position, accountsById);
+      if (account) {
+        if (account.id !== undefined && account.id !== null) {
+          const normalizedId = String(account.id).trim();
+          if (normalizedId) {
+            accountKeys.add(`id:${normalizedId}`);
+            return;
+          }
+        }
+        if (account.number !== undefined && account.number !== null) {
+          const normalizedNumber = String(account.number).trim();
+          if (normalizedNumber) {
+            accountKeys.add(`number:${normalizedNumber}`);
+            return;
+          }
+        }
+      }
+      const candidates = [
+        position?.portalAccountId,
+        position?.accountPortalId,
+        position?.portalId,
+        position?.accountPortalUuid,
+        position?.accountId,
+        position?.accountKey,
+        position?.accountNumber,
+      ];
+      for (const candidate of candidates) {
+        if (candidate === undefined || candidate === null) {
+          continue;
+        }
+        const normalized = String(candidate).trim();
+        if (!normalized || normalized.toLowerCase() === 'all') {
+          continue;
+        }
+        accountKeys.add(`candidate:${normalized}`);
+        break;
+      }
+    });
+    return accountKeys.size;
+  }, [accountsById, focusedSymbol, rawPositions]);
+
+  const focusedSymbolHasMultipleAccounts = focusedSymbolAccountCount > 1;
   const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
+  const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
 
   return (
     <div className="summary-page">
@@ -11710,7 +11812,10 @@ export default function App() {
           <section className="symbol-view" aria-label="Symbol focus">
             <div className="symbol-view__row">
               <div className="symbol-view__summary">
-                <div className="symbol-view__summary-content">
+                <div
+                  className="symbol-view__summary-content"
+                  data-focus-visible={focusedSymbolSummaryFocusVisible ? 'true' : undefined}
+                >
                   <div className="symbol-view__primary">
                     <div
                       className="symbol-view__summary-main"
@@ -11719,6 +11824,8 @@ export default function App() {
                       onClick={handleFocusedSymbolSummaryClick}
                       onKeyDown={handleFocusedSymbolSummaryKeyDown}
                       onContextMenu={handleFocusedSymbolContextMenu}
+                      onFocus={handleFocusedSymbolSummaryFocus}
+                      onBlur={handleFocusedSymbolSummaryBlur}
                       title={summaryButtonTitle}
                     >
                       <span className="symbol-view__title">
@@ -11853,17 +11960,19 @@ export default function App() {
                       Buy/sell
                     </button>
                   </li>
-                  <li role="none">
-                    <button
-                      type="button"
-                      className="positions-table__context-menu-item"
-                      role="menuitem"
-                      onClick={handleFocusedSymbolMenuGoToAccount}
-                      disabled={!focusedSymbolHasPosition}
-                    >
-                      Go to account
-                    </button>
-                  </li>
+                  {showFocusedSymbolGoToAccount ? (
+                    <li role="none">
+                      <button
+                        type="button"
+                        className="positions-table__context-menu-item"
+                        role="menuitem"
+                        onClick={handleFocusedSymbolMenuGoToAccount}
+                        disabled={!focusedSymbolHasPosition}
+                      >
+                        Go to account
+                      </button>
+                    </li>
+                  ) : null}
                   <li role="none">
                     <button
                       type="button"
@@ -12066,7 +12175,7 @@ export default function App() {
         )}
 
         {showContent && (
-          <section className="positions-card">
+          <section className="positions-card" ref={positionsCardRef}>
             <header className="positions-card__header">
               <div className="positions-card__tabs" role="tablist" aria-label="Portfolio data views">
                 <button
