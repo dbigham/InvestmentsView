@@ -10650,6 +10650,68 @@ export default function App() {
     [scrollPositionsCardIntoView, setOrdersFilter, setPortfolioViewTab]
   );
 
+  const focusedSymbolAccountCount = useMemo(() => {
+    if (!focusedSymbol) {
+      return 0;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      return 0;
+    }
+    const source = Array.isArray(rawPositions) ? rawPositions : [];
+    if (!source.length) {
+      return 0;
+    }
+    const accountKeys = new Set();
+    source.forEach((position) => {
+      if (!position || (position.symbol || '').toString().trim().toUpperCase() !== key) {
+        return;
+      }
+      const account = resolveAccountForPosition(position, accountsById);
+      if (account) {
+        if (account.id !== undefined && account.id !== null) {
+          const normalizedId = String(account.id).trim();
+          if (normalizedId) {
+            accountKeys.add(`id:${normalizedId}`);
+            return;
+          }
+        }
+        if (account.number !== undefined && account.number !== null) {
+          const normalizedNumber = String(account.number).trim();
+          if (normalizedNumber) {
+            accountKeys.add(`number:${normalizedNumber}`);
+            return;
+          }
+        }
+      }
+      const candidates = [
+        position?.portalAccountId,
+        position?.accountPortalId,
+        position?.portalId,
+        position?.accountPortalUuid,
+        position?.accountId,
+        position?.accountKey,
+        position?.accountNumber,
+      ];
+      for (const candidate of candidates) {
+        if (candidate === undefined || candidate === null) {
+          continue;
+        }
+        const normalized = String(candidate).trim();
+        if (!normalized || normalized.toLowerCase() === 'all') {
+          continue;
+        }
+        accountKeys.add(`candidate:${normalized}`);
+        break;
+      }
+    });
+    return accountKeys.size;
+  }, [accountsById, focusedSymbol, rawPositions]);
+
+  const focusedSymbolHasMultipleAccounts = focusedSymbolAccountCount > 1;
+  const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
+  const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
+
   const handleFocusedSymbolMenuDetails = useCallback(() => {
     if (!focusedSymbol) {
       closeFocusedSymbolMenu();
@@ -11671,68 +11733,6 @@ export default function App() {
   const summaryButtonTitle = focusedSymbolQuoteError
     ? `${summaryButtonTitleBase} Quote status: ${focusedSymbolQuoteError.message || 'Failed to refresh quote.'}`
     : summaryButtonTitleBase;
-  const focusedSymbolAccountCount = useMemo(() => {
-    if (!focusedSymbol) {
-      return 0;
-    }
-    const key = String(focusedSymbol).trim().toUpperCase();
-    if (!key) {
-      return 0;
-    }
-    const source = Array.isArray(rawPositions) ? rawPositions : [];
-    if (!source.length) {
-      return 0;
-    }
-    const accountKeys = new Set();
-    source.forEach((position) => {
-      if (!position || (position.symbol || '').toString().trim().toUpperCase() !== key) {
-        return;
-      }
-      const account = resolveAccountForPosition(position, accountsById);
-      if (account) {
-        if (account.id !== undefined && account.id !== null) {
-          const normalizedId = String(account.id).trim();
-          if (normalizedId) {
-            accountKeys.add(`id:${normalizedId}`);
-            return;
-          }
-        }
-        if (account.number !== undefined && account.number !== null) {
-          const normalizedNumber = String(account.number).trim();
-          if (normalizedNumber) {
-            accountKeys.add(`number:${normalizedNumber}`);
-            return;
-          }
-        }
-      }
-      const candidates = [
-        position?.portalAccountId,
-        position?.accountPortalId,
-        position?.portalId,
-        position?.accountPortalUuid,
-        position?.accountId,
-        position?.accountKey,
-        position?.accountNumber,
-      ];
-      for (const candidate of candidates) {
-        if (candidate === undefined || candidate === null) {
-          continue;
-        }
-        const normalized = String(candidate).trim();
-        if (!normalized || normalized.toLowerCase() === 'all') {
-          continue;
-        }
-        accountKeys.add(`candidate:${normalized}`);
-        break;
-      }
-    });
-    return accountKeys.size;
-  }, [accountsById, focusedSymbol, rawPositions]);
-
-  const focusedSymbolHasMultipleAccounts = focusedSymbolAccountCount > 1;
-  const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
-  const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
-
   return (
     <div className="summary-page">
       <main className={summaryMainClassName}>
