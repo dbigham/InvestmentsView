@@ -12222,6 +12222,22 @@ app.get('/api/quote', async function (req, res) {
       (quote &&
         (quote.longName || quote.shortName || quote.displayName || quote.symbol || normalizedSymbol)) ||
       normalizedSymbol;
+    const changePercent = coerceQuoteNumber(quote.regularMarketChangePercent);
+    const previousClose = coerceQuoteNumber(
+      quote.regularMarketPreviousClose !== undefined && quote.regularMarketPreviousClose !== null
+        ? quote.regularMarketPreviousClose
+        : quote.previousClose
+    );
+    const trailingPe = coerceQuoteNumber(quote.trailingPE);
+    const forwardPe = coerceQuoteNumber(quote.forwardPE);
+    const peRatio = Number.isFinite(trailingPe) && trailingPe > 0
+      ? trailingPe
+      : Number.isFinite(forwardPe) && forwardPe > 0
+        ? forwardPe
+        : null;
+    const marketCap = coerceQuoteNumber(quote.marketCap);
+    const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
+
     const payload = {
       symbol: normalizedSymbol,
       price,
@@ -12229,6 +12245,15 @@ app.get('/api/quote', async function (req, res) {
       name,
       source: 'yahoo-finance2',
       asOf: resolveQuoteTimestamp(quote),
+      changePercent: Number.isFinite(changePercent) ? changePercent : null,
+      previousClose:
+        Number.isFinite(previousClose) && previousClose > 0 ? previousClose : null,
+      peRatio: Number.isFinite(peRatio) && peRatio > 0 ? peRatio : null,
+      marketCap: Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null,
+      dividendYieldPercent:
+        Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0
+          ? dividendYieldPercent
+          : null,
     };
     quoteCache.set(cacheKey, payload);
     return res.json(payload);

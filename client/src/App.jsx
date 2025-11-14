@@ -37,7 +37,7 @@ import SymbolNotesDialog from './components/SymbolNotesDialog';
 import PlanningContextDialog from './components/PlanningContextDialog';
 import NewsPromptDialog from './components/NewsPromptDialog';
 import AccountMetadataDialog from './components/AccountMetadataDialog';
-import { formatMoney, formatNumber, formatDate, formatSignedMoney } from './utils/formatters';
+import { formatMoney, formatNumber, formatDate, formatPercent, formatSignedPercent } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
@@ -49,6 +49,7 @@ import {
   readSymbolFromLocation,
 } from './utils/navigation';
 import { buildExplainMovementPrompt, resolveAccountForPosition } from './utils/positions';
+import { buildQuoteUrl, openQuote } from './utils/quotes';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 
@@ -4847,6 +4848,21 @@ export default function App() {
   const isNewsFeatureEnabled = false;
   const [focusedSymbol, setFocusedSymbol] = useState(null);
   const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
+  const [focusedSymbolQuoteState, setFocusedSymbolQuoteState] = useState({
+    status: 'idle',
+    data: null,
+    error: null,
+  });
+  const [focusedSymbolMenuState, setFocusedSymbolMenuState] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+  });
+  const focusedSymbolMenuRef = useRef(null);
+
+  const closeFocusedSymbolMenu = useCallback(() => {
+    setFocusedSymbolMenuState((state) => (state.open ? { ...state, open: false } : state));
+  }, []);
 
   const closeNewsTabContextMenu = useCallback(() => {
     setNewsTabContextMenuState((state) => (state.open ? { ...state, open: false } : state));
@@ -6555,6 +6571,7 @@ export default function App() {
     setPortfolioViewTab('positions');
   }, []);
 
+
   const handleSearchNavigate = (key) => {
     const k = (key || '').toString().toLowerCase();
     // Quick intent: retire-at:<age>
@@ -6940,6 +6957,84 @@ export default function App() {
     return `${symbol} logo`;
   }, [focusedSymbol, focusedSymbolDescription]);
 
+  const handleFocusedSymbolSummaryClick = useCallback(
+    (event) => {
+      if (!focusedSymbol) {
+        return;
+      }
+      const key = String(focusedSymbol).trim().toUpperCase();
+      if (!key) {
+        return;
+      }
+
+      if (event.ctrlKey || event.metaKey) {
+        const url = buildQuoteUrl(key, 'questrade');
+        if (!url) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openQuote(key, 'questrade');
+        return;
+      }
+
+      const provider = event.altKey ? 'yahoo' : 'perplexity';
+      const url = buildQuoteUrl(key, provider);
+      if (!url) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openQuote(key, provider);
+    },
+    [focusedSymbol]
+  );
+
+  const handleFocusedSymbolContextMenu = useCallback(
+    (event) => {
+      if (!focusedSymbol) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      let x = event.clientX ?? 0;
+      let y = event.clientY ?? 0;
+      if ((!x && !y) || Number.isNaN(x) || Number.isNaN(y)) {
+        const target = event.currentTarget instanceof Element ? event.currentTarget : null;
+        if (target) {
+          const rect = target.getBoundingClientRect();
+          x = rect.left + rect.width / 2;
+          y = rect.top + rect.height;
+        } else {
+          x = 0;
+          y = 0;
+        }
+      }
+      setFocusedSymbolMenuState({
+        open: true,
+        x,
+        y,
+      });
+    },
+    [focusedSymbol]
+  );
+
+  const handleFocusedSymbolSummaryKeyDown = useCallback(
+    (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        handleFocusedSymbolSummaryClick(event);
+        return;
+      }
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFocusedSymbolContextMenu(event);
+      }
+    },
+    [handleFocusedSymbolContextMenu, handleFocusedSymbolSummaryClick]
+  );
+
   const handleFocusedSymbolBuySell = useCallback(async () => {
     if (!focusedSymbol) {
       return;
@@ -7097,88 +7192,197 @@ export default function App() {
     return list;
   }, [positions, selectedAccountDividends, ordersForSelectedAccount]);
 
-  // Keep focused symbol description in sync: prefer local data; fallback to quote
+  const resolveLocalDescriptionForFocusedSymbol = useCallback(() => {
+    if (!focusedSymbol) {
+      return null;
+    }
+    const up = String(focusedSymbol).trim().toUpperCase();
+    if (!up) {
+      return null;
+    }
+    // Positions
+    for (let i = 0; i < positions.length; i += 1) {
+      const p = positions[i];
+      const sym = (p?.symbol || '').toString().trim().toUpperCase();
+      if (sym === up) {
+        const desc = (p?.description || '').toString().trim();
+        if (desc) return desc;
+      }
+    }
+    // Dividends
+    const divEntries = Array.isArray(selectedAccountDividends?.entries)
+      ? selectedAccountDividends.entries
+      : [];
+    for (let i = 0; i < divEntries.length; i += 1) {
+      const e = divEntries[i];
+      const sym = (e?.symbol || e?.displaySymbol || '').toString().trim().toUpperCase();
+      if (sym === up) {
+        const desc = (e?.description || '').toString().trim();
+        if (desc) return desc;
+      }
+    }
+    // Orders
+    const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
+    for (let i = 0; i < ordList.length; i += 1) {
+      const o = ordList[i];
+      const sym = (o?.symbol || '').toString().trim().toUpperCase();
+      if (sym === up) {
+        const desc = (o?.description || '').toString().trim();
+        if (desc) return desc;
+      }
+    }
+    return null;
+  }, [focusedSymbol, positions, selectedAccountDividends, ordersForSelectedAccount]);
+
+  // Keep focused symbol description in sync: prefer local data; fallback to cached quote names
   useEffect(() => {
     if (!focusedSymbol) {
       return;
     }
-    const up = String(focusedSymbol).trim().toUpperCase();
-    if (!up) {
-      return;
-    }
-
-    const findDescriptionFromLocalData = () => {
-      // Positions
-      for (let i = 0; i < positions.length; i += 1) {
-        const p = positions[i];
-        const sym = (p?.symbol || '').toString().trim().toUpperCase();
-        if (sym === up) {
-          const desc = (p?.description || '').toString().trim();
-          if (desc) return desc;
-        }
-      }
-      // Dividends
-      const divEntries = Array.isArray(selectedAccountDividends?.entries)
-        ? selectedAccountDividends.entries
-        : [];
-      for (let i = 0; i < divEntries.length; i += 1) {
-        const e = divEntries[i];
-        const sym = (e?.symbol || e?.displaySymbol || '').toString().trim().toUpperCase();
-        if (sym === up) {
-          const desc = (e?.description || '').toString().trim();
-          if (desc) return desc;
-        }
-      }
-      // Orders
-      const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
-      for (let i = 0; i < ordList.length; i += 1) {
-        const o = ordList[i];
-        const sym = (o?.symbol || '').toString().trim().toUpperCase();
-        if (sym === up) {
-          const desc = (o?.description || '').toString().trim();
-          if (desc) return desc;
-        }
-      }
-      return null;
-    };
-
-    const local = findDescriptionFromLocalData();
+    const local = resolveLocalDescriptionForFocusedSymbol();
     if (local) {
       if (local !== focusedSymbolDescription) {
         setFocusedSymbolDescription(local);
       }
       return;
     }
-
     if (!focusedSymbolDescription) {
-      let cancelled = false;
-      (async () => {
-        try {
-          const quote = await getQuote(up);
-          if (cancelled) return;
-          const name = typeof quote?.name === 'string' ? quote.name.trim() : '';
-          if (name) {
-            setFocusedSymbolDescription(name);
-          }
-        } catch (error) {
-          // Non-fatal: leave description empty if quote lookup fails
-          console.warn('Failed to resolve symbol description', up, error);
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      const key = String(focusedSymbol).trim().toUpperCase();
+      const cached = key ? quoteCacheRef.current.get(key) : null;
+      if (
+        cached &&
+        typeof cached.description === 'string' &&
+        cached.description.trim() &&
+        cached.description.trim() !== focusedSymbolDescription
+      ) {
+        setFocusedSymbolDescription(cached.description.trim());
+      }
     }
-    // If we already have a description (likely from quote) and no local description exists yet,
-    // do nothing; when local data arrives, effect will re-run and prefer local.
-    return undefined;
   }, [
     focusedSymbol,
     focusedSymbolDescription,
-    positions,
-    selectedAccountDividends?.entries,
-    ordersForSelectedAccount,
+    resolveLocalDescriptionForFocusedSymbol,
   ]);
+
+  useEffect(() => {
+    if (!focusedSymbol) {
+      setFocusedSymbolQuoteState({ status: 'idle', data: null, error: null });
+      return;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      setFocusedSymbolQuoteState({ status: 'idle', data: null, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    const cached = quoteCacheRef.current.get(key) || null;
+    setFocusedSymbolQuoteState((prev) => {
+      if (cached) {
+        if (prev.status === 'success' && prev.data === cached && !prev.error) {
+          return prev;
+        }
+        return { status: 'success', data: cached, error: null };
+      }
+      if (prev.status === 'loading' && !prev.data) {
+        return prev;
+      }
+      return { status: 'loading', data: null, error: null };
+    });
+
+    (async () => {
+      try {
+        const quote = await getQuote(key);
+        if (cancelled) return;
+        const normalizedPrice = coercePositiveNumber(quote?.price);
+        const normalizedMarketCap = coercePositiveNumber(quote?.marketCap);
+        const normalizedPrevClose = coercePositiveNumber(quote?.previousClose);
+        const rawPe = Number(quote?.peRatio);
+        const normalizedPe = Number.isFinite(rawPe) && rawPe > 0 ? rawPe : null;
+        const rawChange = Number(quote?.changePercent);
+        const normalizedChange = Number.isFinite(rawChange) ? rawChange : null;
+        const rawDividend = Number(quote?.dividendYieldPercent);
+        const normalizedDividend = Number.isFinite(rawDividend) && rawDividend > 0 ? rawDividend : null;
+        const normalized = {
+          price: normalizedPrice,
+          currency:
+            typeof quote?.currency === 'string' && quote.currency.trim()
+              ? quote.currency.trim().toUpperCase()
+              : null,
+          description:
+            typeof quote?.name === 'string' && quote.name.trim() ? quote.name.trim() : null,
+          changePercent:
+            Number.isFinite(normalizedChange) || normalizedChange === 0 ? normalizedChange : null,
+          previousClose: normalizedPrevClose,
+          peRatio: normalizedPe,
+          marketCap: normalizedMarketCap,
+          dividendYieldPercent: normalizedDividend,
+          asOf: typeof quote?.asOf === 'string' && quote.asOf ? quote.asOf : null,
+        };
+        quoteCacheRef.current.set(key, normalized);
+        setFocusedSymbolQuoteState({ status: 'success', data: normalized, error: null });
+        if (normalized.description) {
+          setFocusedSymbolDescription((prev) => {
+            if (prev && prev.trim() && prev.trim().toUpperCase() !== key) {
+              return prev;
+            }
+            const local = resolveLocalDescriptionForFocusedSymbol();
+            if (local && local.trim()) {
+              return local.trim();
+            }
+            return normalized.description;
+          });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        const fallback = quoteCacheRef.current.get(key) || null;
+        const normalizedError = error instanceof Error ? error : new Error('Failed to load quote');
+        if (!fallback) {
+          setFocusedSymbolQuoteState({ status: 'error', data: null, error: normalizedError });
+        } else {
+          setFocusedSymbolQuoteState({ status: 'success', data: fallback, error: normalizedError });
+        }
+        console.warn('Failed to fetch quote for symbol', key, error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedSymbol, resolveLocalDescriptionForFocusedSymbol]);
+
+  useEffect(() => {
+    if (focusedSymbol) {
+      return;
+    }
+    closeFocusedSymbolMenu();
+    setFocusedSymbolQuoteState({ status: 'idle', data: null, error: null });
+  }, [focusedSymbol, closeFocusedSymbolMenu]);
+
+  useEffect(() => {
+    if (!focusedSymbolMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (focusedSymbolMenuRef.current && focusedSymbolMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeFocusedSymbolMenu();
+    };
+    const handleKey = (event) => {
+      if (event.key === 'Escape') {
+        closeFocusedSymbolMenu();
+      }
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('contextmenu', handlePointer);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('contextmenu', handlePointer);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [focusedSymbolMenuState.open, closeFocusedSymbolMenu]);
 
   const hasTargetProportionsForSelection = useMemo(
     () => orderedPositions.some((position) => Number.isFinite(position?.targetProportion)),
@@ -10408,6 +10612,61 @@ export default function App() {
     [setOrdersFilter, setPortfolioViewTab]
   );
 
+  const handleFocusedSymbolMenuDetails = useCallback(() => {
+    if (!focusedSymbol) {
+      closeFocusedSymbolMenu();
+      return;
+    }
+    handleSearchSelectSymbol(focusedSymbol, { description: focusedSymbolDescription || null });
+    closeFocusedSymbolMenu();
+  }, [
+    focusedSymbol,
+    focusedSymbolDescription,
+    handleSearchSelectSymbol,
+    closeFocusedSymbolMenu,
+  ]);
+
+  const handleFocusedSymbolMenuBuySell = useCallback(() => {
+    closeFocusedSymbolMenu();
+    handleFocusedSymbolBuySell();
+  }, [closeFocusedSymbolMenu, handleFocusedSymbolBuySell]);
+
+  const handleFocusedSymbolMenuGoToAccount = useCallback(() => {
+    const position = findFocusedSymbolPosition();
+    closeFocusedSymbolMenu();
+    if (!position) {
+      return;
+    }
+    const account = resolveAccountForPosition(position, accountsById);
+    handleGoToAccountFromSymbol(position, account);
+  }, [
+    accountsById,
+    closeFocusedSymbolMenu,
+    findFocusedSymbolPosition,
+    handleGoToAccountFromSymbol,
+  ]);
+
+  const handleFocusedSymbolMenuOrders = useCallback(() => {
+    const position = findFocusedSymbolPosition();
+    closeFocusedSymbolMenu();
+    if (position) {
+      handleShowSymbolOrders(position);
+    }
+  }, [closeFocusedSymbolMenu, findFocusedSymbolPosition, handleShowSymbolOrders]);
+
+  const handleFocusedSymbolMenuNotes = useCallback(() => {
+    const position = findFocusedSymbolPosition();
+    closeFocusedSymbolMenu();
+    if (position) {
+      handleShowSymbolNotes(position);
+    }
+  }, [closeFocusedSymbolMenu, findFocusedSymbolPosition, handleShowSymbolNotes]);
+
+  const handleFocusedSymbolMenuExplain = useCallback(() => {
+    closeFocusedSymbolMenu();
+    handleExplainMovementForSymbol();
+  }, [closeFocusedSymbolMenu, handleExplainMovementForSymbol]);
+
   const handleCloseSymbolNotes = useCallback(() => {
     setSymbolNotesEditor(null);
   }, []);
@@ -11288,6 +11547,61 @@ export default function App() {
       ? 'summary-main summary-main--compact'
       : 'summary-main';
 
+  const focusedSymbolQuote = focusedSymbolQuoteState.data || null;
+  const focusedSymbolQuoteStatus = focusedSymbolQuoteState.status;
+  const focusedSymbolQuoteError = focusedSymbolQuoteState.error;
+  const focusedSymbolQuoteCurrency =
+    focusedSymbolQuote && typeof focusedSymbolQuote.currency === 'string'
+      ? focusedSymbolQuote.currency.trim().toUpperCase()
+      : null;
+
+  const formatQuoteMoney = (value, digitOptions) => {
+    const formatted = formatMoney(value, digitOptions);
+    if (formatted === '—') {
+      return formatted;
+    }
+    return focusedSymbolQuoteCurrency ? `${formatted} ${focusedSymbolQuoteCurrency}` : formatted;
+  };
+
+  const quotePriceDisplay = formatQuoteMoney(focusedSymbolQuote?.price, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const quoteChangePercent =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.changePercent)
+      ? Number(focusedSymbolQuote.changePercent)
+      : null;
+  const quoteChangeDisplay =
+    quoteChangePercent !== null ? formatSignedPercent(quoteChangePercent, 2) : '—';
+  const quoteChangeTone = quoteChangePercent > 0 ? 'positive' : quoteChangePercent < 0 ? 'negative' : 'neutral';
+  const quotePeDisplay =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
+      ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      : '—';
+  const quoteMarketCapDisplay = formatQuoteMoney(focusedSymbolQuote?.marketCap, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+  const quoteDividendDisplay =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.dividendYieldPercent)
+      ? formatPercent(focusedSymbolQuote.dividendYieldPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : '—';
+  const quoteMessage = (() => {
+    if (focusedSymbolQuoteStatus === 'loading' && !focusedSymbolQuote) {
+      return 'Loading quote…';
+    }
+    if (focusedSymbolQuoteStatus === 'error' && focusedSymbolQuoteError) {
+      return focusedSymbolQuoteError.message || 'Quote unavailable.';
+    }
+    return null;
+  })();
+  const summaryButtonTitleBase =
+    'Open quote (Perplexity). Ctrl-click for Questrade, Alt-click for Yahoo Finance.';
+  const summaryButtonTitle = focusedSymbolQuoteError
+    ? `${summaryButtonTitleBase} Quote status: ${focusedSymbolQuoteError.message || 'Failed to refresh quote.'}`
+    : summaryButtonTitleBase;
+  const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
+
   return (
     <div className="summary-page">
       <main className={summaryMainClassName}>
@@ -11366,51 +11680,88 @@ export default function App() {
         {focusedSymbol ? (
           <section className="symbol-view" aria-label="Symbol focus">
             <div className="symbol-view__row">
-              <div className="symbol-view__title">
-                <span className="symbol-view__icon" aria-hidden="true">
-                  {focusedSymbolLogoUrl ? (
-                    <img
-                      className="symbol-view__icon-image"
-                      src={focusedSymbolLogoUrl}
-                      alt={focusedSymbolLogoAlt || undefined}
-                      width={28}
-                      height={28}
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
-                    />
+              <button
+                type="button"
+                className="symbol-view__summary"
+                onClick={handleFocusedSymbolSummaryClick}
+                onKeyDown={handleFocusedSymbolSummaryKeyDown}
+                onContextMenu={handleFocusedSymbolContextMenu}
+                title={summaryButtonTitle}
+              >
+                <span className="symbol-view__title">
+                  <span className="symbol-view__icon" aria-hidden="true">
+                    {focusedSymbolLogoUrl ? (
+                      <img
+                        className="symbol-view__icon-image"
+                        src={focusedSymbolLogoUrl}
+                        alt={focusedSymbolLogoAlt || undefined}
+                        width={28}
+                        height={28}
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M4 4V20H20"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M7 14L11.5 9.5L14.5 12.5L20 7"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="symbol-view__text">
+                    <strong>{focusedSymbol}</strong>
+                    {focusedSymbolDescription ? (
+                      <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
+                    ) : null}
+                  </span>
+                </span>
+                <div className="symbol-view__metrics">
+                  {quoteMessage ? (
+                    <span className="symbol-view__metric symbol-view__metric--message">{quoteMessage}</span>
                   ) : (
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
-                    >
-                      <path
-                        d="M4 4V20H20"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M7 14L11.5 9.5L14.5 12.5L20 7"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
+                    <>
+                      <span className="symbol-view__metric">
+                        <span className="symbol-view__metric-label">Price</span>
+                        <span className="symbol-view__metric-value">{quotePriceDisplay}</span>
+                        <span
+                          className={`symbol-view__metric-change symbol-view__metric-change--${quoteChangeTone}`}
+                        >
+                          {quoteChangeDisplay}
+                        </span>
+                      </span>
+                      <span className="symbol-view__metric">
+                        <span className="symbol-view__metric-label">P/E</span>
+                        <span className="symbol-view__metric-value">{quotePeDisplay}</span>
+                      </span>
+                      <span className="symbol-view__metric">
+                        <span className="symbol-view__metric-label">Market cap</span>
+                        <span className="symbol-view__metric-value">{quoteMarketCapDisplay}</span>
+                      </span>
+                      <span className="symbol-view__metric">
+                        <span className="symbol-view__metric-label">Dividend yield</span>
+                        <span className="symbol-view__metric-value">{quoteDividendDisplay}</span>
+                      </span>
+                    </>
                   )}
-                </span>
-                <span className="symbol-view__text">
-                  {' '}
-                  <strong>{focusedSymbol}</strong>
-                  {focusedSymbolDescription ? (
-                    <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
-                  ) : null}
-                </span>
-              </div>
+                </div>
+              </button>
               <div className="symbol-view__spacer" />
               <button
                 type="button"
@@ -11431,6 +11782,79 @@ export default function App() {
                 Clear
               </button>
             </div>
+            {focusedSymbolMenuState.open ? (
+              <div
+                className="positions-table__context-menu"
+                ref={focusedSymbolMenuRef}
+                style={{ top: `${focusedSymbolMenuState.y}px`, left: `${focusedSymbolMenuState.x}px` }}
+              >
+                <ul className="positions-table__context-menu-list" role="menu">
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuDetails}
+                    >
+                      Details
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuBuySell}
+                    >
+                      Buy/sell
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuGoToAccount}
+                      disabled={!focusedSymbolHasPosition}
+                    >
+                      Go to account
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuOrders}
+                      disabled={!focusedSymbolHasPosition}
+                    >
+                      Orders
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuNotes}
+                      disabled={!focusedSymbolHasPosition}
+                    >
+                      Notes
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuExplain}
+                    >
+                      Explain movement
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            ) : null}
           </section>
         ) : null}
 

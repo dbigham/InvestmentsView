@@ -1885,6 +1885,11 @@ export default function SummaryMetrics({
         </div>
       </header>
 
+      {showTotalPnlChart && symbolMode && (
+        <div className="equity-card__total-pnl-chart-caption" aria-hidden="true">
+          Account Total P&amp;L
+        </div>
+      )}
       {showTotalPnlChart && (
         <div className="equity-card__total-pnl-chart" aria-label="Total P&L history">
           <div className="equity-card__total-pnl-chart-body qqq-section__chart-container">

@@ -200,6 +200,23 @@ textarea {
   gap: 12px;
   width: 100%;
 }
+.symbol-view__summary {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.symbol-view__summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
 .symbol-view__title {
   font-size: 14px;
   display: flex;
@@ -237,14 +254,50 @@ textarea {
 .symbol-view__spacer { flex: 1; }
 .symbol-view__metrics {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 6px;
+  align-items: center;
 }
 .symbol-view__metric {
-  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
   background: var(--color-neutral-soft);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-pill);
-  padding: 6px 10px;
+  padding: 6px 12px;
+}
+.symbol-view__metric--message {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  min-width: 0;
+}
+.symbol-view__metric-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.symbol-view__metric-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.symbol-view__metric-change {
+  font-size: 12px;
+  font-weight: 600;
+}
+.symbol-view__metric-change--positive {
+  color: var(--color-accent);
+}
+.symbol-view__metric-change--negative {
+  color: var(--color-negative);
+}
+.symbol-view__metric-change--neutral {
+  color: var(--color-text-muted);
 }
 .symbol-view__metric--total {
   cursor: pointer;
@@ -2948,6 +3001,14 @@ textarea {
   background: transparent;
   border: none;
   padding: 0;
+}
+.equity-card__total-pnl-chart-caption {
+  margin-top: 12px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
 .equity-card__total-pnl-chart-header {
