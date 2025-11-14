@@ -11579,7 +11579,33 @@ export default function App() {
       ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
       : null;
   const quoteMarketCapValue = (() => {
-    const formatted = formatQuoteMoney(focusedSymbolQuote?.marketCap, {
+    if (!focusedSymbolQuote || !Number.isFinite(focusedSymbolQuote.marketCap)) {
+      return null;
+    }
+
+    const marketCap = Number(focusedSymbolQuote.marketCap);
+    const currencySuffix = focusedSymbolQuoteCurrency ? ` ${focusedSymbolQuoteCurrency}` : '';
+    const magnitudeFormats = [
+      { threshold: 1e12, suffix: 'T' },
+      { threshold: 1e9, suffix: 'B' },
+      { threshold: 1e6, suffix: 'M' },
+    ];
+
+    for (const { threshold, suffix } of magnitudeFormats) {
+      if (marketCap >= threshold) {
+        const scaled = marketCap / threshold;
+        const digitOptions = scaled >= 100
+          ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+          : { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+        const magnitude = formatNumber(scaled, digitOptions);
+        if (magnitude === '—') {
+          return null;
+        }
+        return `$${magnitude} ${suffix}${currencySuffix}`;
+      }
+    }
+
+    const formatted = formatQuoteMoney(marketCap, {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     });
@@ -11776,7 +11802,6 @@ export default function App() {
                   </div>
                 </div>
               </button>
-              <div className="symbol-view__spacer" />
               <button
                 type="button"
                 className="symbol-view__action"

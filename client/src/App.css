@@ -272,7 +272,6 @@ textarea {
 .symbol-view__desc {
   color: var(--color-text-muted);
 }
-.symbol-view__spacer { flex: 1; }
 .symbol-view__details {
   display: flex;
   align-items: center;
