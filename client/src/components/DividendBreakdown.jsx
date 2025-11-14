@@ -66,6 +66,27 @@ function formatLastPayment(entry) {
   return '—';
 }
 
+function formatEntryDate(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return '—';
+  }
+
+  const dateValue =
+    (typeof entry.lastDate === 'string' && entry.lastDate.trim()) ||
+    (typeof entry.firstDate === 'string' && entry.firstDate.trim()) ||
+    null;
+
+  if (dateValue) {
+    return formatDate(dateValue);
+  }
+
+  if (typeof entry.lastTimestamp === 'string' && entry.lastTimestamp.trim()) {
+    return formatDate(entry.lastTimestamp);
+  }
+
+  return '—';
+}
+
 function formatRange(start, end) {
   const startLabel = start ? formatDate(start) : null;
   const endLabel = end ? formatDate(end) : null;
@@ -97,6 +118,8 @@ function DividendBreakdown({ summary, variant }) {
   const totalsByCurrencyLabel = formatCurrencyTotals(summary.totalsByCurrency);
   const rangeLabel = formatRange(summary.startDate, summary.endDate);
   const totalCount = Number.isFinite(summary.totalCount) ? summary.totalCount : null;
+  const groupingMode = typeof summary.groupingMode === 'string' ? summary.groupingMode : null;
+  const isDateMode = groupingMode === 'date';
 
   const showTitleBlock = Boolean(rangeLabel || totalCount);
 
@@ -133,7 +156,7 @@ function DividendBreakdown({ summary, variant }) {
               <tr>
                 <th scope="col">Symbol</th>
                 <th scope="col">Payments</th>
-                <th scope="col">Last payment</th>
+                <th scope="col">{isDateMode ? 'Date' : 'Last payment'}</th>
                 <th scope="col">Totals (native)</th>
                 <th scope="col">Total (CAD)</th>
               </tr>
@@ -153,8 +176,11 @@ function DividendBreakdown({ summary, variant }) {
                 const cadLabel = Number.isFinite(entry.cadAmount)
                   ? `${formatMoney(entry.cadAmount)} CAD`
                   : '—';
-                const lastPaymentLabel = formatLastPayment(entry);
+                const lastPaymentLabel = isDateMode ? formatEntryDate(entry) : formatLastPayment(entry);
                 const rowKey =
+                  (entry.lineItemId && `dividend-${entry.lineItemId}`) ||
+                  (entry.lastDate && `${entry.symbol || entry.displaySymbol || 'dividend'}-${entry.lastDate}`) ||
+                  (entry.firstDate && `${entry.symbol || entry.displaySymbol || 'dividend'}-${entry.firstDate}`) ||
                   entry.symbol ||
                   (rawSymbols.length ? rawSymbols.join('|') : null) ||
                   entry.displaySymbol ||
@@ -220,6 +246,29 @@ DividendBreakdown.propTypes = {
         lastTimestamp: PropTypes.string,
         lastAmount: PropTypes.number,
         lastCurrency: PropTypes.string,
+        lineItemId: PropTypes.string,
+        accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+        accountLabel: PropTypes.string,
+      })
+    ),
+    lineItems: PropTypes.arrayOf(
+      PropTypes.shape({
+        symbol: PropTypes.string,
+        displaySymbol: PropTypes.string,
+        rawSymbols: PropTypes.arrayOf(PropTypes.string),
+        description: PropTypes.string,
+        currencyTotals: PropTypes.objectOf(PropTypes.number),
+        cadAmount: PropTypes.number,
+        conversionIncomplete: PropTypes.bool,
+        activityCount: PropTypes.number,
+        firstDate: PropTypes.string,
+        lastDate: PropTypes.string,
+        lastTimestamp: PropTypes.string,
+        lastAmount: PropTypes.number,
+        lastCurrency: PropTypes.string,
+        lineItemId: PropTypes.string,
+        accountId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+        accountLabel: PropTypes.string,
       })
     ),
     totalsByCurrency: PropTypes.objectOf(PropTypes.number),
@@ -228,6 +277,7 @@ DividendBreakdown.propTypes = {
     startDate: PropTypes.string,
     endDate: PropTypes.string,
     totalCount: PropTypes.number,
+    groupingMode: PropTypes.string,
   }),
   variant: PropTypes.oneOf(['card', 'panel']),
 };
