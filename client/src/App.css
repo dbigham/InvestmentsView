@@ -3047,7 +3047,6 @@ textarea {
   padding: 0;
 }
 .equity-card__total-pnl-chart-caption {
-  margin-top: 12px;
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -3056,10 +3055,77 @@ textarea {
 }
 
 .equity-card__total-pnl-chart-header {
+  margin-top: 12px;
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 16px;
+}
+
+.equity-card__total-pnl-chart-selector {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  padding: 0;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.equity-card__total-pnl-chart-selector:hover {
+  border-color: var(--color-border-strong);
+}
+
+.equity-card__total-pnl-chart-selector:focus-within {
+  border-color: #1b2733;
+  box-shadow: none;
+}
+
+.equity-card__total-pnl-chart-select {
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 400;
+  font-size: 13px;
+  padding: 4px 32px 4px 16px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+
+.equity-card__total-pnl-chart-select:focus-visible {
+  outline: none;
+}
+
+.equity-card__total-pnl-chart-selector::after {
+  content: '';
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-25%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--color-text-muted);
+  pointer-events: none;
+}
+
+.equity-card__total-pnl-chart-start-date {
+  position: absolute;
+  bottom: 0;
+  left: 12px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  padding-top: 8px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .equity-card__total-pnl-chart-title {

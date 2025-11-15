@@ -143,13 +143,44 @@ export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeS
       ? Math.max(0, resolvedRangeEndDate.getTime() - resolvedRangeStartDate.getTime())
       : 0;
 
-  const minValue = Math.min(...finiteValues, 0);
-  const maxValue = Math.max(...finiteValues, 0);
+  const minValue = Math.min(...finiteValues);
+  const maxValue = Math.max(...finiteValues);
   const range = maxValue - minValue;
   const padding = range === 0 ? Math.max(10, Math.abs(maxValue) * 0.1 || 10) : Math.max(10, range * 0.1);
-  const rawMinDomain = minValue - padding;
-  const rawMaxDomain = maxValue + padding;
-  const { minDomain, maxDomain, ticks } = buildAxisScale(rawMinDomain, rawMaxDomain);
+  let rawMinDomain = minValue - padding;
+  let rawMaxDomain = maxValue + padding;
+  if (minValue >= 0 && rawMinDomain < 0) {
+    rawMinDomain = 0;
+  }
+  if (maxValue <= 0 && rawMaxDomain > 0) {
+    rawMaxDomain = 0;
+  }
+  const axisScale = buildAxisScale(rawMinDomain, rawMaxDomain);
+  let minDomain = axisScale.minDomain;
+  let maxDomain = axisScale.maxDomain;
+  const spacing = Number.isFinite(axisScale.tickSpacing) && axisScale.tickSpacing > 0
+    ? axisScale.tickSpacing
+    : axisScale.ticks.length > 1
+      ? Math.abs(axisScale.ticks[1] - axisScale.ticks[0])
+      : 0;
+  if (minDomain < rawMinDomain) {
+    minDomain = rawMinDomain;
+  }
+  if (maxDomain > rawMaxDomain) {
+    maxDomain = rawMaxDomain;
+  }
+  if (maxDomain <= minDomain) {
+    maxDomain = minDomain + 1;
+  }
+  let axisTicks = axisScale.ticks.slice();
+  if (spacing > 0) {
+    axisTicks = axisTicks.filter(
+      (value) => value >= minDomain - spacing * 0.25 && value <= maxDomain + spacing * 0.25
+    );
+  }
+  if (!axisTicks.length) {
+    axisTicks = [minDomain, maxDomain];
+  }
   const domainRange = maxDomain - minDomain || 1;
   const innerWidth = CHART_WIDTH - PADDING.left - PADDING.right;
   const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
@@ -192,7 +223,7 @@ export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeS
     domainRange,
     innerWidth,
     innerHeight,
-    axisTicks: ticks,
+    axisTicks,
   };
 }
 

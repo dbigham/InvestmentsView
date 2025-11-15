@@ -20,6 +20,11 @@ import {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_YEAR = 365.25;
+const DEFAULT_CHART_METRIC = 'total-pnl';
+const CHART_METRIC_OPTIONS = [
+  { value: DEFAULT_CHART_METRIC, label: 'Total P&L', valueKey: 'totalPnl', deltaKey: 'totalPnlDelta' },
+  { value: 'total-equity', label: 'Total Equity', valueKey: 'equity', deltaKey: 'equityDelta' },
+];
 function parseDateString(value, { assumeDateOnly = false } = {}) {
   if (typeof value !== 'string') {
     return null;
@@ -594,7 +599,22 @@ export default function SummaryMetrics({
     []
   );
   const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
+  const [chartMetric, setChartMetric] = usePersistentState('total-pnl-chart-metric', DEFAULT_CHART_METRIC);
+  const normalizedChartMetric = CHART_METRIC_OPTIONS.some((option) => option.value === chartMetric)
+    ? chartMetric
+    : DEFAULT_CHART_METRIC;
+  const chartMetricConfig =
+    CHART_METRIC_OPTIONS.find((option) => option.value === normalizedChartMetric) || CHART_METRIC_OPTIONS[0];
+  const chartMetricLabel = chartMetricConfig.label;
+  const chartMetricAriaLabel = `${chartMetricLabel} history`;
+  const isTotalPnlMetric = chartMetricConfig.valueKey === 'totalPnl';
   const totalPnlRangeId = useId();
+  const chartMetricSelectId = useId();
+  useEffect(() => {
+    if (!CHART_METRIC_OPTIONS.some((option) => option.value === chartMetric)) {
+      setChartMetric(DEFAULT_CHART_METRIC);
+    }
+  }, [chartMetric, setChartMetric]);
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
@@ -891,6 +911,14 @@ export default function SummaryMetrics({
       onTotalPnlRangeChange(event.target.value);
     }
   };
+  const handleChartMetricChange = (event) => {
+    const nextValue = event.target.value;
+    if (CHART_METRIC_OPTIONS.some((option) => option.value === nextValue)) {
+      setChartMetric(nextValue);
+      return;
+    }
+    setChartMetric(DEFAULT_CHART_METRIC);
+  };
   let totalPnlRangeSelector = null;
   if (normalizedRangeOptions.length > 0) {
     if (showRangeSelector) {
@@ -950,6 +978,29 @@ export default function SummaryMetrics({
     });
   }, [totalPnlSeries, chartTimeframe]);
 
+  const chartSeries = useMemo(() => {
+    if (!filteredTotalPnlSeries.length) {
+      return [];
+    }
+    if (isTotalPnlMetric) {
+      return filteredTotalPnlSeries;
+    }
+    return filteredTotalPnlSeries.map((entry) => {
+      const nextValue = entry?.[chartMetricConfig.valueKey];
+      const nextDelta = entry?.[chartMetricConfig.deltaKey];
+      const hasNextValue = Number.isFinite(nextValue);
+      const hasNextDelta = Number.isFinite(nextDelta);
+      if (!hasNextValue && !hasNextDelta) {
+        return entry;
+      }
+      return {
+        ...entry,
+        totalPnl: hasNextValue ? nextValue : entry.totalPnl ?? null,
+        totalPnlDelta: hasNextDelta ? nextDelta : entry.totalPnlDelta ?? null,
+      };
+    });
+  }, [filteredTotalPnlSeries, chartMetricConfig, isTotalPnlMetric]);
+
   const { start: timeframeRangeStart, end: timeframeRangeEnd } = useMemo(() => {
     const endCandidates = [];
     if (filteredTotalPnlSeries.length) {
@@ -976,18 +1027,18 @@ export default function SummaryMetrics({
   }, [filteredTotalPnlSeries, totalPnlSeries?.points, totalPnlSeries?.periodEndDate, chartTimeframe]);
 
   const totalPnlChartMetrics = useMemo(() => {
-    if (!filteredTotalPnlSeries.length) {
+    if (!chartSeries.length) {
       return null;
     }
     // When the series carries a displayStartDate, interpret values as deltas
     // from that baseline so the chart starts at 0 for CAGR views.
     const useDisplayStartDelta = Boolean(totalPnlSeries?.displayStartDate);
-    return buildChartMetrics(filteredTotalPnlSeries, {
+    return buildChartMetrics(chartSeries, {
       useDisplayStartDelta,
       rangeStartDate: timeframeRangeStart,
       rangeEndDate: timeframeRangeEnd,
     });
-  }, [filteredTotalPnlSeries, timeframeRangeStart, timeframeRangeEnd, totalPnlSeries?.displayStartDate]);
+  }, [chartSeries, timeframeRangeStart, timeframeRangeEnd, totalPnlSeries?.displayStartDate]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -1022,6 +1073,12 @@ export default function SummaryMetrics({
 
   const totalPnlChartMarker =
     totalPnlChartMetrics?.points?.[totalPnlChartMetrics.points.length - 1] ?? null;
+  const chartRangeStartLabel = useMemo(() => {
+    if (!totalPnlChartMetrics?.rangeStart) {
+      return null;
+    }
+    return formatDate(totalPnlChartMetrics.rangeStart);
+  }, [totalPnlChartMetrics?.rangeStart]);
   const chartRef = useRef(null);
   const [hoverX, setHoverX] = useState(null);
   const [selectionState, setSelectionState] = useState({
@@ -1265,13 +1322,21 @@ export default function SummaryMetrics({
 
   const hoverLabel = useMemo(() => {
     const useDelta = Boolean(totalPnlSeries?.displayStartDate);
-    return buildHoverLabel(hoverPoint, { useDisplayStartDelta: useDelta });
-  }, [hoverPoint, totalPnlSeries?.displayStartDate]);
+    const label = buildHoverLabel(hoverPoint, { useDisplayStartDelta: useDelta });
+    if (label && !isTotalPnlMetric) {
+      return { ...label, tone: 'neutral' };
+    }
+    return label;
+  }, [hoverPoint, totalPnlSeries?.displayStartDate, isTotalPnlMetric]);
 
   const markerHoverLabel = useMemo(() => {
     const useDelta = Boolean(totalPnlSeries?.displayStartDate);
-    return buildHoverLabel(totalPnlChartMarker, { useDisplayStartDelta: useDelta });
-  }, [totalPnlChartMarker, totalPnlSeries?.displayStartDate]);
+    const label = buildHoverLabel(totalPnlChartMarker, { useDisplayStartDelta: useDelta });
+    if (label && !isTotalPnlMetric) {
+      return { ...label, tone: 'neutral' };
+    }
+    return label;
+  }, [totalPnlChartMarker, totalPnlSeries?.displayStartDate, isTotalPnlMetric]);
 
   // Default action: open Total P&L breakdown when the chart is activated.
   const handleActivateTotalPnl = useCallback(() => {
@@ -1977,13 +2042,27 @@ export default function SummaryMetrics({
         </div>
       </header>
 
-      {showTotalPnlChart && symbolMode && (
-        <div className="equity-card__total-pnl-chart-caption" aria-hidden="true">
-          Total P&amp;L
+      {showTotalPnlChart && (
+        <div className="equity-card__total-pnl-chart-header">
+          <div className="equity-card__total-pnl-chart-selector">
+            <select
+              id={chartMetricSelectId}
+              className="equity-card__total-pnl-chart-select"
+              aria-label="Select chart metric"
+              value={normalizedChartMetric}
+              onChange={handleChartMetricChange}
+            >
+              {CHART_METRIC_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
       {showTotalPnlChart && (
-        <div className="equity-card__total-pnl-chart" aria-label="Total P&L history">
+        <div className="equity-card__total-pnl-chart" aria-label={chartMetricAriaLabel}>
           <div className="equity-card__total-pnl-chart-body qqq-section__chart-container">
             {totalPnlSeriesStatus === 'loading' ? (
               <div className="equity-card__total-pnl-chart-loading" role="status" aria-live="polite">
@@ -1991,16 +2070,25 @@ export default function SummaryMetrics({
               </div>
             ) : totalPnlSeriesError ? (
               <div className="equity-card__total-pnl-chart-message">
-                Unable to load Total P&L data.
+                Unable to load {chartMetricLabel} data.
               </div>
             ) : totalPnlChartHasSeries ? (
               <>
+                {chartRangeStartLabel && (
+                  <div
+                    className="equity-card__total-pnl-chart-start-date"
+                    aria-hidden="true"
+                    style={{ left: `${Math.max(0, PADDING.left) + 12}px` }}
+                  >
+                    {chartRangeStartLabel}
+                  </div>
+                )}
                 <svg
                   ref={chartRef}
                   className="qqq-section__chart pnl-dialog__chart"
                   viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
                   role="img"
-                  aria-label="Total P&L history"
+                  aria-label={chartMetricAriaLabel}
                   onMouseDown={handleMouseDown}
                   onMouseMove={handleMouseMove}
                   onMouseLeave={handleMouseLeave}
@@ -2160,15 +2248,19 @@ export default function SummaryMetrics({
                 )}
               </>
             ) : totalPnlSeriesStatus === 'success' ? (
-              <div className="equity-card__total-pnl-chart-message">No Total P&L data available.</div>
+              <div className="equity-card__total-pnl-chart-message">No {chartMetricLabel} data available.</div>
             ) : null}
           </div>
         </div>
       )}
 
-      {/* Timeframe selector for Total P&L chart */}
+      {/* Timeframe selector for the chart */}
       {showTotalPnlChart && (
-        <div className="equity-card__chip-row equity-card__chip-row--timeframe" role="group" aria-label="Total P&L timeframe">
+        <div
+          className="equity-card__chip-row equity-card__chip-row--timeframe"
+          role="group"
+          aria-label={`${chartMetricLabel} timeframe`}
+        >
           {TIMEFRAME_BUTTONS.map((option) => {
             const isActive = chartTimeframe === option.value;
             return (
