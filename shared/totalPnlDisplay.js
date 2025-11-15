@@ -8,6 +8,7 @@ export const TOTAL_PNL_TIMEFRAME_OPTIONS = Object.freeze([
   { value: '1Y', label: '1 year' },
   { value: '3Y', label: '3 years' },
   { value: '5Y', label: '5 years' },
+  { value: '10Y', label: '10 years' },
   { value: 'ALL', label: 'All' },
 ]);
 
@@ -53,6 +54,9 @@ export function subtractInterval(date, option) {
     case '5Y':
       result.setFullYear(result.getFullYear() - 5);
       break;
+    case '10Y':
+      result.setFullYear(result.getFullYear() - 10);
+      break;
     default:
       return null;
   }
@@ -84,6 +88,8 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
       equitySinceDisplayStartCad: coerceFinite(entry?.equitySinceDisplayStartCad),
       cumulativeNetDepositsCad: coerceFinite(entry?.cumulativeNetDepositsCad),
       cumulativeNetDepositsSinceDisplayStartCad: coerceFinite(entry?.cumulativeNetDepositsSinceDisplayStartCad),
+      priceCad: coerceFinite(entry?.priceCad),
+      priceSinceDisplayStartCad: coerceFinite(entry?.priceSinceDisplayStartCad),
     }))
     .filter((entry) => entry.date && entry.totalPnlCad !== null);
 
@@ -134,6 +140,7 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
   const baselineEquity = coerceFinite(displayStartTotals?.equityCad) ?? afterDisplayStart[0]?.equityCad ?? null;
   const baselineDeposits =
     coerceFinite(displayStartTotals?.cumulativeNetDepositsCad) ?? afterDisplayStart[0]?.cumulativeNetDepositsCad ?? null;
+  const baselinePrice = coerceFinite(displayStartTotals?.priceCad) ?? afterDisplayStart[0]?.priceCad ?? null;
 
   return working.map((entry, index) => {
     const normalized = { ...entry };
@@ -181,6 +188,22 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
       normalized.cumulativeNetDepositsSinceDisplayStartCad !== null
         ? normalized.cumulativeNetDepositsSinceDisplayStartCad
         : undefined;
+
+    if (normalized.priceSinceDisplayStartCad === null && normalized.priceCad !== null) {
+      if (baselinePrice !== null) {
+        const delta = normalized.priceCad - baselinePrice;
+        normalized.priceSinceDisplayStartCad = Math.abs(delta) < DELTA_EPSILON ? 0 : delta;
+      }
+    } else if (index === 0 && normalized.priceSinceDisplayStartCad !== null) {
+      normalized.priceSinceDisplayStartCad =
+        Math.abs(normalized.priceSinceDisplayStartCad) < DELTA_EPSILON
+          ? 0
+          : normalized.priceSinceDisplayStartCad;
+    }
+
+    normalized.price = normalized.priceCad;
+    normalized.priceDelta =
+      normalized.priceSinceDisplayStartCad !== null ? normalized.priceSinceDisplayStartCad : undefined;
 
     return normalized;
   });

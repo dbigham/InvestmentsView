@@ -24,6 +24,15 @@ const DEFAULT_CHART_METRIC = 'total-pnl';
 const CHART_METRIC_OPTIONS = [
   { value: DEFAULT_CHART_METRIC, label: 'Total P&L', valueKey: 'totalPnl', deltaKey: 'totalPnlDelta' },
   { value: 'total-equity', label: 'Total Equity', valueKey: 'equity', deltaKey: 'equityDelta' },
+  {
+    value: 'price',
+    label: 'Price',
+    valueKey: 'price',
+    deltaKey: 'priceDelta',
+    symbolOnly: true,
+    useDisplayStartDelta: false,
+    valueFormatter: (value) => formatMoney(value),
+  },
 ];
 function parseDateString(value, { assumeDateOnly = false } = {}) {
   if (typeof value !== 'string') {
@@ -594,27 +603,39 @@ export default function SummaryMetrics({
       { value: '3M', label: '3M' },
       { value: '6M', label: '6M' },
       { value: '1Y', label: '1Y' },
+      { value: '5Y', label: '5Y' },
+      { value: '10Y', label: '10Y' },
       { value: 'ALL', label: 'Since inception' },
     ],
     []
   );
+  const availableChartMetricOptions = useMemo(
+    () => CHART_METRIC_OPTIONS.filter((option) => !option.symbolOnly || symbolMode),
+    [symbolMode]
+  );
   const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
   const [chartMetric, setChartMetric] = usePersistentState('total-pnl-chart-metric', DEFAULT_CHART_METRIC);
-  const normalizedChartMetric = CHART_METRIC_OPTIONS.some((option) => option.value === chartMetric)
+  const normalizedChartMetric = availableChartMetricOptions.some((option) => option.value === chartMetric)
     ? chartMetric
     : DEFAULT_CHART_METRIC;
   const chartMetricConfig =
-    CHART_METRIC_OPTIONS.find((option) => option.value === normalizedChartMetric) || CHART_METRIC_OPTIONS[0];
+    availableChartMetricOptions.find((option) => option.value === normalizedChartMetric) ||
+    availableChartMetricOptions[0] ||
+    CHART_METRIC_OPTIONS[0];
   const chartMetricLabel = chartMetricConfig.label;
   const chartMetricAriaLabel = `${chartMetricLabel} history`;
+  const applyDisplayStartDelta =
+    chartMetricConfig.useDisplayStartDelta !== undefined
+      ? chartMetricConfig.useDisplayStartDelta
+      : Boolean(totalPnlSeries?.displayStartDate);
   const isTotalPnlMetric = chartMetricConfig.valueKey === 'totalPnl';
   const totalPnlRangeId = useId();
   const chartMetricSelectId = useId();
   useEffect(() => {
-    if (!CHART_METRIC_OPTIONS.some((option) => option.value === chartMetric)) {
+    if (!availableChartMetricOptions.some((option) => option.value === chartMetric)) {
       setChartMetric(DEFAULT_CHART_METRIC);
     }
-  }, [chartMetric, setChartMetric]);
+  }, [availableChartMetricOptions, chartMetric, setChartMetric]);
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
@@ -1032,13 +1053,12 @@ export default function SummaryMetrics({
     }
     // When the series carries a displayStartDate, interpret values as deltas
     // from that baseline so the chart starts at 0 for CAGR views.
-    const useDisplayStartDelta = Boolean(totalPnlSeries?.displayStartDate);
     return buildChartMetrics(chartSeries, {
-      useDisplayStartDelta,
+      useDisplayStartDelta: applyDisplayStartDelta,
       rangeStartDate: timeframeRangeStart,
       rangeEndDate: timeframeRangeEnd,
     });
-  }, [chartSeries, timeframeRangeStart, timeframeRangeEnd, totalPnlSeries?.displayStartDate]);
+  }, [applyDisplayStartDelta, chartSeries, timeframeRangeStart, timeframeRangeEnd]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -1321,22 +1341,52 @@ export default function SummaryMetrics({
   }
 
   const hoverLabel = useMemo(() => {
-    const useDelta = Boolean(totalPnlSeries?.displayStartDate);
-    const label = buildHoverLabel(hoverPoint, { useDisplayStartDelta: useDelta });
-    if (label && !isTotalPnlMetric) {
-      return { ...label, tone: 'neutral' };
+    if (!hoverPoint) {
+      return null;
     }
-    return label;
-  }, [hoverPoint, totalPnlSeries?.displayStartDate, isTotalPnlMetric]);
+    const label = buildHoverLabel(hoverPoint, { useDisplayStartDelta: applyDisplayStartDelta });
+    if (!label) {
+      return null;
+    }
+    const resolved = !isTotalPnlMetric ? { ...label, tone: 'neutral' } : label;
+    if (typeof chartMetricConfig.valueFormatter === 'function') {
+      const rawValue = applyDisplayStartDelta && Number.isFinite(hoverPoint?.chartValue)
+        ? hoverPoint.chartValue
+        : Number.isFinite(hoverPoint?.totalPnl)
+          ? hoverPoint.totalPnl
+          : Number.isFinite(hoverPoint?.chartValue)
+            ? hoverPoint.chartValue
+            : null;
+      if (Number.isFinite(rawValue)) {
+        return { ...resolved, amount: chartMetricConfig.valueFormatter(rawValue) };
+      }
+    }
+    return resolved;
+  }, [hoverPoint, applyDisplayStartDelta, chartMetricConfig, isTotalPnlMetric]);
 
   const markerHoverLabel = useMemo(() => {
-    const useDelta = Boolean(totalPnlSeries?.displayStartDate);
-    const label = buildHoverLabel(totalPnlChartMarker, { useDisplayStartDelta: useDelta });
-    if (label && !isTotalPnlMetric) {
-      return { ...label, tone: 'neutral' };
+    if (!totalPnlChartMarker) {
+      return null;
     }
-    return label;
-  }, [totalPnlChartMarker, totalPnlSeries?.displayStartDate, isTotalPnlMetric]);
+    const label = buildHoverLabel(totalPnlChartMarker, { useDisplayStartDelta: applyDisplayStartDelta });
+    if (!label) {
+      return null;
+    }
+    const resolved = !isTotalPnlMetric ? { ...label, tone: 'neutral' } : label;
+    if (typeof chartMetricConfig.valueFormatter === 'function') {
+      const rawValue = applyDisplayStartDelta && Number.isFinite(totalPnlChartMarker?.chartValue)
+        ? totalPnlChartMarker.chartValue
+        : Number.isFinite(totalPnlChartMarker?.totalPnl)
+          ? totalPnlChartMarker.totalPnl
+          : Number.isFinite(totalPnlChartMarker?.chartValue)
+            ? totalPnlChartMarker.chartValue
+            : null;
+      if (Number.isFinite(rawValue)) {
+        return { ...resolved, amount: chartMetricConfig.valueFormatter(rawValue) };
+      }
+    }
+    return resolved;
+  }, [applyDisplayStartDelta, chartMetricConfig, isTotalPnlMetric, totalPnlChartMarker]);
 
   // Default action: open Total P&L breakdown when the chart is activated.
   const handleActivateTotalPnl = useCallback(() => {
@@ -2052,7 +2102,7 @@ export default function SummaryMetrics({
               value={normalizedChartMetric}
               onChange={handleChartMetricChange}
             >
-              {CHART_METRIC_OPTIONS.map((option) => (
+              {availableChartMetricOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -2510,6 +2560,9 @@ SummaryMetrics.propTypes = {
         totalPnlSinceDisplayStartCad: PropTypes.number,
         equityCad: PropTypes.number,
         cumulativeNetDepositsCad: PropTypes.number,
+        priceCad: PropTypes.number,
+        priceSinceDisplayStartCad: PropTypes.number,
+        priceNative: PropTypes.number,
       })
     ),
     summary: PropTypes.shape({
@@ -2517,10 +2570,12 @@ SummaryMetrics.propTypes = {
       totalPnlCad: PropTypes.number,
       totalPnlSinceDisplayStartCad: PropTypes.number,
       totalPnlAllTimeCad: PropTypes.number,
+      priceCad: PropTypes.number,
       displayStartTotals: PropTypes.shape({
         cumulativeNetDepositsCad: PropTypes.number,
         equityCad: PropTypes.number,
         totalPnlCad: PropTypes.number,
+        priceCad: PropTypes.number,
       }),
     }),
   }),

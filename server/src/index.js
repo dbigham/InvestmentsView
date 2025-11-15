@@ -10802,6 +10802,18 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
     }
 
+    const series = priceSeriesMap.get(targetSymbol) || new Map();
+    const nativePrice = series.get(dateKey);
+    let priceCad = null;
+    if (Number.isFinite(nativePrice)) {
+      const priceCurrency = (symbolMeta.get(targetSymbol) && symbolMeta.get(targetSymbol).currency) || 'CAD';
+      if (priceCurrency === 'USD') {
+        priceCad = Number.isFinite(usdRate) && usdRate > 0 ? nativePrice * usdRate : null;
+      } else {
+        priceCad = nativePrice;
+      }
+    }
+
     const snapshot = computeLedgerEquitySnapshot(
       dateKey,
       holdings,
@@ -11348,18 +11360,23 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     }
     const usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
 
+    const series = priceSeriesMap.get(targetSymbol) || new Map();
+    const nativePrice = series.get(dateKey);
+    let priceCad = null;
+    if (Number.isFinite(nativePrice)) {
+      const priceCurrency = (symbolMeta.get(targetSymbol) && symbolMeta.get(targetSymbol).currency) || 'CAD';
+      if (priceCurrency === 'USD') {
+        priceCad = Number.isFinite(usdRate) && usdRate > 0 ? nativePrice * usdRate : null;
+      } else {
+        priceCad = nativePrice;
+      }
+    }
+
     // Treat non-trade share transfers as deposits/withdrawals at the day's price
     const qtyDelta = nonTradeQtyByDate.has(dateKey) ? nonTradeQtyByDate.get(dateKey) : 0;
     if (Number.isFinite(qtyDelta) && Math.abs(qtyDelta) >= LEDGER_QUANTITY_EPSILON) {
-      const series = priceSeriesMap.get(targetSymbol) || new Map();
-      const nativePrice = series.get(dateKey);
-      let cadPrice = null;
-      if (Number.isFinite(nativePrice)) {
-        const cur = (symbolMeta.get(targetSymbol) && symbolMeta.get(targetSymbol).currency) || 'CAD';
-        cadPrice = cur === 'USD' ? (Number.isFinite(usdRate) && usdRate > 0 ? nativePrice * usdRate : null) : nativePrice;
-      }
-      if (Number.isFinite(cadPrice) && Math.abs(cadPrice) > 0) {
-        const deltaInvested = qtyDelta * cadPrice;
+      if (Number.isFinite(priceCad) && Math.abs(priceCad) > 0) {
+        const deltaInvested = qtyDelta * priceCad;
         if (Math.abs(deltaInvested) >= CASH_FLOW_EPSILON / 10) {
           cumulativeInvested += deltaInvested;
         }
@@ -11376,7 +11393,14 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     );
     const equityCad = Number.isFinite(snapshot.equityCad) ? snapshot.equityCad : 0;
     const totalPnlCad = Number.isFinite(cumulativeInvested) ? equityCad - cumulativeInvested : null;
-    points.push({ date: dateKey, equityCad, cumulativeNetDepositsCad: Number.isFinite(cumulativeInvested) ? cumulativeInvested : null, totalPnlCad });
+    points.push({
+      date: dateKey,
+      equityCad,
+      cumulativeNetDepositsCad: Number.isFinite(cumulativeInvested) ? cumulativeInvested : null,
+      totalPnlCad,
+      priceCad: Number.isFinite(priceCad) ? priceCad : null,
+      priceNative: Number.isFinite(nativePrice) ? nativePrice : null,
+    });
   }
 
   const summary = (function buildSummary() {
@@ -11387,10 +11411,12 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       totalPnlCad: Number.isFinite(last.totalPnlCad) ? last.totalPnlCad : null,
       totalPnlAllTimeCad: Number.isFinite(last.totalPnlCad) ? last.totalPnlCad : null,
       totalEquityCad: Number.isFinite(last.equityCad) ? last.equityCad : null,
+      priceCad: Number.isFinite(last.priceCad) ? last.priceCad : null,
       seriesStartTotals: {
         cumulativeNetDepositsCad: Number.isFinite(first.cumulativeNetDepositsCad) ? first.cumulativeNetDepositsCad : null,
         equityCad: Number.isFinite(first.equityCad) ? first.equityCad : null,
         totalPnlCad: Number.isFinite(first.totalPnlCad) ? first.totalPnlCad : null,
+        priceCad: Number.isFinite(first.priceCad) ? first.priceCad : null,
       },
       displayStartTotals: undefined,
     };
