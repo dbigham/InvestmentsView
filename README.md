@@ -89,6 +89,14 @@ From there browse to `http://localhost:5173`, drop in your refresh tokens, and t
 
 Need the full playbook (environment variables, metadata files, optional helpers, production builds, etc.)? See the [setup & running guide](docs/setup-and-running.md) for step-by-step instructions.
 
+## More screenshots
+
+Prefer to browse a few more UI surfaces before diving in? Here are quick links to the remaining screenshots:
+
+- [Date range selection](docs/screenshots/date-range-selection.png)
+- [Dividends view](docs/screenshots/dividends.png)
+- [Position actions menu](docs/screenshots/position-actions-menu.png)
+
 ## Credits
 
 - Company logos powered by [Logo.dev](https://logo.dev).
