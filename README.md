@@ -10,7 +10,7 @@ Other key features:
 - Annualized return (XIRR)
 - Retirement projections, including CPP + OAS calculations
 - Deployed vs. reserve (Cash + T-bill ETFs) with a tool for adjusting this percentage
-- Everything runs locally reads data through Questrade's public API.
+- Everything runs locally and reads data through Questrade's public API.
 
 ![Main dashboard overview](docs/screenshots/main.png)
 
