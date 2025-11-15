@@ -583,6 +583,9 @@ export default function SummaryMetrics({
   totalPnlSeries,
   totalPnlSeriesStatus,
   totalPnlSeriesError,
+  symbolPriceSeries,
+  symbolPriceSeriesStatus,
+  symbolPriceSeriesError,
   onAdjustDeployment,
   symbolMode = false,
   childAccounts,
@@ -622,8 +625,37 @@ export default function SummaryMetrics({
     availableChartMetricOptions.find((option) => option.value === normalizedChartMetric) ||
     availableChartMetricOptions[0] ||
     CHART_METRIC_OPTIONS[0];
-  const chartMetricLabel = chartMetricConfig.label;
+  const isPriceMetric = chartMetricConfig.value === 'price';
+  const chartMetricBaseLabel = chartMetricConfig.label;
+  const chartMetricLabel = useMemo(() => {
+    if (isPriceMetric && symbolMode && symbolPriceSeries?.currency) {
+      return `${chartMetricBaseLabel} (${symbolPriceSeries.currency})`;
+    }
+    return chartMetricBaseLabel;
+  }, [chartMetricBaseLabel, isPriceMetric, symbolMode, symbolPriceSeries?.currency]);
   const chartMetricAriaLabel = `${chartMetricLabel} history`;
+  const chartMetricValueFormatter = useMemo(() => {
+    if (isPriceMetric && symbolMode) {
+      const currency = typeof symbolPriceSeries?.currency === 'string' ? symbolPriceSeries.currency : null;
+      if (currency) {
+        try {
+          const formatter = new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency,
+            maximumFractionDigits: 4,
+          });
+          return (value) => (Number.isFinite(value) ? formatter.format(value) : formatMoney(value));
+        } catch {
+          // ignore formatter errors and fall back to default
+        }
+      }
+    }
+    return chartMetricConfig.valueFormatter;
+  }, [chartMetricConfig.valueFormatter, isPriceMetric, symbolMode, symbolPriceSeries?.currency]);
+  const effectiveChartSeriesStatus =
+    isPriceMetric && symbolMode ? symbolPriceSeriesStatus : totalPnlSeriesStatus;
+  const effectiveChartSeriesError =
+    isPriceMetric && symbolMode ? symbolPriceSeriesError : totalPnlSeriesError;
   const applyDisplayStartDelta =
     chartMetricConfig.useDisplayStartDelta !== undefined
       ? chartMetricConfig.useDisplayStartDelta
@@ -706,7 +738,7 @@ export default function SummaryMetrics({
   const [showChartSpinner, setShowChartSpinner] = useState(false);
   useEffect(() => {
     let timer = null;
-    if (totalPnlSeriesStatus === 'loading') {
+    if (effectiveChartSeriesStatus === 'loading') {
       setShowChartSpinner(false);
       timer = setTimeout(() => setShowChartSpinner(true), 750);
     } else {
@@ -715,7 +747,7 @@ export default function SummaryMetrics({
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [totalPnlSeriesStatus]);
+  }, [effectiveChartSeriesStatus]);
   const hasQqqTemperature = Number.isFinite(qqqSummary?.temperature);
   let qqqLabel = 'QQQ temperature: Loading…';
   if ((qqqStatus === 'ready' || qqqStatus === 'refreshing') && hasQqqTemperature) {
@@ -999,16 +1031,114 @@ export default function SummaryMetrics({
     });
   }, [totalPnlSeries, chartTimeframe]);
 
-  const chartSeries = useMemo(() => {
-    if (!filteredTotalPnlSeries.length) {
+  const priceChartSeries = useMemo(() => {
+    if (!symbolMode || !Array.isArray(symbolPriceSeries?.points)) {
       return [];
     }
-    if (isTotalPnlMetric) {
-      return filteredTotalPnlSeries;
+    const normalizedPoints = symbolPriceSeries.points
+      .map((point) => {
+        const dateKey = typeof point?.date === 'string' ? point.date : null;
+        const priceValue = Number(point?.price);
+        if (!dateKey || !Number.isFinite(priceValue)) {
+          return null;
+        }
+        return { date: dateKey, price: priceValue };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (!normalizedPoints.length) {
+      return [];
     }
-    return filteredTotalPnlSeries.map((entry) => {
-      const nextValue = entry?.[chartMetricConfig.valueKey];
-      const nextDelta = entry?.[chartMetricConfig.deltaKey];
+    let working = normalizedPoints;
+    if (chartTimeframe && chartTimeframe !== 'ALL') {
+      const lastEntry = normalizedPoints[normalizedPoints.length - 1];
+      const lastDate = parseDateOnly(lastEntry?.date);
+      const cutoff = subtractInterval(lastDate, chartTimeframe);
+      if (cutoff) {
+        const filtered = normalizedPoints.filter((point) => {
+          const pointDate = parseDateOnly(point.date);
+          if (!pointDate) {
+            return false;
+          }
+          return pointDate >= cutoff;
+        });
+        if (filtered.length) {
+          working = filtered;
+        }
+      }
+    }
+    let baseline = null;
+    return working
+      .map((point, index) => {
+        const priceValue = Number(point.price);
+        if (!Number.isFinite(priceValue)) {
+          return null;
+        }
+        if (baseline === null) {
+          baseline = priceValue;
+        }
+        const delta = priceValue - baseline;
+        const normalizedDelta = Math.abs(delta) < 1e-6 ? 0 : delta;
+        return {
+          date: point.date,
+          totalPnl: priceValue,
+          totalPnlDelta: index === 0 ? 0 : normalizedDelta,
+          price: priceValue,
+          priceNative: priceValue,
+          priceDelta: index === 0 ? 0 : normalizedDelta,
+        };
+      })
+      .filter(Boolean);
+  }, [symbolMode, symbolPriceSeries?.points, chartTimeframe]);
+
+  const baseChartSeries = useMemo(() => {
+    if (isPriceMetric && symbolMode) {
+      return priceChartSeries;
+    }
+    return filteredTotalPnlSeries;
+  }, [isPriceMetric, symbolMode, priceChartSeries, filteredTotalPnlSeries]);
+
+  const chartSeries = useMemo(() => {
+    if (!baseChartSeries.length) {
+      return [];
+    }
+    if ((isPriceMetric && symbolMode) || isTotalPnlMetric) {
+      return baseChartSeries;
+    }
+    const metricUsesPrice = chartMetricConfig.valueKey === 'price';
+    const resolveMetricValue = (entry) => {
+      const direct = entry?.[chartMetricConfig.valueKey];
+      if (Number.isFinite(direct)) {
+        return direct;
+      }
+      if (metricUsesPrice) {
+        const priceCad = entry?.price ?? entry?.priceCad;
+        if (Number.isFinite(priceCad)) {
+          return priceCad;
+        }
+        const priceNative = entry?.priceNative;
+        if (Number.isFinite(priceNative)) {
+          return priceNative;
+        }
+      }
+      return direct;
+    };
+    const resolveMetricDelta = (entry) => {
+      const direct = entry?.[chartMetricConfig.deltaKey];
+      if (Number.isFinite(direct)) {
+        return direct;
+      }
+      if (metricUsesPrice) {
+        const fallbackDelta = entry?.priceDelta ?? entry?.priceSinceDisplayStartCad;
+        if (Number.isFinite(fallbackDelta)) {
+          return fallbackDelta;
+        }
+      }
+      return direct;
+    };
+    return baseChartSeries.map((entry) => {
+      const nextValue = resolveMetricValue(entry);
+      const nextDelta = resolveMetricDelta(entry);
       const hasNextValue = Number.isFinite(nextValue);
       const hasNextDelta = Number.isFinite(nextDelta);
       if (!hasNextValue && !hasNextDelta) {
@@ -1020,7 +1150,7 @@ export default function SummaryMetrics({
         totalPnlDelta: hasNextDelta ? nextDelta : entry.totalPnlDelta ?? null,
       };
     });
-  }, [filteredTotalPnlSeries, chartMetricConfig, isTotalPnlMetric]);
+  }, [baseChartSeries, chartMetricConfig, isPriceMetric, isTotalPnlMetric, symbolMode]);
 
   const { start: timeframeRangeStart, end: timeframeRangeEnd } = useMemo(() => {
     const endCandidates = [];
@@ -1153,22 +1283,50 @@ export default function SummaryMetrics({
         return null;
       }
       const clampedX = clampChartX(x);
-      const ratio =
-        totalPnlChartMetrics.innerWidth > 0
-          ? (clampedX - PADDING.left) / totalPnlChartMetrics.innerWidth
-          : 0;
-      const targetIndex = Math.max(
-        0,
-        Math.min(totalPnlChartMetrics.points.length - 1, ratio * (totalPnlChartMetrics.points.length - 1))
-      );
-      const lowerIndex = Math.max(0, Math.floor(targetIndex));
-      const upperIndex = Math.min(totalPnlChartMetrics.points.length - 1, lowerIndex + 1);
-      const t = Math.max(0, Math.min(1, targetIndex - lowerIndex));
-      const lower = totalPnlChartMetrics.points[lowerIndex];
-      const upper = totalPnlChartMetrics.points[upperIndex];
-      if (!lower || !upper) {
-        return lower || upper || null;
+      const points = totalPnlChartMetrics.points;
+      if (points.length === 1) {
+        return points[0];
       }
+      let low = 0;
+      let high = points.length - 1;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        const midPoint = points[mid];
+        if (!midPoint || !Number.isFinite(midPoint.x)) {
+          break;
+        }
+        if (midPoint.x < clampedX) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      let upperIndex = Math.min(points.length - 1, Math.max(0, low));
+      let lowerIndex = Math.max(0, upperIndex - 1);
+      if (
+        upperIndex === lowerIndex &&
+        upperIndex + 1 < points.length &&
+        Number.isFinite(points[upperIndex].x) &&
+        points[upperIndex].x < clampedX
+      ) {
+        lowerIndex = upperIndex;
+        upperIndex = upperIndex + 1;
+      }
+      const lower = points[lowerIndex];
+      const upper = points[upperIndex];
+      if (!lower && !upper) {
+        return null;
+      }
+      if (!upper) {
+        return lower;
+      }
+      if (!lower) {
+        return upper;
+      }
+      const lowerX = Number.isFinite(lower.x) ? lower.x : clampedX;
+      const upperX = Number.isFinite(upper.x) ? upper.x : clampedX;
+      const span = upperX - lowerX;
+      const t = span !== 0 ? Math.max(0, Math.min(1, (clampedX - lowerX) / span)) : 0;
       const interpolate = (lowerValue, upperValue) => {
         const lowerFinite = Number.isFinite(lowerValue);
         const upperFinite = Number.isFinite(upperValue);
@@ -1183,16 +1341,21 @@ export default function SummaryMetrics({
         }
         return lowerValue + (upperValue - lowerValue) * t;
       };
-      const interpolatedX = clampChartX(lower.x + (upper.x - lower.x) * t);
-      const resolvedX = Number.isFinite(interpolatedX) ? interpolatedX : clampedX;
+      const resolvedX = clampChartX(lowerX + (upperX - lowerX) * t);
       const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
       const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
+      const resolvedY =
+        Number.isFinite(lower.y) && Number.isFinite(upper.y)
+          ? lower.y + (upper.y - lower.y) * t
+          : Number.isFinite(lower.y)
+            ? lower.y
+            : upper.y;
       return {
         date: t < 0.5 ? lower.date : upper.date,
         totalPnl: interpolatedTotalPnl,
         chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
         x: resolvedX,
-        y: lower.y + (upper.y - lower.y) * t,
+        y: resolvedY,
       };
     },
     [totalPnlChartMetrics]
@@ -1243,7 +1406,7 @@ export default function SummaryMetrics({
   // Clear selection when series changes
   useEffect(() => {
     clearSelectionAndNotify();
-  }, [filteredTotalPnlSeries, clearSelectionAndNotify]);
+  }, [filteredTotalPnlSeries, priceChartSeries, symbolMode, isPriceMetric, clearSelectionAndNotify]);
 
   useEffect(() => {
     if (totalPnlSelectionResetKey === undefined || totalPnlSelectionResetKey === null) {
@@ -1354,7 +1517,7 @@ export default function SummaryMetrics({
       return null;
     }
     const resolved = !isTotalPnlMetric ? { ...label, tone: 'neutral' } : label;
-    if (typeof chartMetricConfig.valueFormatter === 'function') {
+    if (typeof chartMetricValueFormatter === 'function') {
       const rawValue = applyDisplayStartDelta && Number.isFinite(hoverPoint?.chartValue)
         ? hoverPoint.chartValue
         : Number.isFinite(hoverPoint?.totalPnl)
@@ -1363,11 +1526,11 @@ export default function SummaryMetrics({
             ? hoverPoint.chartValue
             : null;
       if (Number.isFinite(rawValue)) {
-        return { ...resolved, amount: chartMetricConfig.valueFormatter(rawValue) };
+        return { ...resolved, amount: chartMetricValueFormatter(rawValue) };
       }
     }
     return resolved;
-  }, [hoverPoint, applyDisplayStartDelta, chartMetricConfig, isTotalPnlMetric]);
+  }, [hoverPoint, applyDisplayStartDelta, chartMetricValueFormatter, isTotalPnlMetric]);
 
   const markerHoverLabel = useMemo(() => {
     if (!totalPnlChartMarker) {
@@ -1378,7 +1541,7 @@ export default function SummaryMetrics({
       return null;
     }
     const resolved = !isTotalPnlMetric ? { ...label, tone: 'neutral' } : label;
-    if (typeof chartMetricConfig.valueFormatter === 'function') {
+    if (typeof chartMetricValueFormatter === 'function') {
       const rawValue = applyDisplayStartDelta && Number.isFinite(totalPnlChartMarker?.chartValue)
         ? totalPnlChartMarker.chartValue
         : Number.isFinite(totalPnlChartMarker?.totalPnl)
@@ -1387,11 +1550,11 @@ export default function SummaryMetrics({
             ? totalPnlChartMarker.chartValue
             : null;
       if (Number.isFinite(rawValue)) {
-        return { ...resolved, amount: chartMetricConfig.valueFormatter(rawValue) };
+        return { ...resolved, amount: chartMetricValueFormatter(rawValue) };
       }
     }
     return resolved;
-  }, [applyDisplayStartDelta, chartMetricConfig, isTotalPnlMetric, totalPnlChartMarker]);
+  }, [applyDisplayStartDelta, chartMetricValueFormatter, isTotalPnlMetric, totalPnlChartMarker]);
 
   // Default action: open Total P&L breakdown when the chart is activated.
   const handleActivateTotalPnl = useCallback(() => {
@@ -2141,11 +2304,11 @@ export default function SummaryMetrics({
       {showTotalPnlChart && (
         <div className="equity-card__total-pnl-chart" aria-label={chartMetricAriaLabel}>
           <div className="equity-card__total-pnl-chart-body qqq-section__chart-container">
-            {totalPnlSeriesStatus === 'loading' ? (
+            {effectiveChartSeriesStatus === 'loading' ? (
               <div className="equity-card__total-pnl-chart-loading" role="status" aria-live="polite">
                 {showChartSpinner ? <span className="initial-loading__spinner" aria-hidden="true" /> : null}
               </div>
-            ) : totalPnlSeriesError ? (
+            ) : effectiveChartSeriesError ? (
               <div className="equity-card__total-pnl-chart-message">
                 Unable to load {chartMetricLabel} data.
               </div>
@@ -2326,7 +2489,7 @@ export default function SummaryMetrics({
                   </div>
                 )}
               </>
-            ) : totalPnlSeriesStatus === 'success' ? (
+            ) : effectiveChartSeriesStatus === 'success' ? (
               <div className="equity-card__total-pnl-chart-message">No {chartMetricLabel} data available.</div>
             ) : null}
           </div>
@@ -2610,6 +2773,17 @@ SummaryMetrics.propTypes = {
   }),
   totalPnlSeriesStatus: PropTypes.oneOf(['idle', 'loading', 'success', 'error']),
   totalPnlSeriesError: PropTypes.instanceOf(Error),
+  symbolPriceSeries: PropTypes.shape({
+    currency: PropTypes.string,
+    points: PropTypes.arrayOf(
+      PropTypes.shape({
+        date: PropTypes.string,
+        price: PropTypes.number,
+      })
+    ),
+  }),
+  symbolPriceSeriesStatus: PropTypes.oneOf(['idle', 'loading', 'success', 'error']),
+  symbolPriceSeriesError: PropTypes.instanceOf(Error),
   totalPnlRangeOptions: PropTypes.arrayOf(
     PropTypes.shape({
       value: PropTypes.string.isRequired,
@@ -2682,6 +2856,9 @@ SummaryMetrics.defaultProps = {
   totalPnlSeries: null,
   totalPnlSeriesStatus: 'idle',
   totalPnlSeriesError: null,
+  symbolPriceSeries: null,
+  symbolPriceSeriesStatus: 'idle',
+  symbolPriceSeriesError: null,
   totalPnlRangeOptions: [],
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,

@@ -13,6 +13,7 @@ import {
   getBenchmarkReturns,
   markAccountRebalanced,
   getTotalPnlSeries,
+  getSymbolPriceHistory,
   setAccountTargetProportions,
   getPortfolioNews,
   setAccountSymbolNotes,
@@ -5338,6 +5339,12 @@ export default function App() {
     mode: 'cagr',
     symbol: null,
   });
+  const [symbolPriceSeriesState, setSymbolPriceSeriesState] = useState({
+    symbol: null,
+    status: 'idle',
+    data: null,
+    error: null,
+  });
   
   // If a symbol is present in the URL, focus it on load
   useEffect(() => {
@@ -10097,6 +10104,42 @@ export default function App() {
     fetchTotalPnlSeries(targetKey, { symbol: focusedSymbol, applyAccountCagrStartDate: false });
   }, [focusedSymbol, selectedAccountKey, totalPnlSeriesState.accountKey, totalPnlSeriesState.symbol, totalPnlSeriesState.status, fetchTotalPnlSeries]);
 
+  useEffect(() => {
+    if (!focusedSymbol) {
+      setSymbolPriceSeriesState({ symbol: null, status: 'idle', data: null, error: null });
+      return;
+    }
+    const targetSymbol = String(focusedSymbol).trim().toUpperCase();
+    let cancelled = false;
+    setSymbolPriceSeriesState((prev) => {
+      if (prev.symbol === targetSymbol && prev.status === 'loading') {
+        return prev;
+      }
+      if (prev.symbol === targetSymbol && prev.status === 'success') {
+        return prev;
+      }
+      return { symbol: targetSymbol, status: 'loading', data: prev.symbol === targetSymbol ? prev.data : null, error: null };
+    });
+    (async () => {
+      try {
+        const payload = await getSymbolPriceHistory(targetSymbol);
+        if (cancelled) {
+          return;
+        }
+        setSymbolPriceSeriesState({ symbol: targetSymbol, status: 'success', data: payload, error: null });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        const normalized = error instanceof Error ? error : new Error('Failed to load price history');
+        setSymbolPriceSeriesState({ symbol: targetSymbol, status: 'error', data: null, error: normalized });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedSymbol, refreshKey]);
+
   const resolveAccountLabelByKey = useCallback(
     (accountKey) => {
       if (!accountKey) {
@@ -12291,6 +12334,7 @@ export default function App() {
     }
     return null;
   }, [focusedSymbol, selectedAccountKey, totalPnlSeriesState.accountKey, totalPnlSeriesState.symbol, totalPnlSeriesState.status, totalPnlSeriesState.error]);
+  const normalizedFocusedSymbolKey = focusedSymbol ? String(focusedSymbol).trim().toUpperCase() : null;
 
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
   const totalPnlDialogData = useMemo(() => {
@@ -12771,12 +12815,7 @@ export default function App() {
                             <span className="symbol-view__detail-label">Dividend yield</span>
                             <span className="symbol-view__detail-value">{quoteDividendValue}</span>
                           </button>
-                        ) : (
-                          <span className="symbol-view__detail">
-                            <span className="symbol-view__detail-label">Dividend yield</span>
-                            <span className="symbol-view__detail-value">{quoteDividendValue}</span>
-                          </span>
-                        )}
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -12990,6 +13029,21 @@ export default function App() {
             totalPnlSeries={focusedSymbol ? selectedSymbolTotalPnlSeriesForChart : selectedAccountTotalPnlSeries}
             totalPnlSeriesStatus={focusedSymbol ? selectedSymbolTotalPnlSeriesStatus : selectedTotalPnlSeriesStatus}
             totalPnlSeriesError={focusedSymbol ? selectedSymbolTotalPnlSeriesError : selectedTotalPnlSeriesError}
+            symbolPriceSeries={
+              focusedSymbol && normalizedFocusedSymbolKey === symbolPriceSeriesState.symbol
+                ? symbolPriceSeriesState.data
+                : null
+            }
+            symbolPriceSeriesStatus={
+              focusedSymbol && normalizedFocusedSymbolKey === symbolPriceSeriesState.symbol
+                ? symbolPriceSeriesState.status
+                : 'idle'
+            }
+            symbolPriceSeriesError={
+              focusedSymbol && normalizedFocusedSymbolKey === symbolPriceSeriesState.symbol
+                ? symbolPriceSeriesState.error
+                : null
+            }
             onAdjustDeployment={focusedSymbol ? null : handleOpenDeploymentAdjustment}
             symbolMode={Boolean(focusedSymbol)}
             childAccounts={focusedSymbol ? [] : childAccountSummaries}

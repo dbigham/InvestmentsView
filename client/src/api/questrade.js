@@ -150,6 +150,23 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   return url.toString();
 }
 
+function buildSymbolPriceHistoryUrl(symbol, params = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedSymbol = typeof symbol === 'string' ? symbol.trim() : '';
+  if (!trimmedSymbol) {
+    throw new Error('symbol is required');
+  }
+  const encodedSymbol = encodeURIComponent(trimmedSymbol);
+  const url = new URL(`/api/symbols/${encodedSymbol}/price-history`, base);
+  if (params && typeof params.startDate === 'string' && params.startDate.trim()) {
+    url.searchParams.set('startDate', params.startDate.trim());
+  }
+  if (params && typeof params.endDate === 'string' && params.endDate.trim()) {
+    url.searchParams.set('endDate', params.endDate.trim());
+  }
+  return url.toString();
+}
+
 function buildRangePnlBreakdownUrl(params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/pnl-breakdown/range', base);
@@ -611,5 +628,24 @@ export async function getTotalPnlSeries(accountKey, params = {}) {
     throw new Error(message);
   }
 
+  return response.json();
+}
+
+export async function getSymbolPriceHistory(symbol, params = {}) {
+  const trimmedSymbol = typeof symbol === 'string' ? symbol.trim() : '';
+  if (!trimmedSymbol) {
+    throw new Error('symbol is required');
+  }
+  const response = await fetch(buildSymbolPriceHistoryUrl(trimmedSymbol, params));
+  if (!response.ok) {
+    let message = 'Failed to load price history';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (error) {
+      console.warn('Failed to parse price history error response', error);
+    }
+    throw new Error(message);
+  }
   return response.json();
 }
