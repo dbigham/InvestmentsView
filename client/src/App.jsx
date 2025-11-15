@@ -7127,7 +7127,14 @@ export default function App() {
       if (!peopleDisabled) {
         handleOpenPeople();
       }
-    } else if (k === 'cash-breakdown') {
+    } else if (
+      k === 'cash-breakdown' ||
+      k === 'cash-breakdown-locations' ||
+      k === 'cash-breakdown-in-accounts' ||
+      k === 'cash-breakdown-breakdown' ||
+      k === 'cash-breakdown-locations-alt' ||
+      k === 'cash-breakdown-accounts'
+    ) {
       if (cashBreakdownAvailable) {
         const activeCurrencyCode =
           typeof activeCurrency?.currency === 'string'
@@ -12347,6 +12354,11 @@ export default function App() {
               // Cash breakdown (only in aggregate view with CAD/USD)
               if (cashBreakdownAvailable) {
                 items.push({ key: 'cash-breakdown', label: 'Cash Breakdown' });
+                items.push({ key: 'cash-breakdown-locations', label: 'Cash Locations' });
+                items.push({ key: 'cash-breakdown-in-accounts', label: 'Cash in Accounts' });
+                items.push({ key: 'cash-breakdown-breakdown', label: 'Breakdown of Cash' });
+                items.push({ key: 'cash-breakdown-locations-alt', label: 'Locations of Cash' });
+                items.push({ key: 'cash-breakdown-accounts', label: 'Accounts with Cash' });
               }
 
               // P&L breakdowns (only when we have positions content)
