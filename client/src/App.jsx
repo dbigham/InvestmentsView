@@ -31,7 +31,7 @@ import QqqTemperatureDialog from './components/QqqTemperatureDialog';
 import TotalPnlDialog from './components/TotalPnlDialog';
 import ProjectionDialog from './components/ProjectionDialog';
 import CashBreakdownDialog from './components/CashBreakdownDialog';
-import DividendBreakdown from './components/DividendBreakdown';
+import DividendBreakdown, { formatCurrencyTotals as formatDividendCurrencyTotals } from './components/DividendBreakdown';
 import TargetProportionsDialog from './components/TargetProportionsDialog';
 import PortfolioNews from './components/PortfolioNews';
 import SymbolNotesDialog from './components/SymbolNotesDialog';
@@ -7028,6 +7028,35 @@ export default function App() {
   const newsPanelId = 'portfolio-panel-news';
   const investmentModelEvaluations = data?.investmentModelEvaluations ?? EMPTY_OBJECT;
 
+  const scrollDividendsPanelIntoView = useCallback(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    const target = document.getElementById(dividendsPanelId);
+    if (!target || typeof target.scrollIntoView !== 'function') {
+      return;
+    }
+    try {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (error) {
+      target.scrollIntoView();
+    }
+  }, [dividendsPanelId]);
+
+  const handleShowDividendsPanel = useCallback(() => {
+    setPortfolioViewTab('dividends');
+    if (typeof document === 'undefined') {
+      return;
+    }
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        window.setTimeout(scrollDividendsPanelIntoView, 0);
+      });
+    } else {
+      setTimeout(scrollDividendsPanelIntoView, 0);
+    }
+  }, [scrollDividendsPanelIntoView, setPortfolioViewTab]);
+
   
 
   const handleSearchSelectSymbol = useCallback(
@@ -7042,7 +7071,7 @@ export default function App() {
       if (desiredTabRaw === 'orders') {
         setPortfolioViewTab('orders');
       } else if (desiredTabRaw === 'dividends') {
-        setPortfolioViewTab('dividends');
+        handleShowDividendsPanel();
       } else {
         setPortfolioViewTab('positions');
       }
@@ -7054,7 +7083,7 @@ export default function App() {
         setPendingSymbolAction(null);
       }
     },
-    [setOrdersFilter, setPendingSymbolAction, setPortfolioViewTab]
+    [handleShowDividendsPanel, setOrdersFilter, setPendingSymbolAction, setPortfolioViewTab]
   );
 
 
@@ -7109,13 +7138,7 @@ export default function App() {
         setTimeout(scroll, 0);
       }
     } else if (k === 'dividends') {
-      setPortfolioViewTab('dividends');
-      const scroll = () => document.getElementById('portfolio-panel-dividends')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => setTimeout(scroll, 0));
-      } else {
-        setTimeout(scroll, 0);
-      }
+      handleShowDividendsPanel();
     } else if (k === 'total-pnl') {
       handleShowTotalPnlDialog();
     } else if (k === 'projections' || k === 'retirement-projections') {
@@ -12448,6 +12471,30 @@ export default function App() {
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.dividendYieldPercent) && focusedSymbolQuote.dividendYieldPercent > 0
       ? formatPercent(focusedSymbolQuote.dividendYieldPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : null;
+  const quoteDividendTooltip = useMemo(() => {
+    if (!focusedSymbol || !quoteDividendValue) {
+      return null;
+    }
+    if (!selectedAccountDividendsForView || typeof selectedAccountDividendsForView !== 'object') {
+      return null;
+    }
+    const summary = selectedAccountDividendsForView;
+    const totalCadValue = Number.isFinite(summary.totalCad) ? summary.totalCad : null;
+    const lines = [];
+    if (totalCadValue !== null) {
+      lines.push(`Total received: ${formatMoney(totalCadValue)} CAD`);
+    } else {
+      lines.push('Total received: —');
+    }
+    const nativeTotalsLabel = formatDividendCurrencyTotals(summary.totalsByCurrency);
+    if (nativeTotalsLabel) {
+      lines.push(`Native totals: ${nativeTotalsLabel}`);
+    }
+    if (summary.conversionIncomplete) {
+      lines.push('CAD total excludes payouts without FX rates.');
+    }
+    return lines.join('\n');
+  }, [focusedSymbol, quoteDividendValue, selectedAccountDividendsForView]);
   const quoteMessage = (() => {
     if (focusedSymbolQuoteStatus === 'loading' && !focusedSymbolQuote) {
       return 'Loading quote…';
@@ -12685,11 +12732,21 @@ export default function App() {
                           </span>
                         ) : null}
                         {quoteDividendValue ? (
+                          <button
+                            type="button"
+                            className="symbol-view__detail symbol-view__detail-button"
+                            onClick={handleShowDividendsPanel}
+                            title={quoteDividendTooltip || undefined}
+                          >
+                            <span className="symbol-view__detail-label">Dividend yield</span>
+                            <span className="symbol-view__detail-value">{quoteDividendValue}</span>
+                          </button>
+                        ) : (
                           <span className="symbol-view__detail">
                             <span className="symbol-view__detail-label">Dividend yield</span>
                             <span className="symbol-view__detail-value">{quoteDividendValue}</span>
                           </span>
-                        ) : null}
+                        )}
                       </>
                     )}
                   </div>
