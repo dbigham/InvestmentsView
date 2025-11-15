@@ -12368,12 +12368,32 @@ export default function App() {
 
               // Cash breakdown (only in aggregate view with CAD/USD)
               if (cashBreakdownAvailable) {
-                items.push({ key: 'cash-breakdown', label: 'Cash Breakdown' });
-                items.push({ key: 'cash-breakdown-locations', label: 'Cash Locations' });
-                items.push({ key: 'cash-breakdown-in-accounts', label: 'Cash in Accounts' });
-                items.push({ key: 'cash-breakdown-breakdown', label: 'Breakdown of Cash' });
-                items.push({ key: 'cash-breakdown-locations-alt', label: 'Locations of Cash' });
-                items.push({ key: 'cash-breakdown-accounts', label: 'Accounts with Cash' });
+                items.push({ key: 'cash-breakdown', label: 'Cash Breakdown', target: 'cash-breakdown' });
+                items.push({
+                  key: 'cash-breakdown-locations',
+                  label: 'Cash Locations',
+                  target: 'cash-breakdown',
+                });
+                items.push({
+                  key: 'cash-breakdown-in-accounts',
+                  label: 'Cash in Accounts',
+                  target: 'cash-breakdown',
+                });
+                items.push({
+                  key: 'cash-breakdown-breakdown',
+                  label: 'Breakdown of Cash',
+                  target: 'cash-breakdown',
+                });
+                items.push({
+                  key: 'cash-breakdown-locations-alt',
+                  label: 'Locations of Cash',
+                  target: 'cash-breakdown',
+                });
+                items.push({
+                  key: 'cash-breakdown-accounts',
+                  label: 'Accounts with Cash',
+                  target: 'cash-breakdown',
+                });
               }
 
               // P&L breakdowns (only when we have positions content)
