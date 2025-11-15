@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import { formatMoney, formatNumber, formatDate } from '../utils/formatters';
 
-function formatCurrencyTotals(totals) {
+export function formatCurrencyTotals(totals) {
   if (!totals || typeof totals !== 'object') {
     return null;
   }
