@@ -108,6 +108,9 @@ function toPlainDateString(date) {
 }
 
 function parseDateOnly(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
     const d = new Date(value);
     return Number.isNaN(d.getTime()) ? null : toDateOnly(d);
