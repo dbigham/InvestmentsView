@@ -10,7 +10,12 @@ import {
 import { buildQuoteUrl, openQuote } from '../utils/quotes';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
-import { buildExplainMovementPrompt, derivePercentages, resolveTotalCost } from '../utils/positions';
+import {
+  buildExplainMovementPrompt,
+  derivePercentages,
+  resolveAccountForPosition,
+  resolveTotalCost,
+} from '../utils/positions';
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -666,6 +671,12 @@ export default function PnlHeatmapDialog({
   initialAccount,
   totalPnlBySymbol,
   totalPnlAsOf,
+  onBuySell,
+  onGoToAccount,
+  onShowOrders,
+  onShowNotes,
+  onFocusSymbol,
+  accountsById,
 }) {
   const initialMetric = mode === 'total' ? 'total' : mode === 'open' ? 'open' : 'day';
   const [metricMode, setMetricMode] = useState(initialMetric);
@@ -1116,6 +1127,77 @@ export default function PnlHeatmapDialog({
     setContextMenuState({ open: true, x: event.clientX, y: event.clientY, node });
   }, []);
 
+  const getContextMenuPosition = useCallback(() => {
+    const targetNode = contextMenuState.node;
+    if (!targetNode) {
+      return null;
+    }
+    if (targetNode.positionDetail) {
+      return targetNode.positionDetail;
+    }
+    return {
+      symbol: targetNode.symbol,
+      description: targetNode.description,
+      accountId: targetNode.accountId,
+      accountNumber: targetNode.accountNumber,
+    };
+  }, [contextMenuState.node]);
+
+  const handleOpenDetails = useCallback(() => {
+    const targetNode = contextMenuState.node;
+    closeContextMenu();
+    if (!targetNode || typeof onFocusSymbol !== 'function') {
+      return;
+    }
+    const base = targetNode.positionDetail || targetNode;
+    const rawSymbol = (base.symbol || '').toString().trim();
+    if (!rawSymbol) {
+      return;
+    }
+    const description =
+      (typeof base.description === 'string' && base.description.trim()) ||
+      (typeof targetNode.description === 'string' && targetNode.description.trim()) ||
+      null;
+    onFocusSymbol(rawSymbol, { description });
+  }, [closeContextMenu, contextMenuState.node, onFocusSymbol]);
+
+  const handleOpenBuySell = useCallback(() => {
+    const position = getContextMenuPosition();
+    closeContextMenu();
+    if (!position || typeof onBuySell !== 'function') {
+      return;
+    }
+    onBuySell(position);
+  }, [closeContextMenu, getContextMenuPosition, onBuySell]);
+
+  const handleOpenOrders = useCallback(() => {
+    const position = getContextMenuPosition();
+    closeContextMenu();
+    if (!position || typeof onShowOrders !== 'function') {
+      return;
+    }
+    onShowOrders(position);
+  }, [closeContextMenu, getContextMenuPosition, onShowOrders]);
+
+  const handleOpenNotes = useCallback(() => {
+    const position = getContextMenuPosition();
+    closeContextMenu();
+    if (!position || typeof onShowNotes !== 'function') {
+      return;
+    }
+    onShowNotes(position);
+  }, [closeContextMenu, getContextMenuPosition, onShowNotes]);
+
+  const handleGoToAccount = useCallback(() => {
+    const position = getContextMenuPosition();
+    closeContextMenu();
+    if (!position || typeof onGoToAccount !== 'function') {
+      return;
+    }
+    const account = resolveAccountForPosition(position, accountsById);
+    onGoToAccount(position, account);
+  }, [accountsById, closeContextMenu, getContextMenuPosition, onGoToAccount]);
+
   const handleExplainMovement = useCallback(async () => {
     const targetNode = contextMenuState.node;
     closeContextMenu();
@@ -1317,6 +1399,16 @@ export default function PnlHeatmapDialog({
       : '';
   const currencyLabel = normalizedCurrency || fallbackCurrency || 'CAD';
 
+  const contextMenuPosition = getContextMenuPosition();
+  const canGoToAccount = Boolean(
+    contextMenuPosition &&
+      ((contextMenuPosition.accountId !== null &&
+        contextMenuPosition.accountId !== undefined &&
+        `${contextMenuPosition.accountId}`.trim() !== '') ||
+        (typeof contextMenuPosition.accountNumber === 'string' &&
+          contextMenuPosition.accountNumber.trim()))
+  );
+
   const contextMenuElement = contextMenuState.open ? (
     <div
       className="positions-table__context-menu"
@@ -1324,6 +1416,66 @@ export default function PnlHeatmapDialog({
       style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
     >
       <ul className="positions-table__context-menu-list" role="menu">
+        {typeof onFocusSymbol === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleOpenDetails}
+            >
+              Details
+            </button>
+          </li>
+        ) : null}
+        <li role="none">
+          <button
+            type="button"
+            className="positions-table__context-menu-item"
+            role="menuitem"
+            onClick={handleOpenBuySell}
+            disabled={typeof onBuySell !== 'function'}
+          >
+            Buy/sell
+          </button>
+        </li>
+        {typeof onGoToAccount === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleGoToAccount}
+              disabled={!canGoToAccount}
+            >
+              Go to account
+            </button>
+          </li>
+        ) : null}
+        {typeof onShowOrders === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleOpenOrders}
+            >
+              Orders
+            </button>
+          </li>
+        ) : null}
+        {typeof onShowNotes === 'function' ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleOpenNotes}
+            >
+              Notes
+            </button>
+          </li>
+        ) : null}
         <li role="none">
           <button
             type="button"
@@ -1742,6 +1894,12 @@ PnlHeatmapDialog.propTypes = {
     }),
   ]),
   totalPnlAsOf: PropTypes.string,
+  onBuySell: PropTypes.func,
+  onGoToAccount: PropTypes.func,
+  onShowOrders: PropTypes.func,
+  onShowNotes: PropTypes.func,
+  onFocusSymbol: PropTypes.func,
+  accountsById: PropTypes.instanceOf(Map),
 };
 
 PnlHeatmapDialog.defaultProps = {
@@ -1752,4 +1910,10 @@ PnlHeatmapDialog.defaultProps = {
   initialAccount: null,
   totalPnlBySymbol: [],
   totalPnlAsOf: null,
+  onBuySell: null,
+  onGoToAccount: null,
+  onShowOrders: null,
+  onShowNotes: null,
+  onFocusSymbol: null,
+  accountsById: null,
 };
