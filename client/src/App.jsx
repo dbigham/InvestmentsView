@@ -201,6 +201,365 @@ function normalizePositiveInteger(value) {
   return null;
 }
 
+const PEG_SOURCE_LABELS = {
+  'quote.trailingPegRatio': 'Trailing PEG ratio (quote)',
+  'quote.pegRatio': 'PEG ratio (quote)',
+  'quote.forwardPegRatio': 'Forward PEG ratio (quote)',
+  'summaryDetail.trailingPegRatio': 'Trailing PEG ratio (summary detail)',
+  'summaryDetail.pegRatio': 'PEG ratio (summary detail)',
+  'defaultKeyStatistics.pegRatio': 'PEG ratio (default key statistics)',
+  'financialData.pegRatio': 'PEG ratio (financial data)',
+  'financialData.forwardPegRatio': 'Forward PEG ratio (financial data)',
+  'derived.forwardPeOverEarningsGrowth': 'Derived from forward P/E and earnings growth',
+};
+
+const PEG_REASON_MESSAGES = {
+  missing: 'Yahoo did not provide a value.',
+  invalid: 'Yahoo returned an invalid PEG ratio.',
+  non_positive: 'Yahoo reported a PEG ratio that was not positive.',
+  missing_inputs: 'Unable to derive PEG because both forward P/E and earnings growth were missing.',
+  missing_forward_pe: 'Unable to derive PEG because forward P/E was missing.',
+  missing_earnings_growth: 'Unable to derive PEG because earnings growth was missing.',
+  invalid_growth: 'Unable to derive PEG because earnings growth was not positive.',
+};
+
+function normalizePegDiagnostics(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const normalizeCandidate = (candidate, stageName) => {
+    if (!candidate || typeof candidate !== 'object') {
+      return null;
+    }
+    const source = typeof candidate.source === 'string' && candidate.source.trim() ? candidate.source.trim() : null;
+    const stage =
+      typeof candidate.stage === 'string' && candidate.stage.trim()
+        ? candidate.stage.trim()
+        : typeof stageName === 'string' && stageName.trim()
+        ? stageName.trim()
+        : null;
+    const value =
+      candidate.value === null || candidate.value === undefined || Number.isNaN(Number(candidate.value))
+        ? null
+        : Number(candidate.value);
+    const normalizedCandidate = { stage, source, value };
+    if (candidate.reason && typeof candidate.reason === 'string' && candidate.reason.trim()) {
+      normalizedCandidate.reason = candidate.reason.trim();
+    }
+    if (candidate.raw !== undefined) {
+      normalizedCandidate.raw = candidate.raw;
+    }
+    return normalizedCandidate;
+  };
+
+  const normalizeStage = (stage) => {
+    if (!stage || typeof stage !== 'object') {
+      return null;
+    }
+    const stageName = typeof stage.stage === 'string' && stage.stage.trim() ? stage.stage.trim() : null;
+    const accepted = Array.isArray(stage.accepted)
+      ? stage.accepted.map((candidate) => normalizeCandidate(candidate, stageName)).filter(Boolean)
+      : [];
+    const rejected = Array.isArray(stage.rejected)
+      ? stage.rejected.map((candidate) => normalizeCandidate(candidate, stageName)).filter(Boolean)
+      : [];
+    const normalizedStage = {
+      stage: stageName,
+      accepted,
+      rejected,
+    };
+    if (stage.error && typeof stage.error === 'string' && stage.error.trim()) {
+      normalizedStage.error = stage.error.trim();
+    }
+    return normalizedStage;
+  };
+
+  const stages = Array.isArray(raw.stages)
+    ? raw.stages.map((stage) => normalizeStage(stage)).filter(Boolean)
+    : [];
+
+  const resolveCandidateWrapper = (wrapper) => {
+    if (!wrapper || typeof wrapper !== 'object') {
+      return null;
+    }
+    const stageName = typeof wrapper.stage === 'string' && wrapper.stage.trim() ? wrapper.stage.trim() : null;
+    const candidate = normalizeCandidate(wrapper.candidate, stageName);
+    if (!candidate) {
+      return null;
+    }
+    const resolvedStage = stageName || candidate.stage || null;
+    return {
+      stage: resolvedStage,
+      candidate: {
+        ...candidate,
+        stage: candidate.stage || resolvedStage,
+      },
+    };
+  };
+
+  const resolved = resolveCandidateWrapper(raw.resolved);
+  const failure = resolveCandidateWrapper(raw.failure);
+
+  const contextSource = raw.context && typeof raw.context === 'object' ? raw.context : null;
+  const normalizeContextValue = (value) =>
+    value === null || value === undefined || Number.isNaN(Number(value)) ? null : Number(value);
+  const context = contextSource
+    ? {
+        trailingPe: normalizeContextValue(contextSource.trailingPe),
+        trailingPeSource:
+          typeof contextSource.trailingPeSource === 'string' && contextSource.trailingPeSource.trim()
+            ? contextSource.trailingPeSource.trim()
+            : null,
+        forwardPe: normalizeContextValue(contextSource.forwardPe),
+        forwardPeSource:
+          typeof contextSource.forwardPeSource === 'string' && contextSource.forwardPeSource.trim()
+            ? contextSource.forwardPeSource.trim()
+            : null,
+        earningsGrowth: normalizeContextValue(contextSource.earningsGrowth),
+        earningsGrowthPercent: normalizeContextValue(contextSource.earningsGrowthPercent),
+        earningsGrowthSource:
+          typeof contextSource.earningsGrowthSource === 'string' && contextSource.earningsGrowthSource.trim()
+            ? contextSource.earningsGrowthSource.trim()
+            : null,
+      }
+    : null;
+
+  return {
+    stages,
+    resolved,
+    failure,
+    context,
+  };
+}
+
+function describePegStage(stage) {
+  if (!stage || typeof stage !== 'string') {
+    return null;
+  }
+  const trimmed = stage.trim();
+  if (!trimmed) {
+    return null;
+  }
+  switch (trimmed) {
+    case 'quote':
+      return 'Quote snapshot';
+    case 'quote-summary':
+      return 'Quote summary';
+    default:
+      return trimmed;
+  }
+}
+
+function describePegSource(source) {
+  if (!source || typeof source !== 'string') {
+    return null;
+  }
+  const trimmed = source.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return PEG_SOURCE_LABELS[trimmed] || trimmed;
+}
+
+function describePegReason(reason) {
+  if (!reason || typeof reason !== 'string') {
+    return null;
+  }
+  const trimmed = reason.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return PEG_REASON_MESSAGES[trimmed] || trimmed;
+}
+
+function formatPegMetricLine(label, value, options = {}, source) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return null;
+  }
+  const numericValue = Number(value);
+  const digitsOption = options.digits || { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+  let formattedValue = null;
+  if (options.type === 'percent') {
+    formattedValue = formatPercent(numericValue, digitsOption);
+  } else {
+    formattedValue = formatNumber(numericValue, digitsOption);
+  }
+  const trimmedSource = typeof source === 'string' && source.trim() ? source.trim() : null;
+  return trimmedSource ? `${label}: ${formattedValue} (${trimmedSource})` : `${label}: ${formattedValue}`;
+}
+
+function buildPegTooltip(diagnostics, options = {}) {
+  if (!diagnostics) {
+    if (options.formattedPegValue) {
+      return `PEG: ${options.formattedPegValue}`;
+    }
+    return 'PEG ratio unavailable.';
+  }
+
+  const lines = [];
+  const resolvedCandidate = diagnostics.resolved && diagnostics.resolved.candidate ? diagnostics.resolved.candidate : null;
+  const resolvedStageLabel = diagnostics.resolved ? describePegStage(diagnostics.resolved.stage) : null;
+
+  if (resolvedCandidate) {
+    const sourceLabel = describePegSource(resolvedCandidate.source);
+    const pegValueLine =
+      options.formattedPegValue ||
+      (Number.isFinite(resolvedCandidate.value)
+        ? formatNumber(resolvedCandidate.value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : options.fallbackDisplay || '?');
+    const headerParts = [`PEG ${pegValueLine}`];
+    if (sourceLabel) {
+      headerParts.push(sourceLabel);
+    }
+    if (resolvedStageLabel) {
+      headerParts.push(`from ${resolvedStageLabel.toLowerCase()}`);
+    }
+    lines.push(headerParts.join(' — '));
+
+    if (resolvedCandidate.source === 'derived.forwardPeOverEarningsGrowth') {
+      const context = diagnostics.context || {};
+      const componentLines = [];
+      const forwardLine = formatPegMetricLine(
+        'Forward P/E',
+        context.forwardPe,
+        { type: 'number', digits: { minimumFractionDigits: 2, maximumFractionDigits: 2 } },
+        context.forwardPeSource
+      );
+      if (forwardLine) {
+        componentLines.push(`• ${forwardLine}`);
+      }
+      let growthPercentValue = null;
+      if (context.earningsGrowthPercent !== null && context.earningsGrowthPercent !== undefined) {
+        growthPercentValue = context.earningsGrowthPercent;
+      } else if (context.earningsGrowth !== null && context.earningsGrowth !== undefined) {
+        growthPercentValue = context.earningsGrowth * 100;
+      }
+      const growthLine = formatPegMetricLine(
+        'Earnings growth',
+        growthPercentValue,
+        { type: 'percent', digits: { minimumFractionDigits: 1, maximumFractionDigits: 1 } },
+        context.earningsGrowthSource
+      );
+      if (growthLine) {
+        componentLines.push(`• ${growthLine}`);
+      }
+      if (componentLines.length) {
+        lines.push('Components:');
+        lines.push(...componentLines);
+      }
+    }
+
+    const stageErrors = Array.isArray(diagnostics.stages)
+      ? diagnostics.stages
+          .filter((stage) => stage && stage.error)
+          .map((stage) => {
+            const label = describePegStage(stage.stage);
+            return `${label || stage.stage}: ${stage.error}`;
+          })
+          .filter(Boolean)
+      : [];
+    if (stageErrors.length) {
+      lines.push(...stageErrors);
+    }
+    return lines.filter(Boolean).join('\n');
+  }
+
+  lines.push('PEG ratio unavailable.');
+  const failureCandidate = diagnostics.failure && diagnostics.failure.candidate ? diagnostics.failure.candidate : null;
+  const failureStageLabel = diagnostics.failure ? describePegStage(diagnostics.failure.stage) : null;
+  if (failureCandidate) {
+    const sourceLabel = describePegSource(failureCandidate.source);
+    if (sourceLabel || failureStageLabel) {
+      const failureParts = [];
+      if (sourceLabel) {
+        failureParts.push(sourceLabel);
+      }
+      if (failureStageLabel) {
+        failureParts.push(`(${failureStageLabel})`);
+      }
+      if (failureParts.length) {
+        lines.push(failureParts.join(' '));
+      }
+    }
+    const reasonMessage = describePegReason(failureCandidate.reason);
+    if (reasonMessage) {
+      lines.push(reasonMessage);
+    }
+  }
+
+  const context = diagnostics.context || {};
+  const availableLines = [];
+  const forwardLine = formatPegMetricLine(
+    'Forward P/E',
+    context.forwardPe,
+    { type: 'number', digits: { minimumFractionDigits: 2, maximumFractionDigits: 2 } },
+    context.forwardPeSource
+  );
+  if (forwardLine) {
+    availableLines.push(`• ${forwardLine}`);
+  }
+  const trailingLine = formatPegMetricLine(
+    'Trailing P/E',
+    context.trailingPe,
+    { type: 'number', digits: { minimumFractionDigits: 2, maximumFractionDigits: 2 } },
+    context.trailingPeSource
+  );
+  if (trailingLine) {
+    availableLines.push(`• ${trailingLine}`);
+  }
+  let growthPercentValue = null;
+  if (context.earningsGrowthPercent !== null && context.earningsGrowthPercent !== undefined) {
+    growthPercentValue = context.earningsGrowthPercent;
+  } else if (context.earningsGrowth !== null && context.earningsGrowth !== undefined) {
+    growthPercentValue = context.earningsGrowth * 100;
+  }
+  const growthLine = formatPegMetricLine(
+    'Earnings growth',
+    growthPercentValue,
+    { type: 'percent', digits: { minimumFractionDigits: 1, maximumFractionDigits: 1 } },
+    context.earningsGrowthSource
+  );
+  if (growthLine) {
+    availableLines.push(`• ${growthLine}`);
+  }
+  if (availableLines.length) {
+    lines.push('Available metrics:');
+    lines.push(...availableLines);
+  }
+
+  const missingMetrics = [];
+  const failureReason = failureCandidate && failureCandidate.reason ? failureCandidate.reason : null;
+  if (failureReason === 'missing_forward_pe' || failureReason === 'missing_inputs') {
+    missingMetrics.push('Forward P/E');
+  }
+  if (failureReason === 'missing_earnings_growth' || failureReason === 'missing_inputs') {
+    missingMetrics.push('Earnings growth');
+  }
+  if (failureReason === 'invalid_growth') {
+    missingMetrics.push('Positive earnings growth');
+  }
+  if (missingMetrics.length) {
+    lines.push('Missing metrics:');
+    lines.push(...missingMetrics.map((label) => `• ${label}`));
+  }
+
+  const stageErrors = Array.isArray(diagnostics.stages)
+    ? diagnostics.stages
+        .filter((stage) => stage && stage.error)
+        .map((stage) => {
+          const label = describePegStage(stage.stage);
+          return `${label || stage.stage}: ${stage.error}`;
+        })
+        .filter(Boolean)
+    : [];
+  if (stageErrors.length) {
+    lines.push(...stageErrors);
+  }
+
+  return lines.filter(Boolean).join('\n') || null;
+}
+
 function normalizeAccountGroupKey(value) {
   if (value === undefined || value === null) {
     return null;
@@ -7266,6 +7625,8 @@ export default function App() {
     [accountActionPrompt]
   );
 
+  let handleFocusedSymbolBuySell;
+
   const handleExplainMovementForSymbol = useCallback(async () => {
     if (!focusedSymbol) {
       return;
@@ -7510,6 +7871,9 @@ export default function App() {
         const normalizedChange = Number.isFinite(rawChange) ? rawChange : null;
         const rawDividend = Number(quote?.dividendYieldPercent);
         const normalizedDividend = Number.isFinite(rawDividend) && rawDividend > 0 ? rawDividend : null;
+        const rawPeg = Number(quote?.pegRatio);
+        const normalizedPeg = Number.isFinite(rawPeg) && rawPeg > 0 ? rawPeg : null;
+        const normalizedPegDiagnostics = normalizePegDiagnostics(quote?.pegDiagnostics);
         const normalized = {
           price: normalizedPrice,
           currency:
@@ -7522,9 +7886,11 @@ export default function App() {
             Number.isFinite(normalizedChange) || normalizedChange === 0 ? normalizedChange : null,
           previousClose: normalizedPrevClose,
           peRatio: normalizedPe,
+          pegRatio: normalizedPeg,
           marketCap: normalizedMarketCap,
           dividendYieldPercent: normalizedDividend,
           asOf: typeof quote?.asOf === 'string' && quote.asOf ? quote.asOf : null,
+          pegDiagnostics: normalizedPegDiagnostics,
         };
         quoteCacheRef.current.set(key, normalized);
         setFocusedSymbolQuoteState({ status: 'success', data: normalized, error: null });
@@ -10889,7 +11255,7 @@ export default function App() {
   const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
   const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
 
-  const handleFocusedSymbolBuySell = useCallback(async () => {
+  handleFocusedSymbolBuySell = useCallback(async () => {
     if (!focusedSymbol) {
       return;
     }
@@ -11880,6 +12246,23 @@ export default function App() {
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
       ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
       : null;
+  const rawPegRatio =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.pegRatio) && focusedSymbolQuote.pegRatio > 0
+      ? Number(focusedSymbolQuote.pegRatio)
+      : null;
+  const formattedPegRatio =
+    rawPegRatio !== null
+      ? formatNumber(rawPegRatio, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : null;
+  const quotePegDiagnostics = normalizePegDiagnostics(focusedSymbolQuote?.pegDiagnostics);
+  const shouldShowPeg = Boolean(focusedSymbolQuote) && (formattedPegRatio !== null || quotePegDiagnostics !== null);
+  const quotePegValue = formattedPegRatio !== null ? formattedPegRatio : shouldShowPeg ? '?' : null;
+  const quotePegTooltip = shouldShowPeg
+    ? buildPegTooltip(quotePegDiagnostics, {
+        formattedPegValue: formattedPegRatio,
+        fallbackDisplay: '?',
+      })
+    : null;
   const quoteMarketCapValue = (() => {
     if (!focusedSymbolQuote || !Number.isFinite(focusedSymbolQuote.marketCap)) {
       return null;
@@ -12111,6 +12494,15 @@ export default function App() {
                           <span className="symbol-view__detail">
                             <span className="symbol-view__detail-label">P/E</span>
                             <span className="symbol-view__detail-value">{quotePeValue}</span>
+                          </span>
+                        ) : null}
+                        {quotePegValue ? (
+                          <span
+                            className="symbol-view__detail"
+                            title={quotePegTooltip || undefined}
+                          >
+                            <span className="symbol-view__detail-label">PEG</span>
+                            <span className="symbol-view__detail-value">{quotePegValue}</span>
                           </span>
                         ) : null}
                         {quoteMarketCapValue ? (

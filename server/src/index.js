@@ -9,6 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
+const util = require('util');
 const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 dotenv.config();
@@ -194,6 +195,10 @@ const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
 })();
 
 const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
+const DEBUG_YAHOO_PEG = parseBooleanEnv(process.env.DEBUG_YAHOO_PEG, false);
+if (DEBUG_YAHOO_PEG) {
+  console.log('[peg-debug] Yahoo PEG ratio debugging enabled');
+}
 // Max valid JS Date timestamp in ms is ±8.64e15; use slightly below as a pinned expiry
 const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
 const PREHEAT_GROUP_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_GROUP_TOTAL_PNL, false);
@@ -2163,6 +2168,7 @@ function getDispatcherForUrl(targetUrl, { reuse = false } = {}) {
 
 const YAHOO_CHART_BASE_URL = 'https://query1.finance.yahoo.com';
 const YAHOO_QUOTE_BASE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote';
+const YAHOO_QUOTE_SUMMARY_BASE_URL = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
 
 // Explicit per-symbol Yahoo alias overrides. Keys are case-insensitive.
 const YAHOO_SYMBOL_ALIASES = new Map([
@@ -2229,6 +2235,30 @@ async function fetchYahooQuote(symbol) {
   return finance.quote(yahooSymbol, undefined, {
     fetchOptions: { dispatcher },
   });
+}
+
+const YAHOO_QUOTE_SUMMARY_MODULES = ['defaultKeyStatistics', 'summaryDetail', 'financialData'];
+
+async function fetchYahooQuoteSummary(symbol, modules = YAHOO_QUOTE_SUMMARY_MODULES) {
+  const finance = ensureYahooFinanceClient();
+  const yahooSymbol = resolveYahooSymbol(symbol);
+  if (!yahooSymbol) {
+    return null;
+  }
+  const requestedModules = Array.isArray(modules) && modules.length ? modules : YAHOO_QUOTE_SUMMARY_MODULES;
+  if (DEBUG_API_REQUESTS) {
+    try {
+      console.log('[api-req]', `[yahoo] GET quoteSummary ${yahooSymbol} modules=${requestedModules.join(',')}`);
+    } catch (_) { /* ignore */ }
+  }
+  const { dispatcher } = getDispatcherForUrl(YAHOO_QUOTE_SUMMARY_BASE_URL, { reuse: true });
+  return finance.quoteSummary(
+    yahooSymbol,
+    { modules: requestedModules },
+    {
+      fetchOptions: { dispatcher },
+    }
+  );
 }
 
 let yahooFinance = null;
@@ -2418,6 +2448,464 @@ function resolveDividendYieldPercentFromQuote(quote) {
   }
 
   return null;
+}
+
+function sanitizePegDiagnosticRawValue(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === 'object') {
+    const compact = {};
+    if ('raw' in value) {
+      compact.raw = value.raw;
+    }
+    if ('fmt' in value) {
+      compact.fmt = value.fmt;
+    }
+    if ('longFmt' in value) {
+      compact.longFmt = value.longFmt;
+    }
+    const keys = Object.keys(compact);
+    if (keys.length > 0) {
+      return compact;
+    }
+  }
+  return value;
+}
+
+function selectPegMetricCandidate(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+  let firstCandidate = null;
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const { value, normalizer, source } = candidate;
+    const normalized = typeof normalizer === 'function' ? normalizer(value) : null;
+    const entry = {
+      source: typeof source === 'string' ? source : null,
+      rawValue: value,
+      normalized,
+    };
+    if (!firstCandidate) {
+      firstCandidate = entry;
+    }
+    if (Number.isFinite(normalized) && normalized > 0) {
+      return entry;
+    }
+  }
+  return firstCandidate;
+}
+
+function formatPegComponentDiagnostics(candidate) {
+  if (!candidate) {
+    return null;
+  }
+  const normalized = Number.isFinite(candidate.normalized) ? Number(candidate.normalized) : null;
+  return {
+    source: candidate.source,
+    normalized,
+    raw: sanitizePegDiagnosticRawValue(candidate.rawValue),
+  };
+}
+
+function buildDerivedPegCandidate(quote, quoteSummary) {
+  const summaryDetail = quoteSummary && typeof quoteSummary === 'object' ? quoteSummary.summaryDetail : null;
+  const defaultKeyStatistics = quoteSummary && typeof quoteSummary === 'object' ? quoteSummary.defaultKeyStatistics : null;
+  const financialData = quoteSummary && typeof quoteSummary === 'object' ? quoteSummary.financialData : null;
+
+  const forwardCandidates = [
+    { value: quote && quote.forwardPE, normalizer: coerceQuoteNumber, source: 'quote.forwardPE' },
+    summaryDetail
+      ? { value: summaryDetail.forwardPE, normalizer: coerceQuoteSummaryNumber, source: 'summaryDetail.forwardPE' }
+      : null,
+    defaultKeyStatistics
+      ? {
+          value: defaultKeyStatistics.forwardPE,
+          normalizer: coerceQuoteSummaryNumber,
+          source: 'defaultKeyStatistics.forwardPE',
+        }
+      : null,
+  ];
+  const growthCandidates = [
+    financialData
+      ? {
+          value: financialData.earningsGrowth,
+          normalizer: coerceQuoteSummaryNumber,
+          source: 'financialData.earningsGrowth',
+        }
+      : null,
+    defaultKeyStatistics
+      ? {
+          value: defaultKeyStatistics.earningsQuarterlyGrowth,
+          normalizer: coerceQuoteSummaryNumber,
+          source: 'defaultKeyStatistics.earningsQuarterlyGrowth',
+        }
+      : null,
+  ];
+
+  const forwardCandidate = selectPegMetricCandidate(forwardCandidates);
+  const growthCandidate = selectPegMetricCandidate(growthCandidates);
+
+  if (!forwardCandidate && !growthCandidate) {
+    return null;
+  }
+
+  const entry = {
+    source: 'derived.forwardPeOverEarningsGrowth',
+    raw: {
+      forwardPe: formatPegComponentDiagnostics(forwardCandidate),
+      earningsGrowth: formatPegComponentDiagnostics(growthCandidate),
+    },
+    value: null,
+  };
+
+  const forwardNormalized = forwardCandidate && Number.isFinite(forwardCandidate.normalized) && forwardCandidate.normalized > 0
+    ? Number(forwardCandidate.normalized)
+    : null;
+  const growthNormalized = growthCandidate && Number.isFinite(growthCandidate.normalized) && growthCandidate.normalized > 0
+    ? Number(growthCandidate.normalized)
+    : null;
+
+  if (!forwardNormalized && !growthNormalized) {
+    entry.reason = 'missing_inputs';
+    return entry;
+  }
+  if (!forwardNormalized) {
+    entry.reason = 'missing_forward_pe';
+    return entry;
+  }
+  if (!growthNormalized) {
+    entry.reason = 'missing_earnings_growth';
+    return entry;
+  }
+
+  const growthPercent = growthNormalized < 1 ? growthNormalized * 100 : growthNormalized;
+  entry.raw.growthPercent = Number.isFinite(growthPercent) ? Number(growthPercent) : null;
+  if (!Number.isFinite(growthPercent) || growthPercent <= 0) {
+    entry.reason = 'invalid_growth';
+    return entry;
+  }
+
+  const derivedValue = forwardNormalized / growthPercent;
+  if (!Number.isFinite(derivedValue) || derivedValue <= 0) {
+    entry.reason = 'invalid';
+    return entry;
+  }
+
+  entry.value = Number(derivedValue);
+  return entry;
+}
+
+function collectPegRatioDiagnostics(quote, quoteSummary) {
+  const accepted = [];
+  const rejected = [];
+
+  const consider = (rawValue, source, normalizer) => {
+    const normalized = typeof normalizer === 'function' ? normalizer(rawValue) : null;
+    const entry = {
+      source,
+      raw: sanitizePegDiagnosticRawValue(rawValue),
+      value: Number.isFinite(normalized) && normalized > 0 ? Number(normalized) : null,
+    };
+    if (entry.value !== null) {
+      accepted.push(entry);
+      return;
+    }
+    if (rawValue === undefined || rawValue === null) {
+      entry.reason = 'missing';
+    } else if (typeof rawValue === 'number' || typeof entry.raw === 'number') {
+      const numeric = typeof rawValue === 'number' ? rawValue : entry.raw;
+      entry.reason = Number(numeric) > 0 ? 'invalid' : 'non_positive';
+    } else {
+      entry.reason = 'invalid';
+    }
+    rejected.push(entry);
+  };
+
+  if (quote && typeof quote === 'object') {
+    consider(quote.trailingPegRatio, 'quote.trailingPegRatio', coerceQuoteNumber);
+    consider(quote.pegRatio, 'quote.pegRatio', coerceQuoteNumber);
+    consider(quote.forwardPegRatio, 'quote.forwardPegRatio', coerceQuoteNumber);
+  }
+
+  if (quoteSummary && typeof quoteSummary === 'object') {
+    const summaryDetail = quoteSummary.summaryDetail;
+    if (summaryDetail && typeof summaryDetail === 'object') {
+      consider(summaryDetail.trailingPegRatio, 'summaryDetail.trailingPegRatio', coerceQuoteSummaryNumber);
+      consider(summaryDetail.pegRatio, 'summaryDetail.pegRatio', coerceQuoteSummaryNumber);
+    }
+    const defaultKeyStatistics = quoteSummary.defaultKeyStatistics;
+    if (defaultKeyStatistics && typeof defaultKeyStatistics === 'object') {
+      consider(defaultKeyStatistics.pegRatio, 'defaultKeyStatistics.pegRatio', coerceQuoteSummaryNumber);
+    }
+    const financialData = quoteSummary.financialData;
+    if (financialData && typeof financialData === 'object') {
+      consider(financialData.pegRatio, 'financialData.pegRatio', coerceQuoteSummaryNumber);
+      consider(financialData.forwardPegRatio, 'financialData.forwardPegRatio', coerceQuoteSummaryNumber);
+    }
+  }
+
+  if (accepted.length === 0) {
+    const derivedCandidate = buildDerivedPegCandidate(quote, quoteSummary);
+    if (derivedCandidate) {
+      if (Number.isFinite(derivedCandidate.value) && derivedCandidate.value > 0) {
+        accepted.push(derivedCandidate);
+      } else {
+        if (!derivedCandidate.reason) {
+          derivedCandidate.reason = 'invalid';
+        }
+        rejected.push(derivedCandidate);
+      }
+    }
+  }
+
+  return { accepted, rejected };
+}
+
+function normalizePegDiagnosticEntries(entries, stageName) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return [];
+  }
+  const stage = typeof stageName === 'string' ? stageName : null;
+  const normalized = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const source = typeof entry.source === 'string' ? entry.source : null;
+    const candidate = {
+      stage,
+      source,
+      value:
+        entry.value === null || entry.value === undefined || Number.isNaN(Number(entry.value))
+          ? null
+          : Number(entry.value),
+    };
+    if (entry.reason && typeof entry.reason === 'string' && entry.reason.trim()) {
+      candidate.reason = entry.reason.trim();
+    }
+    if (entry.raw !== undefined) {
+      candidate.raw = entry.raw;
+    }
+    normalized.push(candidate);
+  }
+  return normalized;
+}
+
+function selectPegResolvedCandidate(stages) {
+  if (!Array.isArray(stages)) {
+    return null;
+  }
+  for (const stage of stages) {
+    if (!stage) {
+      continue;
+    }
+    const accepted = Array.isArray(stage.accepted) ? stage.accepted : [];
+    if (accepted.length === 0) {
+      continue;
+    }
+    const candidate = accepted[0];
+    if (candidate && typeof candidate === 'object') {
+      return {
+        stage: stage.stage || candidate.stage || null,
+        candidate,
+      };
+    }
+  }
+  return null;
+}
+
+function selectPegFailureCandidate(stages) {
+  if (!Array.isArray(stages)) {
+    return null;
+  }
+  for (let index = stages.length - 1; index >= 0; index -= 1) {
+    const stage = stages[index];
+    if (!stage) {
+      continue;
+    }
+    const rejected = Array.isArray(stage.rejected) ? stage.rejected : [];
+    if (rejected.length === 0) {
+      continue;
+    }
+    let candidate = rejected.find((entry) => entry && entry.source === 'derived.forwardPeOverEarningsGrowth');
+    if (!candidate) {
+      candidate = rejected[0];
+    }
+    if (candidate && typeof candidate === 'object') {
+      return {
+        stage: stage.stage || candidate.stage || null,
+        candidate,
+      };
+    }
+  }
+  return null;
+}
+
+function buildPegDiagnosticsContext(stages, baseContext = {}) {
+  const context = {
+    trailingPe:
+      Number.isFinite(baseContext.trailingPe) || baseContext.trailingPe === 0
+        ? Number(baseContext.trailingPe)
+        : null,
+    trailingPeSource:
+      typeof baseContext.trailingPeSource === 'string' && baseContext.trailingPeSource.trim()
+        ? baseContext.trailingPeSource.trim()
+        : null,
+    forwardPe:
+      Number.isFinite(baseContext.forwardPe) || baseContext.forwardPe === 0
+        ? Number(baseContext.forwardPe)
+        : null,
+    forwardPeSource:
+      typeof baseContext.forwardPeSource === 'string' && baseContext.forwardPeSource.trim()
+        ? baseContext.forwardPeSource.trim()
+        : null,
+    earningsGrowth:
+      Number.isFinite(baseContext.earningsGrowth) || baseContext.earningsGrowth === 0
+        ? Number(baseContext.earningsGrowth)
+        : null,
+    earningsGrowthPercent:
+      Number.isFinite(baseContext.earningsGrowthPercent) || baseContext.earningsGrowthPercent === 0
+        ? Number(baseContext.earningsGrowthPercent)
+        : null,
+    earningsGrowthSource:
+      typeof baseContext.earningsGrowthSource === 'string' && baseContext.earningsGrowthSource.trim()
+        ? baseContext.earningsGrowthSource.trim()
+        : null,
+  };
+
+  if (!Array.isArray(stages)) {
+    return context;
+  }
+
+  for (const stage of stages) {
+    if (!stage) {
+      continue;
+    }
+    const candidates = [];
+    if (Array.isArray(stage.accepted)) {
+      candidates.push(...stage.accepted);
+    }
+    if (Array.isArray(stage.rejected)) {
+      candidates.push(...stage.rejected);
+    }
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== 'object') {
+        continue;
+      }
+      if (candidate.source !== 'derived.forwardPeOverEarningsGrowth') {
+        continue;
+      }
+      const raw = candidate.raw && typeof candidate.raw === 'object' ? candidate.raw : null;
+      if (!raw) {
+        continue;
+      }
+      const forwardPe = raw.forwardPe && typeof raw.forwardPe === 'object' ? raw.forwardPe : null;
+      if (
+        forwardPe &&
+        Number.isFinite(forwardPe.normalized) &&
+        (context.forwardPe === null || context.forwardPe === undefined)
+      ) {
+        context.forwardPe = Number(forwardPe.normalized);
+      }
+      if (forwardPe && typeof forwardPe.source === 'string' && forwardPe.source.trim() && !context.forwardPeSource) {
+        context.forwardPeSource = forwardPe.source.trim();
+      }
+      const earningsGrowth = raw.earningsGrowth && typeof raw.earningsGrowth === 'object' ? raw.earningsGrowth : null;
+      if (
+        earningsGrowth &&
+        Number.isFinite(earningsGrowth.normalized) &&
+        (context.earningsGrowth === null || context.earningsGrowth === undefined)
+      ) {
+        context.earningsGrowth = Number(earningsGrowth.normalized);
+      }
+      if (
+        earningsGrowth &&
+        typeof earningsGrowth.source === 'string' &&
+        earningsGrowth.source.trim() &&
+        !context.earningsGrowthSource
+      ) {
+        context.earningsGrowthSource = earningsGrowth.source.trim();
+      }
+      if (
+        raw.growthPercent !== undefined &&
+        raw.growthPercent !== null &&
+        Number.isFinite(Number(raw.growthPercent)) &&
+        (context.earningsGrowthPercent === null || context.earningsGrowthPercent === undefined)
+      ) {
+        context.earningsGrowthPercent = Number(raw.growthPercent);
+      }
+    }
+  }
+
+  return context;
+}
+
+function buildPegDiagnosticsPayload(stages, baseContext) {
+  if (!Array.isArray(stages) || stages.length === 0) {
+    return null;
+  }
+
+  const normalizedStages = stages.map((stage) => {
+    if (!stage || typeof stage !== 'object') {
+      return null;
+    }
+    const stageName = typeof stage.stage === 'string' && stage.stage.trim() ? stage.stage.trim() : null;
+    const normalizedStage = {
+      stage: stageName,
+      accepted: normalizePegDiagnosticEntries(stage.accepted, stageName),
+      rejected: normalizePegDiagnosticEntries(stage.rejected, stageName),
+    };
+    if (stage.error && typeof stage.error === 'string' && stage.error.trim()) {
+      normalizedStage.error = stage.error.trim();
+    }
+    return normalizedStage;
+  }).filter(Boolean);
+
+  if (normalizedStages.length === 0) {
+    return null;
+  }
+
+  const resolved = selectPegResolvedCandidate(normalizedStages);
+  const failure = resolved ? null : selectPegFailureCandidate(normalizedStages);
+  const context = buildPegDiagnosticsContext(normalizedStages, baseContext);
+
+  return {
+    stages: normalizedStages,
+    resolved,
+    failure,
+    context,
+  };
+}
+
+function logPegDebug(symbol, stage, payloadFactory) {
+  if (!DEBUG_YAHOO_PEG) {
+    return;
+  }
+  try {
+    const payload = typeof payloadFactory === 'function' ? payloadFactory() : payloadFactory;
+    const debugPayload = {
+      symbol,
+      stage,
+      payload,
+    };
+    const inspected = util.inspect(debugPayload, {
+      depth: null,
+      colors: false,
+      compact: false,
+      breakLength: 120,
+      maxArrayLength: null,
+    });
+    console.log('[peg-debug]', inspected);
+  } catch (logError) {
+    console.warn('[peg-debug]', 'Failed to emit PEG debug output', symbol, stage, logError?.message || logError);
+  }
 }
 
 async function fetchDividendYieldMap(symbolEntries) {
@@ -3763,6 +4251,34 @@ function coerceQuoteNumber(value) {
     const numeric = value.getTime();
     if (Number.isFinite(numeric) && numeric > 0) {
       return numeric;
+    }
+  }
+  return null;
+}
+
+function coerceQuoteSummaryNumber(value) {
+  const direct = coerceQuoteNumber(value);
+  if (direct !== null) {
+    return direct;
+  }
+  if (value && typeof value === 'object') {
+    if ('raw' in value) {
+      const raw = coerceQuoteNumber(value.raw);
+      if (raw !== null) {
+        return raw;
+      }
+    }
+    if ('fmt' in value) {
+      const formatted = coerceQuoteNumber(value.fmt);
+      if (formatted !== null) {
+        return formatted;
+      }
+    }
+    if ('longFmt' in value) {
+      const longFormatted = coerceQuoteNumber(value.longFmt);
+      if (longFormatted !== null) {
+        return longFormatted;
+      }
     }
   }
   return null;
@@ -12201,11 +12717,19 @@ app.get('/api/quote', async function (req, res) {
   const cacheKey = normalizedSymbol;
   const cached = quoteCache.get(cacheKey);
   if (cached) {
-    return res.json(cached);
+    if (!cached || typeof cached !== 'object' || cached.pegDiagnostics === undefined) {
+      quoteCache.delete(cacheKey);
+    } else {
+      logPegDebug(normalizedSymbol, 'cache-hit', () => ({
+        pegRatio: Number.isFinite(cached.pegRatio) ? cached.pegRatio : null,
+      }));
+      return res.json(cached);
+    }
   }
 
   try {
-    const quote = await fetchYahooQuote(trimmedSymbol || normalizedSymbol);
+    const lookupSymbol = trimmedSymbol || normalizedSymbol;
+    const quote = await fetchYahooQuote(lookupSymbol);
     if (!quote) {
       return res.status(404).json({ message: `Quote unavailable for ${normalizedSymbol}` });
     }
@@ -12235,8 +12759,71 @@ app.get('/api/quote', async function (req, res) {
       : Number.isFinite(forwardPe) && forwardPe > 0
         ? forwardPe
         : null;
+    const initialPegDiagnostics = collectPegRatioDiagnostics(quote, null);
+    const pegDiagnosticStages = [
+      {
+        stage: 'quote',
+        accepted: initialPegDiagnostics.accepted,
+        rejected: initialPegDiagnostics.rejected,
+      },
+    ];
+    let pegRatio = initialPegDiagnostics.accepted.length > 0 ? initialPegDiagnostics.accepted[0].value : null;
+    logPegDebug(normalizedSymbol, 'quote', () => ({
+      price,
+      trailingPe: Number.isFinite(trailingPe) && trailingPe > 0 ? trailingPe : null,
+      forwardPe: Number.isFinite(forwardPe) && forwardPe > 0 ? forwardPe : null,
+      pegCandidates: initialPegDiagnostics.accepted,
+      rejectedCandidates: initialPegDiagnostics.rejected,
+    }));
+    if (initialPegDiagnostics.accepted.length === 0) {
+      try {
+        const quoteSummary = await fetchYahooQuoteSummary(lookupSymbol);
+        const summaryDiagnostics = collectPegRatioDiagnostics(quote, quoteSummary);
+        if (summaryDiagnostics.accepted.length > 0) {
+          pegRatio = summaryDiagnostics.accepted[0].value;
+        }
+        pegDiagnosticStages.push({
+          stage: 'quote-summary',
+          accepted: summaryDiagnostics.accepted,
+          rejected: summaryDiagnostics.rejected,
+        });
+        logPegDebug(normalizedSymbol, 'quote-summary', () => ({
+          requestedModules: YAHOO_QUOTE_SUMMARY_MODULES,
+          availableModules:
+            quoteSummary && typeof quoteSummary === 'object'
+              ? Object.keys(quoteSummary).filter((key) =>
+                  quoteSummary[key] && typeof quoteSummary[key] === 'object'
+                )
+              : [],
+          pegCandidates: summaryDiagnostics.accepted,
+          rejectedCandidates: summaryDiagnostics.rejected,
+        }));
+      } catch (summaryError) {
+        if (summaryError instanceof MissingYahooDependencyError || summaryError?.code === 'MISSING_DEPENDENCY') {
+          throw summaryError;
+        }
+        const message = summaryError && summaryError.message ? summaryError.message : String(summaryError);
+        console.warn('Failed to fetch quote summary from Yahoo Finance:', normalizedSymbol, message);
+        logPegDebug(normalizedSymbol, 'quote-summary-error', () => ({
+          requestedModules: YAHOO_QUOTE_SUMMARY_MODULES,
+          error: message,
+        }));
+        pegDiagnosticStages.push({
+          stage: 'quote-summary',
+          accepted: [],
+          rejected: [],
+          error: message,
+        });
+      }
+    }
     const marketCap = coerceQuoteNumber(quote.marketCap);
     const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
+    const pegDiagnostics = buildPegDiagnosticsPayload(pegDiagnosticStages, {
+      trailingPe: Number.isFinite(trailingPe) ? trailingPe : null,
+      trailingPeSource: Number.isFinite(trailingPe) ? 'quote.trailingPE' : null,
+      forwardPe: Number.isFinite(forwardPe) ? forwardPe : null,
+      forwardPeSource: Number.isFinite(forwardPe) ? 'quote.forwardPE' : null,
+    });
 
     const payload = {
       symbol: normalizedSymbol,
@@ -12249,12 +12836,19 @@ app.get('/api/quote', async function (req, res) {
       previousClose:
         Number.isFinite(previousClose) && previousClose > 0 ? previousClose : null,
       peRatio: Number.isFinite(peRatio) && peRatio > 0 ? peRatio : null,
+      pegRatio: Number.isFinite(pegRatio) && pegRatio > 0 ? pegRatio : null,
       marketCap: Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null,
       dividendYieldPercent:
         Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0
           ? dividendYieldPercent
           : null,
+      pegDiagnostics: pegDiagnostics || null,
     };
+    logPegDebug(normalizedSymbol, 'response', () => ({
+      pegRatio: payload.pegRatio,
+      dividendYieldPercent: payload.dividendYieldPercent,
+      marketCap: payload.marketCap,
+    }));
     quoteCache.set(cacheKey, payload);
     return res.json(payload);
   } catch (error) {
