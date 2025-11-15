@@ -12444,6 +12444,23 @@ export default function App() {
     });
     return formatted === '—' ? null : formatted;
   })();
+  const quoteMarketCapHistoryUrl = (() => {
+    if (!quoteHasMarketCap) {
+      return null;
+    }
+
+    const base = (focusedSymbol || '').toString().trim();
+    if (!base) {
+      return null;
+    }
+
+    const normalized = base.replace(/\s+/g, '-').toLowerCase();
+    if (!normalized || /[^a-z0-9.-]/i.test(normalized)) {
+      return null;
+    }
+
+    return `https://stockanalysis.com/stocks/${encodeURIComponent(normalized)}/market-cap/`;
+  })();
   const quoteDividendValue =
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.dividendYieldPercent) && focusedSymbolQuote.dividendYieldPercent > 0
       ? formatPercent(focusedSymbolQuote.dividendYieldPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -12680,7 +12697,18 @@ export default function App() {
                         ) : null}
                         {quoteMarketCapValue ? (
                           <span className="symbol-view__detail">
-                            <span className="symbol-view__detail-label">Market cap</span>
+                            {quoteMarketCapHistoryUrl ? (
+                              <a
+                                className="symbol-view__detail-label symbol-view__detail-label--link"
+                                href={quoteMarketCapHistoryUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                Market cap
+                              </a>
+                            ) : (
+                              <span className="symbol-view__detail-label">Market cap</span>
+                            )}
                             <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
                           </span>
                         ) : null}
