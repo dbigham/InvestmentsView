@@ -7140,18 +7140,6 @@ export default function App() {
     [accountsById, accountsByNumber, setAccountActionPrompt]
   );
 
-  const handleFocusedSymbolBuySell = useCallback(async () => {
-    if (!focusedSymbol) {
-      return;
-    }
-    const position = findFocusedSymbolPosition();
-    await triggerBuySell({
-      symbol: focusedSymbol,
-      position,
-      accountOptionsOverride: focusedSymbolAccountOptions,
-    });
-  }, [focusedSymbol, findFocusedSymbolPosition, triggerBuySell, focusedSymbolAccountOptions]);
-
   const handleBuySellPosition = useCallback(
     (position) => {
       if (!position || position.symbol === undefined || position.symbol === null) {
@@ -10815,6 +10803,23 @@ export default function App() {
   const focusedSymbolHasMultipleAccounts = focusedSymbolAccountCount > 1;
   const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
   const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
+
+  const handleFocusedSymbolBuySell = useCallback(async () => {
+    if (!focusedSymbol) {
+      return;
+    }
+    const position = findFocusedSymbolPosition();
+    await triggerBuySell({
+      symbol: focusedSymbol,
+      position,
+      accountOptionsOverride: focusedSymbolAccountOptions,
+    });
+  }, [
+    focusedSymbol,
+    findFocusedSymbolPosition,
+    triggerBuySell,
+    focusedSymbolAccountOptions,
+  ]);
 
   const handleFocusedSymbolMenuBuySell = useCallback(() => {
     closeFocusedSymbolMenu();
