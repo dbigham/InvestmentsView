@@ -188,23 +188,69 @@ textarea {
 
 /* Symbol view banner */
 .symbol-view {
-  background: var(--color-accent-soft);
-  border: 1px solid rgba(56, 155, 60, 0.35);
-  border-radius: var(--radius-card);
-  padding: 12px 16px;
   display: flex;
+  gap: 12px;
 }
 .symbol-view__row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   width: 100%;
+}
+.symbol-view__summary {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+.symbol-view__summary-content {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(56, 155, 60, 0.35);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--color-accent-soft);
+}
+.symbol-view__summary-content[data-focus-visible='true'] {
+  box-shadow: 0 0 0 2px var(--color-focus-outline);
+}
+.symbol-view__summary-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.symbol-view__summary-main:focus-visible {
+  outline: none;
+}
+.symbol-view__primary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  min-width: 0;
+}
+.symbol-view__primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .symbol-view__title {
   font-size: 14px;
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+}
+.symbol-view__text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
 }
 
 .symbol-view__icon {
@@ -234,20 +280,68 @@ textarea {
 .symbol-view__desc {
   color: var(--color-text-muted);
 }
-.symbol-view__spacer { flex: 1; }
-.symbol-view__metrics {
+.symbol-view__details {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border-top: 1px solid rgba(56, 155, 60, 0.28);
+  flex-wrap: wrap;
+  min-width: 0;
 }
-.symbol-view__metric {
+.symbol-view__detail {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 13px;
-  background: var(--color-neutral-soft);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
-  padding: 6px 10px;
+  font-weight: 500;
+  color: var(--color-text-primary);
 }
-.symbol-view__metric--total {
-  cursor: pointer;
+.symbol-view__detail--price {
+  font-size: 14px;
+  font-weight: 600;
+  gap: 8px;
+}
+.symbol-view__detail-price {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.symbol-view__detail-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+}
+.symbol-view__detail-label::after {
+  content: ':';
+  margin-left: 3px;
+}
+.symbol-view__detail-value {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+.symbol-view__detail-change {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.symbol-view__detail-change--positive {
+  color: var(--color-accent);
+}
+.symbol-view__detail-change--negative {
+  color: var(--color-negative);
+}
+.symbol-view__detail-change--neutral {
+  color: var(--color-text-muted);
+}
+.symbol-view__detail--message {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 .symbol-view__action,
 .symbol-view__clear {
@@ -2948,6 +3042,14 @@ textarea {
   background: transparent;
   border: none;
   padding: 0;
+}
+.equity-card__total-pnl-chart-caption {
+  margin-top: 12px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
 .equity-card__total-pnl-chart-header {
@@ -6243,3 +6345,134 @@ button.time-pill:hover .time-pill__icon {
 .projection-tree__rate-placeholder {
   width: 88px;
 }
+.account-action-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.45);
+  z-index: 1200;
+}
+
+.account-action-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  width: min(420px, 100%);
+  max-width: 420px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.account-action-dialog__header {
+  padding: 24px 24px 0;
+}
+
+.account-action-dialog__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.account-action-dialog__body {
+  padding: 16px 24px 0;
+}
+
+.account-action-dialog__message {
+  margin: 0 0 16px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.account-action-dialog__options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-action-dialog__option {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  padding: 12px 16px;
+  text-align: left;
+  color: var(--color-text-primary);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.account-action-dialog__option:hover,
+.account-action-dialog__option:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+  outline: none;
+  background: var(--color-surface);
+}
+
+.account-action-dialog__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  box-shadow: none;
+}
+
+.account-action-dialog__option-label {
+  display: block;
+  font-weight: 600;
+}
+
+.account-action-dialog__option-description {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.account-action-dialog__footer {
+  padding: 20px 24px 24px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.account-action-dialog__cancel {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.account-action-dialog__cancel:hover,
+.account-action-dialog__cancel:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+.account-action-dialog__cancel:active {
+  transform: translateY(1px);
+}
+
+.account-action-dialog__option:disabled:hover,
+.account-action-dialog__option:disabled:focus-visible {
+  border-color: var(--color-border);
+  box-shadow: none;
+  background: var(--color-surface-alt);
+}
+
