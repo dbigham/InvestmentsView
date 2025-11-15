@@ -9,6 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
+const util = require('util');
 const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 dotenv.config();
@@ -2533,11 +2534,19 @@ function logPegDebug(symbol, stage, payloadFactory) {
   }
   try {
     const payload = typeof payloadFactory === 'function' ? payloadFactory() : payloadFactory;
-    console.log('[peg-debug]', {
+    const debugPayload = {
       symbol,
       stage,
       payload,
+    };
+    const inspected = util.inspect(debugPayload, {
+      depth: null,
+      colors: false,
+      compact: false,
+      breakLength: 120,
+      maxArrayLength: null,
     });
+    console.log('[peg-debug]', inspected);
   } catch (logError) {
     console.warn('[peg-debug]', 'Failed to emit PEG debug output', symbol, stage, logError?.message || logError);
   }
