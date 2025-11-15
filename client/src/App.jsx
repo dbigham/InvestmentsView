@@ -7524,6 +7524,8 @@ export default function App() {
         const normalizedChange = Number.isFinite(rawChange) ? rawChange : null;
         const rawDividend = Number(quote?.dividendYieldPercent);
         const normalizedDividend = Number.isFinite(rawDividend) && rawDividend > 0 ? rawDividend : null;
+        const rawPeg = Number(quote?.pegRatio);
+        const normalizedPeg = Number.isFinite(rawPeg) && rawPeg > 0 ? rawPeg : null;
         const normalized = {
           price: normalizedPrice,
           currency:
@@ -7536,6 +7538,7 @@ export default function App() {
             Number.isFinite(normalizedChange) || normalizedChange === 0 ? normalizedChange : null,
           previousClose: normalizedPrevClose,
           peRatio: normalizedPe,
+          pegRatio: normalizedPeg,
           marketCap: normalizedMarketCap,
           dividendYieldPercent: normalizedDividend,
           asOf: typeof quote?.asOf === 'string' && quote.asOf ? quote.asOf : null,
@@ -11880,6 +11883,10 @@ export default function App() {
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
       ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
       : null;
+  const quotePegValue =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.pegRatio)
+      ? formatNumber(focusedSymbolQuote.pegRatio, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : null;
   const quoteMarketCapValue = (() => {
     if (!focusedSymbolQuote || !Number.isFinite(focusedSymbolQuote.marketCap)) {
       return null;
@@ -12111,6 +12118,12 @@ export default function App() {
                           <span className="symbol-view__detail">
                             <span className="symbol-view__detail-label">P/E</span>
                             <span className="symbol-view__detail-value">{quotePeValue}</span>
+                          </span>
+                        ) : null}
+                        {quotePegValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">PEG</span>
+                            <span className="symbol-view__detail-value">{quotePegValue}</span>
                           </span>
                         ) : null}
                         {quoteMarketCapValue ? (

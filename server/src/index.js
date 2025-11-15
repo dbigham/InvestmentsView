@@ -12235,6 +12235,10 @@ app.get('/api/quote', async function (req, res) {
       : Number.isFinite(forwardPe) && forwardPe > 0
         ? forwardPe
         : null;
+    const trailingPeg = coerceQuoteNumber(quote.trailingPegRatio);
+    const forwardPeg = coerceQuoteNumber(quote.forwardPegRatio);
+    const directPeg = coerceQuoteNumber(quote.pegRatio);
+    const pegRatio = trailingPeg ?? directPeg ?? forwardPeg ?? null;
     const marketCap = coerceQuoteNumber(quote.marketCap);
     const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
 
@@ -12249,6 +12253,7 @@ app.get('/api/quote', async function (req, res) {
       previousClose:
         Number.isFinite(previousClose) && previousClose > 0 ? previousClose : null,
       peRatio: Number.isFinite(peRatio) && peRatio > 0 ? peRatio : null,
+      pegRatio: Number.isFinite(pegRatio) && pegRatio > 0 ? pegRatio : null,
       marketCap: Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null,
       dividendYieldPercent:
         Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0
