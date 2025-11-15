@@ -2668,6 +2668,222 @@ function collectPegRatioDiagnostics(quote, quoteSummary) {
   return { accepted, rejected };
 }
 
+function normalizePegDiagnosticEntries(entries, stageName) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return [];
+  }
+  const stage = typeof stageName === 'string' ? stageName : null;
+  const normalized = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const source = typeof entry.source === 'string' ? entry.source : null;
+    const candidate = {
+      stage,
+      source,
+      value:
+        entry.value === null || entry.value === undefined || Number.isNaN(Number(entry.value))
+          ? null
+          : Number(entry.value),
+    };
+    if (entry.reason && typeof entry.reason === 'string' && entry.reason.trim()) {
+      candidate.reason = entry.reason.trim();
+    }
+    if (entry.raw !== undefined) {
+      candidate.raw = entry.raw;
+    }
+    normalized.push(candidate);
+  }
+  return normalized;
+}
+
+function selectPegResolvedCandidate(stages) {
+  if (!Array.isArray(stages)) {
+    return null;
+  }
+  for (const stage of stages) {
+    if (!stage) {
+      continue;
+    }
+    const accepted = Array.isArray(stage.accepted) ? stage.accepted : [];
+    if (accepted.length === 0) {
+      continue;
+    }
+    const candidate = accepted[0];
+    if (candidate && typeof candidate === 'object') {
+      return {
+        stage: stage.stage || candidate.stage || null,
+        candidate,
+      };
+    }
+  }
+  return null;
+}
+
+function selectPegFailureCandidate(stages) {
+  if (!Array.isArray(stages)) {
+    return null;
+  }
+  for (let index = stages.length - 1; index >= 0; index -= 1) {
+    const stage = stages[index];
+    if (!stage) {
+      continue;
+    }
+    const rejected = Array.isArray(stage.rejected) ? stage.rejected : [];
+    if (rejected.length === 0) {
+      continue;
+    }
+    let candidate = rejected.find((entry) => entry && entry.source === 'derived.forwardPeOverEarningsGrowth');
+    if (!candidate) {
+      candidate = rejected[0];
+    }
+    if (candidate && typeof candidate === 'object') {
+      return {
+        stage: stage.stage || candidate.stage || null,
+        candidate,
+      };
+    }
+  }
+  return null;
+}
+
+function buildPegDiagnosticsContext(stages, baseContext = {}) {
+  const context = {
+    trailingPe:
+      Number.isFinite(baseContext.trailingPe) || baseContext.trailingPe === 0
+        ? Number(baseContext.trailingPe)
+        : null,
+    trailingPeSource:
+      typeof baseContext.trailingPeSource === 'string' && baseContext.trailingPeSource.trim()
+        ? baseContext.trailingPeSource.trim()
+        : null,
+    forwardPe:
+      Number.isFinite(baseContext.forwardPe) || baseContext.forwardPe === 0
+        ? Number(baseContext.forwardPe)
+        : null,
+    forwardPeSource:
+      typeof baseContext.forwardPeSource === 'string' && baseContext.forwardPeSource.trim()
+        ? baseContext.forwardPeSource.trim()
+        : null,
+    earningsGrowth:
+      Number.isFinite(baseContext.earningsGrowth) || baseContext.earningsGrowth === 0
+        ? Number(baseContext.earningsGrowth)
+        : null,
+    earningsGrowthPercent:
+      Number.isFinite(baseContext.earningsGrowthPercent) || baseContext.earningsGrowthPercent === 0
+        ? Number(baseContext.earningsGrowthPercent)
+        : null,
+    earningsGrowthSource:
+      typeof baseContext.earningsGrowthSource === 'string' && baseContext.earningsGrowthSource.trim()
+        ? baseContext.earningsGrowthSource.trim()
+        : null,
+  };
+
+  if (!Array.isArray(stages)) {
+    return context;
+  }
+
+  for (const stage of stages) {
+    if (!stage) {
+      continue;
+    }
+    const candidates = [];
+    if (Array.isArray(stage.accepted)) {
+      candidates.push(...stage.accepted);
+    }
+    if (Array.isArray(stage.rejected)) {
+      candidates.push(...stage.rejected);
+    }
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== 'object') {
+        continue;
+      }
+      if (candidate.source !== 'derived.forwardPeOverEarningsGrowth') {
+        continue;
+      }
+      const raw = candidate.raw && typeof candidate.raw === 'object' ? candidate.raw : null;
+      if (!raw) {
+        continue;
+      }
+      const forwardPe = raw.forwardPe && typeof raw.forwardPe === 'object' ? raw.forwardPe : null;
+      if (
+        forwardPe &&
+        Number.isFinite(forwardPe.normalized) &&
+        (context.forwardPe === null || context.forwardPe === undefined)
+      ) {
+        context.forwardPe = Number(forwardPe.normalized);
+      }
+      if (forwardPe && typeof forwardPe.source === 'string' && forwardPe.source.trim() && !context.forwardPeSource) {
+        context.forwardPeSource = forwardPe.source.trim();
+      }
+      const earningsGrowth = raw.earningsGrowth && typeof raw.earningsGrowth === 'object' ? raw.earningsGrowth : null;
+      if (
+        earningsGrowth &&
+        Number.isFinite(earningsGrowth.normalized) &&
+        (context.earningsGrowth === null || context.earningsGrowth === undefined)
+      ) {
+        context.earningsGrowth = Number(earningsGrowth.normalized);
+      }
+      if (
+        earningsGrowth &&
+        typeof earningsGrowth.source === 'string' &&
+        earningsGrowth.source.trim() &&
+        !context.earningsGrowthSource
+      ) {
+        context.earningsGrowthSource = earningsGrowth.source.trim();
+      }
+      if (
+        raw.growthPercent !== undefined &&
+        raw.growthPercent !== null &&
+        Number.isFinite(Number(raw.growthPercent)) &&
+        (context.earningsGrowthPercent === null || context.earningsGrowthPercent === undefined)
+      ) {
+        context.earningsGrowthPercent = Number(raw.growthPercent);
+      }
+    }
+  }
+
+  return context;
+}
+
+function buildPegDiagnosticsPayload(stages, baseContext) {
+  if (!Array.isArray(stages) || stages.length === 0) {
+    return null;
+  }
+
+  const normalizedStages = stages.map((stage) => {
+    if (!stage || typeof stage !== 'object') {
+      return null;
+    }
+    const stageName = typeof stage.stage === 'string' && stage.stage.trim() ? stage.stage.trim() : null;
+    const normalizedStage = {
+      stage: stageName,
+      accepted: normalizePegDiagnosticEntries(stage.accepted, stageName),
+      rejected: normalizePegDiagnosticEntries(stage.rejected, stageName),
+    };
+    if (stage.error && typeof stage.error === 'string' && stage.error.trim()) {
+      normalizedStage.error = stage.error.trim();
+    }
+    return normalizedStage;
+  }).filter(Boolean);
+
+  if (normalizedStages.length === 0) {
+    return null;
+  }
+
+  const resolved = selectPegResolvedCandidate(normalizedStages);
+  const failure = resolved ? null : selectPegFailureCandidate(normalizedStages);
+  const context = buildPegDiagnosticsContext(normalizedStages, baseContext);
+
+  return {
+    stages: normalizedStages,
+    resolved,
+    failure,
+    context,
+  };
+}
+
 function logPegDebug(symbol, stage, payloadFactory) {
   if (!DEBUG_YAHOO_PEG) {
     return;
@@ -12501,10 +12717,14 @@ app.get('/api/quote', async function (req, res) {
   const cacheKey = normalizedSymbol;
   const cached = quoteCache.get(cacheKey);
   if (cached) {
-    logPegDebug(normalizedSymbol, 'cache-hit', () => ({
-      pegRatio: Number.isFinite(cached.pegRatio) ? cached.pegRatio : null,
-    }));
-    return res.json(cached);
+    if (!cached || typeof cached !== 'object' || cached.pegDiagnostics === undefined) {
+      quoteCache.delete(cacheKey);
+    } else {
+      logPegDebug(normalizedSymbol, 'cache-hit', () => ({
+        pegRatio: Number.isFinite(cached.pegRatio) ? cached.pegRatio : null,
+      }));
+      return res.json(cached);
+    }
   }
 
   try {
@@ -12540,6 +12760,13 @@ app.get('/api/quote', async function (req, res) {
         ? forwardPe
         : null;
     const initialPegDiagnostics = collectPegRatioDiagnostics(quote, null);
+    const pegDiagnosticStages = [
+      {
+        stage: 'quote',
+        accepted: initialPegDiagnostics.accepted,
+        rejected: initialPegDiagnostics.rejected,
+      },
+    ];
     let pegRatio = initialPegDiagnostics.accepted.length > 0 ? initialPegDiagnostics.accepted[0].value : null;
     logPegDebug(normalizedSymbol, 'quote', () => ({
       price,
@@ -12555,6 +12782,11 @@ app.get('/api/quote', async function (req, res) {
         if (summaryDiagnostics.accepted.length > 0) {
           pegRatio = summaryDiagnostics.accepted[0].value;
         }
+        pegDiagnosticStages.push({
+          stage: 'quote-summary',
+          accepted: summaryDiagnostics.accepted,
+          rejected: summaryDiagnostics.rejected,
+        });
         logPegDebug(normalizedSymbol, 'quote-summary', () => ({
           requestedModules: YAHOO_QUOTE_SUMMARY_MODULES,
           availableModules:
@@ -12576,10 +12808,22 @@ app.get('/api/quote', async function (req, res) {
           requestedModules: YAHOO_QUOTE_SUMMARY_MODULES,
           error: message,
         }));
+        pegDiagnosticStages.push({
+          stage: 'quote-summary',
+          accepted: [],
+          rejected: [],
+          error: message,
+        });
       }
     }
     const marketCap = coerceQuoteNumber(quote.marketCap);
     const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
+    const pegDiagnostics = buildPegDiagnosticsPayload(pegDiagnosticStages, {
+      trailingPe: Number.isFinite(trailingPe) ? trailingPe : null,
+      trailingPeSource: Number.isFinite(trailingPe) ? 'quote.trailingPE' : null,
+      forwardPe: Number.isFinite(forwardPe) ? forwardPe : null,
+      forwardPeSource: Number.isFinite(forwardPe) ? 'quote.forwardPE' : null,
+    });
 
     const payload = {
       symbol: normalizedSymbol,
@@ -12598,6 +12842,7 @@ app.get('/api/quote', async function (req, res) {
         Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0
           ? dividendYieldPercent
           : null,
+      pegDiagnostics: pegDiagnostics || null,
     };
     logPegDebug(normalizedSymbol, 'response', () => ({
       pegRatio: payload.pegRatio,
