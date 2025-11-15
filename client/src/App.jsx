@@ -7627,23 +7627,6 @@ export default function App() {
 
   let handleFocusedSymbolBuySell;
 
-  useEffect(() => {
-    if (!pendingSymbolAction || !pendingSymbolAction.symbol) {
-      return;
-    }
-    const { symbol, intent } = pendingSymbolAction;
-    if (!symbol || symbol !== focusedSymbol) {
-      return;
-    }
-    if (typeof handleFocusedSymbolBuySell !== 'function') {
-      return;
-    }
-    if (intent === 'buy' || intent === 'sell') {
-      handleFocusedSymbolBuySell();
-    }
-    setPendingSymbolAction(null);
-  }, [pendingSymbolAction, focusedSymbol, handleFocusedSymbolBuySell, setPendingSymbolAction]);
-
   const handleExplainMovementForSymbol = useCallback(async () => {
     if (!focusedSymbol) {
       return;
@@ -11337,6 +11320,20 @@ export default function App() {
     closeFocusedSymbolMenu();
     handleExplainMovementForSymbol();
   }, [closeFocusedSymbolMenu, handleExplainMovementForSymbol]);
+
+  useEffect(() => {
+    if (!pendingSymbolAction || !pendingSymbolAction.symbol) {
+      return;
+    }
+    const { symbol, intent } = pendingSymbolAction;
+    if (!symbol || symbol !== focusedSymbol) {
+      return;
+    }
+    if (intent === 'buy' || intent === 'sell') {
+      handleFocusedSymbolBuySell();
+    }
+    setPendingSymbolAction(null);
+  }, [pendingSymbolAction, focusedSymbol, handleFocusedSymbolBuySell, setPendingSymbolAction]);
 
   const handleCloseSymbolNotes = useCallback(() => {
     setSymbolNotesEditor(null);

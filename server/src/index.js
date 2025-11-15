@@ -195,7 +195,7 @@ const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
 })();
 
 const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
-const DEBUG_YAHOO_PEG = parseBooleanEnv(process.env.DEBUG_YAHOO_PEG, true);
+const DEBUG_YAHOO_PEG = parseBooleanEnv(process.env.DEBUG_YAHOO_PEG, false);
 if (DEBUG_YAHOO_PEG) {
   console.log('[peg-debug] Yahoo PEG ratio debugging enabled');
 }
