@@ -12249,6 +12249,11 @@ export default function App() {
   const quoteChangeDisplay =
     quoteChangePercent !== null ? formatSignedPercent(quoteChangePercent, 2) : null;
   const quoteChangeTone = quoteChangePercent > 0 ? 'positive' : quoteChangePercent < 0 ? 'negative' : 'neutral';
+  const rawMarketCap =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.marketCap)
+      ? Number(focusedSymbolQuote.marketCap)
+      : null;
+  const quoteHasMarketCap = rawMarketCap !== null && rawMarketCap > 0;
   const quotePeValue =
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
       ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
@@ -12262,8 +12267,18 @@ export default function App() {
       ? formatNumber(rawPegRatio, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : null;
   const quotePegDiagnostics = normalizePegDiagnostics(focusedSymbolQuote?.pegDiagnostics);
-  const shouldShowPeg = Boolean(focusedSymbolQuote) && (formattedPegRatio !== null || quotePegDiagnostics !== null);
-  const quotePegValue = formattedPegRatio !== null ? formattedPegRatio : shouldShowPeg ? '?' : null;
+  const shouldShowPeg =
+    quoteHasMarketCap && (formattedPegRatio !== null || quotePegDiagnostics !== null);
+  const quotePegValue =
+    formattedPegRatio !== null
+      ? formattedPegRatio
+      : shouldShowPeg
+        ? '?'
+        : null;
+  const quotePegValueClassName =
+    shouldShowPeg && formattedPegRatio === null
+      ? 'symbol-view__detail-value symbol-view__detail-value--muted'
+      : 'symbol-view__detail-value';
   const quotePegTooltip = shouldShowPeg
     ? buildPegTooltip(quotePegDiagnostics, {
         formattedPegValue: formattedPegRatio,
@@ -12271,11 +12286,11 @@ export default function App() {
       })
     : null;
   const quoteMarketCapValue = (() => {
-    if (!focusedSymbolQuote || !Number.isFinite(focusedSymbolQuote.marketCap)) {
+    if (!quoteHasMarketCap) {
       return null;
     }
 
-    const marketCap = Number(focusedSymbolQuote.marketCap);
+    const marketCap = rawMarketCap;
     const currencySuffix = focusedSymbolQuoteCurrency ? ` ${focusedSymbolQuoteCurrency}` : '';
     const magnitudeFormats = [
       { threshold: 1e12, suffix: 'T' },
@@ -12514,7 +12529,7 @@ export default function App() {
                             title={quotePegTooltip || undefined}
                           >
                             <span className="symbol-view__detail-label">PEG</span>
-                            <span className="symbol-view__detail-value">{quotePegValue}</span>
+                            <span className={quotePegValueClassName}>{quotePegValue}</span>
                           </span>
                         ) : null}
                         {quoteMarketCapValue ? (

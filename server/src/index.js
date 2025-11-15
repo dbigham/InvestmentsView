@@ -2308,7 +2308,8 @@ const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod:
 
 const DIVIDEND_YIELD_CACHE_DIR = path.join(__dirname, '..', '.cache', 'dividend-yields');
 // Bump when changing how yields are computed so stale cache is ignored
-const DIVIDEND_YIELD_CACHE_SCHEMA_VERSION = 2;
+const DIVIDEND_YIELD_CACHE_SCHEMA_VERSION = 3;
+const DIVIDEND_YIELD_SUSPICIOUS_THRESHOLD = 8;
 const DIVIDEND_YIELD_CACHE_MAX_AGE_MS = 15 * DAY_IN_MS;
 const dividendYieldMemoryCache = new Map();
 let dividendYieldCacheDirEnsured = false;
@@ -2404,50 +2405,183 @@ function setCachedDividendYield(symbolKey, value) {
   writeDividendYieldCache(symbolKey, entry);
 }
 
-function normalizeDividendYieldPercent(rawValue) {
+function pickFirstFiniteNumber(values) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  for (const candidate of values) {
+    if (candidate === undefined || candidate === null) {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function pickPositiveNumber(values) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  for (const candidate of values) {
+    if (candidate === undefined || candidate === null) {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function normalizeDividendYieldPercent(rawValue, referencePercent = null) {
   const numeric = Number(rawValue);
   if (!Number.isFinite(numeric) || numeric <= 0) {
     return null;
   }
-  if (numeric <= 1) {
-    return Number((numeric * 100).toFixed(4));
+  const normalized = numeric <= 1 ? numeric * 100 : numeric;
+  const percentValue = Number(normalized.toFixed(4));
+  if (!Number.isFinite(percentValue) || percentValue <= 0 || percentValue > 100) {
+    return null;
   }
-  if (numeric <= 100) {
-    return Number(numeric.toFixed(4));
+  if (
+    Number.isFinite(referencePercent) &&
+    referencePercent > 0 &&
+    percentValue / referencePercent >= 8 &&
+    numeric <= 1
+  ) {
+    const percentAsProvided = Number(numeric.toFixed(4));
+    if (percentAsProvided > 0 && percentAsProvided <= 100) {
+      return percentAsProvided;
+    }
   }
-  return null;
+  return percentValue;
+}
+
+function deriveDividendYieldPercentFromRate(quote, summaryDetail = null) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+  const rate = pickPositiveNumber([
+    quote.trailingAnnualDividendRate,
+    summaryDetail?.trailingAnnualDividendRate,
+    summaryDetail?.dividendRate,
+    summaryDetail?.annualDividendRate,
+  ]);
+  if (!Number.isFinite(rate)) {
+    return null;
+  }
+  const price = pickPositiveNumber([
+    quote.regularMarketPrice,
+    quote.postMarketPrice,
+    quote.preMarketPrice,
+    summaryDetail?.navPrice,
+    summaryDetail?.regularMarketPreviousClose,
+    summaryDetail?.previousClose,
+  ]);
+  if (!Number.isFinite(price)) {
+    return null;
+  }
+  return normalizeDividendYieldPercent(rate / price);
 }
 
 // Prefer forward yield when available, fall back to trailing yield,
 // and as a last resort compute from trailing dividend rate and price.
 // Intentionally ignore the ambiguous Yahoo `yield` field.
-function resolveDividendYieldPercentFromQuote(quote) {
+function resolveDividendYieldPercentFromQuote(quote, options = {}) {
   if (!quote || typeof quote !== 'object') {
     return null;
   }
 
-  const forward = normalizeDividendYieldPercent(quote.dividendYield);
-  const trailing = normalizeDividendYieldPercent(quote.trailingAnnualDividendYield);
+  const summaryDetail =
+    options && typeof options.summaryDetail === 'object' ? options.summaryDetail : null;
+  const context = options && typeof options.context === 'object' ? options.context : null;
+  const derivedFromRate = deriveDividendYieldPercentFromRate(quote, summaryDetail);
+  const forwardRaw = pickFirstFiniteNumber([
+    quote.dividendYield,
+    summaryDetail?.dividendYield,
+    summaryDetail?.yield,
+  ]);
+  const trailingRaw = pickFirstFiniteNumber([
+    quote.trailingAnnualDividendYield,
+    summaryDetail?.trailingAnnualDividendYield,
+  ]);
+  const summaryYield = normalizeDividendYieldPercent(summaryDetail?.yield, derivedFromRate);
+  const forward = normalizeDividendYieldPercent(forwardRaw, derivedFromRate);
+  const trailing = normalizeDividendYieldPercent(trailingRaw, derivedFromRate);
 
-  // If both present, choose the smaller to avoid overstating yield due to one-offs
+  if (context) {
+    context.derivedFromRate = Number.isFinite(derivedFromRate) && derivedFromRate > 0 ? derivedFromRate : null;
+    context.valueSource = null;
+  }
+
+  let candidate = null;
+  let candidateSource = null;
   if (Number.isFinite(forward) && forward > 0 && Number.isFinite(trailing) && trailing > 0) {
-    return Math.min(forward, trailing);
-  }
-  if (Number.isFinite(forward) && forward > 0) {
-    return forward;
-  }
-  if (Number.isFinite(trailing) && trailing > 0) {
-    return trailing;
+    candidate = Math.min(forward, trailing);
+    candidateSource = forward <= trailing ? 'forward' : 'trailing';
+  } else if (Number.isFinite(forward) && forward > 0) {
+    candidate = forward;
+    candidateSource = 'forward';
+  } else if (Number.isFinite(trailing) && trailing > 0) {
+    candidate = trailing;
+    candidateSource = 'trailing';
   }
 
-  // Try compute from trailing rate / market price
-  const rate = Number(quote.trailingAnnualDividendRate);
-  const price = Number(quote.regularMarketPrice || quote.postMarketPrice || quote.preMarketPrice);
-  if (Number.isFinite(rate) && rate > 0 && Number.isFinite(price) && price > 0) {
-    return normalizeDividendYieldPercent(rate / price);
+  const derived = Number.isFinite(derivedFromRate) && derivedFromRate > 0 ? derivedFromRate : null;
+  if (candidate !== null) {
+    if (
+      Number.isFinite(summaryYield) &&
+      summaryYield > 0 &&
+      candidate / summaryYield >= 6
+    ) {
+      candidate = summaryYield;
+      candidateSource = 'summary';
+    } else if (
+      Number.isFinite(derived) &&
+      derived > 0 &&
+      candidate / derived >= 8
+    ) {
+      candidate = derived;
+      candidateSource = 'derived';
+    }
+    if (context) {
+      context.valueSource = candidateSource;
+    }
+    return candidate;
+  }
+
+  if (Number.isFinite(derived) && derived > 0) {
+    if (context) {
+      context.valueSource = 'derived';
+    }
+    return derived;
+  }
+
+  if (Number.isFinite(summaryYield) && summaryYield > 0) {
+    if (context) {
+      context.valueSource = 'summary';
+    }
+    return summaryYield;
   }
 
   return null;
+}
+
+function shouldRefineDividendYieldWithSummary(value, context) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return false;
+  }
+  if (!context || (Number.isFinite(context.derivedFromRate) && context.derivedFromRate > 0)) {
+    return false;
+  }
+  if (context.valueSource !== 'forward') {
+    return false;
+  }
+  return value >= DIVIDEND_YIELD_SUSPICIOUS_THRESHOLD;
 }
 
 function sanitizePegDiagnosticRawValue(value) {
@@ -2931,7 +3065,21 @@ async function fetchDividendYieldMap(symbolEntries) {
     }
     try {
       const quote = await fetchYahooQuote(rawSymbol);
-      const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
+      const dividendContext = {};
+      let dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote, { context: dividendContext });
+      if (shouldRefineDividendYieldWithSummary(dividendYieldPercent, dividendContext)) {
+        try {
+          const summary = await fetchYahooQuoteSummary(rawSymbol, ['summaryDetail']);
+          const summaryDetail =
+            summary && typeof summary.summaryDetail === 'object' ? summary.summaryDetail : null;
+          if (summaryDetail) {
+            dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote, { summaryDetail });
+          }
+        } catch (summaryError) {
+          const message = summaryError?.message || String(summaryError);
+          console.warn(`[Dividends] Failed to refine dividend yield for ${normalizedSymbol}:`, message);
+        }
+      }
       setCachedDividendYield(normalizedSymbol, dividendYieldPercent);
       if (Number.isFinite(dividendYieldPercent) && dividendYieldPercent > 0) {
         results.set(normalizedSymbol, dividendYieldPercent);
@@ -12730,6 +12878,13 @@ app.get('/api/quote', async function (req, res) {
   try {
     const lookupSymbol = trimmedSymbol || normalizedSymbol;
     const quote = await fetchYahooQuote(lookupSymbol);
+    let quoteSummaryPromise = null;
+    const loadQuoteSummary = () => {
+      if (!quoteSummaryPromise) {
+        quoteSummaryPromise = fetchYahooQuoteSummary(lookupSymbol);
+      }
+      return quoteSummaryPromise;
+    };
     if (!quote) {
       return res.status(404).json({ message: `Quote unavailable for ${normalizedSymbol}` });
     }
@@ -12777,7 +12932,7 @@ app.get('/api/quote', async function (req, res) {
     }));
     if (initialPegDiagnostics.accepted.length === 0) {
       try {
-        const quoteSummary = await fetchYahooQuoteSummary(lookupSymbol);
+        const quoteSummary = await loadQuoteSummary();
         const summaryDiagnostics = collectPegRatioDiagnostics(quote, quoteSummary);
         if (summaryDiagnostics.accepted.length > 0) {
           pegRatio = summaryDiagnostics.accepted[0].value;
@@ -12817,7 +12972,23 @@ app.get('/api/quote', async function (req, res) {
       }
     }
     const marketCap = coerceQuoteNumber(quote.marketCap);
-    const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
+    const dividendContext = {};
+    let dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote, { context: dividendContext });
+    if (shouldRefineDividendYieldWithSummary(dividendYieldPercent, dividendContext)) {
+      try {
+        const quoteSummary = await loadQuoteSummary();
+        const summaryDetail =
+          quoteSummary && typeof quoteSummary.summaryDetail === 'object' ? quoteSummary.summaryDetail : null;
+        if (summaryDetail) {
+          dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote, { summaryDetail });
+        }
+      } catch (summaryError) {
+        if (!(summaryError instanceof MissingYahooDependencyError) && summaryError?.code !== 'MISSING_DEPENDENCY') {
+          const message = summaryError?.message || String(summaryError);
+          console.warn('Failed to refine dividend yield from Yahoo summary:', normalizedSymbol, message);
+        }
+      }
+    }
     const pegDiagnostics = buildPegDiagnosticsPayload(pegDiagnosticStages, {
       trailingPe: Number.isFinite(trailingPe) ? trailingPe : null,
       trailingPeSource: Number.isFinite(trailingPe) ? 'quote.trailingPE' : null,

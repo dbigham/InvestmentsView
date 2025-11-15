@@ -324,6 +324,9 @@ textarea {
   color: var(--color-text-primary);
   white-space: nowrap;
 }
+.symbol-view__detail-value--muted {
+  color: var(--color-text-muted);
+}
 .symbol-view__detail-change {
   font-size: 13px;
   font-weight: 600;
@@ -6475,4 +6478,3 @@ button.time-pill:hover .time-pill__icon {
   box-shadow: none;
   background: var(--color-surface-alt);
 }
-
