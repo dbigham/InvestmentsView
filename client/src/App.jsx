@@ -7266,12 +7266,17 @@ export default function App() {
     [accountActionPrompt]
   );
 
+  let handleFocusedSymbolBuySell;
+
   useEffect(() => {
     if (!pendingSymbolAction || !pendingSymbolAction.symbol) {
       return;
     }
     const { symbol, intent } = pendingSymbolAction;
     if (!symbol || symbol !== focusedSymbol) {
+      return;
+    }
+    if (typeof handleFocusedSymbolBuySell !== 'function') {
       return;
     }
     if (intent === 'buy' || intent === 'sell') {
@@ -10906,7 +10911,7 @@ export default function App() {
   const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
   const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
 
-  const handleFocusedSymbolBuySell = useCallback(async () => {
+  handleFocusedSymbolBuySell = useCallback(async () => {
     if (!focusedSymbol) {
       return;
     }
