@@ -23,7 +23,14 @@ const DAYS_PER_YEAR = 365.25;
 const DEFAULT_CHART_METRIC = 'total-pnl';
 const CHART_METRIC_OPTIONS = [
   { value: DEFAULT_CHART_METRIC, label: 'Total P&L', valueKey: 'totalPnl', deltaKey: 'totalPnlDelta' },
-  { value: 'total-equity', label: 'Total Equity', valueKey: 'equity', deltaKey: 'equityDelta' },
+  {
+    value: 'total-equity',
+    label: 'Total Equity',
+    valueKey: 'equity',
+    deltaKey: 'equityDelta',
+    useDisplayStartDelta: false,
+    valueFormatter: (value) => formatMoney(value),
+  },
   {
     value: 'price',
     label: 'Price',
