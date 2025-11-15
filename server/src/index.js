@@ -2476,6 +2476,132 @@ function sanitizePegDiagnosticRawValue(value) {
   return value;
 }
 
+function selectPegMetricCandidate(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+  let firstCandidate = null;
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const { value, normalizer, source } = candidate;
+    const normalized = typeof normalizer === 'function' ? normalizer(value) : null;
+    const entry = {
+      source: typeof source === 'string' ? source : null,
+      rawValue: value,
+      normalized,
+    };
+    if (!firstCandidate) {
+      firstCandidate = entry;
+    }
+    if (Number.isFinite(normalized) && normalized > 0) {
+      return entry;
+    }
+  }
+  return firstCandidate;
+}
+
+function formatPegComponentDiagnostics(candidate) {
+  if (!candidate) {
+    return null;
+  }
+  const normalized = Number.isFinite(candidate.normalized) ? Number(candidate.normalized) : null;
+  return {
+    source: candidate.source,
+    normalized,
+    raw: sanitizePegDiagnosticRawValue(candidate.rawValue),
+  };
+}
+
+function buildDerivedPegCandidate(quote, quoteSummary) {
+  const summaryDetail = quoteSummary && typeof quoteSummary === 'object' ? quoteSummary.summaryDetail : null;
+  const defaultKeyStatistics = quoteSummary && typeof quoteSummary === 'object' ? quoteSummary.defaultKeyStatistics : null;
+  const financialData = quoteSummary && typeof quoteSummary === 'object' ? quoteSummary.financialData : null;
+
+  const forwardCandidates = [
+    { value: quote && quote.forwardPE, normalizer: coerceQuoteNumber, source: 'quote.forwardPE' },
+    summaryDetail
+      ? { value: summaryDetail.forwardPE, normalizer: coerceQuoteSummaryNumber, source: 'summaryDetail.forwardPE' }
+      : null,
+    defaultKeyStatistics
+      ? {
+          value: defaultKeyStatistics.forwardPE,
+          normalizer: coerceQuoteSummaryNumber,
+          source: 'defaultKeyStatistics.forwardPE',
+        }
+      : null,
+  ];
+  const growthCandidates = [
+    financialData
+      ? {
+          value: financialData.earningsGrowth,
+          normalizer: coerceQuoteSummaryNumber,
+          source: 'financialData.earningsGrowth',
+        }
+      : null,
+    defaultKeyStatistics
+      ? {
+          value: defaultKeyStatistics.earningsQuarterlyGrowth,
+          normalizer: coerceQuoteSummaryNumber,
+          source: 'defaultKeyStatistics.earningsQuarterlyGrowth',
+        }
+      : null,
+  ];
+
+  const forwardCandidate = selectPegMetricCandidate(forwardCandidates);
+  const growthCandidate = selectPegMetricCandidate(growthCandidates);
+
+  if (!forwardCandidate && !growthCandidate) {
+    return null;
+  }
+
+  const entry = {
+    source: 'derived.forwardPeOverEarningsGrowth',
+    raw: {
+      forwardPe: formatPegComponentDiagnostics(forwardCandidate),
+      earningsGrowth: formatPegComponentDiagnostics(growthCandidate),
+    },
+    value: null,
+  };
+
+  const forwardNormalized = forwardCandidate && Number.isFinite(forwardCandidate.normalized) && forwardCandidate.normalized > 0
+    ? Number(forwardCandidate.normalized)
+    : null;
+  const growthNormalized = growthCandidate && Number.isFinite(growthCandidate.normalized) && growthCandidate.normalized > 0
+    ? Number(growthCandidate.normalized)
+    : null;
+
+  if (!forwardNormalized && !growthNormalized) {
+    entry.reason = 'missing_inputs';
+    return entry;
+  }
+  if (!forwardNormalized) {
+    entry.reason = 'missing_forward_pe';
+    return entry;
+  }
+  if (!growthNormalized) {
+    entry.reason = 'missing_earnings_growth';
+    return entry;
+  }
+
+  const growthPercent = growthNormalized < 1 ? growthNormalized * 100 : growthNormalized;
+  entry.raw.growthPercent = Number.isFinite(growthPercent) ? Number(growthPercent) : null;
+  if (!Number.isFinite(growthPercent) || growthPercent <= 0) {
+    entry.reason = 'invalid_growth';
+    return entry;
+  }
+
+  const derivedValue = forwardNormalized / growthPercent;
+  if (!Number.isFinite(derivedValue) || derivedValue <= 0) {
+    entry.reason = 'invalid';
+    return entry;
+  }
+
+  entry.value = Number(derivedValue);
+  return entry;
+}
+
 function collectPegRatioDiagnostics(quote, quoteSummary) {
   const accepted = [];
   const rejected = [];
@@ -2522,6 +2648,20 @@ function collectPegRatioDiagnostics(quote, quoteSummary) {
     if (financialData && typeof financialData === 'object') {
       consider(financialData.pegRatio, 'financialData.pegRatio', coerceQuoteSummaryNumber);
       consider(financialData.forwardPegRatio, 'financialData.forwardPegRatio', coerceQuoteSummaryNumber);
+    }
+  }
+
+  if (accepted.length === 0) {
+    const derivedCandidate = buildDerivedPegCandidate(quote, quoteSummary);
+    if (derivedCandidate) {
+      if (Number.isFinite(derivedCandidate.value) && derivedCandidate.value > 0) {
+        accepted.push(derivedCandidate);
+      } else {
+        if (!derivedCandidate.reason) {
+          derivedCandidate.reason = 'invalid';
+        }
+        rejected.push(derivedCandidate);
+      }
     }
   }
 
