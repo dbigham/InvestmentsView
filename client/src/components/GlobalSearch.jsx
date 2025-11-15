@@ -145,14 +145,17 @@ export default function GlobalSearch({
   }, [navItems]);
 
   const results = useMemo(() => {
-    const q = normalize(query);
+    const rawQuery = typeof query === 'string' ? query : '';
+    const q = normalize(rawQuery);
     if (!q) {
       return [];
     }
     // Special intent: "retire at 55" / "retirement at 55"
     const lower = q.toLowerCase();
+    const prefixCandidate = rawQuery.toLowerCase().trimStart();
     let retireAction = null;
     const templateActions = [];
+    const symbolActions = [];
     try {
       // Match variations like: retire at 55, retirement at 60, retire 55, retirement age 65
       const m = lower.match(/\bretire(?:ment)?(?:\s+(?:at|age))?\s*(\d{2})\b/);
@@ -188,6 +191,178 @@ export default function GlobalSearch({
     } catch (e) {
       // no-op
     }
+
+    const symbolIndex = new Map();
+    symbolItems.forEach((item) => {
+      if (!item || !item.key) return;
+      symbolIndex.set(String(item.key).toUpperCase(), item);
+    });
+
+    const symbolActionDeduper = new Set();
+    const templateDeduper = new Set();
+
+    const pushSymbolIntentTemplate = (intent) => {
+      if (templateDeduper.has(intent)) return;
+      if (intent === 'orders') {
+        templateActions.push({
+          kind: 'template',
+          key: 'orders-template',
+          label: 'Orders for [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'orders for ',
+        });
+      } else if (intent === 'dividends') {
+        templateActions.push({
+          kind: 'template',
+          key: 'dividends-template',
+          label: 'Dividends for [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'dividends for ',
+        });
+      } else if (intent === 'buy') {
+        templateActions.push({
+          kind: 'template',
+          key: 'buy-template',
+          label: 'Buy [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'buy ',
+        });
+      } else if (intent === 'sell') {
+        templateActions.push({
+          kind: 'template',
+          key: 'sell-template',
+          label: 'Sell [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'sell ',
+        });
+      }
+      templateDeduper.add(intent);
+    };
+
+    const pushSymbolAction = (intent, symbolItem) => {
+      if (!symbolItem || !symbolItem.key) return;
+      const symbolKey = String(symbolItem.key).toUpperCase();
+      if (!symbolKey) return;
+      const dedupeKey = `${intent}:${symbolKey}`;
+      if (symbolActionDeduper.has(dedupeKey)) return;
+      symbolActionDeduper.add(dedupeKey);
+      const description = symbolItem.sublabel || null;
+      if (intent === 'orders') {
+        symbolActions.push({
+          kind: 'symbol-action',
+          key: `symbol-orders:${symbolKey}`,
+          label: `Orders for ${symbolKey}`,
+          sublabel: 'View Orders tab for this symbol',
+          symbol: symbolKey,
+          symbolDescription: description,
+          targetTab: 'orders',
+          intent: 'orders',
+        });
+      } else if (intent === 'dividends') {
+        symbolActions.push({
+          kind: 'symbol-action',
+          key: `symbol-dividends:${symbolKey}`,
+          label: `Dividends for ${symbolKey}`,
+          sublabel: 'View Dividends tab for this symbol',
+          symbol: symbolKey,
+          symbolDescription: description,
+          targetTab: 'dividends',
+          intent: 'dividends',
+        });
+      } else if (intent === 'buy' || intent === 'sell') {
+        symbolActions.push({
+          kind: 'symbol-action',
+          key: `symbol-${intent}:${symbolKey}`,
+          label: `${intent === 'buy' ? 'Buy' : 'Sell'} ${symbolKey}`,
+          sublabel: 'Open buy/sell flow for this symbol',
+          symbol: symbolKey,
+          symbolDescription: description,
+          targetTab: null,
+          intent,
+        });
+      }
+    };
+
+    const findSymbolSuggestions = (fragment) => {
+      const normalizedFragment = normalize(fragment);
+      if (!normalizedFragment) return [];
+      const compact = normalizedFragment.replace(/\s+/g, '');
+      if (!compact) return [];
+      const bare = compact.replace(/[^a-z0-9]/gi, '');
+      const withScores = symbolItems
+        .map((item) => {
+          const label = String(item.label || '');
+          const baseScore = scoreMatch(label, compact);
+          const bareLabel = label.replace(/[^a-z0-9]/gi, '');
+          const bareScore = bare ? scoreMatch(bareLabel, bare) : -1;
+          const score = Math.max(baseScore, bareScore);
+          return { item, score };
+        })
+        .filter((entry) => entry.score >= 45)
+        .sort((a, b) => b.score - a.score);
+      return withScores.slice(0, 5).map((entry) => entry.item);
+    };
+
+    const matchSymbolIntent = (intent, regex, fragmentIndex = 1) => {
+      const match = lower.match(regex);
+      if (!match) return;
+      const fragment = match[fragmentIndex] || '';
+      collectSymbolIntentMatches(intent, fragment);
+    };
+
+    const matchesIntentCue = (candidate, forms) => {
+      if (!candidate) return false;
+      return forms.some((form) => form.startsWith(candidate) || candidate.startsWith(form));
+    };
+
+    const collectSymbolIntentMatches = (intent, fragment) => {
+      const normalizedFragment = normalize(fragment);
+      if (!normalizedFragment) return;
+      const compact = normalizedFragment.replace(/\s+/g, '');
+      if (compact) {
+        const up = compact.toUpperCase();
+        if (symbolIndex.has(up)) {
+          pushSymbolAction(intent, symbolIndex.get(up));
+        }
+      }
+      findSymbolSuggestions(fragment).forEach((item) => pushSymbolAction(intent, item));
+    };
+
+    const matchSymbolLeadingIntent = (intent, forms) => {
+      const trimmed = rawQuery.trimStart();
+      if (!trimmed) return;
+      const match = trimmed.match(/^([-a-z0-9.]+)(?:\s+(.*))?$/i);
+      if (!match) return;
+      const symbolFragment = match[1] || '';
+      const remainderRaw = match[2];
+      if (!remainderRaw) return;
+      const candidate = normalize(remainderRaw).toLowerCase();
+      if (!candidate) return;
+      if (!matchesIntentCue(candidate, forms)) return;
+      collectSymbolIntentMatches(intent, symbolFragment);
+    };
+
+    const intentPrefixes = [
+      { intent: 'orders', forms: ['orders', 'order', 'orders for', 'order for'] },
+      { intent: 'dividends', forms: ['dividends', 'dividend', 'dividends for', 'dividend for'] },
+      { intent: 'buy', forms: ['buy'] },
+      { intent: 'sell', forms: ['sell'] },
+    ];
+
+    intentPrefixes.forEach(({ intent, forms }) => {
+      if (matchesIntentCue(prefixCandidate, forms)) {
+        pushSymbolIntentTemplate(intent);
+      }
+    });
+
+    matchSymbolIntent('orders', /^orders?\s+for(?:\s+([-a-z0-9.]*))?\s*$/);
+    matchSymbolIntent('dividends', /^dividends?\s+for(?:\s+([-a-z0-9.]*))?\s*$/);
+    matchSymbolIntent('buy', /^buy(?:\s+([-a-z0-9.]*))?\s*$/);
+    matchSymbolIntent('sell', /^sell(?:\s+([-a-z0-9.]*))?\s*$/);
+
+    matchSymbolLeadingIntent('orders', ['orders', 'order']);
+    matchSymbolLeadingIntent('dividends', ['dividends', 'dividend']);
+
     const rank = (item) => {
       if (!item) return -1;
       const base = scoreMatch(item.label, q);
@@ -206,6 +381,8 @@ export default function GlobalSearch({
       } else if (item.kind === 'action') {
         // Intent actions should be quite prominent when query hints at them
         boost += 25;
+      } else if (item.kind === 'symbol-action') {
+        boost += 35;
       } else if (item.kind === 'template') {
         // Template suggestions also prominent while composing
         boost += 20;
@@ -214,8 +391,8 @@ export default function GlobalSearch({
     };
     const poolBase = [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
     const pool = retireAction
-      ? [retireAction, ...templateActions, ...poolBase]
-      : [...templateActions, ...poolBase];
+      ? [retireAction, ...templateActions, ...symbolActions, ...poolBase]
+      : [...templateActions, ...symbolActions, ...poolBase];
     const withScores = pool
       .map((item) => ({ item, score: rank(item) }))
       .filter((e) => e.score >= 0)
@@ -273,7 +450,21 @@ export default function GlobalSearch({
     }
     setOpen(false);
     setQuery('');
-    if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
+    if (item.kind === 'symbol-action') {
+      if (typeof onSelectSymbol === 'function' && item.symbol) {
+        onSelectSymbol(item.symbol, {
+          description: item.symbolDescription || item.sublabel || null,
+          targetTab: item.targetTab || null,
+          intent: item.intent || null,
+        });
+      }
+      if (
+        typeof onNavigate === 'function' &&
+        (item.intent === 'orders' || item.intent === 'dividends')
+      ) {
+        onNavigate(item.intent);
+      }
+    } else if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
       onSelectSymbol(item.key, { description: item.sublabel || null });
     } else if (item.kind === 'account' && typeof onSelectAccount === 'function') {
       onSelectAccount(item.key);
@@ -408,6 +599,9 @@ export default function GlobalSearch({
                     {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
                     {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
                     {item.kind === 'action' ? <span className="global-search__badge">ACTION</span> : null}
+                    {item.kind === 'symbol-action' ? (
+                      <span className="global-search__badge">ACTION</span>
+                    ) : null}
                     {item.kind === 'template' ? <span className="global-search__badge">TPL</span> : null}
                   </div>
                   {item.sublabel ? (
