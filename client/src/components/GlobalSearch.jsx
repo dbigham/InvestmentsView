@@ -141,7 +141,12 @@ export default function GlobalSearch({
     ];
     const custom = Array.isArray(navItems) ? navItems : [];
     const list = custom.length ? custom : defaults;
-    return list.map((item) => ({ kind: 'nav', key: String(item.key), label: normalize(item.label) }));
+    return list.map((item) => ({
+      kind: 'nav',
+      key: String(item.key),
+      label: normalize(item.label),
+      targetKey: normalizeKey(item.target || item.key) || String(item.key),
+    }));
   }, [navItems]);
 
   const results = useMemo(() => {
@@ -397,8 +402,49 @@ export default function GlobalSearch({
       .map((item) => ({ item, score: rank(item) }))
       .filter((e) => e.score >= 0)
       .sort((a, b) => b.score - a.score);
-    const top = withScores.slice(0, 10).map((e) => e.item);
-    return top;
+
+    const resolveTargetKey = (item) => {
+      if (!item) return null;
+      const baseKey = String(item.key ?? '').trim();
+      if (!baseKey) return null;
+      if (item.kind === 'nav') {
+        const target = typeof item.targetKey === 'string' ? item.targetKey : baseKey;
+        return `nav:${target}`;
+      }
+      if (item.kind === 'symbol-action') {
+        return `symbol-action:${baseKey}`;
+      }
+      if (item.kind === 'template') {
+        return `template:${baseKey}`;
+      }
+      if (item.kind === 'symbol') {
+        return `symbol:${baseKey.toUpperCase()}`;
+      }
+      if (item.kind === 'account' || item.kind === 'group') {
+        return `${item.kind}:${baseKey}`;
+      }
+      if (item.kind === 'action') {
+        return `action:${baseKey}`;
+      }
+      return `${item.kind || 'item'}:${baseKey}`;
+    };
+
+    const seenTargets = new Set();
+    const deduped = [];
+    for (const entry of withScores) {
+      const targetKey = resolveTargetKey(entry.item);
+      if (targetKey && seenTargets.has(targetKey)) {
+        continue;
+      }
+      if (targetKey) {
+        seenTargets.add(targetKey);
+      }
+      deduped.push(entry.item);
+      if (deduped.length >= 10) {
+        break;
+      }
+    }
+    return deduped;
   }, [query, symbolItems, accountItems, groupItems, navItemsNormalized]);
 
   // Ensure we reset the highlighted option to the first item whenever
@@ -646,7 +692,11 @@ GlobalSearch.propTypes = {
     })
   ),
   navItems: PropTypes.arrayOf(
-    PropTypes.shape({ key: PropTypes.string.isRequired, label: PropTypes.string.isRequired })
+    PropTypes.shape({
+      key: PropTypes.string.isRequired,
+      label: PropTypes.string.isRequired,
+      target: PropTypes.string,
+    })
   ),
   placeholder: PropTypes.string,
   onSelectSymbol: PropTypes.func,
