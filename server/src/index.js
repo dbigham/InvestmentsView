@@ -2163,6 +2163,7 @@ function getDispatcherForUrl(targetUrl, { reuse = false } = {}) {
 
 const YAHOO_CHART_BASE_URL = 'https://query1.finance.yahoo.com';
 const YAHOO_QUOTE_BASE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote';
+const YAHOO_QUOTE_SUMMARY_BASE_URL = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
 
 // Explicit per-symbol Yahoo alias overrides. Keys are case-insensitive.
 const YAHOO_SYMBOL_ALIASES = new Map([
@@ -2229,6 +2230,30 @@ async function fetchYahooQuote(symbol) {
   return finance.quote(yahooSymbol, undefined, {
     fetchOptions: { dispatcher },
   });
+}
+
+const YAHOO_QUOTE_SUMMARY_MODULES = ['defaultKeyStatistics', 'summaryDetail', 'financialData'];
+
+async function fetchYahooQuoteSummary(symbol, modules = YAHOO_QUOTE_SUMMARY_MODULES) {
+  const finance = ensureYahooFinanceClient();
+  const yahooSymbol = resolveYahooSymbol(symbol);
+  if (!yahooSymbol) {
+    return null;
+  }
+  const requestedModules = Array.isArray(modules) && modules.length ? modules : YAHOO_QUOTE_SUMMARY_MODULES;
+  if (DEBUG_API_REQUESTS) {
+    try {
+      console.log('[api-req]', `[yahoo] GET quoteSummary ${yahooSymbol} modules=${requestedModules.join(',')}`);
+    } catch (_) { /* ignore */ }
+  }
+  const { dispatcher } = getDispatcherForUrl(YAHOO_QUOTE_SUMMARY_BASE_URL, { reuse: true });
+  return finance.quoteSummary(
+    yahooSymbol,
+    { modules: requestedModules },
+    {
+      fetchOptions: { dispatcher },
+    }
+  );
 }
 
 let yahooFinance = null;
@@ -2418,6 +2443,40 @@ function resolveDividendYieldPercentFromQuote(quote) {
   }
 
   return null;
+}
+
+function resolvePegRatioFromQuoteData(quote, quoteSummary) {
+  const candidates = [];
+  const consider = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      candidates.push(value);
+    }
+  };
+
+  if (quote && typeof quote === 'object') {
+    consider(coerceQuoteNumber(quote.trailingPegRatio));
+    consider(coerceQuoteNumber(quote.pegRatio));
+    consider(coerceQuoteNumber(quote.forwardPegRatio));
+  }
+
+  if (quoteSummary && typeof quoteSummary === 'object') {
+    const summaryDetail = quoteSummary.summaryDetail;
+    if (summaryDetail && typeof summaryDetail === 'object') {
+      consider(coerceQuoteSummaryNumber(summaryDetail.trailingPegRatio));
+      consider(coerceQuoteSummaryNumber(summaryDetail.pegRatio));
+    }
+    const defaultKeyStatistics = quoteSummary.defaultKeyStatistics;
+    if (defaultKeyStatistics && typeof defaultKeyStatistics === 'object') {
+      consider(coerceQuoteSummaryNumber(defaultKeyStatistics.pegRatio));
+    }
+    const financialData = quoteSummary.financialData;
+    if (financialData && typeof financialData === 'object') {
+      consider(coerceQuoteSummaryNumber(financialData.pegRatio));
+      consider(coerceQuoteSummaryNumber(financialData.forwardPegRatio));
+    }
+  }
+
+  return candidates.length > 0 ? candidates[0] : null;
 }
 
 async function fetchDividendYieldMap(symbolEntries) {
@@ -3763,6 +3822,34 @@ function coerceQuoteNumber(value) {
     const numeric = value.getTime();
     if (Number.isFinite(numeric) && numeric > 0) {
       return numeric;
+    }
+  }
+  return null;
+}
+
+function coerceQuoteSummaryNumber(value) {
+  const direct = coerceQuoteNumber(value);
+  if (direct !== null) {
+    return direct;
+  }
+  if (value && typeof value === 'object') {
+    if ('raw' in value) {
+      const raw = coerceQuoteNumber(value.raw);
+      if (raw !== null) {
+        return raw;
+      }
+    }
+    if ('fmt' in value) {
+      const formatted = coerceQuoteNumber(value.fmt);
+      if (formatted !== null) {
+        return formatted;
+      }
+    }
+    if ('longFmt' in value) {
+      const longFormatted = coerceQuoteNumber(value.longFmt);
+      if (longFormatted !== null) {
+        return longFormatted;
+      }
     }
   }
   return null;
@@ -12205,7 +12292,8 @@ app.get('/api/quote', async function (req, res) {
   }
 
   try {
-    const quote = await fetchYahooQuote(trimmedSymbol || normalizedSymbol);
+    const lookupSymbol = trimmedSymbol || normalizedSymbol;
+    const quote = await fetchYahooQuote(lookupSymbol);
     if (!quote) {
       return res.status(404).json({ message: `Quote unavailable for ${normalizedSymbol}` });
     }
@@ -12235,10 +12323,19 @@ app.get('/api/quote', async function (req, res) {
       : Number.isFinite(forwardPe) && forwardPe > 0
         ? forwardPe
         : null;
-    const trailingPeg = coerceQuoteNumber(quote.trailingPegRatio);
-    const forwardPeg = coerceQuoteNumber(quote.forwardPegRatio);
-    const directPeg = coerceQuoteNumber(quote.pegRatio);
-    const pegRatio = trailingPeg ?? directPeg ?? forwardPeg ?? null;
+    let pegRatio = resolvePegRatioFromQuoteData(quote, null);
+    if (!Number.isFinite(pegRatio) || pegRatio <= 0) {
+      try {
+        const quoteSummary = await fetchYahooQuoteSummary(lookupSymbol);
+        pegRatio = resolvePegRatioFromQuoteData(quote, quoteSummary);
+      } catch (summaryError) {
+        if (summaryError instanceof MissingYahooDependencyError || summaryError?.code === 'MISSING_DEPENDENCY') {
+          throw summaryError;
+        }
+        const message = summaryError && summaryError.message ? summaryError.message : String(summaryError);
+        console.warn('Failed to fetch quote summary from Yahoo Finance:', normalizedSymbol, message);
+      }
+    }
     const marketCap = coerceQuoteNumber(quote.marketCap);
     const dividendYieldPercent = resolveDividendYieldPercentFromQuote(quote);
 
