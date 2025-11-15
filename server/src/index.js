@@ -194,6 +194,10 @@ const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
 })();
 
 const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
+const DEBUG_YAHOO_PEG = parseBooleanEnv(process.env.DEBUG_YAHOO_PEG, true);
+if (DEBUG_YAHOO_PEG) {
+  console.log('[peg-debug] Yahoo PEG ratio debugging enabled');
+}
 // Max valid JS Date timestamp in ms is ±8.64e15; use slightly below as a pinned expiry
 const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
 const PREHEAT_GROUP_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_GROUP_TOTAL_PNL, false);
@@ -2445,38 +2449,98 @@ function resolveDividendYieldPercentFromQuote(quote) {
   return null;
 }
 
-function resolvePegRatioFromQuoteData(quote, quoteSummary) {
-  const candidates = [];
-  const consider = (value) => {
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-      candidates.push(value);
+function sanitizePegDiagnosticRawValue(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === 'object') {
+    const compact = {};
+    if ('raw' in value) {
+      compact.raw = value.raw;
     }
+    if ('fmt' in value) {
+      compact.fmt = value.fmt;
+    }
+    if ('longFmt' in value) {
+      compact.longFmt = value.longFmt;
+    }
+    const keys = Object.keys(compact);
+    if (keys.length > 0) {
+      return compact;
+    }
+  }
+  return value;
+}
+
+function collectPegRatioDiagnostics(quote, quoteSummary) {
+  const accepted = [];
+  const rejected = [];
+
+  const consider = (rawValue, source, normalizer) => {
+    const normalized = typeof normalizer === 'function' ? normalizer(rawValue) : null;
+    const entry = {
+      source,
+      raw: sanitizePegDiagnosticRawValue(rawValue),
+      value: Number.isFinite(normalized) && normalized > 0 ? Number(normalized) : null,
+    };
+    if (entry.value !== null) {
+      accepted.push(entry);
+      return;
+    }
+    if (rawValue === undefined || rawValue === null) {
+      entry.reason = 'missing';
+    } else if (typeof rawValue === 'number' || typeof entry.raw === 'number') {
+      const numeric = typeof rawValue === 'number' ? rawValue : entry.raw;
+      entry.reason = Number(numeric) > 0 ? 'invalid' : 'non_positive';
+    } else {
+      entry.reason = 'invalid';
+    }
+    rejected.push(entry);
   };
 
   if (quote && typeof quote === 'object') {
-    consider(coerceQuoteNumber(quote.trailingPegRatio));
-    consider(coerceQuoteNumber(quote.pegRatio));
-    consider(coerceQuoteNumber(quote.forwardPegRatio));
+    consider(quote.trailingPegRatio, 'quote.trailingPegRatio', coerceQuoteNumber);
+    consider(quote.pegRatio, 'quote.pegRatio', coerceQuoteNumber);
+    consider(quote.forwardPegRatio, 'quote.forwardPegRatio', coerceQuoteNumber);
   }
 
   if (quoteSummary && typeof quoteSummary === 'object') {
     const summaryDetail = quoteSummary.summaryDetail;
     if (summaryDetail && typeof summaryDetail === 'object') {
-      consider(coerceQuoteSummaryNumber(summaryDetail.trailingPegRatio));
-      consider(coerceQuoteSummaryNumber(summaryDetail.pegRatio));
+      consider(summaryDetail.trailingPegRatio, 'summaryDetail.trailingPegRatio', coerceQuoteSummaryNumber);
+      consider(summaryDetail.pegRatio, 'summaryDetail.pegRatio', coerceQuoteSummaryNumber);
     }
     const defaultKeyStatistics = quoteSummary.defaultKeyStatistics;
     if (defaultKeyStatistics && typeof defaultKeyStatistics === 'object') {
-      consider(coerceQuoteSummaryNumber(defaultKeyStatistics.pegRatio));
+      consider(defaultKeyStatistics.pegRatio, 'defaultKeyStatistics.pegRatio', coerceQuoteSummaryNumber);
     }
     const financialData = quoteSummary.financialData;
     if (financialData && typeof financialData === 'object') {
-      consider(coerceQuoteSummaryNumber(financialData.pegRatio));
-      consider(coerceQuoteSummaryNumber(financialData.forwardPegRatio));
+      consider(financialData.pegRatio, 'financialData.pegRatio', coerceQuoteSummaryNumber);
+      consider(financialData.forwardPegRatio, 'financialData.forwardPegRatio', coerceQuoteSummaryNumber);
     }
   }
 
-  return candidates.length > 0 ? candidates[0] : null;
+  return { accepted, rejected };
+}
+
+function logPegDebug(symbol, stage, payloadFactory) {
+  if (!DEBUG_YAHOO_PEG) {
+    return;
+  }
+  try {
+    const payload = typeof payloadFactory === 'function' ? payloadFactory() : payloadFactory;
+    console.log('[peg-debug]', {
+      symbol,
+      stage,
+      payload,
+    });
+  } catch (logError) {
+    console.warn('[peg-debug]', 'Failed to emit PEG debug output', symbol, stage, logError?.message || logError);
+  }
 }
 
 async function fetchDividendYieldMap(symbolEntries) {
@@ -12288,6 +12352,9 @@ app.get('/api/quote', async function (req, res) {
   const cacheKey = normalizedSymbol;
   const cached = quoteCache.get(cacheKey);
   if (cached) {
+    logPegDebug(normalizedSymbol, 'cache-hit', () => ({
+      pegRatio: Number.isFinite(cached.pegRatio) ? cached.pegRatio : null,
+    }));
     return res.json(cached);
   }
 
@@ -12323,17 +12390,43 @@ app.get('/api/quote', async function (req, res) {
       : Number.isFinite(forwardPe) && forwardPe > 0
         ? forwardPe
         : null;
-    let pegRatio = resolvePegRatioFromQuoteData(quote, null);
-    if (!Number.isFinite(pegRatio) || pegRatio <= 0) {
+    const initialPegDiagnostics = collectPegRatioDiagnostics(quote, null);
+    let pegRatio = initialPegDiagnostics.accepted.length > 0 ? initialPegDiagnostics.accepted[0].value : null;
+    logPegDebug(normalizedSymbol, 'quote', () => ({
+      price,
+      trailingPe: Number.isFinite(trailingPe) && trailingPe > 0 ? trailingPe : null,
+      forwardPe: Number.isFinite(forwardPe) && forwardPe > 0 ? forwardPe : null,
+      pegCandidates: initialPegDiagnostics.accepted,
+      rejectedCandidates: initialPegDiagnostics.rejected,
+    }));
+    if (initialPegDiagnostics.accepted.length === 0) {
       try {
         const quoteSummary = await fetchYahooQuoteSummary(lookupSymbol);
-        pegRatio = resolvePegRatioFromQuoteData(quote, quoteSummary);
+        const summaryDiagnostics = collectPegRatioDiagnostics(quote, quoteSummary);
+        if (summaryDiagnostics.accepted.length > 0) {
+          pegRatio = summaryDiagnostics.accepted[0].value;
+        }
+        logPegDebug(normalizedSymbol, 'quote-summary', () => ({
+          requestedModules: YAHOO_QUOTE_SUMMARY_MODULES,
+          availableModules:
+            quoteSummary && typeof quoteSummary === 'object'
+              ? Object.keys(quoteSummary).filter((key) =>
+                  quoteSummary[key] && typeof quoteSummary[key] === 'object'
+                )
+              : [],
+          pegCandidates: summaryDiagnostics.accepted,
+          rejectedCandidates: summaryDiagnostics.rejected,
+        }));
       } catch (summaryError) {
         if (summaryError instanceof MissingYahooDependencyError || summaryError?.code === 'MISSING_DEPENDENCY') {
           throw summaryError;
         }
         const message = summaryError && summaryError.message ? summaryError.message : String(summaryError);
         console.warn('Failed to fetch quote summary from Yahoo Finance:', normalizedSymbol, message);
+        logPegDebug(normalizedSymbol, 'quote-summary-error', () => ({
+          requestedModules: YAHOO_QUOTE_SUMMARY_MODULES,
+          error: message,
+        }));
       }
     }
     const marketCap = coerceQuoteNumber(quote.marketCap);
@@ -12357,6 +12450,11 @@ app.get('/api/quote', async function (req, res) {
           ? dividendYieldPercent
           : null,
     };
+    logPegDebug(normalizedSymbol, 'response', () => ({
+      pegRatio: payload.pegRatio,
+      dividendYieldPercent: payload.dividendYieldPercent,
+      marketCap: payload.marketCap,
+    }));
     quoteCache.set(cacheKey, payload);
     return res.json(payload);
   } catch (error) {
