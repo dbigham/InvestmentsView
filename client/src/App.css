@@ -1275,9 +1275,9 @@ textarea {
 }
 
 .pnl-dialog__toggle-button.active {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-  background: rgba(37, 99, 235, 0.12);
+  color: #000;
+  border-color: #000;
+  background: var(--color-surface-alt);
 }
 
 /* Wider variant for retirement-age control (about 80% wider than 140px) */

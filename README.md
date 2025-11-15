@@ -1,120 +1,86 @@
 # Questrade Summary View
 
-A local web app that mirrors the Questrade web portal "Summary" tab so you can review both your account and your spouse's on the same screen. The app is read-only and pulls live balances and positions through Questrade's public API.
+A household-first dashboard that mirrors the Questrade "Summary" page, but lets you line up every login, compare CAD vs USD exposure, surface contributions, run dividend and projection reports, and share the view with your partner. Everything runs locally and only reads live data through Questrade's public API.
 
-## Project layout
+![Main dashboard overview](docs/screenshots/main.png)
 
-- `server/` - Node/Express proxy that refreshes OAuth tokens, calls Questrade endpoints, and exposes a single `/api/summary` endpoint to the frontend.
-- `client/` - React single-page app (Vite) that recreates the Summary dashboard UI with account selector, currency toggle, metrics, and holdings table.
-- `vendor/` - Optional checkouts for external helpers (for example the TQQQ investment model bridge).
+## Highlights
 
-## Prerequisites
+- Household-aware account selector with saved nicknames, default landing accounts, and deep links back into the Questrade portal.
+- Rich equity card that rolls up cash, buying power, day/open P&L, funding progress, CAGR, and household adjustments.
+- Positions table with instant filtering, logo support, and a context menu for copying trade prompts or drilling into symbol-level analysis.
+- Dedicated tabs for Dividends, Deployments, Projections, News (OpenAI-powered), and CAD/USD cash breakdowns.
+- "People" overlay that converts everything to CAD, totals per person, and keeps multiple households in sync.
+- Optional investment-model bridge to evaluate TQQQ-style strategies or QQQ "temperature" overlays next to your actual holdings.
+- Built as a Vite + React SPA backed by a tiny Express proxy that handles OAuth refresh cycles for every configured login.
 
-- Node.js 20.19 or later (the UI still builds on 20.11 but Vite prints a warning).
-- Python 3.9 or later if you plan to evaluate investment models / QQQ temperature overlays.
-- One or more valid Questrade API refresh tokens (one per Questrade login you want to include).
+## Guided tour
 
-## Getting started
+### All accounts, always in sync
+![Account selector](docs/screenshots/account-selector.png)
 
-1. Configure credentials
-   - Copy `server/.env.example` to `server/.env` (no refresh token needed).
-   - Seed refresh tokens for each login by running
+Keep multiple logins and sub-accounts pinned wherever you want them. Ctrl/?-click opens the native Questrade portal, and you can favourite any account as the default landing zone after a restart.
 
-        npm run seed-token -- <refreshTokenFromQuestrade> [--id=<loginId>] [--label="Display name"] [--email=<email>]
+### Drill into any symbol without leaving the view
+![Symbol quick view](docs/screenshots/symbol-view.png)
 
-     inside the `server` directory. Repeat for every login you want to mirror (for example, `--id=daniel` and `--id=meredith`). When omitted, `--id` defaults to `primary` and updates that entry.
-   - Optionally adjust `CLIENT_ORIGIN` or `PORT` if you change the frontend host.
-- Optional: set `DEBUG_QUESTRADE_API=true` to log every Questrade API response (defaults to disabled to keep the console quiet).
-- Optional: set `OPENAI_API_KEY` (and optionally `OPENAI_NEWS_MODEL`) to enable the portfolio "News" tab powered by OpenAI's GPT models.
-  - (Optional) Copy `server/account-beneficiaries.example.json` to `server/account-beneficiaries.json` and replace the placeholder account numbers with your own. The proxy reads this file to attach household beneficiary metadata (for example "Eli Bigham" or "Philanthropy") to each account.
-   - (Optional) Copy `server/accounts.example.json` to `server/accounts.json` to define friendly account names, chat links, and Questrade portal UUIDs per account number. The proxy watches this file (or the path pointed to by `ACCOUNTS_FILE` / `ACCOUNT_NAMES_FILE`) for updates and forwards the resolved metadata to the UI so Ctrl/⌘-clicking the account selector can open the matching page in the Questrade portal. You can also:
-     - Set `showQQQDetails` to surface the per-account QQQ temperature card.
-     - Add an `investmentModels` array (each entry may include `model`, `symbol`, `leveragedSymbol`, `reserveSymbol`, and `lastRebalance`) to evaluate strategies with the optional bridge.
-     - Provide `chatURL` links that appear under the summary card "Actions" menu.
-     - Apply `netDepositAdjustment` and `cagrStartDate` overrides to tune funding / return calculations.
-     - Mark `"default": true` on an account to have the dashboard start there after a restart.
-     - Supply nested `accounts` arrays to record preferred ordering for the account picker.
-   - (Optional) Copy `client/.env.example` to `client/.env` if you want to point the UI at a non-default proxy URL.
+Hover or search for a ticker to break down open quantity, currency exposure, dividend history, and account-level ownership. The per-row menu also drafts prompts or "invest cash evenly" plans based on live positions.
 
-2. Install dependencies
+### Understand deployment and cash plans
+![Deployment adjustments](docs/screenshots/adjust-deployment-vs-reserve-dialog.png)
 
-        cd server
-        npm install
+Track how much of your cash pile is deployed over time, target reserve levels, and apply overrides by login. Switch between absolute CAD and percent deployed, then generate an action plan directly from the data.
 
-        cd ../client
-        npm install
+### Funding, dividends, and total P&L stories
+![Total profit and loss breakdown](docs/screenshots/total-profit-and-loss-breakdown.png)
 
-3. (Optional) Install the investment model helpers
+Every badge on the equity card opens a focused dialog: funding history, dividends grouped by symbol and date range, or a P&L breakdown that highlights where gains and drawdowns originated.
 
-       mkdir -p vendor
-       git clone https://github.com/dbigham/TQQQ.git vendor/TQQQ
+### Household perspective with one click
+![People view](docs/screenshots/people-view.png)
 
-   Install Python dependencies for the bridge according to the helper repository's README. The server will also honour the
-   `INVESTMENT_MODEL_REPO` environment variable if you prefer to keep the checkout elsewhere. The bridge is only required when
-   accounts are configured with `investmentModels` or `showQQQDetails`.
+Translate every holding to CAD and view balances per person (or entity) across logins. Useful for joint planning sessions or making sure RESP/TFSA goals stay on target.
 
-4. Run the backend
+### Plan the future as well as the present
+![Projections view](docs/screenshots/projections-view-1.png)
 
-        cd server
-        npm run dev
+Toggle into the projections tab to test growth rates, contribution schedules, or investment-model overlays. Multiple presets (see also `docs/screenshots/projections-view-2.png`) show alternative timelines without leaving the dashboard.
 
-   The server listens on port `4000` by default. It keeps access tokens in memory and saves the most recent refresh token to `server/token-store.json` so restarts do not require manual updates.
+### Investment models and automation hooks
+![Investment model integration](docs/screenshots/investment-model-integration.png)
 
-5. Run the frontend
+When the optional Python helper is installed, the app keeps your reference model (for example TQQQ + reserves) beside live accounts, showing temperature, drift, and the trades required to snap back to target.
 
-        cd client
-        npm run dev
+### Search once, act anywhere
+![Search bar](docs/screenshots/search-bar.png)
 
-   Vite serves the app on `http://localhost:5173` by default. Open that URL in your browser.
+The omnibox jumps to accounts, tickers, tabs, or dialogs. Need to open the Dividends tab for a symbol or edit account metadata? Type a few letters and hit enter. Shortcuts keep the workflow fast.
 
-## Features
+## Under the hood
 
-- Account drop-down with "All accounts" aggregate view across every configured login.
-- Currency toggle that surfaces combined and per-currency balances if Questrade returns them.
-- Total equity card with today's and open P&L badges, cash, buying power, and a funding summary (net deposits, cumulative P&L, annualized return, and account-level adjustments).
-- Positions table listing symbol, description, account number, intraday/open P&L, quantities, prices, and market value.
-- Dividends tab that groups historical distributions by symbol, currency, and time range.
-- News tab that summarizes recent web articles about the current holdings by querying OpenAI's GPT-5 model (requires an OpenAI API key).
-- Optional company logos column in the Positions table. If you set `VITE_LOGO_DEV_PUBLISHABLE_KEY` in `client/.env`, logos are fetched from Logo.dev using the ticker endpoint.
-- Action menu to copy a text summary, draft a CAGR prompt, or build an "invest cash evenly" plan from live holdings and balances.
-- Manual refresh button to force a new fetch from Questrade.
-- People overlay that converts every account to CAD and totals holdings for each household member.
-- Cash breakdown dialog for aggregate CAD or USD balances.
-- P&L heatmap that breaks down gains by symbol or sector.
-- Optional QQQ temperature / investment model evaluation card when the helper bridge is installed.
-- Automatic handling of access-token refresh and persistence of the newest refresh token.
+- `client/` - React + Vite SPA with TanStack Query for data orchestration, accessible dialogs (Radix primitives), and CSS tuned for dense financial layouts.
+- `server/` - Lightweight Express proxy that refreshes OAuth tokens per login, caches the newest refresh token, enriches account metadata, and exposes everything through `/api/summary`.
+- `shared/` - Date math, deployment helpers, and formatting utilities reused by both sides.
 
-## Notes & limitations
+## Run it yourself
 
-- The proxy requests `/v1/accounts`, `/v1/accounts/{id}/positions`, `/v1/accounts/{id}/balances`, and `/v1/symbols` for enrichment. Additional summary widgets (charts, watchlists, events) from the official site are intentionally omitted.
-- Combined P&L values still reflect the native currency of each position; cross-currency translation is on the enhancement list.
-- The app is read-only by design; no trade placement or fund transfers are exposed.
-- Dividend summaries rely on `/v1/accounts/{id}/activities`; if the API omits history for an account or the server cannot backfill FX conversions the panel will show partial data.
-- Investment model evaluation requires Python and the optional helper repository; failures fall back to the standard QQQ view without blocking the rest of the dashboard.
-- When preparing a pull request with the OpenAI `make_pr` helper, avoid adding Git submodules. The helper snapshots files but does not understand gitlink entries, so the request fails silently after a few seconds instead of creating the PR. Vendor external code directly if it needs to ship with the app.
-- The proxy only authorizes the frontend origin defined in `CLIENT_ORIGIN`. When driving the UI through Playwright or another automated browser, open the app with that exact origin (for example `http://localhost:5173/` instead of `http://127.0.0.1:5173/`) to avoid CORS failures that surface as `Failed to fetch` errors in the UI. See [`docs/ui-screenshot-guide.md`](docs/ui-screenshot-guide.md) for an end-to-end walkthrough that covers standing up the stack and capturing account screenshots.
+You only need Node.js 20.19+, Git, and at least one Questrade API refresh token. Python 3.9+ is optional unless you want investment-model overlays.
 
-## Building for production
+```bash
+# one-time
+cd server && npm install
+cd ../client && npm install
 
-        cd client
-        npm run build
+# start the stack (two terminals)
+cd server && npm run dev
+cd client && npm run dev
+```
 
-The compiled frontend lives under `client/dist/`. Serve it with any static host and point it at the running proxy.
+From there browse to `http://localhost:5173`, drop in your refresh tokens, and the dashboard lights up. The proxy will persist replacement tokens so you can keep the terminals running indefinitely.
 
-### Company logos (Logo.dev)
+Need the full playbook (environment variables, metadata files, optional helpers, production builds, etc.)? See the [setup & running guide](docs/setup-and-running.md) for step-by-step instructions.
 
-To enable high-quality company logos via Logo.dev in the Positions table:
+## Credits
 
-- Set `VITE_LOGO_DEV_PUBLISHABLE_KEY=pk_...` in `client/.env` (publishable key).
-- The UI loads logos from `https://img.logo.dev/ticker/<TICKER>?token=...` with sensible sizing.
-
-Notes:
-- Do not set a secret key in the frontend. If you only have a secret (`sk_...`), keep it on the server. The implementation uses a publishable key on the client.
-
-## Rotating tokens
-
-Use `npm run seed-token -- <refreshToken> --id=<loginId>` any time you generate a fresh token in the Questrade portal. The script exchanges it, updates the matching login inside `server/token-store.json`, and preserves the other stored logins. Add `--label` and `--email` to refresh the display metadata when needed.
-
-## Acknowledgements
-
-- Company logos provided by [Logo.dev](https://logo.dev).
+- Company logos powered by [Logo.dev](https://logo.dev).
+- Screenshots captured via the internal [UI screenshot guide](docs/ui-screenshot-guide.md).
