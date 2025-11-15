@@ -577,6 +577,9 @@ export default function SummaryMetrics({
   childAccountParentTotal,
   onShowChildPnlBreakdown,
   onShowChildTotalPnl,
+  onShowRangePnlBreakdown,
+  totalPnlSelectionResetKey,
+  onTotalPnlSelectionCleared,
 }) {
   // Local timeframe for the Total P&L chart (Since inception by default)
   const TIMEFRAME_BUTTONS = useMemo(
@@ -1040,6 +1043,12 @@ export default function SummaryMetrics({
       }),
     []
   );
+  const clearSelectionAndNotify = useCallback(() => {
+    resetSelection();
+    if (typeof onTotalPnlSelectionCleared === 'function') {
+      onTotalPnlSelectionCleared();
+    }
+  }, [resetSelection, onTotalPnlSelectionCleared]);
   const getRelativePoint = useCallback(
     (clientX, clientY) => {
       if (!chartRef.current) {
@@ -1151,8 +1160,15 @@ export default function SummaryMetrics({
 
   // Clear selection when series changes
   useEffect(() => {
+    clearSelectionAndNotify();
+  }, [filteredTotalPnlSeries, clearSelectionAndNotify]);
+
+  useEffect(() => {
+    if (totalPnlSelectionResetKey === undefined || totalPnlSelectionResetKey === null) {
+      return;
+    }
     resetSelection();
-  }, [filteredTotalPnlSeries, resetSelection]);
+  }, [totalPnlSelectionResetKey, resetSelection]);
 
   const selectionRange = useMemo(() => {
     if (selectionState.active) {
@@ -1297,6 +1313,7 @@ export default function SummaryMetrics({
     setHoverX(null);
   }, []);
 
+  const selectionActive = selectionState.active;
   const handleMouseDown = useCallback((event) => {
     // Prevent selecting text (axis labels) while dragging
     event.preventDefault();
@@ -1307,9 +1324,84 @@ export default function SummaryMetrics({
     if (!point) {
       return;
     }
+    if (
+      selectionRange &&
+      !selectionActive &&
+      point.x >= selectionRange.startX &&
+      point.x <= selectionRange.endX &&
+      point.y >= PADDING.top &&
+      point.y <= CHART_HEIGHT - PADDING.bottom
+    ) {
+      setHoverX(point.x);
+      suppressClickRef.current = false;
+      return;
+    }
     setHoverX(point.x);
     setSelectionState({ anchorX: point.x, currentX: point.x, startX: null, endX: null, active: true });
-  }, [totalPnlChartHasSeries, getRelativePoint]);
+  }, [totalPnlChartHasSeries, getRelativePoint, selectionRange, selectionActive]);
+
+  const triggerRangeBreakdown = useCallback(() => {
+    if (
+      !selectionSummary ||
+      typeof onShowRangePnlBreakdown !== 'function' ||
+      !selectionSummary.startPoint?.date ||
+      !selectionSummary.endPoint?.date
+    ) {
+      return;
+    }
+    onShowRangePnlBreakdown({
+      startDate: selectionSummary.startPoint.date,
+      endDate: selectionSummary.endPoint.date,
+      startLabel: selectionStartDateLabel,
+      endLabel: selectionEndDateLabel,
+      startValueLabel: selectionStartValueLabel,
+      endValueLabel: selectionEndValueLabel,
+      changeLabel: formattedSelectionChange,
+      deltaValue: selectionSummary.deltaValue ?? null,
+    });
+  }, [
+    selectionSummary,
+    onShowRangePnlBreakdown,
+    selectionStartDateLabel,
+    selectionEndDateLabel,
+    selectionStartValueLabel,
+    selectionEndValueLabel,
+    formattedSelectionChange,
+  ]);
+
+  const handleChartClick = useCallback(
+    (event) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+      const hasRangeSelection =
+        selectionSummary && typeof onShowRangePnlBreakdown === 'function' && selectionSummary.startPoint?.date && selectionSummary.endPoint?.date;
+      if (hasRangeSelection) {
+        const point = getRelativePoint(event.clientX, event.clientY);
+        if (
+          point &&
+          point.x >= selectionSummary.startX &&
+          point.x <= selectionSummary.endX &&
+          point.y >= PADDING.top &&
+          point.y <= CHART_HEIGHT - PADDING.bottom
+        ) {
+          triggerRangeBreakdown();
+          return;
+        }
+        clearSelectionAndNotify();
+        return;
+      }
+      handleActivateTotalPnl();
+    },
+    [
+      selectionSummary,
+      getRelativePoint,
+      handleActivateTotalPnl,
+      triggerRangeBreakdown,
+      clearSelectionAndNotify,
+    ]
+  );
 
   // Always allow the Total P&L chart to render; caller controls series and status.
   const showTotalPnlChart = true;
@@ -1913,13 +2005,7 @@ export default function SummaryMetrics({
                   onMouseMove={handleMouseMove}
                   onMouseLeave={handleMouseLeave}
                   style={{ cursor: 'pointer' }}
-                  onClick={(e) => {
-                    if (suppressClickRef.current) {
-                      suppressClickRef.current = false;
-                      return;
-                    }
-                    handleActivateTotalPnl();
-                  }}
+                  onClick={handleChartClick}
                   tabIndex={0}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -2004,7 +2090,22 @@ export default function SummaryMetrics({
                   )}
                 </svg>
                 {selectionSummary && selectionLabelStyle && (
-                  <div className={selectionSummaryClassNames.join(' ')} style={selectionLabelStyle}>
+                  <div
+                    className={selectionSummaryClassNames.join(' ')}
+                    style={selectionLabelStyle}
+                    role="button"
+                    tabIndex={0}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      triggerRangeBreakdown();
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        triggerRangeBreakdown();
+                      }
+                    }}
+                  >
                     <div className="pnl-dialog__selection-header">
                       {formattedSelectionChange && (
                         <div className="pnl-dialog__selection-metrics">
@@ -2014,7 +2115,10 @@ export default function SummaryMetrics({
                       <button
                         type="button"
                         className="pnl-dialog__selection-clear"
-                        onClick={resetSelection}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          clearSelectionAndNotify();
+                        }}
                         aria-label="Clear selection"
                       >
                         x
@@ -2240,6 +2344,7 @@ SummaryMetrics.propTypes = {
   peopleDisabled: PropTypes.bool,
   onShowCashBreakdown: PropTypes.func,
   onShowPnlBreakdown: PropTypes.func,
+  onShowRangePnlBreakdown: PropTypes.func,
   onShowTotalPnl: PropTypes.func,
   onShowAnnualizedReturn: PropTypes.func,
   isRefreshing: PropTypes.bool,
@@ -2362,6 +2467,8 @@ SummaryMetrics.propTypes = {
   childAccountParentTotal: PropTypes.number,
   onShowChildPnlBreakdown: PropTypes.func,
   onShowChildTotalPnl: PropTypes.func,
+  totalPnlSelectionResetKey: PropTypes.number,
+  onTotalPnlSelectionCleared: PropTypes.func,
 };
 
 SummaryMetrics.defaultProps = {
@@ -2376,6 +2483,7 @@ SummaryMetrics.defaultProps = {
   peopleDisabled: false,
   onShowCashBreakdown: null,
   onShowPnlBreakdown: null,
+  onShowRangePnlBreakdown: null,
   onShowTotalPnl: null,
   onShowAnnualizedReturn: null,
   isRefreshing: false,
@@ -2409,4 +2517,6 @@ SummaryMetrics.defaultProps = {
   childAccountParentTotal: null,
   onShowChildPnlBreakdown: null,
   onShowChildTotalPnl: null,
+  totalPnlSelectionResetKey: 0,
+  onTotalPnlSelectionCleared: null,
 };

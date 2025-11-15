@@ -223,6 +223,8 @@ if (DEBUG_SUMMARY_CACHE) {
 const summaryCacheStore = new Map();
 let supersetSummaryCache = null;
 const totalPnlSeriesCacheStore = new Map();
+const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
+const rangeBreakdownCache = new Map();
 // Cache for Questrade candle lookups to avoid duplicate provider calls for identical ranges
 const questradeCandleCache = new Map();
 // Track the current client-driven refresh key to support manual cache invalidation
@@ -719,6 +721,48 @@ function setSummaryCacheEntry(cacheKey, payload, metadata = {}) {
 
 function clearSummaryCache() {
   summaryCacheStore.clear();
+}
+
+function pruneRangeBreakdownCache() {
+  const now = nowMs();
+  for (const [key, entry] of rangeBreakdownCache.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      rangeBreakdownCache.delete(key);
+    }
+  }
+}
+
+function buildRangeBreakdownCacheKey(scopeKey, startDate, endDate) {
+  const scope = typeof scopeKey === 'string' ? scopeKey.trim().toLowerCase() : '';
+  if (!scope) {
+    return null;
+  }
+  const normalizedStart = typeof startDate === 'string' ? startDate.trim() : '';
+  const normalizedEnd = typeof endDate === 'string' ? endDate.trim() : '';
+  if (!normalizedStart || !normalizedEnd) {
+    return null;
+  }
+  return [scope, normalizedStart, normalizedEnd].join('|');
+}
+
+function getRangeBreakdownCacheEntry(key) {
+  if (!key) {
+    return null;
+  }
+  pruneRangeBreakdownCache();
+  const entry = rangeBreakdownCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  return entry.payload;
+}
+
+function setRangeBreakdownCacheEntry(key, payload) {
+  if (!key) {
+    return;
+  }
+  const expiresAt = nowMs() + RANGE_BREAKDOWN_CACHE_TTL_MS;
+  rangeBreakdownCache.set(key, { payload, expiresAt });
 }
 
 function getSupersetCacheEntry() {
@@ -1729,6 +1773,133 @@ function resolveAccountIdsForSelection(superset, normalizedSelection) {
     return [byNumber];
   }
   return [];
+}
+
+function buildContextFromSupersetAccount(superset, accountId) {
+  if (!superset || !accountId) {
+    return null;
+  }
+  const normalizedId = String(accountId).trim();
+  if (!normalizedId) {
+    return null;
+  }
+  let accountRecord = null;
+  if (superset.accountsById instanceof Map && superset.accountsById.has(normalizedId)) {
+    accountRecord = superset.accountsById.get(normalizedId);
+  }
+  if (!accountRecord && Array.isArray(superset.accounts)) {
+    accountRecord = superset.accounts.find((entry) => entry && String(entry.id).trim() === normalizedId) || null;
+  }
+  if (!accountRecord && Array.isArray(superset.payload?.accounts)) {
+    accountRecord = superset.payload.accounts.find((entry) => entry && String(entry.id).trim() === normalizedId) || null;
+  }
+  if (!accountRecord) {
+    return null;
+  }
+  const login = getLoginById(accountRecord.loginId);
+  if (!login) {
+    return null;
+  }
+  const normalizedNumber =
+    accountRecord.number !== undefined && accountRecord.number !== null
+      ? String(accountRecord.number).trim()
+      : accountRecord.accountNumber !== undefined && accountRecord.accountNumber !== null
+        ? String(accountRecord.accountNumber).trim()
+        : normalizedId;
+  const normalizedAccount = Object.assign({}, accountRecord, {
+    id: normalizedId,
+    number: normalizedNumber || normalizedId,
+    accountNumber: normalizedNumber || normalizedId,
+    loginId: login.id,
+  });
+  const accountWithOverrides = applyAccountSettingsOverrides
+    ? applyAccountSettingsOverrides(normalizedAccount, login)
+    : normalizedAccount;
+  const effectiveAccount = Object.assign({}, accountWithOverrides, {
+    id: normalizedId,
+    number: accountWithOverrides.number || normalizedAccount.number,
+    accountNumber: accountWithOverrides.accountNumber || normalizedAccount.accountNumber,
+  });
+  return { login, account: effectiveAccount };
+}
+
+function aggregateSymbolBreakdowns(results) {
+  if (!Array.isArray(results) || results.length === 0) {
+    return { entries: [] };
+  }
+  const aggregateEntriesMap = new Map();
+  const aggregateEntriesNoFxMap = new Map();
+  let fxEffectCad = 0;
+  let asOf = null;
+  const addNumber = (value) => (Number.isFinite(value) ? value : 0);
+  const mergeEntry = (targetMap, entry) => {
+    const key = entry && typeof entry.symbol === 'string' ? entry.symbol.trim().toUpperCase() : null;
+    if (!key) {
+      return;
+    }
+    const existing =
+      targetMap.get(key) || {
+        symbol: entry.symbol,
+        symbolId: entry.symbolId || null,
+        totalPnlCad: 0,
+        investedCad: 0,
+        openQuantity: 0,
+        marketValueCad: 0,
+        currency: entry.currency || null,
+      };
+    existing.totalPnlCad += addNumber(entry.totalPnlCad);
+    existing.investedCad += addNumber(entry.investedCad);
+    existing.openQuantity += addNumber(entry.openQuantity);
+    existing.marketValueCad += addNumber(entry.marketValueCad);
+    if (!existing.symbolId && Number.isFinite(entry.symbolId)) {
+      existing.symbolId = entry.symbolId;
+    }
+    if (!existing.currency && entry.currency) {
+      existing.currency = entry.currency;
+    }
+    targetMap.set(key, existing);
+  };
+
+  results.forEach((result) => {
+    if (!result || typeof result !== 'object') {
+      return;
+    }
+    if (typeof result.endDate === 'string' && result.endDate) {
+      if (!asOf || result.endDate > asOf) {
+        asOf = result.endDate;
+      }
+    }
+    if (Number.isFinite(result.fxEffectCad)) {
+      fxEffectCad += result.fxEffectCad;
+    }
+    if (Array.isArray(result.entries)) {
+      result.entries.forEach((entry) => mergeEntry(aggregateEntriesMap, entry));
+    }
+    if (Array.isArray(result.entriesNoFx)) {
+      result.entriesNoFx.forEach((entry) => mergeEntry(aggregateEntriesNoFxMap, entry));
+    }
+  });
+
+  const aggregateEntries = Array.from(aggregateEntriesMap.values())
+    .filter((entry) => Number.isFinite(entry.totalPnlCad) || Number.isFinite(entry.marketValueCad))
+    .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+  const aggregateEntriesNoFx = Array.from(aggregateEntriesNoFxMap.values()).sort(
+    (a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0)
+  );
+
+  const payload = {
+    entries: aggregateEntries,
+  };
+  if (aggregateEntriesNoFx.length) {
+    payload.entriesNoFx = aggregateEntriesNoFx;
+  }
+  if (Number.isFinite(fxEffectCad)) {
+    payload.fxEffectCad = fxEffectCad;
+  }
+  if (asOf) {
+    payload.asOf = asOf;
+  }
+  return payload;
 }
 
 function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) {
@@ -11381,7 +11552,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     (activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
       ? activityContext.now
       : new Date());
-  const dateKeys = enumerateDateKeys(startDate, endDate);
+  let dateKeys = enumerateDateKeys(startDate, endDate);
   if (!dateKeys.length) {
     return { entries: [] };
   }
@@ -11397,6 +11568,31 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       : (applyCagrStart && typeof account?.cagrStartDate === 'string' && account.cagrStartDate.trim()
           ? account.cagrStartDate.trim()
           : null);
+  const rawDisplayEnd =
+    typeof options.displayEndKey === 'string' && options.displayEndKey.trim()
+      ? options.displayEndKey.trim()
+      : null;
+  if (rawDisplayStart && rawDisplayEnd && rawDisplayStart > rawDisplayEnd) {
+    return { entries: [] };
+  }
+  const effectiveEndKey = rawDisplayEnd
+    ? (function () {
+        for (let i = dateKeys.length - 1; i >= 0; i -= 1) {
+          const key = dateKeys[i];
+          if (key <= rawDisplayEnd) {
+            return key;
+          }
+        }
+        return null;
+      })()
+    : dateKeys[dateKeys.length - 1];
+  if (!effectiveEndKey) {
+    return { entries: [] };
+  }
+  dateKeys = dateKeys.filter((key) => key <= effectiveEndKey);
+  if (!dateKeys.length) {
+    return { entries: [] };
+  }
   const effectiveStartKey = rawDisplayStart
     ? (function () {
         for (const k of dateKeys) {
@@ -11469,6 +11665,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       continue;
     }
     const { activity, symbol, dateKey } = entry;
+    if (dateKey > effectiveEndKey) {
+      continue;
+    }
     const rawQty = Number(activity.quantity);
     // Only order-like activities affect holdings; split into baseline (before start)
     // and current (on/after start) so we can derive starting MV correctly.
@@ -11489,6 +11688,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       !isOrderLikeActivity(activity) &&
       symbol &&
       dateKey >= effectiveStartKey &&
+      dateKey <= effectiveEndKey &&
       Number.isFinite(rawQty) &&
       Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
     ) {
@@ -11498,7 +11698,15 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
 
     // Track total quantity deltas regardless of classification
     if (symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
-      const bucket = dateKey >= effectiveStartKey ? qtyDeltaSinceStart : qtyDeltaBeforeStart;
+      const bucket =
+        dateKey < effectiveStartKey
+          ? qtyDeltaBeforeStart
+          : dateKey <= effectiveEndKey
+            ? qtyDeltaSinceStart
+            : null;
+      if (!bucket) {
+        continue;
+      }
       const cur = bucket.has(symbol) ? bucket.get(symbol) : 0;
       bucket.set(symbol, cur + rawQty);
     }
@@ -11521,6 +11729,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       !isOrderLikeActivity(activity) &&
       symbol &&
       dateKey >= effectiveStartKey &&
+      dateKey <= effectiveEndKey &&
       Number.isFinite(rawQty) &&
       Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
     ) {
@@ -11541,6 +11750,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       currency &&
       (isTradeCash || isDividendCash) &&
       dateKey >= effectiveStartKey &&
+      dateKey <= effectiveEndKey &&
       Number.isFinite(netAmount) &&
       Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
     ) {
@@ -11618,7 +11828,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         continue;
       }
       const { activity, symbol, dateKey } = entry;
-      if (!symbol || !dateKey || dateKey < effectiveStartKey) {
+      if (!symbol || !dateKey || dateKey < effectiveStartKey || dateKey > effectiveEndKey) {
         continue;
       }
       const qty = Number(activity.quantity);
@@ -15828,7 +16038,156 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     console.error('Failed to compute total P&L series for account ' + rawAccountKey + ':', error.message || error);
     return res.status(500).json({ message: 'Failed to compute total P&L series', details: error.message || String(error) });
   }
-});app.get('/health', function (req, res) {
+});
+
+app.get('/api/pnl-breakdown/range', async function (req, res) {
+  const scopeParam = typeof req.query.scope === 'string' && req.query.scope.trim() ? req.query.scope.trim() : 'all';
+  const startKey = normalizeDateOnly(req.query.startDate);
+  const endKey = normalizeDateOnly(req.query.endDate);
+  if (!startKey || !endKey) {
+    return res.status(400).json({ message: 'startDate and endDate are required (YYYY-MM-DD).' });
+  }
+  if (startKey > endKey) {
+    return res.status(400).json({ message: 'startDate must be before endDate.' });
+  }
+
+  const cacheKey = buildRangeBreakdownCacheKey(scopeParam, startKey, endKey);
+  if (cacheKey) {
+    const cached = getRangeBreakdownCacheEntry(cacheKey);
+    if (cached) {
+      return res.json(Object.assign({}, cached, { cached: true }));
+    }
+  }
+
+  const superset = getSupersetCacheEntry();
+  if (!superset) {
+    return res.status(409).json({ message: 'Summary data unavailable. Refresh and try again.' });
+  }
+
+  const normalizedSelection = normalizeSummaryRequestKey(scopeParam);
+  const accountIds = resolveAccountIdsForSelection(superset, normalizedSelection);
+  if (!accountIds.length) {
+    return res.status(404).json({ message: 'Requested scope is unavailable.' });
+  }
+  const contexts = accountIds
+    .map((accountId) => buildContextFromSupersetAccount(superset, accountId))
+    .filter(Boolean);
+  if (!contexts.length) {
+    return res.status(404).json({ message: 'Accounts unavailable for requested scope.' });
+  }
+
+  const activityContextStore =
+    (superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
+      ? superset.activityContextsByAccountId
+      : (superset.activityContextsByAccountId = {}));
+
+  const perAccountResults = [];
+  let failureCount = 0;
+  await mapWithConcurrency(
+    contexts,
+    Math.min(4, contexts.length),
+    async function (context) {
+      if (!context || !context.account || !context.account.id) {
+        failureCount += 1;
+        return;
+      }
+      const accountId = context.account.id;
+      let activityContext = activityContextStore[accountId];
+      if (!activityContext) {
+        try {
+          activityContext = await buildAccountActivityContext(context.login, context.account);
+          if (activityContext) {
+            activityContextStore[accountId] = activityContext;
+          }
+        } catch (activityError) {
+          const message = activityError && activityError.message ? activityError.message : String(activityError);
+          console.warn('Failed to prepare activity history for range breakdown account ' + accountId + ':', message);
+          failureCount += 1;
+          return;
+        }
+      }
+      if (!activityContext) {
+        failureCount += 1;
+        return;
+      }
+      try {
+        const breakdown = await computeTotalPnlBySymbol(context.login, context.account, {
+          applyAccountCagrStartDate: false,
+          displayStartKey: startKey,
+          displayEndKey: endKey,
+          activityContext,
+        });
+        if (breakdown) {
+          perAccountResults.push({ accountId, breakdown });
+        }
+      } catch (breakdownError) {
+        const message = breakdownError && breakdownError.message ? breakdownError.message : String(breakdownError);
+        console.warn('Failed to compute range Total P&L for account ' + accountId + ':', message);
+        failureCount += 1;
+      }
+    }
+  );
+
+  if (!perAccountResults.length) {
+    const statusCode = failureCount ? 503 : 404;
+    return res
+      .status(statusCode)
+      .json({ message: failureCount ? 'Unable to compute range breakdown.' : 'No Total P&L data available for range.' });
+  }
+
+  const perAccountPayload = {};
+  perAccountResults.forEach(({ accountId, breakdown }) => {
+    if (!accountId || !breakdown) {
+      return;
+    }
+    perAccountPayload[accountId] = {
+      entries: Array.isArray(breakdown.entries) ? breakdown.entries : [],
+      entriesNoFx: Array.isArray(breakdown.entriesNoFx) ? breakdown.entriesNoFx : undefined,
+      fxEffectCad: Number.isFinite(breakdown.fxEffectCad) ? breakdown.fxEffectCad : undefined,
+      asOf: breakdown.endDate || endKey,
+    };
+  });
+
+  const isAggregate = normalizedSelection.type !== 'account' && normalizedSelection.type !== 'default';
+  let payload;
+  if (isAggregate) {
+    const aggregate = aggregateSymbolBreakdowns(perAccountResults.map((entry) => entry.breakdown));
+    payload = {
+      scope: scopeParam,
+      startDate: startKey,
+      endDate: endKey,
+      accountCount: contexts.length,
+      partial: failureCount > 0,
+      entries: aggregate.entries || [],
+      entriesNoFx: Array.isArray(aggregate.entriesNoFx) ? aggregate.entriesNoFx : undefined,
+      fxEffectCad: Number.isFinite(aggregate.fxEffectCad) ? aggregate.fxEffectCad : undefined,
+      asOf: aggregate.asOf || endKey,
+      perAccount: perAccountPayload,
+    };
+  } else {
+    const single = perAccountResults[0].breakdown || {};
+    payload = {
+      scope: scopeParam,
+      startDate: startKey,
+      endDate: endKey,
+      accountCount: 1,
+      partial: failureCount > 0,
+      entries: Array.isArray(single.entries) ? single.entries : [],
+      entriesNoFx: Array.isArray(single.entriesNoFx) ? single.entriesNoFx : undefined,
+      fxEffectCad: Number.isFinite(single.fxEffectCad) ? single.fxEffectCad : undefined,
+      asOf: single.endDate || endKey,
+      perAccount: perAccountPayload,
+    };
+  }
+
+  if (cacheKey) {
+    setRangeBreakdownCacheEntry(cacheKey, payload);
+  }
+
+  res.json(payload);
+});
+
+app.get('/health', function (req, res) {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 

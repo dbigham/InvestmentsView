@@ -150,6 +150,21 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   return url.toString();
 }
 
+function buildRangePnlBreakdownUrl(params = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/pnl-breakdown/range', base);
+  if (params && typeof params.scope === 'string' && params.scope.trim()) {
+    url.searchParams.set('scope', params.scope.trim());
+  }
+  if (params && typeof params.startDate === 'string' && params.startDate.trim()) {
+    url.searchParams.set('startDate', params.startDate.trim());
+  }
+  if (params && typeof params.endDate === 'string' && params.endDate.trim()) {
+    url.searchParams.set('endDate', params.endDate.trim());
+  }
+  return url.toString();
+}
+
 function buildPortfolioNewsUrl() {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/news', base);
@@ -200,6 +215,40 @@ export async function getInvestmentModelTemperature(params) {
     throw new Error(message);
   }
 
+  return response.json();
+}
+
+export async function getRangeTotalPnlBreakdown(params) {
+  if (!params || typeof params.startDate !== 'string' || typeof params.endDate !== 'string') {
+    throw new Error('startDate and endDate are required');
+  }
+  const trimmedScope =
+    params.scope === undefined || params.scope === null ? 'all' : String(params.scope).trim() || 'all';
+  const response = await fetch(
+    buildRangePnlBreakdownUrl({
+      scope: trimmedScope,
+      startDate: params.startDate,
+      endDate: params.endDate,
+    })
+  );
+  if (!response.ok) {
+    let message = 'Failed to load Total P&L breakdown for range';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse range breakdown error response', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read range breakdown error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
   return response.json();
 }
 

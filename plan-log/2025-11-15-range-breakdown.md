@@ -1,5 +1,69 @@
 # Questrade UI Plan
 
+## Total P&L Range Breakdown from Chart Selection
+
+### Goals
+- Let users click an already-selected Total P&L chart range (the green rectangle in `client/src/components/SummaryMetrics.jsx`) to open the heatmap dialog scoped to that exact time window.
+- Keep the current click-to-open behavior when no selection is present, and avoid spurious launches while the user is still dragging.
+- Reuse activity contexts and cached data so a range-specific breakdown returns quickly even if the user tries multiple date spans in succession.
+
+### UX / Interaction Updates
+- Treat the translucent selection rectangle as a hit target. When `selectionSummary` is populated and the user clicks inside its bounds, call a new handler that opens the breakdown for that range instead of the full-series Total P&L.
+- Keep the existing click handler for the chart background/path so a simple click without a selection still launches the Total P&L dialog / full-range breakdown.
+- When a range click launches the dialog, include the formatted start/end dates and delta in the dialog header (e.g., “Total P&L breakdown — Jan 10 – Feb 3” and show the P&L delta for context). Provide a small inline pill/badge in the dialog to remind the user that the data is filtered to a subrange and offer a “Clear range” action that closes the dialog and clears the selection (or reopens with the full range).
+
+### Client-Side Data Flow
+1. **SummaryMetrics.jsx**
+   - Augment the chart `<svg>` click handler to detect whether the pointer event is inside `selectionRange`. Use `getRelativePoint` to compare against `selectionRange.startX/endX` and the chart’s vertical bounds.
+   - If inside, call `onShowPnlBreakdown` with mode `'total'` plus a new `range` option object: `{ startDate: ISO, endDate: ISO, startLabel, endLabel, deltaValue }`. Compute ISO keys via `formatDateOnly(selectionSummary.startPoint.date)` and `...endPoint.date`.
+   - Continue to call the existing handler without a `range` option when there is no selection, and ensure drag completions still suppress accidental clicks via `suppressClickRef`.
+2. **App.jsx state management**
+   - Extend `handleShowPnlBreakdown` (currently around line 10336) to accept a `range` option. Store it in a new piece of state such as `pnlBreakdownRange` (object with `{ kind: 'total', startDate, endDate, label, deltaValue }` or `null`). Clear this state when the dialog closes or when the mode is not `'total'`.
+   - Pass `pnlBreakdownRange` (or derived props) down to `<PnlHeatmapDialog>` along with the current account scope (single account id, `all`, or `group:<slug>`). Also pass callbacks so the dialog can request the range to be cleared.
+   - Track a new resource state for range-specific totals, e.g., `{ status: 'idle' | 'loading' | 'ready' | 'error', key, data }`. The key should include the account scope + range dates to avoid re-fetching if the same span is reopened.
+3. **Range breakdown API consumption**
+   - When `pnlBreakdownRange` is set and mode is `'total'`, fire a data fetch instead of relying on `data?.accountTotalPnlBySymbol`. Call a new endpoint (see server plan) with query params `accountScope`, `startDate`, `endDate`, and `includeClosed=true`. Include the selected accounts list for aggregates so the server does not need to refetch metadata.
+   - Keep using the cached `accountTotalPnlBySymbol` / `accountTotalPnlBySymbolAll` data path when there is no range override; the dialog should toggle between “precomputed full-range data” vs “ad-hoc range data” depending on whether `pnlBreakdownRange` exists.
+   - Cache positive responses client-side in a simple `Map<string, RangeResult>` keyed by `${scope}|${mode}|${start}|${end}` to make repeated opens instant until the summary data refreshes.
+4. **PnlHeatmapDialog.jsx**
+   - Accept new props: `rangeSummary` (labels/delta), `rangeBreakdownState` (data + status), and handlers for clearing the range or reloading.
+   - When `rangeBreakdownState.status === 'ready'`, bypass the existing `totalPnlBySymbol` prop and render the fetched entries instead (since the response will already match the `accountTotalPnlBySymbol` shape). Show a spinner overlay or inline skeleton while the range data is loading, and surface errors with retry controls.
+   - Update the subtitle/toolbar area (lines ~1503–1585) to show the date span label whenever `rangeSummary` is present, and optionally disable the Total/Open/Day toggle buttons until the range is cleared (range applies only to Total mode).
+
+### Server-Side Changes
+1. **Extend `computeTotalPnlBySymbol`**
+   - Add an optional `displayEndKey` (ISO `YYYY-MM-DD`) argument to `options`. When provided, clamp the generated `dateKeys` array so it stops at `displayEndKey` (or earlier if the requested end precedes `activityContext.now`). Ensure all derivative loops respect this clamp: holdings snapshots, USD rate lookups, price series requests, and final `points` aggregation.
+   - Ensure `effectiveStartKey` still honors account `cagrStartDate` or the explicit `displayStartKey`, and validate that `displayStartKey <= displayEndKey`. For invalid ranges, return `{ entries: [] }` quickly.
+   - Update existing callers in `server/src/index.js` and tests to pass the new option explicitly (default to `activityContext.now` when omitted) to keep behavior unchanged.
+2. **New aggregation helper**
+   - Implement a helper such as `computeRangeTotalPnlBySymbolForScope(scope, accounts, startKey, endKey, options)` that loops through each account in the scope, invokes `computeTotalPnlBySymbol` with `{ displayStartKey: startKey, displayEndKey: endKey, activityContext }`, and merges the resulting `entries`/`entriesNoFx`/`fxEffectCad`.
+   - Reuse the superset cache (`getSupersetCacheEntry().activityContextsByAccountId`) so we can pull an activity context without making another provider request. If a context is missing, fetch/ensure it via `ensureAccountActivityContext`, but never trigger a wholesale “fetch all accounts” cycle—fallback to reporting a 503 if contexts are unavailable.
+3. **API endpoint**
+   - Add `GET /api/pnl-breakdown/range` (or similar) that accepts `scope=account:<id>|group:<slug>|all`, `startDate`, `endDate`, and optionally `currency` or `applyCagrStartDate`. Validate the range (start ≤ end, span within loaded series) and reject spans longer than the currently materialized history if needed.
+   - The endpoint should return `{ scope, startDate, endDate, entries, entriesNoFx, fxEffectCad, asOf }`, matching the existing `accountTotalPnlBySymbol` payload so the client can drop it into the heatmap directly.
+   - Add lightweight caching keyed by `scope|start|end` for a short TTL to make repeated clicks instant. Cache entries should store the merged breakdown plus the `asOf` date (end key).
+4. **Performance considerations**
+   - Because the endpoint reuses cached activity contexts and already-fetched price history (in-memory caches), the remaining work is pure JS processing. Guard against concurrent range requests by limiting per-scope work with promise memoization.
+   - Ensure price history requests do **not** fire again if the requested end date is within the previously cached window. Use the existing `getPriceHistoryCacheKey` path to reuse downloads.
+
+### Implementation Steps
+1. [x] Update `computeTotalPnlBySymbol` (and tests under `server/test/totalPnlBySymbol.test.js`) to honor `displayEndKey`, and add guardrails for invalid ranges.
+2. [x] Create a server helper + cache for range breakdowns and expose it through `/api/pnl-breakdown/range`.
+3. [x] Wire the API into `App.jsx`: track `pnlBreakdownRange` state, fetch range data, and plumb it into `PnlHeatmapDialog`.
+4. [x] Adjust `PnlHeatmapDialog.jsx` to display range metadata, show loading/error states, and route between precomputed totals vs range totals.
+5. [x] Enhance `SummaryMetrics.jsx` to detect clicks within the selection rectangle, build the range descriptor, and invoke `onShowPnlBreakdown` with the new option. Add a “clear selection” action that resets the chart selection after the dialog closes.
+6. [x] Update CSS/ARIA strings as needed so the new badge/labels remain accessible.
+
+### Testing
+- Unit:
+  - [x] `npm test -- test/totalPnlBySymbol.test.js`
+  - [ ] Add a new test file for the range endpoint that feeds synthetic activity contexts and asserts the merged output.
+- Client: [ ] Add a `PnlHeatmapDialog` Jest/RTL test covering range loading & error UI.
+- Manual: 
+  1. Load the UI, select several ranges on the Total P&L chart, and verify the dialog opens with matching start/end labels and delta values.
+  2. Repeat in `All accounts` mode, confirm the range dialog returns quickly (<500 ms) and FX breakdowns still sum to the chart delta.
+  3. Toggle between range and non-range modes to ensure the dialog resets properly and the chart selection clears when requested.
+
 ## Total P&L Daily Series Plan
 
 Goal: Compute a per-day Total P&L series for a selected account that:

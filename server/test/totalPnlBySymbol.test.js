@@ -149,3 +149,54 @@ test('PSA trade with "INTEREST" in description is treated as trade (not income)'
   // MV (36*50=1800) - buy 1803.6 + dividends (7.45) = ~4. - rounding
   assert.ok(Math.abs(psa.totalPnlCad - 3.85) < 0.75, 'PSA ~small positive P&L');
 });
+
+test('displayEndKey clamps series end', async () => {
+  const account = { id: 'test:5', number: 'test:5' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const clampEnd = '2025-10-15';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'SHOP.TO', quantity: 10, netAmount: -1000, currency: 'CAD', tradeDate: start },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['SHOP.TO', new Map([[d(start), 100], [d(clampEnd), 150], [d(end), 200]])],
+  ]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: false,
+    displayStartKey: d(start),
+    displayEndKey: d(clampEnd),
+    priceSeriesBySymbol: priceSeries,
+  });
+  assert.equal(result.endDate, d(clampEnd), 'end date respects clamp');
+  const shop = result.entries.find((e) => e.symbol === 'SHOP.TO');
+  assert.ok(shop, 'SHOP entry present');
+  assert.ok(Math.abs(shop.totalPnlCad - 500) < 1e-6, 'P&L reflects price at clamp date');
+});
+
+test('symbols closed before range are excluded', async () => {
+  const account = { id: 'test:6', number: 'test:6' };
+  const login = { id: 'login' };
+  const buyDate = '2025-01-05';
+  const sellDate = '2025-01-15';
+  const start = '2025-02-01';
+  const end = '2025-02-28';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'MSFT', quantity: 10, netAmount: -1000, currency: 'USD', tradeDate: buyDate },
+    { type: 'Trades', action: 'Sell', symbol: 'MSFT', quantity: -10, netAmount: 1100, currency: 'USD', tradeDate: sellDate },
+  ];
+  const ctx = makeContext(account.id, buyDate, end, activities);
+  const priceSeries = new Map([
+    ['MSFT', new Map([[d(buyDate), 100], [d(sellDate), 110], [d(start), 120], [d(end), 130]])],
+  ]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: false,
+    displayStartKey: d(start),
+    displayEndKey: d(end),
+    priceSeriesBySymbol: priceSeries,
+  });
+  assert.equal(result.entries.length, 0, 'No entries when symbol closed before range');
+});

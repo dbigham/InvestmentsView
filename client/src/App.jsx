@@ -18,6 +18,7 @@ import {
   setAccountSymbolNotes,
   setAccountPlanningContext,
   setAccountMetadata,
+  getRangeTotalPnlBreakdown,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -5204,6 +5205,16 @@ export default function App() {
   // Capture the Total P&L dialog's range choice when launching the breakdown
   // so it applies even after the dialog closes.
   const [pnlBreakdownUseAllOverride, setPnlBreakdownUseAllOverride] = useState(null);
+  const [pnlBreakdownRange, setPnlBreakdownRange] = useState(null);
+  const [rangeBreakdownState, setRangeBreakdownState] = useState({
+    status: 'idle',
+    key: null,
+    data: null,
+    error: null,
+  });
+  const rangeBreakdownCacheRef = useRef(new Map());
+  const [rangeBreakdownRequestId, setRangeBreakdownRequestId] = useState(0);
+  const [totalPnlSelectionResetKey, setTotalPnlSelectionResetKey] = useState(0);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [showProjectionDialog, setShowProjectionDialog] = useState(false);
   const [projectionContext, setProjectionContext] = useState({
@@ -9456,6 +9467,22 @@ export default function App() {
     return heatmapAccountOptions[0].value;
   }, [heatmapAccountOptions, selectedAccount]);
 
+  const breakdownScopeKey = useMemo(() => {
+    if (isAggregateSelection) {
+      if (typeof selectedAccount === 'string' && selectedAccount.trim()) {
+        return selectedAccount.trim();
+      }
+      return 'all';
+    }
+    if (selectedAccountInfo?.id) {
+      return String(selectedAccountInfo.id);
+    }
+    if (selectedAccount && accountsById.has(selectedAccount)) {
+      return String(selectedAccount);
+    }
+    return 'all';
+  }, [isAggregateSelection, selectedAccount, selectedAccountInfo, accountsById]);
+
   const peopleTotals = peopleSummary.totals;
   const peopleMissingAccounts = peopleSummary.missingAccounts;
   const investmentModelsForView = useMemo(() => {
@@ -10333,6 +10360,29 @@ export default function App() {
       if (!preserveOverride) {
         setPnlBreakdownUseAllOverride(null);
       }
+       const rangeOption =
+        options && options.range && typeof options.range === 'object' ? options.range : null;
+      if (
+        mode === 'total' &&
+        rangeOption &&
+        typeof rangeOption.startDate === 'string' &&
+        typeof rangeOption.endDate === 'string'
+      ) {
+        setPnlBreakdownRange({
+          startDate: rangeOption.startDate,
+          endDate: rangeOption.endDate,
+          startLabel: rangeOption.startLabel || null,
+          endLabel: rangeOption.endLabel || null,
+          startValueLabel: rangeOption.startValueLabel || null,
+          endValueLabel: rangeOption.endValueLabel || null,
+          changeLabel: rangeOption.changeLabel || null,
+          deltaValue: Number.isFinite(rangeOption.deltaValue) ? rangeOption.deltaValue : null,
+        });
+      } else if (mode === 'total') {
+        setPnlBreakdownRange(null);
+      } else {
+        setPnlBreakdownRange(null);
+      }
       const normalizedAccountKey =
         accountKey === undefined || accountKey === null ? null : String(accountKey).trim();
       if (normalizedAccountKey) {
@@ -10354,6 +10404,33 @@ export default function App() {
     },
     [handleShowPnlBreakdown]
   );
+
+  const handleShowRangePnlBreakdown = useCallback(
+    (rangeInfo) => {
+      if (!rangeInfo || typeof rangeInfo.startDate !== 'string' || typeof rangeInfo.endDate !== 'string') {
+        return;
+      }
+      handleShowPnlBreakdown('total', null, { range: rangeInfo });
+    },
+    [handleShowPnlBreakdown]
+  );
+
+  const handleClearPnlBreakdownRange = useCallback(() => {
+    setPnlBreakdownRange(null);
+    setRangeBreakdownState({ status: 'idle', key: null, data: null, error: null });
+    setTotalPnlSelectionResetKey((value) => value + 1);
+  }, []);
+
+  const handleRetryRangeBreakdown = useCallback(() => {
+    if (rangeBreakdownState?.key) {
+      rangeBreakdownCacheRef.current.delete(rangeBreakdownState.key);
+    }
+    setRangeBreakdownRequestId((value) => value + 1);
+  }, [rangeBreakdownState?.key]);
+
+  const handleTotalPnlSelectionCleared = useCallback(() => {
+    setPnlBreakdownRange(null);
+  }, []);
 
   const handleShowChildTotalPnl = useCallback(
     (accountKey, child) => {
@@ -10402,6 +10479,54 @@ export default function App() {
     handleShowPnlBreakdown,
     totalPnlSeriesState.mode,
   ]);
+
+  useEffect(() => {
+    if (pnlBreakdownMode !== 'total' || !pnlBreakdownRange) {
+      setRangeBreakdownState({ status: 'idle', key: null, data: null, error: null });
+      return;
+    }
+    if (!breakdownScopeKey) {
+      setRangeBreakdownState({
+        status: 'error',
+        key: null,
+        data: null,
+        error: new Error('Unable to determine account scope for range breakdown.'),
+      });
+      return;
+    }
+    const normalizedScope = breakdownScopeKey;
+    const fetchKey = `${normalizedScope}|${pnlBreakdownRange.startDate}|${pnlBreakdownRange.endDate}`;
+    const cached = rangeBreakdownCacheRef.current.get(fetchKey);
+    if (cached) {
+      setRangeBreakdownState({ status: 'ready', key: fetchKey, data: cached, error: null });
+      return;
+    }
+    let cancelled = false;
+    setRangeBreakdownState({ status: 'loading', key: fetchKey, data: null, error: null });
+    getRangeTotalPnlBreakdown({
+      scope: normalizedScope,
+      startDate: pnlBreakdownRange.startDate,
+      endDate: pnlBreakdownRange.endDate,
+    })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        rangeBreakdownCacheRef.current.set(fetchKey, payload);
+        setRangeBreakdownState({ status: 'ready', key: fetchKey, data: payload, error: null });
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        const normalizedError =
+          error instanceof Error ? error : new Error('Failed to load Total P&L breakdown for range');
+        setRangeBreakdownState({ status: 'error', key: fetchKey, data: null, error: normalizedError });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pnlBreakdownMode, pnlBreakdownRange, breakdownScopeKey, rangeBreakdownRequestId]);
 
   const todoAccountIds = useMemo(() => {
     if (!showContent) {
@@ -11959,6 +12084,7 @@ export default function App() {
     setPnlBreakdownMode(null);
     setPnlBreakdownInitialAccount(null);
     setPnlBreakdownUseAllOverride(null);
+    setRangeBreakdownState({ status: 'idle', key: null, data: null, error: null });
   };
 
   const handleShowAnnualizedReturnDetails = useCallback(() => {
@@ -12785,6 +12911,9 @@ export default function App() {
             onSelectAccount={handleAccountChange}
             onShowChildPnlBreakdown={handleShowChildPnlBreakdown}
             onShowChildTotalPnl={handleShowChildTotalPnl}
+            onShowRangePnlBreakdown={handleShowRangePnlBreakdown}
+            totalPnlSelectionResetKey={totalPnlSelectionResetKey}
+            onTotalPnlSelectionCleared={handleTotalPnlSelectionCleared}
           />
         )}
 
@@ -13380,6 +13509,10 @@ export default function App() {
           totalMarketValue={heatmapMarketValue}
           accountOptions={heatmapAccountOptions}
           initialAccount={pnlBreakdownInitialAccount ?? heatmapDefaultAccount}
+          rangeSummary={pnlBreakdownRange}
+          rangeBreakdownState={rangeBreakdownState}
+          onClearRange={pnlBreakdownRange ? handleClearPnlBreakdownRange : null}
+          onRetryRange={handleRetryRangeBreakdown}
           totalPnlBySymbol={(function resolveTotalPnlBySymbol() {
             const useAll = (function decideVariant() {
               if (isAggregateSelection && selectedAccount === 'all') {

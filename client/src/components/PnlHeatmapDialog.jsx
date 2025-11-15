@@ -677,12 +677,38 @@ export default function PnlHeatmapDialog({
   onShowNotes,
   onFocusSymbol,
   accountsById,
+  rangeSummary,
+  rangeBreakdownState,
+  onClearRange,
+  onRetryRange,
 }) {
   const initialMetric = mode === 'total' ? 'total' : mode === 'open' ? 'open' : 'day';
+  const rangeActive = Boolean(rangeSummary && mode === 'total');
+  const rangeStatus = rangeActive ? rangeBreakdownState?.status || 'idle' : 'idle';
+  const rangeData = rangeActive && rangeStatus === 'ready' ? rangeBreakdownState?.data || null : null;
+  const effectiveTotalPnlSource = rangeActive
+    ? rangeData
+      ? {
+          entries: Array.isArray(rangeData.entries) ? rangeData.entries : [],
+          entriesNoFx: Array.isArray(rangeData.entriesNoFx) ? rangeData.entriesNoFx : undefined,
+          fxEffectCad: Number.isFinite(rangeData.fxEffectCad) ? rangeData.fxEffectCad : undefined,
+        }
+      : { entries: [] }
+    : totalPnlBySymbol;
+  const effectiveTotalPnlAsOf = rangeData?.asOf || totalPnlAsOf;
+  const rangeLoading = rangeActive && rangeStatus === 'loading';
+  const rangeError = rangeActive && rangeStatus === 'error' ? rangeBreakdownState?.error || null : null;
+  const rangeErrorMessage = rangeError?.message || 'Failed to load range breakdown.';
+
   const [metricMode, setMetricMode] = useState(initialMetric);
   useEffect(() => {
     setMetricMode(initialMetric);
   }, [initialMetric]);
+  useEffect(() => {
+    if (rangeActive && metricMode !== 'total') {
+      setMetricMode('total');
+    }
+  }, [rangeActive, metricMode]);
 
   const metricKey = metricMode === 'open' ? 'openPnl' : metricMode === 'total' ? 'totalPnl' : 'dayPnl';
   const metricLabel =
@@ -919,7 +945,10 @@ export default function PnlHeatmapDialog({
     },
     []
   );
-  const totalList = useMemo(() => normalizeTotalList(totalPnlBySymbol, fxBreakout), [totalPnlBySymbol, fxBreakout, normalizeTotalList]);
+  const totalList = useMemo(
+    () => normalizeTotalList(effectiveTotalPnlSource, fxBreakout),
+    [effectiveTotalPnlSource, fxBreakout, normalizeTotalList]
+  );
   const tileGapPx = 1;
   const halfTileGapPx = tileGapPx / 2;
   const epsilon = 0.0001;
@@ -1024,7 +1053,7 @@ export default function PnlHeatmapDialog({
     return totalMarketValue;
   }, [activeAccountOption, totalMarketValue]);
 
-  const hasAccountSelector = normalizedAccountOptions.length > 1;
+  const hasAccountSelector = !rangeActive && normalizedAccountOptions.length > 1;
 
   const positionsForNodes = useMemo(() => {
     if (metricKey !== 'totalPnl') {
@@ -1382,7 +1411,7 @@ export default function PnlHeatmapDialog({
     ? activeMarketValue
     : totals.marketValue;
 
-  const asOfEffective = metricKey === 'totalPnl' && totalPnlAsOf ? totalPnlAsOf : asOf;
+  const asOfEffective = metricKey === 'totalPnl' && effectiveTotalPnlAsOf ? effectiveTotalPnlAsOf : asOf;
   const asOfDisplay = asOfEffective ? `As of ${formatDateTime(asOfEffective)}` : null;
   const normalizedCurrency = typeof baseCurrency === 'string' && baseCurrency.trim()
     ? baseCurrency.trim().toUpperCase()
@@ -1506,7 +1535,42 @@ export default function PnlHeatmapDialog({
                 ? `${pnlLabel} total across traded symbols`
                 : `${pnlLabel} in ${marketValueLabel} total market value`}
             </p>
-            {asOfDisplay && <p className="pnl-heatmap-dialog__timestamp">{asOfDisplay}</p>}
+            {rangeSummary ? (
+              <div className="pnl-heatmap-dialog__range">
+                <div className="pnl-heatmap-dialog__range-label">
+                  {rangeSummary.startLabel && rangeSummary.endLabel
+                    ? `${rangeSummary.startLabel} — ${rangeSummary.endLabel}`
+                    : `${rangeSummary.startDate ?? ''} — ${rangeSummary.endDate ?? ''}`}
+                </div>
+                {rangeSummary.changeLabel ? (
+                  <div
+                    className={`pnl-heatmap-dialog__range-change${
+                      rangeSummary.deltaValue > 0
+                        ? ' pnl-heatmap-dialog__range-change--positive'
+                        : rangeSummary.deltaValue < 0
+                          ? ' pnl-heatmap-dialog__range-change--negative'
+                          : ''
+                    }`}
+                  >
+                    {rangeSummary.changeLabel}
+                  </div>
+                ) : null}
+                <div className="pnl-heatmap-dialog__range-actions">
+                  {rangeSummary.changeLabel && rangeSummary.startValueLabel && rangeSummary.endValueLabel ? (
+                    <span className="pnl-heatmap-dialog__range-values">
+                      {rangeSummary.startValueLabel} {'→'} {rangeSummary.endValueLabel}
+                    </span>
+                  ) : null}
+                  {onClearRange && (
+                    <button type="button" className="pnl-heatmap-dialog__range-clear" onClick={onClearRange}>
+                      Clear range
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              asOfDisplay && <p className="pnl-heatmap-dialog__timestamp">{asOfDisplay}</p>
+            )}
             <div className="pnl-heatmap-dialog__toolbar">
               {hasAccountSelector ? (
                 <div className="pnl-heatmap-dialog__controls pnl-heatmap-dialog__controls--select">
@@ -1535,6 +1599,7 @@ export default function PnlHeatmapDialog({
                   className={`pnl-heatmap-dialog__control${
                     metricMode === 'day' ? ' pnl-heatmap-dialog__control--active' : ''
                   }`}
+                  disabled={rangeActive}
                   onClick={() => setMetricMode('day')}
                   aria-pressed={metricMode === 'day'}
                 >
@@ -1545,6 +1610,7 @@ export default function PnlHeatmapDialog({
                   className={`pnl-heatmap-dialog__control${
                     metricMode === 'open' ? ' pnl-heatmap-dialog__control--active' : ''
                   }`}
+                  disabled={rangeActive}
                   onClick={() => setMetricMode('open')}
                   aria-pressed={metricMode === 'open'}
                 >
@@ -1609,7 +1675,11 @@ export default function PnlHeatmapDialog({
                   {currencyLabel} change
                 </button>
               </div>
-              {metricKey === 'totalPnl' && !Array.isArray(totalPnlBySymbol) && totalPnlBySymbol && typeof totalPnlBySymbol === 'object' && Array.isArray(totalPnlBySymbol.entriesNoFx) && (
+              {metricKey === 'totalPnl' &&
+                !Array.isArray(effectiveTotalPnlSource) &&
+                effectiveTotalPnlSource &&
+                typeof effectiveTotalPnlSource === 'object' &&
+                Array.isArray(effectiveTotalPnlSource.entriesNoFx) && (
                 <div
                   className="pnl-heatmap-dialog__controls"
                   role="group"
@@ -1633,7 +1703,25 @@ export default function PnlHeatmapDialog({
           </button>
         </header>
         <div className="pnl-heatmap-dialog__body">
-          {nodes.length ? (
+          {rangeActive && rangeLoading ? (
+            <p className="pnl-heatmap-empty">Loading range breakdown…</p>
+          ) : rangeActive && rangeError ? (
+            <div className="pnl-heatmap-empty">
+              <p>{rangeErrorMessage}</p>
+              <div className="pnl-heatmap-dialog__range-actions">
+                {onRetryRange && (
+                  <button type="button" className="pnl-heatmap-dialog__range-clear" onClick={onRetryRange}>
+                    Retry
+                  </button>
+                )}
+                {onClearRange && (
+                  <button type="button" className="pnl-heatmap-dialog__range-clear" onClick={onClearRange}>
+                    Clear range
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : nodes.length ? (
             <div className="pnl-heatmap-board" role="presentation">
               {nodes.map((node) => {
                 const isStyleTwo = styleMode === 'style2';
@@ -1900,6 +1988,23 @@ PnlHeatmapDialog.propTypes = {
   onShowNotes: PropTypes.func,
   onFocusSymbol: PropTypes.func,
   accountsById: PropTypes.instanceOf(Map),
+  rangeSummary: PropTypes.shape({
+    startDate: PropTypes.string,
+    endDate: PropTypes.string,
+    startLabel: PropTypes.string,
+    endLabel: PropTypes.string,
+    startValueLabel: PropTypes.string,
+    endValueLabel: PropTypes.string,
+    changeLabel: PropTypes.string,
+    deltaValue: PropTypes.number,
+  }),
+  rangeBreakdownState: PropTypes.shape({
+    status: PropTypes.string,
+    data: PropTypes.object,
+    error: PropTypes.instanceOf(Error),
+  }),
+  onClearRange: PropTypes.func,
+  onRetryRange: PropTypes.func,
 };
 
 PnlHeatmapDialog.defaultProps = {
@@ -1916,4 +2021,8 @@ PnlHeatmapDialog.defaultProps = {
   onShowNotes: null,
   onFocusSymbol: null,
   accountsById: null,
+  rangeSummary: null,
+  rangeBreakdownState: { status: 'idle', data: null, error: null },
+  onClearRange: null,
+  onRetryRange: null,
 };
