@@ -10802,18 +10802,6 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
     }
 
-    const series = priceSeriesMap.get(targetSymbol) || new Map();
-    const nativePrice = series.get(dateKey);
-    let priceCad = null;
-    if (Number.isFinite(nativePrice)) {
-      const priceCurrency = (symbolMeta.get(targetSymbol) && symbolMeta.get(targetSymbol).currency) || 'CAD';
-      if (priceCurrency === 'USD') {
-        priceCad = Number.isFinite(usdRate) && usdRate > 0 ? nativePrice * usdRate : null;
-      } else {
-        priceCad = nativePrice;
-      }
-    }
-
     const snapshot = computeLedgerEquitySnapshot(
       dateKey,
       holdings,
