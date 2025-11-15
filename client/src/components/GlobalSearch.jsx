@@ -145,12 +145,14 @@ export default function GlobalSearch({
   }, [navItems]);
 
   const results = useMemo(() => {
-    const q = normalize(query);
+    const rawQuery = typeof query === 'string' ? query : '';
+    const q = normalize(rawQuery);
     if (!q) {
       return [];
     }
     // Special intent: "retire at 55" / "retirement at 55"
     const lower = q.toLowerCase();
+    const prefixCandidate = rawQuery.toLowerCase().trimStart();
     let retireAction = null;
     const templateActions = [];
     const symbolActions = [];
@@ -315,15 +317,20 @@ export default function GlobalSearch({
       findSymbolSuggestions(fragment).forEach((item) => pushSymbolAction(intent, item));
     };
 
+    const matchesIntentCue = (candidate, forms) => {
+      if (!candidate) return false;
+      return forms.some((form) => form.startsWith(candidate) || candidate.startsWith(form));
+    };
+
     const intentPrefixes = [
-      { intent: 'orders', test: /^orders?/ },
-      { intent: 'dividends', test: /^dividends?/ },
-      { intent: 'buy', test: /^buy/ },
-      { intent: 'sell', test: /^sell/ },
+      { intent: 'orders', forms: ['orders', 'order', 'orders for', 'order for'] },
+      { intent: 'dividends', forms: ['dividends', 'dividend', 'dividends for', 'dividend for'] },
+      { intent: 'buy', forms: ['buy'] },
+      { intent: 'sell', forms: ['sell'] },
     ];
 
-    intentPrefixes.forEach(({ intent, test }) => {
-      if (test.test(lower)) {
+    intentPrefixes.forEach(({ intent, forms }) => {
+      if (matchesIntentCue(prefixCandidate, forms)) {
         pushSymbolIntentTemplate(intent);
       }
     });
