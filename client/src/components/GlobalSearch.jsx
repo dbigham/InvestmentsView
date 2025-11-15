@@ -307,7 +307,18 @@ export default function GlobalSearch({
       const match = lower.match(regex);
       if (!match) return;
       const fragment = match[fragmentIndex] || '';
-      const compact = normalize(fragment).replace(/\s+/g, '');
+      collectSymbolIntentMatches(intent, fragment);
+    };
+
+    const matchesIntentCue = (candidate, forms) => {
+      if (!candidate) return false;
+      return forms.some((form) => form.startsWith(candidate) || candidate.startsWith(form));
+    };
+
+    const collectSymbolIntentMatches = (intent, fragment) => {
+      const normalizedFragment = normalize(fragment);
+      if (!normalizedFragment) return;
+      const compact = normalizedFragment.replace(/\s+/g, '');
       if (compact) {
         const up = compact.toUpperCase();
         if (symbolIndex.has(up)) {
@@ -317,9 +328,18 @@ export default function GlobalSearch({
       findSymbolSuggestions(fragment).forEach((item) => pushSymbolAction(intent, item));
     };
 
-    const matchesIntentCue = (candidate, forms) => {
-      if (!candidate) return false;
-      return forms.some((form) => form.startsWith(candidate) || candidate.startsWith(form));
+    const matchSymbolLeadingIntent = (intent, forms) => {
+      const trimmed = rawQuery.trimStart();
+      if (!trimmed) return;
+      const match = trimmed.match(/^([-a-z0-9.]+)(?:\s+(.*))?$/i);
+      if (!match) return;
+      const symbolFragment = match[1] || '';
+      const remainderRaw = match[2];
+      if (!remainderRaw) return;
+      const candidate = normalize(remainderRaw).toLowerCase();
+      if (!candidate) return;
+      if (!matchesIntentCue(candidate, forms)) return;
+      collectSymbolIntentMatches(intent, symbolFragment);
     };
 
     const intentPrefixes = [
@@ -339,6 +359,9 @@ export default function GlobalSearch({
     matchSymbolIntent('dividends', /^dividends?\s+for(?:\s+([-a-z0-9.]*))?\s*$/);
     matchSymbolIntent('buy', /^buy(?:\s+([-a-z0-9.]*))?\s*$/);
     matchSymbolIntent('sell', /^sell(?:\s+([-a-z0-9.]*))?\s*$/);
+
+    matchSymbolLeadingIntent('orders', ['orders', 'order']);
+    matchSymbolLeadingIntent('dividends', ['dividends', 'dividend']);
 
     const rank = (item) => {
       if (!item) return -1;
