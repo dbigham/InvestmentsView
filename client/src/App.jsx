@@ -4847,6 +4847,7 @@ export default function App() {
   const isNewsFeatureEnabled = false;
   const [focusedSymbol, setFocusedSymbol] = useState(null);
   const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
+  const [pendingSymbolAction, setPendingSymbolAction] = useState(null);
 
   const closeNewsTabContextMenu = useCallback(() => {
     setNewsTabContextMenuState((state) => (state.open ? { ...state, open: false } : state));
@@ -6547,14 +6548,32 @@ export default function App() {
 
   
 
-  const handleSearchSelectSymbol = useCallback((symbol, meta) => {
-    const up = (symbol || '').toString().trim().toUpperCase();
-    if (!up) return;
-    setFocusedSymbol(up);
-    setFocusedSymbolDescription(meta?.description || null);
-    setOrdersFilter(up);
-    setPortfolioViewTab('positions');
-  }, []);
+  const handleSearchSelectSymbol = useCallback(
+    (symbol, meta) => {
+      const up = (symbol || '').toString().trim().toUpperCase();
+      if (!up) return;
+      setFocusedSymbol(up);
+      setFocusedSymbolDescription(meta?.description || null);
+      setOrdersFilter(up);
+
+      const desiredTabRaw = typeof meta?.targetTab === 'string' ? meta.targetTab.trim().toLowerCase() : '';
+      if (desiredTabRaw === 'orders') {
+        setPortfolioViewTab('orders');
+      } else if (desiredTabRaw === 'dividends') {
+        setPortfolioViewTab('dividends');
+      } else {
+        setPortfolioViewTab('positions');
+      }
+
+      const intentRaw = typeof meta?.intent === 'string' ? meta.intent.trim().toLowerCase() : '';
+      if (intentRaw === 'buy' || intentRaw === 'sell') {
+        setPendingSymbolAction({ symbol: up, intent: intentRaw });
+      } else {
+        setPendingSymbolAction(null);
+      }
+    },
+    [setOrdersFilter, setPendingSymbolAction, setPortfolioViewTab]
+  );
 
   const handleSearchNavigate = (key) => {
     const k = (key || '').toString().toLowerCase();
@@ -6964,6 +6983,20 @@ export default function App() {
       console.error('Failed to copy symbol to clipboard', error);
     }
   }, [focusedSymbol, findFocusedSymbolPosition, accountsById]);
+
+  useEffect(() => {
+    if (!pendingSymbolAction || !pendingSymbolAction.symbol) {
+      return;
+    }
+    const { symbol, intent } = pendingSymbolAction;
+    if (!symbol || symbol !== focusedSymbol) {
+      return;
+    }
+    if (intent === 'buy' || intent === 'sell') {
+      handleFocusedSymbolBuySell();
+    }
+    setPendingSymbolAction(null);
+  }, [pendingSymbolAction, focusedSymbol, handleFocusedSymbolBuySell, setPendingSymbolAction]);
 
   const handleExplainMovementForSymbol = useCallback(async () => {
     if (!focusedSymbol) {

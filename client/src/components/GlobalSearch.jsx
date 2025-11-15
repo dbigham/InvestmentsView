@@ -153,6 +153,7 @@ export default function GlobalSearch({
     const lower = q.toLowerCase();
     let retireAction = null;
     const templateActions = [];
+    const symbolActions = [];
     try {
       // Match variations like: retire at 55, retirement at 60, retire 55, retirement age 65
       const m = lower.match(/\bretire(?:ment)?(?:\s+(?:at|age))?\s*(\d{2})\b/);
@@ -188,6 +189,85 @@ export default function GlobalSearch({
     } catch (e) {
       // no-op
     }
+
+    const symbolIndex = new Map();
+    symbolItems.forEach((item) => {
+      if (!item || !item.key) return;
+      symbolIndex.set(String(item.key).toUpperCase(), item);
+    });
+
+    const resolveSymbolActionTarget = (raw) => {
+      if (!raw) return null;
+      const compact = normalize(raw).replace(/\s+/g, '');
+      if (!compact) return null;
+      const up = compact.toUpperCase();
+      if (!symbolIndex.has(up)) return null;
+      const entry = symbolIndex.get(up);
+      return {
+        key: up,
+        item: entry,
+      };
+    };
+
+    const appendSymbolAction = (intent, match) => {
+      if (!match || !match.key) return;
+      const description = match.item?.sublabel || null;
+      if (intent === 'orders') {
+        symbolActions.push({
+          kind: 'symbol-action',
+          key: `symbol-orders:${match.key}`,
+          label: `Orders for ${match.key}`,
+          sublabel: 'View Orders tab for this symbol',
+          symbol: match.key,
+          symbolDescription: description,
+          targetTab: 'orders',
+          intent: 'orders',
+        });
+      } else if (intent === 'dividends') {
+        symbolActions.push({
+          kind: 'symbol-action',
+          key: `symbol-dividends:${match.key}`,
+          label: `Dividends for ${match.key}`,
+          sublabel: 'View Dividends tab for this symbol',
+          symbol: match.key,
+          symbolDescription: description,
+          targetTab: 'dividends',
+          intent: 'dividends',
+        });
+      } else if (intent === 'buy' || intent === 'sell') {
+        symbolActions.push({
+          kind: 'symbol-action',
+          key: `symbol-${intent}:${match.key}`,
+          label: `${intent === 'buy' ? 'Buy' : 'Sell'} ${match.key}`,
+          sublabel: 'Open buy/sell flow for this symbol',
+          symbol: match.key,
+          symbolDescription: description,
+          targetTab: null,
+          intent,
+        });
+      }
+    };
+
+    const ordersMatch = lower.match(/^orders?\s+for\s+([-a-z0-9.]+)$/);
+    if (ordersMatch && ordersMatch[1]) {
+      appendSymbolAction('orders', resolveSymbolActionTarget(ordersMatch[1]));
+    }
+
+    const dividendsMatch = lower.match(/^dividends?\s+for\s+([-a-z0-9.]+)$/);
+    if (dividendsMatch && dividendsMatch[1]) {
+      appendSymbolAction('dividends', resolveSymbolActionTarget(dividendsMatch[1]));
+    }
+
+    const buyMatch = lower.match(/^buy\s+([-a-z0-9.]+)$/);
+    if (buyMatch && buyMatch[1]) {
+      appendSymbolAction('buy', resolveSymbolActionTarget(buyMatch[1]));
+    }
+
+    const sellMatch = lower.match(/^sell\s+([-a-z0-9.]+)$/);
+    if (sellMatch && sellMatch[1]) {
+      appendSymbolAction('sell', resolveSymbolActionTarget(sellMatch[1]));
+    }
+
     const rank = (item) => {
       if (!item) return -1;
       const base = scoreMatch(item.label, q);
@@ -206,6 +286,8 @@ export default function GlobalSearch({
       } else if (item.kind === 'action') {
         // Intent actions should be quite prominent when query hints at them
         boost += 25;
+      } else if (item.kind === 'symbol-action') {
+        boost += 35;
       } else if (item.kind === 'template') {
         // Template suggestions also prominent while composing
         boost += 20;
@@ -214,8 +296,8 @@ export default function GlobalSearch({
     };
     const poolBase = [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
     const pool = retireAction
-      ? [retireAction, ...templateActions, ...poolBase]
-      : [...templateActions, ...poolBase];
+      ? [retireAction, ...templateActions, ...symbolActions, ...poolBase]
+      : [...templateActions, ...symbolActions, ...poolBase];
     const withScores = pool
       .map((item) => ({ item, score: rank(item) }))
       .filter((e) => e.score >= 0)
@@ -273,7 +355,21 @@ export default function GlobalSearch({
     }
     setOpen(false);
     setQuery('');
-    if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
+    if (item.kind === 'symbol-action') {
+      if (typeof onSelectSymbol === 'function' && item.symbol) {
+        onSelectSymbol(item.symbol, {
+          description: item.symbolDescription || item.sublabel || null,
+          targetTab: item.targetTab || null,
+          intent: item.intent || null,
+        });
+      }
+      if (
+        typeof onNavigate === 'function' &&
+        (item.intent === 'orders' || item.intent === 'dividends')
+      ) {
+        onNavigate(item.intent);
+      }
+    } else if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
       onSelectSymbol(item.key, { description: item.sublabel || null });
     } else if (item.kind === 'account' && typeof onSelectAccount === 'function') {
       onSelectAccount(item.key);
@@ -408,6 +504,9 @@ export default function GlobalSearch({
                     {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
                     {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
                     {item.kind === 'action' ? <span className="global-search__badge">ACTION</span> : null}
+                    {item.kind === 'symbol-action' ? (
+                      <span className="global-search__badge">ACTION</span>
+                    ) : null}
                     {item.kind === 'template' ? <span className="global-search__badge">TPL</span> : null}
                   </div>
                   {item.sublabel ? (
