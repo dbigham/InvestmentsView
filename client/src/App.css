@@ -5083,6 +5083,18 @@ button.time-pill:hover .time-pill__icon {
 .projection-tree__cell-value + .projection-tree__cell-value { padding-left: 0; }
 .projection-tree__cell-rate { text-align: right; padding-left: 24px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
 
+.projection-dialog__yearly .projection-tree tbody tr:nth-child(odd) td {
+  background-color: var(--color-surface);
+}
+
+.projection-dialog__yearly .projection-tree tbody tr:nth-child(even) td {
+  background-color: var(--color-surface-alt);
+}
+
+.projection-dialog__yearly .projection-tree__cell-name {
+  background: transparent;
+}
+
 .projection-tree__name-wrap { display: inline-flex; align-items: center; gap: 8px; }
 .projection-tree__checkbox { flex: 0 0 auto; }
 .projection-tree__name { font-weight: 500; }
