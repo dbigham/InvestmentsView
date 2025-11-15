@@ -228,10 +228,11 @@ export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeS
 }
 
 // Shared helper for building a hover label that matches dialog styling
-export function buildHoverLabel(point, { useDisplayStartDelta = false } = {}) {
+export function buildHoverLabel(point, { useDisplayStartDelta = false, valueFormatter } = {}) {
   if (!point) {
     return null;
   }
+  const formatter = typeof valueFormatter === 'function' ? valueFormatter : formatSignedMoney;
   let value = null;
   if (useDisplayStartDelta && Number.isFinite(point?.chartValue)) {
     value = point.chartValue;
@@ -245,7 +246,7 @@ export function buildHoverLabel(point, { useDisplayStartDelta = false } = {}) {
   }
   const tone = classifyPnL(value);
   return {
-    amount: formatSignedMoney(value),
+    amount: formatter(value),
     date: point?.date ? formatDate(point.date) : null,
     tone,
   };

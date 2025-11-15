@@ -1385,7 +1385,8 @@ textarea {
   gap: 6px;
   min-width: 220px;
   max-width: 280px;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .pnl-dialog__selection-summary--active {

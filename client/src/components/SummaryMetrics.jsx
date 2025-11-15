@@ -1109,15 +1109,18 @@ export default function SummaryMetrics({
     active: false,
   });
   const suppressClickRef = useRef(false);
+  const pendingSelectionClearRef = useRef(false);
   const resetSelection = useCallback(
-    () =>
+    () => {
+      pendingSelectionClearRef.current = false;
       setSelectionState({
         anchorX: null,
         currentX: null,
         startX: null,
         endX: null,
         active: false,
-      }),
+      });
+    },
     []
   );
   const clearSelectionAndNotify = useCallback(() => {
@@ -1216,6 +1219,7 @@ export default function SummaryMetrics({
         const current = clampChartX(state.currentX ?? state.anchorX);
         if (!Number.isFinite(anchor) || !Number.isFinite(current)) {
           suppressClickRef.current = false;
+          pendingSelectionClearRef.current = false;
           return { anchorX: null, currentX: null, startX: null, endX: null, active: false };
         }
         const delta = Math.abs(current - anchor);
@@ -1223,6 +1227,7 @@ export default function SummaryMetrics({
           const startX = Math.min(anchor, current);
           const endX = Math.max(anchor, current);
           suppressClickRef.current = true;
+          pendingSelectionClearRef.current = false;
           return { anchorX: null, currentX: null, startX, endX, active: false };
         }
         suppressClickRef.current = false;
@@ -1433,23 +1438,33 @@ export default function SummaryMetrics({
     // Prevent selecting text (axis labels) while dragging
     event.preventDefault();
     if (!totalPnlChartHasSeries) {
+      pendingSelectionClearRef.current = false;
       return;
     }
     const point = getRelativePoint(event.clientX, event.clientY);
     if (!point) {
+      pendingSelectionClearRef.current = false;
       return;
     }
-    if (
+    const withinChartBounds = point.y >= PADDING.top && point.y <= CHART_HEIGHT - PADDING.bottom;
+    const clickedInsideSelection =
       selectionRange &&
       !selectionActive &&
+      withinChartBounds &&
       point.x >= selectionRange.startX &&
-      point.x <= selectionRange.endX &&
-      point.y >= PADDING.top &&
-      point.y <= CHART_HEIGHT - PADDING.bottom
+      point.x <= selectionRange.endX;
+    if (
+      clickedInsideSelection
     ) {
+      pendingSelectionClearRef.current = false;
       setHoverX(point.x);
       suppressClickRef.current = false;
       return;
+    }
+    if (selectionRange && !selectionActive && withinChartBounds) {
+      pendingSelectionClearRef.current = true;
+    } else {
+      pendingSelectionClearRef.current = false;
     }
     setHoverX(point.x);
     setSelectionState({ anchorX: point.x, currentX: point.x, startX: null, endX: null, active: true });
@@ -1488,29 +1503,41 @@ export default function SummaryMetrics({
     (event) => {
       if (suppressClickRef.current) {
         suppressClickRef.current = false;
+        pendingSelectionClearRef.current = false;
         return;
       }
-      const hasRangeSelection =
-        selectionSummary && typeof onShowRangePnlBreakdown === 'function' && selectionSummary.startPoint?.date && selectionSummary.endPoint?.date;
-      if (hasRangeSelection) {
+      const hasSelectionRange = Boolean(selectionRange);
+      if (hasSelectionRange) {
         const point = getRelativePoint(event.clientX, event.clientY);
-        if (
+        const clickedInsideSelection =
           point &&
-          point.x >= selectionSummary.startX &&
-          point.x <= selectionSummary.endX &&
+          point.x >= (selectionRange?.startX ?? 0) &&
+          point.x <= (selectionRange?.endX ?? 0) &&
           point.y >= PADDING.top &&
-          point.y <= CHART_HEIGHT - PADDING.bottom
-        ) {
+          point.y <= CHART_HEIGHT - PADDING.bottom;
+        const canOpenRangeBreakdown =
+          clickedInsideSelection &&
+          selectionSummary &&
+          typeof onShowRangePnlBreakdown === 'function' &&
+          selectionSummary.startPoint?.date &&
+          selectionSummary.endPoint?.date;
+        if (canOpenRangeBreakdown) {
           triggerRangeBreakdown();
           return;
         }
         clearSelectionAndNotify();
         return;
       }
+      if (pendingSelectionClearRef.current) {
+        clearSelectionAndNotify();
+        return;
+      }
       handleActivateTotalPnl();
     },
     [
+      selectionRange,
       selectionSummary,
+      onShowRangePnlBreakdown,
       getRelativePoint,
       handleActivateTotalPnl,
       triggerRangeBreakdown,
@@ -2206,7 +2233,7 @@ export default function SummaryMetrics({
                   {totalPnlChartPath && (
                     <path className="qqq-section__series-path" d={totalPnlChartPath} />
                   )}
-                  {hoverPoint && !selectionRange?.isActive && (
+                  {hoverPoint && !selectionRange && (
                     <>
                       <line
                         className="pnl-dialog__hover-line"
@@ -2235,11 +2262,13 @@ export default function SummaryMetrics({
                     tabIndex={0}
                     onClick={(event) => {
                       event.preventDefault();
+                      event.stopPropagation();
                       triggerRangeBreakdown();
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
+                        event.stopPropagation();
                         triggerRangeBreakdown();
                       }
                     }}
