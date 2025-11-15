@@ -1394,8 +1394,12 @@ export default function SummaryMetrics({
   }, [applyDisplayStartDelta, chartMetricConfig, isTotalPnlMetric, totalPnlChartMarker]);
 
   // Default action: open Total P&L breakdown when the chart is activated.
+  const chartSupportsBreakdown = isTotalPnlMetric && !symbolMode;
+
   const handleActivateTotalPnl = useCallback(() => {
-    if (symbolMode) return;
+    if (!chartSupportsBreakdown) {
+      return;
+    }
     if (typeof onShowPnlBreakdown === 'function') {
       onShowPnlBreakdown('total');
       return;
@@ -1403,7 +1407,7 @@ export default function SummaryMetrics({
     if (typeof onShowTotalPnl === 'function') {
       onShowTotalPnl();
     }
-  }, [symbolMode, onShowPnlBreakdown, onShowTotalPnl]);
+  }, [chartSupportsBreakdown, onShowPnlBreakdown, onShowTotalPnl]);
   const markerLabel = markerHoverLabel?.amount || null;
   const labelPosition = useMemo(() => {
     const point = hoverPoint || totalPnlChartMarker;
@@ -1516,6 +1520,7 @@ export default function SummaryMetrics({
           point.y >= PADDING.top &&
           point.y <= CHART_HEIGHT - PADDING.bottom;
         const canOpenRangeBreakdown =
+          chartSupportsBreakdown &&
           clickedInsideSelection &&
           selectionSummary &&
           typeof onShowRangePnlBreakdown === 'function' &&
@@ -1523,6 +1528,9 @@ export default function SummaryMetrics({
           selectionSummary.endPoint?.date;
         if (canOpenRangeBreakdown) {
           triggerRangeBreakdown();
+          return;
+        }
+        if (clickedInsideSelection) {
           return;
         }
         clearSelectionAndNotify();
@@ -1535,6 +1543,7 @@ export default function SummaryMetrics({
       handleActivateTotalPnl();
     },
     [
+      chartSupportsBreakdown,
       selectionRange,
       selectionSummary,
       onShowRangePnlBreakdown,
@@ -2169,10 +2178,13 @@ export default function SummaryMetrics({
                   onMouseDown={handleMouseDown}
                   onMouseMove={handleMouseMove}
                   onMouseLeave={handleMouseLeave}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: chartSupportsBreakdown ? 'pointer' : 'default' }}
                   onClick={handleChartClick}
                   tabIndex={0}
                   onKeyDown={(e) => {
+                    if (!chartSupportsBreakdown) {
+                      return;
+                    }
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       handleActivateTotalPnl();
