@@ -11,7 +11,6 @@ import {
   formatShare,
   resolveAccountForPosition,
 } from '../utils/positions';
-import { openAccountSummary } from '../utils/questrade';
 // Logo column uses Logo.dev ticker endpoint when a publishable key is present
 
 const TABLE_HEADERS = [
@@ -226,12 +225,14 @@ function PositionsTable({
   onShowInvestmentModel = null,
   onShowNotes = null,
   onShowOrders = null,
+  onBuySell = null,
   onFocusSymbol = null,
   onGoToAccount = null,
   forceShowTargetColumn = false,
   showPortfolioShare = true,
   showAccountColumn = false,
   hideTargetColumn = false,
+  hideDetailsOption = false,
   accountsById = null,
 }) {
   // No local mapping required when using Logo.dev ticker endpoint
@@ -457,29 +458,14 @@ function PositionsTable({
     onShowOrders(targetPosition);
   }, [closeContextMenu, contextMenuState.position, onShowOrders]);
 
-  const handleOpenBuySell = useCallback(async () => {
+  const handleOpenBuySell = useCallback(() => {
     const targetPosition = contextMenuState.position;
     closeContextMenu();
-    if (!targetPosition) {
+    if (!targetPosition || typeof onBuySell !== 'function') {
       return;
     }
-
-    const account = resolveAccountForPosition(targetPosition, accountsById);
-    if (account) {
-      openAccountSummary(account);
-    }
-
-    const symbol = typeof targetPosition.symbol === 'string' ? targetPosition.symbol.trim().toUpperCase() : '';
-    if (!symbol) {
-      return;
-    }
-
-    try {
-      await copyTextToClipboard(symbol);
-    } catch (error) {
-      console.error('Failed to copy symbol to clipboard', error);
-    }
-  }, [closeContextMenu, contextMenuState.position, accountsById]);
+    onBuySell(targetPosition);
+  }, [closeContextMenu, contextMenuState.position, onBuySell]);
 
   const handleOpenDetails = useCallback(() => {
     const targetPosition = contextMenuState.position;
@@ -896,22 +882,25 @@ function PositionsTable({
       style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
     >
       <ul className="positions-table__context-menu-list" role="menu">
-        <li role="none">
-          <button
-            type="button"
-            className="positions-table__context-menu-item"
-            role="menuitem"
-            onClick={handleOpenDetails}
-          >
-            Details
-          </button>
-        </li>
+        {!hideDetailsOption ? (
+          <li role="none">
+            <button
+              type="button"
+              className="positions-table__context-menu-item"
+              role="menuitem"
+              onClick={handleOpenDetails}
+            >
+              Details
+            </button>
+          </li>
+        ) : null}
         <li role="none">
           <button
             type="button"
             className="positions-table__context-menu-item"
             role="menuitem"
             onClick={handleOpenBuySell}
+            disabled={typeof onBuySell !== 'function'}
           >
             Buy/sell
           </button>
@@ -1052,12 +1041,14 @@ PositionsTable.propTypes = {
   onShowInvestmentModel: PropTypes.func,
   onShowNotes: PropTypes.func,
   onShowOrders: PropTypes.func,
+  onBuySell: PropTypes.func,
   onFocusSymbol: PropTypes.func,
   onGoToAccount: PropTypes.func,
   forceShowTargetColumn: PropTypes.bool,
   showPortfolioShare: PropTypes.bool,
   showAccountColumn: PropTypes.bool,
   hideTargetColumn: PropTypes.bool,
+  hideDetailsOption: PropTypes.bool,
   accountsById: PropTypes.instanceOf(Map),
 };
 
@@ -1073,12 +1064,14 @@ PositionsTable.defaultProps = {
   onShowInvestmentModel: null,
   onShowNotes: null,
   onShowOrders: null,
+  onBuySell: null,
   onFocusSymbol: null,
   onGoToAccount: null,
   forceShowTargetColumn: false,
   showPortfolioShare: true,
   showAccountColumn: false,
   hideTargetColumn: false,
+  hideDetailsOption: false,
   accountsById: null,
 };
 

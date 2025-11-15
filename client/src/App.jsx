@@ -37,7 +37,8 @@ import SymbolNotesDialog from './components/SymbolNotesDialog';
 import PlanningContextDialog from './components/PlanningContextDialog';
 import NewsPromptDialog from './components/NewsPromptDialog';
 import AccountMetadataDialog from './components/AccountMetadataDialog';
-import { formatMoney, formatNumber, formatDate, formatSignedMoney } from './utils/formatters';
+import AccountActionDialog from './components/AccountActionDialog';
+import { formatMoney, formatNumber, formatDate, formatPercent, formatSignedPercent } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
@@ -48,7 +49,12 @@ import {
   readTodoReminderFromLocation,
   readSymbolFromLocation,
 } from './utils/navigation';
-import { buildExplainMovementPrompt, resolveAccountForPosition } from './utils/positions';
+import {
+  buildExplainMovementPrompt,
+  resolveAccountForPosition,
+  listAccountsForPosition,
+} from './utils/positions';
+import { buildQuoteUrl, openQuote } from './utils/quotes';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 
@@ -1285,6 +1291,45 @@ function aggregateAccountBalanceSummaries(accountBalances, accountIds) {
   return summary;
 }
 
+function resolveEarliestCagrStartDate(accountFunding, accountIds) {
+  if (!accountFunding || typeof accountFunding !== 'object') {
+    return null;
+  }
+  if (!Array.isArray(accountIds) || !accountIds.length) {
+    return null;
+  }
+
+  let allHaveCagrStart = true;
+  let earliest = null;
+
+  accountIds.forEach((accountId) => {
+    const key = accountId === undefined || accountId === null ? '' : String(accountId).trim();
+    if (!key) {
+      allHaveCagrStart = false;
+      return;
+    }
+    const entry = accountFunding[key];
+    if (!entry || typeof entry !== 'object') {
+      allHaveCagrStart = false;
+      return;
+    }
+    const raw = entry.cagrStartDate;
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (!trimmed) {
+      allHaveCagrStart = false;
+      return;
+    }
+    if (!earliest || trimmed < earliest) {
+      earliest = trimmed;
+    }
+  });
+
+  if (!allHaveCagrStart || !earliest) {
+    return null;
+  }
+  return earliest;
+}
+
 function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
   if (!accountFunding || typeof accountFunding !== 'object') {
     return null;
@@ -1345,20 +1390,20 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
     }
   });
 
-  if (netDepositsCount === 0 && totalPnlCount === 0 && totalEquityCount === 0) {
-    return null;
-  }
-
   const aggregate = {};
+  let hasAggregateData = false;
+
   if (netDepositsCount > 0 || netDepositsAllTimeCount > 0) {
     aggregate.netDeposits = {};
     if (netDepositsCount > 0) aggregate.netDeposits.combinedCad = netDepositsTotal;
     if (netDepositsAllTimeCount > 0) aggregate.netDeposits.allTimeCad = netDepositsAllTimeTotal;
+    hasAggregateData = true;
   }
   if (totalPnlCount > 0 || totalPnlAllTimeCount > 0) {
     aggregate.totalPnl = {};
     if (totalPnlCount > 0) aggregate.totalPnl.combinedCad = totalPnlTotal;
     if (totalPnlAllTimeCount > 0) aggregate.totalPnl.allTimeCad = totalPnlAllTimeTotal;
+    hasAggregateData = true;
   } else if ((netDepositsCount > 0 || netDepositsAllTimeCount > 0) && totalEquityCount > 0) {
     const derivedCombined = netDepositsCount > 0 ? totalEquityTotal - netDepositsTotal : null;
     const derivedAllTime = netDepositsAllTimeCount > 0 ? totalEquityTotal - netDepositsAllTimeTotal : null;
@@ -1366,13 +1411,21 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
       aggregate.totalPnl = {};
       if (isFiniteNumber(derivedCombined)) aggregate.totalPnl.combinedCad = derivedCombined;
       if (isFiniteNumber(derivedAllTime)) aggregate.totalPnl.allTimeCad = derivedAllTime;
+      hasAggregateData = true;
     }
   }
   if (totalEquityCount > 0) {
     aggregate.totalEquityCad = totalEquityTotal;
+    hasAggregateData = true;
   }
 
-  return Object.keys(aggregate).length > 0 ? aggregate : null;
+  const derivedCagrStartDate = resolveEarliestCagrStartDate(accountFunding, normalizedIds);
+  if (derivedCagrStartDate) {
+    aggregate.cagrStartDate = derivedCagrStartDate;
+    hasAggregateData = true;
+  }
+
+  return hasAggregateData ? aggregate : null;
 }
 
 function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
@@ -1774,6 +1827,7 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
   // the summary pod matches the Total P&L dialog and avoids double counting.
   if ((isAccountGroupSelection(normalizedKey) || normalizedKey === 'all') && orderedAccountIds.length) {
     let composed = null;
+    const derivedGroupCagrStartDate = resolveEarliestCagrStartDate(fundingMap, orderedAccountIds);
     if (nextTotalPnlSeriesMap) {
       let earliestAllStart = null;
       let latestAllEnd = null;
@@ -1910,7 +1964,24 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
         if (Number.isFinite(composed.totalEquityCad)) {
           merged.totalEquityCad = composed.totalEquityCad;
         }
+        if (derivedGroupCagrStartDate) {
+          merged.cagrStartDate = derivedGroupCagrStartDate;
+        }
         nextAccountFunding = { ...nextAccountFunding, [normalizedKey]: merged };
+      }
+    }
+
+    if (
+      !composed &&
+      derivedGroupCagrStartDate &&
+      (isAccountGroupSelection(normalizedKey) || normalizedKey === 'all')
+    ) {
+      const base = nextAccountFunding[normalizedKey] || {};
+      if (base.cagrStartDate !== derivedGroupCagrStartDate) {
+        nextAccountFunding = {
+          ...nextAccountFunding,
+          [normalizedKey]: { ...base, cagrStartDate: derivedGroupCagrStartDate },
+        };
       }
     }
   }
@@ -4767,6 +4838,7 @@ export default function App() {
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [accountMetadataEditor, setAccountMetadataEditor] = useState(null);
+  const [accountActionPrompt, setAccountActionPrompt] = useState(null);
   const [pendingMetadataOverrides, setPendingMetadataOverrides] = useState(() => new Map());
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
@@ -4848,6 +4920,23 @@ export default function App() {
   const [focusedSymbol, setFocusedSymbol] = useState(null);
   const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
   const [pendingSymbolAction, setPendingSymbolAction] = useState(null);
+  const [focusedSymbolQuoteState, setFocusedSymbolQuoteState] = useState({
+    status: 'idle',
+    data: null,
+    error: null,
+  });
+  const [focusedSymbolSummaryFocusVisible, setFocusedSymbolSummaryFocusVisible] = useState(false);
+  const [focusedSymbolMenuState, setFocusedSymbolMenuState] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+  });
+  const focusedSymbolMenuRef = useRef(null);
+  const positionsCardRef = useRef(null);
+
+  const closeFocusedSymbolMenu = useCallback(() => {
+    setFocusedSymbolMenuState((state) => (state.open ? { ...state, open: false } : state));
+  }, []);
 
   const closeNewsTabContextMenu = useCallback(() => {
     setNewsTabContextMenuState((state) => (state.open ? { ...state, open: false } : state));
@@ -4891,6 +4980,10 @@ export default function App() {
     setOrdersFilter(up);
     setPortfolioViewTab('positions');
   }, [initialSymbolFromUrl]);
+
+  useEffect(() => {
+    setFocusedSymbolSummaryFocusVisible(false);
+  }, [focusedSymbol]);
 
   // (moved) Resolve missing symbol description later, once data is available
   const [totalPnlRange, setTotalPnlRange] = useState('all');
@@ -5265,6 +5358,25 @@ export default function App() {
     accounts.forEach((account) => {
       if (account && typeof account.id === 'string' && account.id) {
         map.set(account.id, account);
+      }
+    });
+    return map;
+  }, [accounts]);
+  const accountsByNumber = useMemo(() => {
+    const map = new Map();
+    accounts.forEach((account) => {
+      if (!account) {
+        return;
+      }
+      const normalized =
+        account.number !== undefined && account.number !== null
+          ? String(account.number).trim()
+          : '';
+      if (!normalized) {
+        return;
+      }
+      if (!map.has(normalized)) {
+        map.set(normalized, account);
       }
     });
     return map;
@@ -6575,6 +6687,7 @@ export default function App() {
     [setOrdersFilter, setPendingSymbolAction, setPortfolioViewTab]
   );
 
+
   const handleSearchNavigate = (key) => {
     const k = (key || '').toString().toLowerCase();
     // Quick intent: retire-at:<age>
@@ -6960,29 +7073,198 @@ export default function App() {
     return `${symbol} logo`;
   }, [focusedSymbol, focusedSymbolDescription]);
 
-  const handleFocusedSymbolBuySell = useCallback(async () => {
-    if (!focusedSymbol) {
-      return;
-    }
-    const key = String(focusedSymbol).trim().toUpperCase();
-    if (!key) {
-      return;
-    }
-
-    const position = findFocusedSymbolPosition();
-    if (position) {
-      const account = resolveAccountForPosition(position, accountsById);
-      if (account) {
-        openAccountSummary(account);
+  const handleFocusedSymbolSummaryClick = useCallback(
+    (event) => {
+      if (!focusedSymbol) {
+        return;
       }
-    }
+      const key = String(focusedSymbol).trim().toUpperCase();
+      if (!key) {
+        return;
+      }
 
-    try {
-      await copyTextToClipboard(key);
-    } catch (error) {
-      console.error('Failed to copy symbol to clipboard', error);
+      if (event.ctrlKey || event.metaKey) {
+        const url = buildQuoteUrl(key, 'questrade');
+        if (!url) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openQuote(key, 'questrade');
+        return;
+      }
+
+      const provider = event.altKey ? 'yahoo' : 'perplexity';
+      const url = buildQuoteUrl(key, provider);
+      if (!url) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openQuote(key, provider);
+    },
+    [focusedSymbol]
+  );
+
+  const handleFocusedSymbolSummaryFocus = useCallback((event) => {
+    if (!(event?.currentTarget instanceof Element)) {
+      setFocusedSymbolSummaryFocusVisible(false);
+      return;
     }
-  }, [focusedSymbol, findFocusedSymbolPosition, accountsById]);
+    const isFocusVisible = event.currentTarget.matches(':focus-visible');
+    setFocusedSymbolSummaryFocusVisible(isFocusVisible);
+  }, []);
+
+  const handleFocusedSymbolSummaryBlur = useCallback(() => {
+    setFocusedSymbolSummaryFocusVisible(false);
+  }, []);
+
+  const handleFocusedSymbolContextMenu = useCallback(
+    (event) => {
+      if (!focusedSymbol) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      let x = event.clientX ?? 0;
+      let y = event.clientY ?? 0;
+      if ((!x && !y) || Number.isNaN(x) || Number.isNaN(y)) {
+        const target = event.currentTarget instanceof Element ? event.currentTarget : null;
+        if (target) {
+          const rect = target.getBoundingClientRect();
+          x = rect.left + rect.width / 2;
+          y = rect.top + rect.height;
+        } else {
+          x = 0;
+          y = 0;
+        }
+      }
+      setFocusedSymbolMenuState({
+        open: true,
+        x,
+        y,
+      });
+    },
+    [focusedSymbol]
+  );
+
+  const handleFocusedSymbolSummaryKeyDown = useCallback(
+    (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        handleFocusedSymbolSummaryClick(event);
+        return;
+      }
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFocusedSymbolContextMenu(event);
+      }
+    },
+    [handleFocusedSymbolContextMenu, handleFocusedSymbolSummaryClick]
+  );
+
+  const triggerBuySell = useCallback(
+    async ({ symbol, position, accountOptionsOverride } = {}) => {
+      const normalizedSymbol =
+        typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+      if (!normalizedSymbol) {
+        return;
+      }
+
+      const baseOptions =
+        Array.isArray(accountOptionsOverride) && accountOptionsOverride.length > 0
+          ? accountOptionsOverride
+          : position
+          ? listAccountsForPosition(position, { accountsById, accountsByNumber })
+          : [];
+
+      if (baseOptions.length > 1) {
+        const dialogOptions = baseOptions.map((option) => ({
+          key: option.key,
+          label: option.label,
+          description: option.description || null,
+          account: option.account || null,
+        }));
+        setAccountActionPrompt({
+          title: 'Select account',
+          message: `Multiple accounts hold ${normalizedSymbol}. Select which account to trade.`,
+          symbol: normalizedSymbol,
+          options: dialogOptions,
+          onConfirm: async (account) => {
+            if (account) {
+              openAccountSummary(account);
+            }
+            try {
+              await copyTextToClipboard(normalizedSymbol);
+            } catch (error) {
+              console.error('Failed to copy symbol to clipboard', error);
+            }
+          },
+        });
+        return;
+      }
+
+      const targetAccount =
+        baseOptions.length === 1
+          ? baseOptions[0].account
+          : position
+          ? resolveAccountForPosition(position, accountsById)
+          : null;
+
+      if (targetAccount) {
+        openAccountSummary(targetAccount);
+      }
+
+      try {
+        await copyTextToClipboard(normalizedSymbol);
+      } catch (error) {
+        console.error('Failed to copy symbol to clipboard', error);
+      }
+    },
+    [accountsById, accountsByNumber, setAccountActionPrompt]
+  );
+
+  const handleBuySellPosition = useCallback(
+    (position) => {
+      if (!position || position.symbol === undefined || position.symbol === null) {
+        return;
+      }
+      const rawSymbol = String(position.symbol);
+      if (!rawSymbol.trim()) {
+        return;
+      }
+      triggerBuySell({ symbol: rawSymbol, position });
+    },
+    [triggerBuySell]
+  );
+
+  const handleAccountActionCancel = useCallback(() => {
+    setAccountActionPrompt(null);
+  }, []);
+
+  const handleAccountActionSelect = useCallback(
+    async (optionKey) => {
+      if (!accountActionPrompt) {
+        return;
+      }
+      const { options, onConfirm } = accountActionPrompt;
+      const option = Array.isArray(options)
+        ? options.find((entry) => entry.key === optionKey)
+        : null;
+      const confirm = typeof onConfirm === 'function' ? onConfirm : null;
+      setAccountActionPrompt(null);
+      if (!option || !confirm) {
+        return;
+      }
+      try {
+        await confirm(option.account || null);
+      } catch (error) {
+        console.error('Account action failed', error);
+      }
+    },
+    [accountActionPrompt]
+  );
 
   useEffect(() => {
     if (!pendingSymbolAction || !pendingSymbolAction.symbol) {
@@ -7131,88 +7413,197 @@ export default function App() {
     return list;
   }, [positions, selectedAccountDividends, ordersForSelectedAccount]);
 
-  // Keep focused symbol description in sync: prefer local data; fallback to quote
+  const resolveLocalDescriptionForFocusedSymbol = useCallback(() => {
+    if (!focusedSymbol) {
+      return null;
+    }
+    const up = String(focusedSymbol).trim().toUpperCase();
+    if (!up) {
+      return null;
+    }
+    // Positions
+    for (let i = 0; i < positions.length; i += 1) {
+      const p = positions[i];
+      const sym = (p?.symbol || '').toString().trim().toUpperCase();
+      if (sym === up) {
+        const desc = (p?.description || '').toString().trim();
+        if (desc) return desc;
+      }
+    }
+    // Dividends
+    const divEntries = Array.isArray(selectedAccountDividends?.entries)
+      ? selectedAccountDividends.entries
+      : [];
+    for (let i = 0; i < divEntries.length; i += 1) {
+      const e = divEntries[i];
+      const sym = (e?.symbol || e?.displaySymbol || '').toString().trim().toUpperCase();
+      if (sym === up) {
+        const desc = (e?.description || '').toString().trim();
+        if (desc) return desc;
+      }
+    }
+    // Orders
+    const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
+    for (let i = 0; i < ordList.length; i += 1) {
+      const o = ordList[i];
+      const sym = (o?.symbol || '').toString().trim().toUpperCase();
+      if (sym === up) {
+        const desc = (o?.description || '').toString().trim();
+        if (desc) return desc;
+      }
+    }
+    return null;
+  }, [focusedSymbol, positions, selectedAccountDividends, ordersForSelectedAccount]);
+
+  // Keep focused symbol description in sync: prefer local data; fallback to cached quote names
   useEffect(() => {
     if (!focusedSymbol) {
       return;
     }
-    const up = String(focusedSymbol).trim().toUpperCase();
-    if (!up) {
-      return;
-    }
-
-    const findDescriptionFromLocalData = () => {
-      // Positions
-      for (let i = 0; i < positions.length; i += 1) {
-        const p = positions[i];
-        const sym = (p?.symbol || '').toString().trim().toUpperCase();
-        if (sym === up) {
-          const desc = (p?.description || '').toString().trim();
-          if (desc) return desc;
-        }
-      }
-      // Dividends
-      const divEntries = Array.isArray(selectedAccountDividends?.entries)
-        ? selectedAccountDividends.entries
-        : [];
-      for (let i = 0; i < divEntries.length; i += 1) {
-        const e = divEntries[i];
-        const sym = (e?.symbol || e?.displaySymbol || '').toString().trim().toUpperCase();
-        if (sym === up) {
-          const desc = (e?.description || '').toString().trim();
-          if (desc) return desc;
-        }
-      }
-      // Orders
-      const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
-      for (let i = 0; i < ordList.length; i += 1) {
-        const o = ordList[i];
-        const sym = (o?.symbol || '').toString().trim().toUpperCase();
-        if (sym === up) {
-          const desc = (o?.description || '').toString().trim();
-          if (desc) return desc;
-        }
-      }
-      return null;
-    };
-
-    const local = findDescriptionFromLocalData();
+    const local = resolveLocalDescriptionForFocusedSymbol();
     if (local) {
       if (local !== focusedSymbolDescription) {
         setFocusedSymbolDescription(local);
       }
       return;
     }
-
     if (!focusedSymbolDescription) {
-      let cancelled = false;
-      (async () => {
-        try {
-          const quote = await getQuote(up);
-          if (cancelled) return;
-          const name = typeof quote?.name === 'string' ? quote.name.trim() : '';
-          if (name) {
-            setFocusedSymbolDescription(name);
-          }
-        } catch (error) {
-          // Non-fatal: leave description empty if quote lookup fails
-          console.warn('Failed to resolve symbol description', up, error);
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      const key = String(focusedSymbol).trim().toUpperCase();
+      const cached = key ? quoteCacheRef.current.get(key) : null;
+      if (
+        cached &&
+        typeof cached.description === 'string' &&
+        cached.description.trim() &&
+        cached.description.trim() !== focusedSymbolDescription
+      ) {
+        setFocusedSymbolDescription(cached.description.trim());
+      }
     }
-    // If we already have a description (likely from quote) and no local description exists yet,
-    // do nothing; when local data arrives, effect will re-run and prefer local.
-    return undefined;
   }, [
     focusedSymbol,
     focusedSymbolDescription,
-    positions,
-    selectedAccountDividends?.entries,
-    ordersForSelectedAccount,
+    resolveLocalDescriptionForFocusedSymbol,
   ]);
+
+  useEffect(() => {
+    if (!focusedSymbol) {
+      setFocusedSymbolQuoteState({ status: 'idle', data: null, error: null });
+      return;
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      setFocusedSymbolQuoteState({ status: 'idle', data: null, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    const cached = quoteCacheRef.current.get(key) || null;
+    setFocusedSymbolQuoteState((prev) => {
+      if (cached) {
+        if (prev.status === 'success' && prev.data === cached && !prev.error) {
+          return prev;
+        }
+        return { status: 'success', data: cached, error: null };
+      }
+      if (prev.status === 'loading' && !prev.data) {
+        return prev;
+      }
+      return { status: 'loading', data: null, error: null };
+    });
+
+    (async () => {
+      try {
+        const quote = await getQuote(key);
+        if (cancelled) return;
+        const normalizedPrice = coercePositiveNumber(quote?.price);
+        const normalizedMarketCap = coercePositiveNumber(quote?.marketCap);
+        const normalizedPrevClose = coercePositiveNumber(quote?.previousClose);
+        const rawPe = Number(quote?.peRatio);
+        const normalizedPe = Number.isFinite(rawPe) && rawPe > 0 ? rawPe : null;
+        const rawChange = Number(quote?.changePercent);
+        const normalizedChange = Number.isFinite(rawChange) ? rawChange : null;
+        const rawDividend = Number(quote?.dividendYieldPercent);
+        const normalizedDividend = Number.isFinite(rawDividend) && rawDividend > 0 ? rawDividend : null;
+        const normalized = {
+          price: normalizedPrice,
+          currency:
+            typeof quote?.currency === 'string' && quote.currency.trim()
+              ? quote.currency.trim().toUpperCase()
+              : null,
+          description:
+            typeof quote?.name === 'string' && quote.name.trim() ? quote.name.trim() : null,
+          changePercent:
+            Number.isFinite(normalizedChange) || normalizedChange === 0 ? normalizedChange : null,
+          previousClose: normalizedPrevClose,
+          peRatio: normalizedPe,
+          marketCap: normalizedMarketCap,
+          dividendYieldPercent: normalizedDividend,
+          asOf: typeof quote?.asOf === 'string' && quote.asOf ? quote.asOf : null,
+        };
+        quoteCacheRef.current.set(key, normalized);
+        setFocusedSymbolQuoteState({ status: 'success', data: normalized, error: null });
+        if (normalized.description) {
+          setFocusedSymbolDescription((prev) => {
+            if (prev && prev.trim() && prev.trim().toUpperCase() !== key) {
+              return prev;
+            }
+            const local = resolveLocalDescriptionForFocusedSymbol();
+            if (local && local.trim()) {
+              return local.trim();
+            }
+            return normalized.description;
+          });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        const fallback = quoteCacheRef.current.get(key) || null;
+        const normalizedError = error instanceof Error ? error : new Error('Failed to load quote');
+        if (!fallback) {
+          setFocusedSymbolQuoteState({ status: 'error', data: null, error: normalizedError });
+        } else {
+          setFocusedSymbolQuoteState({ status: 'success', data: fallback, error: normalizedError });
+        }
+        console.warn('Failed to fetch quote for symbol', key, error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedSymbol, resolveLocalDescriptionForFocusedSymbol]);
+
+  useEffect(() => {
+    if (focusedSymbol) {
+      return;
+    }
+    closeFocusedSymbolMenu();
+    setFocusedSymbolQuoteState({ status: 'idle', data: null, error: null });
+  }, [focusedSymbol, closeFocusedSymbolMenu]);
+
+  useEffect(() => {
+    if (!focusedSymbolMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (focusedSymbolMenuRef.current && focusedSymbolMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeFocusedSymbolMenu();
+    };
+    const handleKey = (event) => {
+      if (event.key === 'Escape') {
+        closeFocusedSymbolMenu();
+      }
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('contextmenu', handlePointer);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('contextmenu', handlePointer);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [focusedSymbolMenuState.open, closeFocusedSymbolMenu]);
 
   const hasTargetProportionsForSelection = useMemo(
     () => orderedPositions.some((position) => Number.isFinite(position?.targetProportion)),
@@ -10427,6 +10818,18 @@ export default function App() {
     [accountsById]
   );
 
+  const scrollPositionsCardIntoView = useCallback(() => {
+    const target = positionsCardRef.current;
+    if (!target || typeof target.scrollIntoView !== 'function') {
+      return;
+    }
+    try {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (error) {
+      target.scrollIntoView();
+    }
+  }, [positionsCardRef]);
+
   const handleShowSymbolOrders = useCallback(
     (position) => {
       if (!position || typeof position.symbol !== 'string') {
@@ -10438,9 +10841,133 @@ export default function App() {
       }
       setPortfolioViewTab('orders');
       setOrdersFilter(trimmedSymbol);
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => {
+          scrollPositionsCardIntoView();
+        });
+      } else {
+        scrollPositionsCardIntoView();
+      }
     },
-    [setOrdersFilter, setPortfolioViewTab]
+    [scrollPositionsCardIntoView, setOrdersFilter, setPortfolioViewTab]
   );
+
+  const focusedSymbolAccountOptions = useMemo(() => {
+    if (!focusedSymbol) {
+      return [];
+    }
+    const key = String(focusedSymbol).trim().toUpperCase();
+    if (!key) {
+      return [];
+    }
+    const source = Array.isArray(symbolFilteredPositions?.list)
+      ? symbolFilteredPositions.list
+      : [];
+    if (!source.length) {
+      return [];
+    }
+    const unique = new Map();
+    source.forEach((position) => {
+      if ((position?.symbol || '').toString().trim().toUpperCase() !== key) {
+        return;
+      }
+      const candidates = listAccountsForPosition(position, { accountsById, accountsByNumber });
+      candidates.forEach((candidate) => {
+        if (!candidate || !candidate.key) {
+          return;
+        }
+        if (!unique.has(candidate.key)) {
+          unique.set(candidate.key, candidate);
+          return;
+        }
+        const existing = unique.get(candidate.key);
+        const existingScore =
+          (existing.description ? 1 : 0) + (existing.ownerLabel ? 1 : 0);
+        const candidateScore =
+          (candidate.description ? 1 : 0) + (candidate.ownerLabel ? 1 : 0);
+        if (candidateScore > existingScore) {
+          unique.set(candidate.key, candidate);
+        }
+      });
+    });
+    if (!unique.size) {
+      return [];
+    }
+    return Array.from(unique.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    );
+  }, [focusedSymbol, symbolFilteredPositions, accountsById, accountsByNumber]);
+
+  const focusedSymbolAccountCount = focusedSymbolAccountOptions.length;
+  const focusedSymbolHasMultipleAccounts = focusedSymbolAccountCount > 1;
+  const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
+  const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
+
+  const handleFocusedSymbolBuySell = useCallback(async () => {
+    if (!focusedSymbol) {
+      return;
+    }
+    const position = findFocusedSymbolPosition();
+    await triggerBuySell({
+      symbol: focusedSymbol,
+      position,
+      accountOptionsOverride: focusedSymbolAccountOptions,
+    });
+  }, [
+    focusedSymbol,
+    findFocusedSymbolPosition,
+    triggerBuySell,
+    focusedSymbolAccountOptions,
+  ]);
+
+  const handleFocusedSymbolMenuBuySell = useCallback(() => {
+    closeFocusedSymbolMenu();
+    handleFocusedSymbolBuySell();
+  }, [closeFocusedSymbolMenu, handleFocusedSymbolBuySell]);
+
+  const handleFocusedSymbolMenuGoToAccount = useCallback(() => {
+    const position = findFocusedSymbolPosition();
+    closeFocusedSymbolMenu();
+    if (!position || focusedSymbolHasMultipleAccounts) {
+      return;
+    }
+    const account =
+      (focusedSymbolAccountOptions.length === 1 && focusedSymbolAccountOptions[0]?.account)
+        ? focusedSymbolAccountOptions[0].account
+        : resolveAccountForPosition(position, accountsById);
+    if (!account) {
+      return;
+    }
+    handleGoToAccountFromSymbol(position, account);
+  }, [
+    accountsById,
+    closeFocusedSymbolMenu,
+    focusedSymbolAccountOptions,
+    focusedSymbolHasMultipleAccounts,
+    findFocusedSymbolPosition,
+    handleGoToAccountFromSymbol,
+  ]);
+
+  const handleFocusedSymbolMenuOrders = useCallback(() => {
+    const position = findFocusedSymbolPosition();
+    closeFocusedSymbolMenu();
+    if (position) {
+      handleShowSymbolOrders(position);
+    }
+  }, [closeFocusedSymbolMenu, findFocusedSymbolPosition, handleShowSymbolOrders]);
+
+  const handleFocusedSymbolMenuNotes = useCallback(() => {
+    const position = findFocusedSymbolPosition();
+    closeFocusedSymbolMenu();
+    if (position) {
+      handleShowSymbolNotes(position);
+    }
+  }, [closeFocusedSymbolMenu, findFocusedSymbolPosition, handleShowSymbolNotes]);
+
+  const handleFocusedSymbolMenuExplain = useCallback(() => {
+    closeFocusedSymbolMenu();
+    handleExplainMovementForSymbol();
+  }, [closeFocusedSymbolMenu, handleExplainMovementForSymbol]);
 
   const handleCloseSymbolNotes = useCallback(() => {
     setSymbolNotesEditor(null);
@@ -11322,6 +11849,88 @@ export default function App() {
       ? 'summary-main summary-main--compact'
       : 'summary-main';
 
+  const focusedSymbolQuote = focusedSymbolQuoteState.data || null;
+  const focusedSymbolQuoteStatus = focusedSymbolQuoteState.status;
+  const focusedSymbolQuoteError = focusedSymbolQuoteState.error;
+  const focusedSymbolQuoteCurrency =
+    focusedSymbolQuote && typeof focusedSymbolQuote.currency === 'string'
+      ? focusedSymbolQuote.currency.trim().toUpperCase()
+      : null;
+
+  const formatQuoteMoney = (value, digitOptions) => {
+    const formatted = formatMoney(value, digitOptions);
+    if (formatted === '—') {
+      return formatted;
+    }
+    return focusedSymbolQuoteCurrency ? `${formatted} ${focusedSymbolQuoteCurrency}` : formatted;
+  };
+
+  const quotePriceDisplay = formatQuoteMoney(focusedSymbolQuote?.price, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const quoteChangePercent =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.changePercent)
+      ? Number(focusedSymbolQuote.changePercent)
+      : null;
+  const quoteChangeDisplay =
+    quoteChangePercent !== null ? formatSignedPercent(quoteChangePercent, 2) : null;
+  const quoteChangeTone = quoteChangePercent > 0 ? 'positive' : quoteChangePercent < 0 ? 'negative' : 'neutral';
+  const quotePeValue =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
+      ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      : null;
+  const quoteMarketCapValue = (() => {
+    if (!focusedSymbolQuote || !Number.isFinite(focusedSymbolQuote.marketCap)) {
+      return null;
+    }
+
+    const marketCap = Number(focusedSymbolQuote.marketCap);
+    const currencySuffix = focusedSymbolQuoteCurrency ? ` ${focusedSymbolQuoteCurrency}` : '';
+    const magnitudeFormats = [
+      { threshold: 1e12, suffix: 'T' },
+      { threshold: 1e9, suffix: 'B' },
+      { threshold: 1e6, suffix: 'M' },
+    ];
+
+    for (const { threshold, suffix } of magnitudeFormats) {
+      if (marketCap >= threshold) {
+        const scaled = marketCap / threshold;
+        const digitOptions = scaled >= 100
+          ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+          : { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+        const magnitude = formatNumber(scaled, digitOptions);
+        if (magnitude === '—') {
+          return null;
+        }
+        return `$${magnitude} ${suffix}${currencySuffix}`;
+      }
+    }
+
+    const formatted = formatQuoteMoney(marketCap, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+    return formatted === '—' ? null : formatted;
+  })();
+  const quoteDividendValue =
+    focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.dividendYieldPercent) && focusedSymbolQuote.dividendYieldPercent > 0
+      ? formatPercent(focusedSymbolQuote.dividendYieldPercent, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : null;
+  const quoteMessage = (() => {
+    if (focusedSymbolQuoteStatus === 'loading' && !focusedSymbolQuote) {
+      return 'Loading quote…';
+    }
+    if (focusedSymbolQuoteStatus === 'error' && focusedSymbolQuoteError) {
+      return focusedSymbolQuoteError.message || 'Quote unavailable.';
+    }
+    return null;
+  })();
+  const summaryButtonTitleBase =
+    'Open quote (Perplexity). Ctrl-click for Questrade, Alt-click for Yahoo Finance.';
+  const summaryButtonTitle = focusedSymbolQuoteError
+    ? `${summaryButtonTitleBase} Quote status: ${focusedSymbolQuoteError.message || 'Failed to refresh quote.'}`
+    : summaryButtonTitleBase;
   return (
     <div className="summary-page">
       <main className={summaryMainClassName}>
@@ -11400,71 +12009,193 @@ export default function App() {
         {focusedSymbol ? (
           <section className="symbol-view" aria-label="Symbol focus">
             <div className="symbol-view__row">
-              <div className="symbol-view__title">
-                <span className="symbol-view__icon" aria-hidden="true">
-                  {focusedSymbolLogoUrl ? (
-                    <img
-                      className="symbol-view__icon-image"
-                      src={focusedSymbolLogoUrl}
-                      alt={focusedSymbolLogoAlt || undefined}
-                      width={28}
-                      height={28}
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
+              <div className="symbol-view__summary">
+                <div
+                  className="symbol-view__summary-content"
+                  data-focus-visible={focusedSymbolSummaryFocusVisible ? 'true' : undefined}
+                >
+                  <div className="symbol-view__primary">
+                    <div
+                      className="symbol-view__summary-main"
+                      role="button"
+                      tabIndex={0}
+                      onClick={handleFocusedSymbolSummaryClick}
+                      onKeyDown={handleFocusedSymbolSummaryKeyDown}
+                      onContextMenu={handleFocusedSymbolContextMenu}
+                      onFocus={handleFocusedSymbolSummaryFocus}
+                      onBlur={handleFocusedSymbolSummaryBlur}
+                      title={summaryButtonTitle}
                     >
-                      <path
-                        d="M4 4V20H20"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M7 14L11.5 9.5L14.5 12.5L20 7"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  )}
-                </span>
-                <span className="symbol-view__text">
-                  {' '}
-                  <strong>{focusedSymbol}</strong>
-                  {focusedSymbolDescription ? (
-                    <span className="symbol-view__desc"> — {focusedSymbolDescription}</span>
-                  ) : null}
-                </span>
+                      <span className="symbol-view__title">
+                        <span className="symbol-view__icon" aria-hidden="true">
+                          {focusedSymbolLogoUrl ? (
+                            <img
+                              className="symbol-view__icon-image"
+                              src={focusedSymbolLogoUrl}
+                              alt={focusedSymbolLogoAlt || undefined}
+                              width={28}
+                              height={28}
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M4 4V20H20"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              <path
+                                d="M7 14L11.5 9.5L14.5 12.5L20 7"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          )}
+                        </span>
+                        <span className="symbol-view__text">
+                          <strong>{focusedSymbol}</strong>
+                          {focusedSymbolDescription ? (
+                            <span className="symbol-view__desc">— {focusedSymbolDescription}</span>
+                          ) : null}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="symbol-view__primary-actions">
+                      <button
+                        type="button"
+                        className="symbol-view__action"
+                        onClick={handleFocusedSymbolBuySell}
+                      >
+                        Buy/sell
+                      </button>
+                      <button
+                        type="button"
+                        className="symbol-view__clear"
+                        onClick={() => {
+                          setFocusedSymbol(null);
+                          setFocusedSymbolDescription(null);
+                          setOrdersFilter('');
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="symbol-view__details">
+                    {quoteMessage ? (
+                      <span className="symbol-view__detail symbol-view__detail--message">{quoteMessage}</span>
+                    ) : (
+                      <>
+                        <span className="symbol-view__detail symbol-view__detail--price">
+                          <span className="symbol-view__detail-price">{quotePriceDisplay}</span>
+                          {quoteChangeDisplay ? (
+                            <span
+                              className={`symbol-view__detail-change symbol-view__detail-change--${quoteChangeTone}`}
+                            >
+                              ({quoteChangeDisplay})
+                            </span>
+                          ) : null}
+                        </span>
+                        {quotePeValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">P/E</span>
+                            <span className="symbol-view__detail-value">{quotePeValue}</span>
+                          </span>
+                        ) : null}
+                        {quoteMarketCapValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">Market cap</span>
+                            <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                          </span>
+                        ) : null}
+                        {quoteDividendValue ? (
+                          <span className="symbol-view__detail">
+                            <span className="symbol-view__detail-label">Dividend yield</span>
+                            <span className="symbol-view__detail-value">{quoteDividendValue}</span>
+                          </span>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="symbol-view__spacer" />
-              <button
-                type="button"
-                className="symbol-view__action"
-                onClick={handleFocusedSymbolBuySell}
-              >
-                Buy/sell
-              </button>
-              <button
-                type="button"
-                className="symbol-view__clear"
-                onClick={() => {
-                  setFocusedSymbol(null);
-                  setFocusedSymbolDescription(null);
-                  setOrdersFilter('');
-                }}
-              >
-                Clear
-              </button>
             </div>
+            {focusedSymbolMenuState.open ? (
+              <div
+                className="positions-table__context-menu"
+                ref={focusedSymbolMenuRef}
+                style={{ top: `${focusedSymbolMenuState.y}px`, left: `${focusedSymbolMenuState.x}px` }}
+              >
+                <ul className="positions-table__context-menu-list" role="menu">
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuBuySell}
+                    >
+                      Buy/sell
+                    </button>
+                  </li>
+                  {showFocusedSymbolGoToAccount ? (
+                    <li role="none">
+                      <button
+                        type="button"
+                        className="positions-table__context-menu-item"
+                        role="menuitem"
+                        onClick={handleFocusedSymbolMenuGoToAccount}
+                        disabled={!focusedSymbolHasPosition}
+                      >
+                        Go to account
+                      </button>
+                    </li>
+                  ) : null}
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuOrders}
+                      disabled={!focusedSymbolHasPosition}
+                    >
+                      Orders
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuNotes}
+                      disabled={!focusedSymbolHasPosition}
+                    >
+                      Notes
+                    </button>
+                  </li>
+                  <li role="none">
+                    <button
+                      type="button"
+                      className="positions-table__context-menu-item"
+                      role="menuitem"
+                      onClick={handleFocusedSymbolMenuExplain}
+                    >
+                      Explain movement
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            ) : null}
           </section>
         ) : null}
 
@@ -11632,7 +12363,7 @@ export default function App() {
         )}
 
         {showContent && (
-          <section className="positions-card">
+          <section className="positions-card" ref={positionsCardRef}>
             <header className="positions-card__header">
               <div className="positions-card__tabs" role="tablist" aria-label="Portfolio data views">
                 <button
@@ -11732,12 +12463,14 @@ export default function App() {
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
                 onShowNotes={handleShowSymbolNotes}
                 onShowOrders={handleShowSymbolOrders}
+                onBuySell={handleBuySellPosition}
                 onFocusSymbol={handleSearchSelectSymbol}
                 onGoToAccount={focusedSymbol ? handleGoToAccountFromSymbol : null}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
                 showPortfolioShare={!focusedSymbol}
                 showAccountColumn={Boolean(focusedSymbol) && isAggregateSelection}
                 hideTargetColumn={Boolean(focusedSymbol)}
+                hideDetailsOption={Boolean(focusedSymbol)}
                 accountsById={accountsById}
               />
             </div>
@@ -12169,6 +12902,15 @@ export default function App() {
           initialValue={planningContextEditor.initialValue}
           onClose={handleClosePlanningContext}
           onSave={(value) => handleSavePlanningContext(planningContextEditor.accountKey, value)}
+        />
+      )}
+      {accountActionPrompt && (
+        <AccountActionDialog
+          title={accountActionPrompt.title}
+          message={accountActionPrompt.message}
+          options={accountActionPrompt.options || []}
+          onSelect={handleAccountActionSelect}
+          onCancel={handleAccountActionCancel}
         />
       )}
       {accountMetadataEditor && (
