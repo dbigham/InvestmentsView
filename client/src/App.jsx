@@ -37,6 +37,7 @@ import SymbolNotesDialog from './components/SymbolNotesDialog';
 import PlanningContextDialog from './components/PlanningContextDialog';
 import NewsPromptDialog from './components/NewsPromptDialog';
 import AccountMetadataDialog from './components/AccountMetadataDialog';
+import AccountActionDialog from './components/AccountActionDialog';
 import { formatMoney, formatNumber, formatDate, formatPercent, formatSignedPercent } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -48,7 +49,11 @@ import {
   readTodoReminderFromLocation,
   readSymbolFromLocation,
 } from './utils/navigation';
-import { buildExplainMovementPrompt, resolveAccountForPosition } from './utils/positions';
+import {
+  buildExplainMovementPrompt,
+  resolveAccountForPosition,
+  listAccountsForPosition,
+} from './utils/positions';
 import { buildQuoteUrl, openQuote } from './utils/quotes';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
@@ -4768,6 +4773,7 @@ export default function App() {
   const [symbolNotesEditor, setSymbolNotesEditor] = useState(null);
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [accountMetadataEditor, setAccountMetadataEditor] = useState(null);
+  const [accountActionPrompt, setAccountActionPrompt] = useState(null);
   const [pendingMetadataOverrides, setPendingMetadataOverrides] = useState(() => new Map());
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
@@ -5286,6 +5292,25 @@ export default function App() {
     accounts.forEach((account) => {
       if (account && typeof account.id === 'string' && account.id) {
         map.set(account.id, account);
+      }
+    });
+    return map;
+  }, [accounts]);
+  const accountsByNumber = useMemo(() => {
+    const map = new Map();
+    accounts.forEach((account) => {
+      if (!account) {
+        return;
+      }
+      const normalized =
+        account.number !== undefined && account.number !== null
+          ? String(account.number).trim()
+          : '';
+      if (!normalized) {
+        return;
+      }
+      if (!map.has(normalized)) {
+        map.set(normalized, account);
       }
     });
     return map;
@@ -7054,29 +7079,119 @@ export default function App() {
     [handleFocusedSymbolContextMenu, handleFocusedSymbolSummaryClick]
   );
 
+  const triggerBuySell = useCallback(
+    async ({ symbol, position, accountOptionsOverride } = {}) => {
+      const normalizedSymbol =
+        typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+      if (!normalizedSymbol) {
+        return;
+      }
+
+      const baseOptions =
+        Array.isArray(accountOptionsOverride) && accountOptionsOverride.length > 0
+          ? accountOptionsOverride
+          : position
+          ? listAccountsForPosition(position, { accountsById, accountsByNumber })
+          : [];
+
+      if (baseOptions.length > 1) {
+        const dialogOptions = baseOptions.map((option) => ({
+          key: option.key,
+          label: option.label,
+          description: option.description || null,
+          account: option.account || null,
+        }));
+        setAccountActionPrompt({
+          title: 'Select account',
+          message: `Multiple accounts hold ${normalizedSymbol}. Select which account to trade.`,
+          symbol: normalizedSymbol,
+          options: dialogOptions,
+          onConfirm: async (account) => {
+            if (account) {
+              openAccountSummary(account);
+            }
+            try {
+              await copyTextToClipboard(normalizedSymbol);
+            } catch (error) {
+              console.error('Failed to copy symbol to clipboard', error);
+            }
+          },
+        });
+        return;
+      }
+
+      const targetAccount =
+        baseOptions.length === 1
+          ? baseOptions[0].account
+          : position
+          ? resolveAccountForPosition(position, accountsById)
+          : null;
+
+      if (targetAccount) {
+        openAccountSummary(targetAccount);
+      }
+
+      try {
+        await copyTextToClipboard(normalizedSymbol);
+      } catch (error) {
+        console.error('Failed to copy symbol to clipboard', error);
+      }
+    },
+    [accountsById, accountsByNumber, setAccountActionPrompt]
+  );
+
   const handleFocusedSymbolBuySell = useCallback(async () => {
     if (!focusedSymbol) {
       return;
     }
-    const key = String(focusedSymbol).trim().toUpperCase();
-    if (!key) {
-      return;
-    }
-
     const position = findFocusedSymbolPosition();
-    if (position) {
-      const account = resolveAccountForPosition(position, accountsById);
-      if (account) {
-        openAccountSummary(account);
-      }
-    }
+    await triggerBuySell({
+      symbol: focusedSymbol,
+      position,
+      accountOptionsOverride: focusedSymbolAccountOptions,
+    });
+  }, [focusedSymbol, findFocusedSymbolPosition, triggerBuySell, focusedSymbolAccountOptions]);
 
-    try {
-      await copyTextToClipboard(key);
-    } catch (error) {
-      console.error('Failed to copy symbol to clipboard', error);
-    }
-  }, [focusedSymbol, findFocusedSymbolPosition, accountsById]);
+  const handleBuySellPosition = useCallback(
+    (position) => {
+      if (!position || position.symbol === undefined || position.symbol === null) {
+        return;
+      }
+      const rawSymbol = String(position.symbol);
+      if (!rawSymbol.trim()) {
+        return;
+      }
+      triggerBuySell({ symbol: rawSymbol, position });
+    },
+    [triggerBuySell]
+  );
+
+  const handleAccountActionCancel = useCallback(() => {
+    setAccountActionPrompt(null);
+  }, []);
+
+  const handleAccountActionSelect = useCallback(
+    async (optionKey) => {
+      if (!accountActionPrompt) {
+        return;
+      }
+      const { options, onConfirm } = accountActionPrompt;
+      const option = Array.isArray(options)
+        ? options.find((entry) => entry.key === optionKey)
+        : null;
+      const confirm = typeof onConfirm === 'function' ? onConfirm : null;
+      setAccountActionPrompt(null);
+      if (!option || !confirm) {
+        return;
+      }
+      try {
+        await confirm(option.account || null);
+      } catch (error) {
+        console.error('Account action failed', error);
+      }
+    },
+    [accountActionPrompt]
+  );
 
   const handleExplainMovementForSymbol = useCallback(async () => {
     if (!focusedSymbol) {
@@ -10650,81 +10765,56 @@ export default function App() {
     [scrollPositionsCardIntoView, setOrdersFilter, setPortfolioViewTab]
   );
 
-  const focusedSymbolAccountCount = useMemo(() => {
+  const focusedSymbolAccountOptions = useMemo(() => {
     if (!focusedSymbol) {
-      return 0;
+      return [];
     }
     const key = String(focusedSymbol).trim().toUpperCase();
     if (!key) {
-      return 0;
+      return [];
     }
-    const source = Array.isArray(rawPositions) ? rawPositions : [];
+    const source = Array.isArray(symbolFilteredPositions?.list)
+      ? symbolFilteredPositions.list
+      : [];
     if (!source.length) {
-      return 0;
+      return [];
     }
-    const accountKeys = new Set();
+    const unique = new Map();
     source.forEach((position) => {
-      if (!position || (position.symbol || '').toString().trim().toUpperCase() !== key) {
+      if ((position?.symbol || '').toString().trim().toUpperCase() !== key) {
         return;
       }
-      const account = resolveAccountForPosition(position, accountsById);
-      if (account) {
-        if (account.id !== undefined && account.id !== null) {
-          const normalizedId = String(account.id).trim();
-          if (normalizedId) {
-            accountKeys.add(`id:${normalizedId}`);
-            return;
-          }
+      const candidates = listAccountsForPosition(position, { accountsById, accountsByNumber });
+      candidates.forEach((candidate) => {
+        if (!candidate || !candidate.key) {
+          return;
         }
-        if (account.number !== undefined && account.number !== null) {
-          const normalizedNumber = String(account.number).trim();
-          if (normalizedNumber) {
-            accountKeys.add(`number:${normalizedNumber}`);
-            return;
-          }
+        if (!unique.has(candidate.key)) {
+          unique.set(candidate.key, candidate);
+          return;
         }
-      }
-      const candidates = [
-        position?.portalAccountId,
-        position?.accountPortalId,
-        position?.portalId,
-        position?.accountPortalUuid,
-        position?.accountId,
-        position?.accountKey,
-        position?.accountNumber,
-      ];
-      for (const candidate of candidates) {
-        if (candidate === undefined || candidate === null) {
-          continue;
+        const existing = unique.get(candidate.key);
+        const existingScore =
+          (existing.description ? 1 : 0) + (existing.ownerLabel ? 1 : 0);
+        const candidateScore =
+          (candidate.description ? 1 : 0) + (candidate.ownerLabel ? 1 : 0);
+        if (candidateScore > existingScore) {
+          unique.set(candidate.key, candidate);
         }
-        const normalized = String(candidate).trim();
-        if (!normalized || normalized.toLowerCase() === 'all') {
-          continue;
-        }
-        accountKeys.add(`candidate:${normalized}`);
-        break;
-      }
+      });
     });
-    return accountKeys.size;
-  }, [accountsById, focusedSymbol, rawPositions]);
+    if (!unique.size) {
+      return [];
+    }
+    return Array.from(unique.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    );
+  }, [focusedSymbol, symbolFilteredPositions, accountsById, accountsByNumber]);
 
+  const focusedSymbolAccountCount = focusedSymbolAccountOptions.length;
   const focusedSymbolHasMultipleAccounts = focusedSymbolAccountCount > 1;
   const focusedSymbolHasPosition = Boolean(findFocusedSymbolPosition());
   const showFocusedSymbolGoToAccount = focusedSymbolHasPosition && !focusedSymbolHasMultipleAccounts;
-
-  const handleFocusedSymbolMenuDetails = useCallback(() => {
-    if (!focusedSymbol) {
-      closeFocusedSymbolMenu();
-      return;
-    }
-    handleSearchSelectSymbol(focusedSymbol, { description: focusedSymbolDescription || null });
-    closeFocusedSymbolMenu();
-  }, [
-    focusedSymbol,
-    focusedSymbolDescription,
-    handleSearchSelectSymbol,
-    closeFocusedSymbolMenu,
-  ]);
 
   const handleFocusedSymbolMenuBuySell = useCallback(() => {
     closeFocusedSymbolMenu();
@@ -10734,17 +10824,21 @@ export default function App() {
   const handleFocusedSymbolMenuGoToAccount = useCallback(() => {
     const position = findFocusedSymbolPosition();
     closeFocusedSymbolMenu();
-    if (focusedSymbolHasMultipleAccounts) {
+    if (!position || focusedSymbolHasMultipleAccounts) {
       return;
     }
-    if (!position) {
+    const account =
+      (focusedSymbolAccountOptions.length === 1 && focusedSymbolAccountOptions[0]?.account)
+        ? focusedSymbolAccountOptions[0].account
+        : resolveAccountForPosition(position, accountsById);
+    if (!account) {
       return;
     }
-    const account = resolveAccountForPosition(position, accountsById);
     handleGoToAccountFromSymbol(position, account);
   }, [
     accountsById,
     closeFocusedSymbolMenu,
+    focusedSymbolAccountOptions,
     focusedSymbolHasMultipleAccounts,
     findFocusedSymbolPosition,
     handleGoToAccountFromSymbol,
@@ -11945,16 +12039,6 @@ export default function App() {
                       type="button"
                       className="positions-table__context-menu-item"
                       role="menuitem"
-                      onClick={handleFocusedSymbolMenuDetails}
-                    >
-                      Details
-                    </button>
-                  </li>
-                  <li role="none">
-                    <button
-                      type="button"
-                      className="positions-table__context-menu-item"
-                      role="menuitem"
                       onClick={handleFocusedSymbolMenuBuySell}
                     >
                       Buy/sell
@@ -12275,12 +12359,14 @@ export default function App() {
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}
                 onShowNotes={handleShowSymbolNotes}
                 onShowOrders={handleShowSymbolOrders}
+                onBuySell={handleBuySellPosition}
                 onFocusSymbol={handleSearchSelectSymbol}
                 onGoToAccount={focusedSymbol ? handleGoToAccountFromSymbol : null}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
                 showPortfolioShare={!focusedSymbol}
                 showAccountColumn={Boolean(focusedSymbol) && isAggregateSelection}
                 hideTargetColumn={Boolean(focusedSymbol)}
+                hideDetailsOption={Boolean(focusedSymbol)}
                 accountsById={accountsById}
               />
             </div>
@@ -12712,6 +12798,15 @@ export default function App() {
           initialValue={planningContextEditor.initialValue}
           onClose={handleClosePlanningContext}
           onSave={(value) => handleSavePlanningContext(planningContextEditor.accountKey, value)}
+        />
+      )}
+      {accountActionPrompt && (
+        <AccountActionDialog
+          title={accountActionPrompt.title}
+          message={accountActionPrompt.message}
+          options={accountActionPrompt.options || []}
+          onSelect={handleAccountActionSelect}
+          onCancel={handleAccountActionCancel}
         />
       )}
       {accountMetadataEditor && (

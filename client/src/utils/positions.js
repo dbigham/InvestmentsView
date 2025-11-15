@@ -156,6 +156,246 @@ export function resolveAccountForPosition(position, accountsById) {
   return null;
 }
 
+function getAccountDisplayLabel(account) {
+  if (!account || typeof account !== 'object') {
+    return '';
+  }
+  const displayName = typeof account.displayName === 'string' ? account.displayName.trim() : '';
+  if (displayName) {
+    return displayName;
+  }
+  const name = typeof account.name === 'string' ? account.name.trim() : '';
+  if (name) {
+    return name;
+  }
+  const number =
+    account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+  if (number) {
+    return number;
+  }
+  const id = account.id !== undefined && account.id !== null ? String(account.id).trim() : '';
+  if (id) {
+    return id;
+  }
+  const portalAccountId =
+    account.portalAccountId !== undefined && account.portalAccountId !== null
+      ? String(account.portalAccountId).trim()
+      : '';
+  if (portalAccountId) {
+    return portalAccountId;
+  }
+  const portalId =
+    account.portalId !== undefined && account.portalId !== null
+      ? String(account.portalId).trim()
+      : '';
+  if (portalId) {
+    return portalId;
+  }
+  const portalUuid =
+    account.portalUuid !== undefined && account.portalUuid !== null
+      ? String(account.portalUuid).trim()
+      : '';
+  if (portalUuid) {
+    return portalUuid;
+  }
+  return 'Account';
+}
+
+export function listAccountsForPosition(position, { accountsById, accountsByNumber } = {}) {
+  if (!position) {
+    return [];
+  }
+
+  const normalizedAccountsByNumber = (() => {
+    if (accountsByNumber instanceof Map) {
+      return accountsByNumber;
+    }
+    const map = new Map();
+    if (accountsById && typeof accountsById.forEach === 'function') {
+      accountsById.forEach((account) => {
+        if (!account) {
+          return;
+        }
+        const rawNumber =
+          account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+        if (rawNumber && !map.has(rawNumber)) {
+          map.set(rawNumber, account);
+        }
+      });
+    }
+    return map;
+  })();
+
+  const options = new Map();
+
+  const registerAccount = (account, metadata = {}) => {
+    if (!account || typeof account !== 'object') {
+      return;
+    }
+
+    const id = account.id !== undefined && account.id !== null ? String(account.id).trim() : '';
+    const number =
+      account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+    const portalAccountId =
+      account.portalAccountId !== undefined && account.portalAccountId !== null
+        ? String(account.portalAccountId).trim()
+        : '';
+    const portalId =
+      account.portalId !== undefined && account.portalId !== null ? String(account.portalId).trim() : '';
+    const portalUuid =
+      account.portalUuid !== undefined && account.portalUuid !== null
+        ? String(account.portalUuid).trim()
+        : '';
+
+    const key = id
+      ? `id:${id}`
+      : number
+      ? `number:${number}`
+      : portalAccountId
+      ? `portal:${portalAccountId}`
+      : portalId
+      ? `portal:${portalId}`
+      : portalUuid
+      ? `portal:${portalUuid}`
+      : null;
+    if (!key) {
+      return;
+    }
+
+    const displayName =
+      typeof metadata.accountDisplayName === 'string' ? metadata.accountDisplayName.trim() : '';
+    const ownerLabel =
+      typeof metadata.accountOwnerLabel === 'string' ? metadata.accountOwnerLabel.trim() : '';
+    const baseLabel = displayName || getAccountDisplayLabel(account);
+    const composedLabel = ownerLabel && !baseLabel.includes(ownerLabel)
+      ? `${baseLabel} — ${ownerLabel}`
+      : baseLabel;
+
+    const numberForDescription =
+      (metadata.accountNumber !== undefined && metadata.accountNumber !== null
+        ? String(metadata.accountNumber).trim()
+        : '') || number;
+
+    const descriptionParts = [];
+    if (ownerLabel && !composedLabel.includes(ownerLabel)) {
+      descriptionParts.push(ownerLabel);
+    }
+    if (numberForDescription && !composedLabel.includes(numberForDescription)) {
+      descriptionParts.push(numberForDescription);
+    }
+    const description = descriptionParts.length ? descriptionParts.join(' • ') : '';
+
+    const existing = options.get(key);
+    if (existing) {
+      const existingScore =
+        (existing.description ? 1 : 0) + (existing.ownerLabel ? 1 : 0) + (existing.hasDisplayName ? 1 : 0);
+      const candidateScore =
+        (description ? 1 : 0) + (ownerLabel ? 1 : 0) + (displayName ? 1 : 0);
+      if (candidateScore <= existingScore) {
+        return;
+      }
+    }
+
+    options.set(key, {
+      key,
+      label: composedLabel,
+      description,
+      account,
+      accountId: id || (metadata.accountId ? String(metadata.accountId).trim() : null),
+      accountNumber: numberForDescription || null,
+      ownerLabel,
+      hasDisplayName: Boolean(displayName),
+    });
+  };
+
+  const tryMatchById = (rawId, metadata = {}) => {
+    if (rawId === undefined || rawId === null) {
+      return false;
+    }
+    const normalized = String(rawId).trim();
+    if (!normalized || normalized.toLowerCase() === 'all') {
+      return false;
+    }
+    if (accountsById && typeof accountsById.get === 'function' && accountsById.has(normalized)) {
+      registerAccount(accountsById.get(normalized), { ...metadata, accountId: normalized });
+      return true;
+    }
+    return false;
+  };
+
+  const tryMatchByNumber = (rawNumber, metadata = {}) => {
+    if (rawNumber === undefined || rawNumber === null) {
+      return false;
+    }
+    const normalized = String(rawNumber).trim();
+    if (!normalized || normalized.toLowerCase() === 'all') {
+      return false;
+    }
+    let account = null;
+    if (normalizedAccountsByNumber.has(normalized)) {
+      account = normalizedAccountsByNumber.get(normalized);
+    } else if (accountsById && typeof accountsById.values === 'function') {
+      for (const entry of accountsById.values()) {
+        const candidateNumber =
+          entry && entry.number !== undefined && entry.number !== null
+            ? String(entry.number).trim()
+            : '';
+        if (candidateNumber && candidateNumber === normalized) {
+          account = entry;
+          break;
+        }
+      }
+    }
+    if (!account) {
+      return false;
+    }
+    registerAccount(account, { ...metadata, accountNumber: normalized });
+    return true;
+  };
+
+  const considerEntry = (entry) => {
+    if (!entry) {
+      return;
+    }
+    const matched = tryMatchById(entry.accountId, entry);
+    if (!matched) {
+      tryMatchByNumber(entry.accountNumber, entry);
+    }
+  };
+
+  considerEntry({
+    accountId: position.accountId,
+    accountNumber: position.accountNumber,
+    accountDisplayName: position.accountDisplayName,
+    accountOwnerLabel: position.accountOwnerLabel,
+  });
+
+  if (Array.isArray(position.accountNotes)) {
+    position.accountNotes.forEach((entry) => {
+      considerEntry(entry);
+    });
+  }
+
+  const resolved = resolveAccountForPosition(position, accountsById);
+  if (resolved) {
+    registerAccount(resolved, {
+      accountDisplayName: position.accountDisplayName,
+      accountOwnerLabel: position.accountOwnerLabel,
+      accountId: position.accountId,
+      accountNumber: position.accountNumber,
+    });
+  }
+
+  const result = Array.from(options.values())
+    .map(({ hasDisplayName, ...entry }) => ({
+      ...entry,
+      description: entry.description || null,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+
+  return result;
+}
+
 function formatPromptValue(value, { fallback = 'Not available', currency } = {}) {
   if (value === null || value === undefined) {
     return fallback;
