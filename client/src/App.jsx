@@ -12355,17 +12355,6 @@ export default function App() {
     activeTotalPnlAccountKey,
   ]);
 
-  if (loading && !data) {
-    return (
-      <div className="summary-page summary-page--initial-loading">
-        <div className="initial-loading" role="status" aria-live="polite">
-          <span className="visually-hidden">Loading latest account data…</span>
-          <span className="initial-loading__spinner" aria-hidden="true" />
-        </div>
-      </div>
-    );
-  }
-
   const summaryMainClassName =
     !showTargetColumnForSelection && orderedPositions.length > 0
       ? 'summary-main summary-main--compact'
@@ -12526,6 +12515,18 @@ export default function App() {
   const summaryButtonTitle = focusedSymbolQuoteError
     ? `${summaryButtonTitleBase} Quote status: ${focusedSymbolQuoteError.message || 'Failed to refresh quote.'}`
     : summaryButtonTitleBase;
+
+  if (loading && !data) {
+    return (
+      <div className="summary-page summary-page--initial-loading">
+        <div className="initial-loading" role="status" aria-live="polite">
+          <span className="visually-hidden">Loading latest account data...</span>
+          <span className="initial-loading__spinner" aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="summary-page">
       <main className={summaryMainClassName}>
@@ -12743,26 +12744,27 @@ export default function App() {
                           </span>
                         ) : null}
                         {quoteMarketCapValue ? (
-                          <span className="symbol-view__detail">
-                            {quoteMarketCapHistoryUrl ? (
-                              <a
-                                className="symbol-view__detail-label symbol-view__detail-label--link"
-                                href={quoteMarketCapHistoryUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                Market cap
-                              </a>
-                            ) : (
+                          quoteMarketCapHistoryUrl ? (
+                            <a
+                              className="symbol-view__detail symbol-view__detail-link"
+                              href={quoteMarketCapHistoryUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
                               <span className="symbol-view__detail-label">Market cap</span>
-                            )}
-                            <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
-                          </span>
+                              <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                            </a>
+                          ) : (
+                            <span className="symbol-view__detail">
+                              <span className="symbol-view__detail-label">Market cap</span>
+                              <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                            </span>
+                          )
                         ) : null}
                         {quoteDividendValue ? (
                           <button
                             type="button"
-                            className="symbol-view__detail symbol-view__detail-button"
+                            className="symbol-view__detail symbol-view__detail-button symbol-view__detail-link"
                             onClick={handleShowDividendsPanel}
                             title={quoteDividendTooltip || undefined}
                           >
