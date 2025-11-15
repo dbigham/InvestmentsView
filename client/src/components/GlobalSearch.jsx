@@ -196,29 +196,62 @@ export default function GlobalSearch({
       symbolIndex.set(String(item.key).toUpperCase(), item);
     });
 
-    const resolveSymbolActionTarget = (raw) => {
-      if (!raw) return null;
-      const compact = normalize(raw).replace(/\s+/g, '');
-      if (!compact) return null;
-      const up = compact.toUpperCase();
-      if (!symbolIndex.has(up)) return null;
-      const entry = symbolIndex.get(up);
-      return {
-        key: up,
-        item: entry,
-      };
+    const symbolActionDeduper = new Set();
+    const templateDeduper = new Set();
+
+    const pushSymbolIntentTemplate = (intent) => {
+      if (templateDeduper.has(intent)) return;
+      if (intent === 'orders') {
+        templateActions.push({
+          kind: 'template',
+          key: 'orders-template',
+          label: 'Orders for [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'orders for ',
+        });
+      } else if (intent === 'dividends') {
+        templateActions.push({
+          kind: 'template',
+          key: 'dividends-template',
+          label: 'Dividends for [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'dividends for ',
+        });
+      } else if (intent === 'buy') {
+        templateActions.push({
+          kind: 'template',
+          key: 'buy-template',
+          label: 'Buy [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'buy ',
+        });
+      } else if (intent === 'sell') {
+        templateActions.push({
+          kind: 'template',
+          key: 'sell-template',
+          label: 'Sell [symbol]',
+          sublabel: 'Type a symbol or choose one of your symbols',
+          templateText: 'sell ',
+        });
+      }
+      templateDeduper.add(intent);
     };
 
-    const appendSymbolAction = (intent, match) => {
-      if (!match || !match.key) return;
-      const description = match.item?.sublabel || null;
+    const pushSymbolAction = (intent, symbolItem) => {
+      if (!symbolItem || !symbolItem.key) return;
+      const symbolKey = String(symbolItem.key).toUpperCase();
+      if (!symbolKey) return;
+      const dedupeKey = `${intent}:${symbolKey}`;
+      if (symbolActionDeduper.has(dedupeKey)) return;
+      symbolActionDeduper.add(dedupeKey);
+      const description = symbolItem.sublabel || null;
       if (intent === 'orders') {
         symbolActions.push({
           kind: 'symbol-action',
-          key: `symbol-orders:${match.key}`,
-          label: `Orders for ${match.key}`,
+          key: `symbol-orders:${symbolKey}`,
+          label: `Orders for ${symbolKey}`,
           sublabel: 'View Orders tab for this symbol',
-          symbol: match.key,
+          symbol: symbolKey,
           symbolDescription: description,
           targetTab: 'orders',
           intent: 'orders',
@@ -226,10 +259,10 @@ export default function GlobalSearch({
       } else if (intent === 'dividends') {
         symbolActions.push({
           kind: 'symbol-action',
-          key: `symbol-dividends:${match.key}`,
-          label: `Dividends for ${match.key}`,
+          key: `symbol-dividends:${symbolKey}`,
+          label: `Dividends for ${symbolKey}`,
           sublabel: 'View Dividends tab for this symbol',
-          symbol: match.key,
+          symbol: symbolKey,
           symbolDescription: description,
           targetTab: 'dividends',
           intent: 'dividends',
@@ -237,10 +270,10 @@ export default function GlobalSearch({
       } else if (intent === 'buy' || intent === 'sell') {
         symbolActions.push({
           kind: 'symbol-action',
-          key: `symbol-${intent}:${match.key}`,
-          label: `${intent === 'buy' ? 'Buy' : 'Sell'} ${match.key}`,
+          key: `symbol-${intent}:${symbolKey}`,
+          label: `${intent === 'buy' ? 'Buy' : 'Sell'} ${symbolKey}`,
           sublabel: 'Open buy/sell flow for this symbol',
-          symbol: match.key,
+          symbol: symbolKey,
           symbolDescription: description,
           targetTab: null,
           intent,
@@ -248,25 +281,57 @@ export default function GlobalSearch({
       }
     };
 
-    const ordersMatch = lower.match(/^orders?\s+for\s+([-a-z0-9.]+)$/);
-    if (ordersMatch && ordersMatch[1]) {
-      appendSymbolAction('orders', resolveSymbolActionTarget(ordersMatch[1]));
-    }
+    const findSymbolSuggestions = (fragment) => {
+      const normalizedFragment = normalize(fragment);
+      if (!normalizedFragment) return [];
+      const compact = normalizedFragment.replace(/\s+/g, '');
+      if (!compact) return [];
+      const bare = compact.replace(/[^a-z0-9]/gi, '');
+      const withScores = symbolItems
+        .map((item) => {
+          const label = String(item.label || '');
+          const baseScore = scoreMatch(label, compact);
+          const bareLabel = label.replace(/[^a-z0-9]/gi, '');
+          const bareScore = bare ? scoreMatch(bareLabel, bare) : -1;
+          const score = Math.max(baseScore, bareScore);
+          return { item, score };
+        })
+        .filter((entry) => entry.score >= 45)
+        .sort((a, b) => b.score - a.score);
+      return withScores.slice(0, 5).map((entry) => entry.item);
+    };
 
-    const dividendsMatch = lower.match(/^dividends?\s+for\s+([-a-z0-9.]+)$/);
-    if (dividendsMatch && dividendsMatch[1]) {
-      appendSymbolAction('dividends', resolveSymbolActionTarget(dividendsMatch[1]));
-    }
+    const matchSymbolIntent = (intent, regex, fragmentIndex = 1) => {
+      const match = lower.match(regex);
+      if (!match) return;
+      const fragment = match[fragmentIndex] || '';
+      const compact = normalize(fragment).replace(/\s+/g, '');
+      if (compact) {
+        const up = compact.toUpperCase();
+        if (symbolIndex.has(up)) {
+          pushSymbolAction(intent, symbolIndex.get(up));
+        }
+      }
+      findSymbolSuggestions(fragment).forEach((item) => pushSymbolAction(intent, item));
+    };
 
-    const buyMatch = lower.match(/^buy\s+([-a-z0-9.]+)$/);
-    if (buyMatch && buyMatch[1]) {
-      appendSymbolAction('buy', resolveSymbolActionTarget(buyMatch[1]));
-    }
+    const intentPrefixes = [
+      { intent: 'orders', test: /^orders?/ },
+      { intent: 'dividends', test: /^dividends?/ },
+      { intent: 'buy', test: /^buy/ },
+      { intent: 'sell', test: /^sell/ },
+    ];
 
-    const sellMatch = lower.match(/^sell\s+([-a-z0-9.]+)$/);
-    if (sellMatch && sellMatch[1]) {
-      appendSymbolAction('sell', resolveSymbolActionTarget(sellMatch[1]));
-    }
+    intentPrefixes.forEach(({ intent, test }) => {
+      if (test.test(lower)) {
+        pushSymbolIntentTemplate(intent);
+      }
+    });
+
+    matchSymbolIntent('orders', /^orders?\s+for(?:\s+([-a-z0-9.]*))?\s*$/);
+    matchSymbolIntent('dividends', /^dividends?\s+for(?:\s+([-a-z0-9.]*))?\s*$/);
+    matchSymbolIntent('buy', /^buy(?:\s+([-a-z0-9.]*))?\s*$/);
+    matchSymbolIntent('sell', /^sell(?:\s+([-a-z0-9.]*))?\s*$/);
 
     const rank = (item) => {
       if (!item) return -1;
