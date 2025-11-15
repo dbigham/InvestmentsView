@@ -13002,6 +13002,12 @@ export default function App() {
             const asOfKey = typeof entry?.asOf === 'string' && entry.asOf.trim() ? entry.asOf.trim() : null;
             return asOfKey;
           })()}
+          onBuySell={handleBuySellPosition}
+          onGoToAccount={handleGoToAccountFromSymbol}
+          onShowOrders={handleShowSymbolOrders}
+          onShowNotes={handleShowSymbolNotes}
+          onFocusSymbol={handleSearchSelectSymbol}
+          accountsById={accountsById}
         />
       )}
     </div>
