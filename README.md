@@ -1,60 +1,69 @@
-# Questrade Summary View
+# Investments View (Questrade Viewer)
 
-A household-first dashboard that mirrors the Questrade "Summary" page, but lets you line up every login, compare CAD vs USD exposure, surface contributions, run dividend and projection reports, and share the view with your partner. Everything runs locally and only reads live data through Questrade's public API.
+A dashboard similar to the Questrade "Summary" page, but lets you aggregate multiple Questrade logins.
+
+Other key features:
+
+- Organize your accounts into a hierarchy of account groups, and see stats for them. (e.g. RRSP)
+- Total P&L graph
+- Total P&L breakdown by ticker in a graphical view (Also for today's P&L and open P&L)
+- Annualized return (XIRR)
+- Retirement projections, including CPP + OAS calculations
+- Deployed vs. reserve (Cash + T-bill ETFs) with a tool for adjusting this percentage
+- Everything runs locally reads data through Questrade's public API.
 
 ![Main dashboard overview](docs/screenshots/main.png)
 
-## Highlights
-
-- Household-aware account selector with saved nicknames, default landing accounts, and deep links back into the Questrade portal.
-- Rich equity card that rolls up cash, buying power, day/open P&L, funding progress, CAGR, and household adjustments.
-- Positions table with instant filtering, logo support, and a context menu for copying trade prompts or drilling into symbol-level analysis.
-- Dedicated tabs for Dividends, Deployments, Projections, News (OpenAI-powered), and CAD/USD cash breakdowns.
-- "People" overlay that converts everything to CAD, totals per person, and keeps multiple households in sync.
-- Optional investment-model bridge to evaluate TQQQ-style strategies or QQQ "temperature" overlays next to your actual holdings.
-- Built as a Vite + React SPA backed by a tiny Express proxy that handles OAuth refresh cycles for every configured login.
-
 ## Guided tour
 
-### All accounts, always in sync
+### Account selector
 ![Account selector](docs/screenshots/account-selector.png)
 
-Keep multiple logins and sub-accounts pinned wherever you want them. Ctrl/?-click opens the native Questrade portal, and you can favourite any account as the default landing zone after a restart.
+Organize your accounts into a hierarchy of account groups.
 
-### Drill into any symbol without leaving the view
+Ctrl-click to go to the account on questrade.com.
+
+### Drill into any symbol
 ![Symbol quick view](docs/screenshots/symbol-view.png)
 
-Hover or search for a ticker to break down open quantity, currency exposure, dividend history, and account-level ownership. The per-row menu also drafts prompts or "invest cash evenly" plans based on live positions.
+See total P&L and other stats for any symbol, as well as orders and dividends.
 
-### Understand deployment and cash plans
-![Deployment adjustments](docs/screenshots/adjust-deployment-vs-reserve-dialog.png)
-
-Track how much of your cash pile is deployed over time, target reserve levels, and apply overrides by login. Switch between absolute CAD and percent deployed, then generate an action plan directly from the data.
-
-### Funding, dividends, and total P&L stories
+### Total P&L breakdown
 ![Total profit and loss breakdown](docs/screenshots/total-profit-and-loss-breakdown.png)
 
-Every badge on the equity card opens a focused dialog: funding history, dividends grouped by symbol and date range, or a P&L breakdown that highlights where gains and drawdowns originated.
+See which symbols (or currency changes) contributed to your total P&L.
 
-### Household perspective with one click
+### Search bar
+![Search bar](docs/screenshots/search-bar.png)
+![Search bar](docs/screenshots/search-bar-2.png)
+![Search bar](docs/screenshots/search-bar-3.png)
+
+The omnibox jumps to accounts, tickers, tabs, or dialogs. Need to open the Dividends tab for a symbol or edit account metadata? Type a few letters and hit enter. Shortcuts keep the workflow fast.
+
+### People view
 ![People view](docs/screenshots/people-view.png)
 
-Translate every holding to CAD and view balances per person (or entity) across logins. Useful for joint planning sessions or making sure RESP/TFSA goals stay on target.
+Aggregate various accounts by person.
 
-### Plan the future as well as the present
+### Retirement projections
+
 ![Projections view](docs/screenshots/projections-view-1.png)
+![Projections view](docs/screenshots/projections-view-2.png)
 
-Toggle into the projections tab to test growth rates, contribution schedules, or investment-model overlays. Multiple presets (see also `docs/screenshots/projections-view-2.png`) show alternative timelines without leaving the dashboard.
+Define which account (or account group) represents your retirement savings, define projected growth rates for your accounts, then see projections.
+
+A questionare can be filled in to allow CPP and OAS calculations. ([edit-account-details-dialog-1.png](docs/screenshots/edit-account-details-dialog-1.png), [edit-account-details-dialog-2.png](docs/screenshots/edit-account-details-dialog-2.png))
+
+### Adjust deployment vs. reserve amounts
+![Deployment adjustments](docs/screenshots/adjust-deployment-vs-reserve-dialog.png)
+
+When adjusting the percentage of capital deployed, computes buys/sells and makes it easy to copy and paste values when making trades.
 
 ### Investment models and automation hooks
 ![Investment model integration](docs/screenshots/investment-model-integration.png)
 
-When the optional Python helper is installed, the app keeps your reference model (for example TQQQ + reserves) beside live accounts, showing temperature, drift, and the trades required to snap back to target.
-
-### Search once, act anywhere
-![Search bar](docs/screenshots/search-bar.png)
-
-The omnibox jumps to accounts, tickers, tabs, or dialogs. Need to open the Dividends tab for a symbol or edit account metadata? Type a few letters and hit enter. Shortcuts keep the workflow fast.
+When the optional Python helper is installed, allows you to associate automated investment models with stocks in your accounts.
+When the main view is loaded, you'll be warned when it's time to rebalance according to the investment model's rules.
 
 ## Under the hood
 
@@ -83,4 +92,4 @@ Need the full playbook (environment variables, metadata files, optional helpers,
 ## Credits
 
 - Company logos powered by [Logo.dev](https://logo.dev).
-- Screenshots captured via the internal [UI screenshot guide](docs/ui-screenshot-guide.md).
+- Implemented using [ChatGPT Codex](https://chatgpt.com/codex).
