@@ -1285,6 +1285,45 @@ function aggregateAccountBalanceSummaries(accountBalances, accountIds) {
   return summary;
 }
 
+function resolveEarliestCagrStartDate(accountFunding, accountIds) {
+  if (!accountFunding || typeof accountFunding !== 'object') {
+    return null;
+  }
+  if (!Array.isArray(accountIds) || !accountIds.length) {
+    return null;
+  }
+
+  let allHaveCagrStart = true;
+  let earliest = null;
+
+  accountIds.forEach((accountId) => {
+    const key = accountId === undefined || accountId === null ? '' : String(accountId).trim();
+    if (!key) {
+      allHaveCagrStart = false;
+      return;
+    }
+    const entry = accountFunding[key];
+    if (!entry || typeof entry !== 'object') {
+      allHaveCagrStart = false;
+      return;
+    }
+    const raw = entry.cagrStartDate;
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (!trimmed) {
+      allHaveCagrStart = false;
+      return;
+    }
+    if (!earliest || trimmed < earliest) {
+      earliest = trimmed;
+    }
+  });
+
+  if (!allHaveCagrStart || !earliest) {
+    return null;
+  }
+  return earliest;
+}
+
 function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
   if (!accountFunding || typeof accountFunding !== 'object') {
     return null;
@@ -1345,20 +1384,20 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
     }
   });
 
-  if (netDepositsCount === 0 && totalPnlCount === 0 && totalEquityCount === 0) {
-    return null;
-  }
-
   const aggregate = {};
+  let hasAggregateData = false;
+
   if (netDepositsCount > 0 || netDepositsAllTimeCount > 0) {
     aggregate.netDeposits = {};
     if (netDepositsCount > 0) aggregate.netDeposits.combinedCad = netDepositsTotal;
     if (netDepositsAllTimeCount > 0) aggregate.netDeposits.allTimeCad = netDepositsAllTimeTotal;
+    hasAggregateData = true;
   }
   if (totalPnlCount > 0 || totalPnlAllTimeCount > 0) {
     aggregate.totalPnl = {};
     if (totalPnlCount > 0) aggregate.totalPnl.combinedCad = totalPnlTotal;
     if (totalPnlAllTimeCount > 0) aggregate.totalPnl.allTimeCad = totalPnlAllTimeTotal;
+    hasAggregateData = true;
   } else if ((netDepositsCount > 0 || netDepositsAllTimeCount > 0) && totalEquityCount > 0) {
     const derivedCombined = netDepositsCount > 0 ? totalEquityTotal - netDepositsTotal : null;
     const derivedAllTime = netDepositsAllTimeCount > 0 ? totalEquityTotal - netDepositsAllTimeTotal : null;
@@ -1366,13 +1405,21 @@ function aggregateFundingSummariesForAccounts(accountFunding, accountIds) {
       aggregate.totalPnl = {};
       if (isFiniteNumber(derivedCombined)) aggregate.totalPnl.combinedCad = derivedCombined;
       if (isFiniteNumber(derivedAllTime)) aggregate.totalPnl.allTimeCad = derivedAllTime;
+      hasAggregateData = true;
     }
   }
   if (totalEquityCount > 0) {
     aggregate.totalEquityCad = totalEquityTotal;
+    hasAggregateData = true;
   }
 
-  return Object.keys(aggregate).length > 0 ? aggregate : null;
+  const derivedCagrStartDate = resolveEarliestCagrStartDate(accountFunding, normalizedIds);
+  if (derivedCagrStartDate) {
+    aggregate.cagrStartDate = derivedCagrStartDate;
+    hasAggregateData = true;
+  }
+
+  return hasAggregateData ? aggregate : null;
 }
 
 function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
@@ -1774,6 +1821,7 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
   // the summary pod matches the Total P&L dialog and avoids double counting.
   if ((isAccountGroupSelection(normalizedKey) || normalizedKey === 'all') && orderedAccountIds.length) {
     let composed = null;
+    const derivedGroupCagrStartDate = resolveEarliestCagrStartDate(fundingMap, orderedAccountIds);
     if (nextTotalPnlSeriesMap) {
       let earliestAllStart = null;
       let latestAllEnd = null;
@@ -1910,7 +1958,24 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
         if (Number.isFinite(composed.totalEquityCad)) {
           merged.totalEquityCad = composed.totalEquityCad;
         }
+        if (derivedGroupCagrStartDate) {
+          merged.cagrStartDate = derivedGroupCagrStartDate;
+        }
         nextAccountFunding = { ...nextAccountFunding, [normalizedKey]: merged };
+      }
+    }
+
+    if (
+      !composed &&
+      derivedGroupCagrStartDate &&
+      (isAccountGroupSelection(normalizedKey) || normalizedKey === 'all')
+    ) {
+      const base = nextAccountFunding[normalizedKey] || {};
+      if (base.cagrStartDate !== derivedGroupCagrStartDate) {
+        nextAccountFunding = {
+          ...nextAccountFunding,
+          [normalizedKey]: { ...base, cagrStartDate: derivedGroupCagrStartDate },
+        };
       }
     }
   }
