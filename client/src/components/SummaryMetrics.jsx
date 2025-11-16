@@ -1565,6 +1565,7 @@ export default function SummaryMetrics({
 
   // Default action: open Total P&L breakdown when the chart is activated.
   const chartSupportsBreakdown = isTotalPnlMetric && !symbolMode;
+  const selectionSupportsBreakdown = !symbolMode && typeof onShowRangePnlBreakdown === 'function';
 
   const handleActivateTotalPnl = useCallback(() => {
     if (!chartSupportsBreakdown) {
@@ -1646,8 +1647,8 @@ export default function SummaryMetrics({
 
   const triggerRangeBreakdown = useCallback(() => {
     if (
+      !selectionSupportsBreakdown ||
       !selectionSummary ||
-      typeof onShowRangePnlBreakdown !== 'function' ||
       !selectionSummary.startPoint?.date ||
       !selectionSummary.endPoint?.date
     ) {
@@ -1664,6 +1665,7 @@ export default function SummaryMetrics({
       deltaValue: selectionSummary.deltaValue ?? null,
     });
   }, [
+    selectionSupportsBreakdown,
     selectionSummary,
     onShowRangePnlBreakdown,
     selectionStartDateLabel,
@@ -1690,10 +1692,9 @@ export default function SummaryMetrics({
           point.y >= PADDING.top &&
           point.y <= CHART_HEIGHT - PADDING.bottom;
         const canOpenRangeBreakdown =
-          chartSupportsBreakdown &&
+          selectionSupportsBreakdown &&
           clickedInsideSelection &&
           selectionSummary &&
-          typeof onShowRangePnlBreakdown === 'function' &&
           selectionSummary.startPoint?.date &&
           selectionSummary.endPoint?.date;
         if (canOpenRangeBreakdown) {
@@ -1713,10 +1714,9 @@ export default function SummaryMetrics({
       handleActivateTotalPnl();
     },
     [
-      chartSupportsBreakdown,
+      selectionSupportsBreakdown,
       selectionRange,
       selectionSummary,
-      onShowRangePnlBreakdown,
       getRelativePoint,
       handleActivateTotalPnl,
       triggerRangeBreakdown,
