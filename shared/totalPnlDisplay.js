@@ -89,7 +89,6 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
       cumulativeNetDepositsCad: coerceFinite(entry?.cumulativeNetDepositsCad),
       cumulativeNetDepositsSinceDisplayStartCad: coerceFinite(entry?.cumulativeNetDepositsSinceDisplayStartCad),
       priceCad: coerceFinite(entry?.priceCad),
-      priceNative: coerceFinite(entry?.priceNative),
       priceSinceDisplayStartCad: coerceFinite(entry?.priceSinceDisplayStartCad),
     }))
     .filter((entry) => entry.date && entry.totalPnlCad !== null);
@@ -141,21 +140,7 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
   const baselineEquity = coerceFinite(displayStartTotals?.equityCad) ?? afterDisplayStart[0]?.equityCad ?? null;
   const baselineDeposits =
     coerceFinite(displayStartTotals?.cumulativeNetDepositsCad) ?? afterDisplayStart[0]?.cumulativeNetDepositsCad ?? null;
-  const resolvePriceValue = (entry) => {
-    if (!entry) {
-      return null;
-    }
-    const native = coerceFinite(entry.priceNative);
-    if (native !== null) {
-      return native;
-    }
-    return coerceFinite(entry.priceCad);
-  };
-  const baselinePrice =
-    coerceFinite(displayStartTotals?.priceNative) ??
-    coerceFinite(displayStartTotals?.priceCad) ??
-    resolvePriceValue(afterDisplayStart[0]) ??
-    null;
+  const baselinePrice = coerceFinite(displayStartTotals?.priceCad) ?? afterDisplayStart[0]?.priceCad ?? null;
 
   return working.map((entry, index) => {
     const normalized = { ...entry };
@@ -204,10 +189,9 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
         ? normalized.cumulativeNetDepositsSinceDisplayStartCad
         : undefined;
 
-    if (normalized.priceSinceDisplayStartCad === null) {
-      const resolvedPrice = resolvePriceValue(normalized);
-      if (baselinePrice !== null && resolvedPrice !== null) {
-        const delta = resolvedPrice - baselinePrice;
+    if (normalized.priceSinceDisplayStartCad === null && normalized.priceCad !== null) {
+      if (baselinePrice !== null) {
+        const delta = normalized.priceCad - baselinePrice;
         normalized.priceSinceDisplayStartCad = Math.abs(delta) < DELTA_EPSILON ? 0 : delta;
       }
     } else if (index === 0 && normalized.priceSinceDisplayStartCad !== null) {
@@ -217,16 +201,9 @@ export function buildTotalPnlDisplaySeries(points, timeframe = 'ALL', options = 
           : normalized.priceSinceDisplayStartCad;
     }
 
-    const resolvedDisplayPrice = resolvePriceValue(normalized);
-    normalized.price =
-      resolvedDisplayPrice !== null
-        ? resolvedDisplayPrice
-        : normalized.priceCad !== null
-          ? normalized.priceCad
-          : null;
+    normalized.price = normalized.priceCad;
     normalized.priceDelta =
       normalized.priceSinceDisplayStartCad !== null ? normalized.priceSinceDisplayStartCad : undefined;
-    normalized.priceNative = normalized.priceNative ?? null;
 
     return normalized;
   });

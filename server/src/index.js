@@ -425,6 +425,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
     totalEquityCad: 0,
     reserveValueCad: 0,
     deployedValueCad: 0,
+    priceCad: 0,
   };
   const summaryCounts = {
     totalPnlCad: 0,
@@ -434,11 +435,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
     totalEquityCad: 0,
     reserveValueCad: 0,
     deployedValueCad: 0,
+    priceCad: 0,
   };
   let aggregatedStart = null;
   let aggregatedEnd = null;
-  let aggregatedPriceCad = null;
-  let aggregatedPriceNative = null;
 
   successfulSeries.forEach(({ series }) => {
     if (!series) {
@@ -490,8 +490,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
             reserveCount: 0,
             deployed: 0,
             deployedCount: 0,
-            priceCad: undefined,
-            priceNative: undefined,
+            priceCad: 0,
+            priceCadCount: 0,
+            priceNative: 0,
+            priceNativeCount: 0,
           };
           totalsByDate.set(dateKey, bucket);
         }
@@ -520,15 +522,15 @@ async function computeAggregateTotalPnlSeriesForContexts(
           bucket.deployed += deployedValue;
           bucket.deployedCount += 1;
         }
-        if (symbolParam) {
-          const pointPriceCad = Number(point.priceCad);
-          if (Number.isFinite(pointPriceCad) && !Number.isFinite(bucket.priceCad)) {
-            bucket.priceCad = pointPriceCad;
-          }
-          const pointPriceNative = Number(point.priceNative);
-          if (Number.isFinite(pointPriceNative) && !Number.isFinite(bucket.priceNative)) {
-            bucket.priceNative = pointPriceNative;
-          }
+        const priceCad = point && Number.isFinite(point.priceCad) ? point.priceCad : null;
+        if (Number.isFinite(priceCad)) {
+          bucket.priceCad += priceCad;
+          bucket.priceCadCount += 1;
+        }
+        const priceNative = point && Number.isFinite(point.priceNative) ? point.priceNative : null;
+        if (Number.isFinite(priceNative)) {
+          bucket.priceNative += priceNative;
+          bucket.priceNativeCount += 1;
         }
       });
     }
@@ -563,11 +565,9 @@ async function computeAggregateTotalPnlSeriesForContexts(
         summaryTotals.deployedValueCad += summary.deployedValueCad;
         summaryCounts.deployedValueCad += 1;
       }
-      if (symbolParam && Number.isFinite(summary.priceCad) && !Number.isFinite(aggregatedPriceCad)) {
-        aggregatedPriceCad = summary.priceCad;
-      }
-      if (symbolParam && Number.isFinite(summary.priceNative) && !Number.isFinite(aggregatedPriceNative)) {
-        aggregatedPriceNative = summary.priceNative;
+      if (Number.isFinite(summary.priceCad)) {
+        summaryTotals.priceCad += summary.priceCad;
+        summaryCounts.priceCad += 1;
       }
     }
   });
@@ -587,6 +587,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
         totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
         reserveValueCad: bucket && bucket.reserveCount > 0 ? bucket.reserve : undefined,
         deployedValueCad: bucket && bucket.deployedCount > 0 ? bucket.deployed : undefined,
+        priceCad:
+          bucket && bucket.priceCadCount > 0 ? bucket.priceCad / bucket.priceCadCount : undefined,
+        priceNative:
+          bucket && bucket.priceNativeCount > 0 ? bucket.priceNative / bucket.priceNativeCount : undefined,
         deployedPercent:
           bucket &&
           bucket.deployedCount > 0 &&
@@ -605,8 +609,6 @@ async function computeAggregateTotalPnlSeriesForContexts(
           Math.abs(bucket.equity) > 0.00001
             ? (bucket.reserve / bucket.equity) * 100
             : undefined,
-        priceCad: symbolParam && Number.isFinite(bucket?.priceCad) ? bucket.priceCad : undefined,
-        priceNative: symbolParam && Number.isFinite(bucket?.priceNative) ? bucket.priceNative : undefined,
       };
     })
     .filter((point) => point && Number.isFinite(point.totalPnlCad));
@@ -633,6 +635,12 @@ async function computeAggregateTotalPnlSeriesForContexts(
     totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
     reserveValueCad: summaryCounts.reserveValueCad > 0 ? summaryTotals.reserveValueCad : null,
     deployedValueCad: summaryCounts.deployedValueCad > 0 ? summaryTotals.deployedValueCad : null,
+    priceCad:
+      summaryCounts.priceCad > 0
+        ? summaryTotals.priceCad / summaryCounts.priceCad
+        : combinedPoints.length && Number.isFinite(combinedPoints[combinedPoints.length - 1].priceCad)
+          ? combinedPoints[combinedPoints.length - 1].priceCad
+          : null,
   };
 
   if (
@@ -641,10 +649,6 @@ async function computeAggregateTotalPnlSeriesForContexts(
     Math.abs(summaryPayload.totalEquityCad) > 0.00001
   ) {
     summaryPayload.deployedPercent = (summaryPayload.deployedValueCad / summaryPayload.totalEquityCad) * 100;
-  }
-  if (symbolParam) {
-    summaryPayload.priceCad = Number.isFinite(aggregatedPriceCad) ? aggregatedPriceCad : null;
-    summaryPayload.priceNative = Number.isFinite(aggregatedPriceNative) ? aggregatedPriceNative : null;
   }
 
   const payload = {
@@ -3303,8 +3307,6 @@ const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
 const priceHistoryCache = new Map();
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
-const PRICE_SERIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'prices');
-const PRICE_SERIES_DEFAULT_START = '1990-01-01';
 // Cache of Questrade symbol details keyed by `${loginId}|${symbolId}` to avoid
 // repeated /v1/symbols lookups when data was already fetched during summary.
 const symbolDetailsCache = new Map();
@@ -3342,46 +3344,6 @@ function setCachedPriceHistory(cacheKey, value) {
     }
   }
   priceHistoryCache.set(cacheKey, value);
-}
-
-function getPriceSeriesCacheFilePath(symbolKey) {
-  const safe = typeof symbolKey === 'string' ? symbolKey.replace(/[^A-Z0-9_.-]/gi, '_') : '';
-  return path.join(PRICE_SERIES_CACHE_DIR, `${safe || 'symbol'}.json`);
-}
-
-function readPriceSeriesCache(symbolKey) {
-  try {
-    const filePath = getPriceSeriesCacheFilePath(symbolKey);
-    if (!fs.existsSync(filePath)) {
-      return null;
-    }
-    const contents = fs.readFileSync(filePath, 'utf-8');
-    if (!contents) {
-      return null;
-    }
-    const parsed = JSON.parse(contents);
-    if (!parsed || !Array.isArray(parsed.points)) {
-      return null;
-    }
-    return parsed;
-  } catch (error) {
-    console.warn('Failed to read price series cache', { symbolKey, error: error?.message || error });
-    return null;
-  }
-}
-
-function writePriceSeriesCache(symbolKey, payload) {
-  try {
-    if (!symbolKey || !payload) {
-      return;
-    }
-    fs.mkdirSync(PRICE_SERIES_CACHE_DIR, { recursive: true });
-    const filePath = getPriceSeriesCacheFilePath(symbolKey);
-    const enriched = { ...payload, cachedAt: new Date().toISOString() };
-    fs.writeFileSync(filePath, JSON.stringify(enriched, null, 2), 'utf-8');
-  } catch (error) {
-    console.warn('Failed to write price series cache', { symbolKey, error: error?.message || error });
-  }
 }
 
 const BENCHMARK_SYMBOLS = {
@@ -10068,98 +10030,6 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
   return normalized;
 }
 
-async function loadSymbolPriceSeries(symbol, requestedStartKey, requestedEndKey) {
-  if (!symbol) {
-    throw new Error('Symbol is required for price history');
-  }
-  const normalizedSymbol = normalizeSymbol(symbol) || symbol.trim().toUpperCase();
-  if (!normalizedSymbol) {
-    throw new Error('Symbol is required for price history');
-  }
-  const startDate = parseDateOnlyString(requestedStartKey) || parseDateOnlyString(PRICE_SERIES_DEFAULT_START);
-  const today = new Date();
-  const endDate = parseDateOnlyString(requestedEndKey) || today;
-  if (!startDate || !endDate || startDate > endDate) {
-    throw new Error('Invalid price history range');
-  }
-  const startKey = formatDateOnly(startDate);
-  const todayKey = formatDateOnly(today);
-  const endKey = formatDateOnly(endDate > today ? today : endDate);
-  const cacheEntry = readPriceSeriesCache(normalizedSymbol);
-  const pointMap = new Map();
-  if (cacheEntry && Array.isArray(cacheEntry.points)) {
-    cacheEntry.points.forEach((point) => {
-      if (!point || typeof point !== 'object') {
-        return;
-      }
-      const dateKey = typeof point.date === 'string' ? point.date : null;
-      const priceValue = Number(point.price);
-      if (dateKey && Number.isFinite(priceValue) && priceValue > 0) {
-        pointMap.set(dateKey, priceValue);
-      }
-    });
-  }
-
-  const ensureRange = async (rangeStartKey, rangeEndKey) => {
-    if (!rangeStartKey || !rangeEndKey || rangeStartKey > rangeEndKey) {
-      return;
-    }
-    const history = await fetchSymbolPriceHistory(normalizedSymbol, rangeStartKey, rangeEndKey, {});
-    if (!Array.isArray(history)) {
-      return;
-    }
-    history.forEach((entry) => {
-      const dateKey = formatDateOnly(entry.date);
-      const priceValue = Number(entry.price);
-      if (dateKey && Number.isFinite(priceValue) && priceValue > 0) {
-        pointMap.set(dateKey, priceValue);
-      }
-    });
-  };
-
-  let sortedKeys = Array.from(pointMap.keys()).sort();
-  if (!sortedKeys.length) {
-    await ensureRange(startKey, endKey);
-  } else {
-    const earliestKey = sortedKeys[0];
-    const latestKey = sortedKeys[sortedKeys.length - 1];
-    if (startKey < earliestKey) {
-      const earliestDate = parseDateOnlyString(earliestKey);
-      const beforeEarliest = earliestDate ? formatDateOnly(addDays(earliestDate, -1)) : earliestKey;
-      const fetchEnd = beforeEarliest && beforeEarliest >= startKey ? beforeEarliest : startKey;
-      if (fetchEnd && fetchEnd >= startKey) {
-        await ensureRange(startKey, fetchEnd);
-      }
-    }
-    if (endKey > latestKey) {
-      const latestDate = parseDateOnlyString(latestKey);
-      const afterLatest = latestDate ? formatDateOnly(addDays(latestDate, 1)) : latestKey;
-      if (afterLatest && afterLatest <= endKey) {
-        await ensureRange(afterLatest, endKey);
-      }
-    }
-  }
-
-  sortedKeys = Array.from(pointMap.keys()).sort();
-  if (!sortedKeys.length) {
-    throw new Error('Price history unavailable for symbol');
-  }
-  const mergedPoints = sortedKeys.map((dateKey) => ({
-    date: dateKey,
-    price: pointMap.get(dateKey),
-  }));
-  const currency = cacheEntry?.currency || inferSymbolCurrency(normalizedSymbol) || 'USD';
-  writePriceSeriesCache(normalizedSymbol, { symbol: normalizedSymbol, currency, points: mergedPoints });
-  const filteredPoints = mergedPoints.filter((point) => point.date >= startKey && point.date <= endKey);
-  return {
-    symbol: normalizedSymbol,
-    currency,
-    startDate: filteredPoints.length ? filteredPoints[0].date : startKey,
-    endDate: filteredPoints.length ? filteredPoints[filteredPoints.length - 1].date : endKey,
-    points: filteredPoints,
-  };
-}
-
 function buildDailyPriceSeries(normalizedHistory, dateKeys) {
   const series = new Map();
   if (!Array.isArray(normalizedHistory) || normalizedHistory.length === 0 || !Array.isArray(dateKeys)) {
@@ -11149,8 +11019,6 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         cumulativeNetDepositsCad: Number.isFinite(displayStartPoint.cumulativeNetDepositsCad)
           ? displayStartPoint.cumulativeNetDepositsCad
           : null,
-        priceCad: Number.isFinite(displayStartPoint.priceCad) ? displayStartPoint.priceCad : null,
-        priceNative: Number.isFinite(displayStartPoint.priceNative) ? displayStartPoint.priceNative : null,
       }
     : null;
 
@@ -11562,13 +11430,11 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       totalPnlAllTimeCad: Number.isFinite(last.totalPnlCad) ? last.totalPnlCad : null,
       totalEquityCad: Number.isFinite(last.equityCad) ? last.equityCad : null,
       priceCad: Number.isFinite(last.priceCad) ? last.priceCad : null,
-      priceNative: Number.isFinite(last.priceNative) ? last.priceNative : null,
       seriesStartTotals: {
         cumulativeNetDepositsCad: Number.isFinite(first.cumulativeNetDepositsCad) ? first.cumulativeNetDepositsCad : null,
         equityCad: Number.isFinite(first.equityCad) ? first.equityCad : null,
         totalPnlCad: Number.isFinite(first.totalPnlCad) ? first.totalPnlCad : null,
         priceCad: Number.isFinite(first.priceCad) ? first.priceCad : null,
-        priceNative: Number.isFinite(first.priceNative) ? first.priceNative : null,
       },
       displayStartTotals: undefined,
     };
@@ -15910,30 +15776,6 @@ app.get('/api/summary', async function (req, res) {
       return res.status(error.response.status).json({ message: 'Questrade API error', details: error.response.data });
     }
     res.status(500).json({ message: 'Unexpected server error', details: error.message });
-  }
-});
-
-app.get('/api/symbols/:symbol/price-history', async function (req, res) {
-  const rawSymbol = typeof req.params.symbol === 'string' ? req.params.symbol.trim() : '';
-  if (!rawSymbol) {
-    return res.status(400).json({ message: 'Symbol is required' });
-  }
-  const normalizedSymbol = rawSymbol.toUpperCase();
-  const startParam = typeof req.query.startDate === 'string' ? req.query.startDate.trim() : '';
-  const endParam = typeof req.query.endDate === 'string' ? req.query.endDate.trim() : '';
-  const startDate = startParam || PRICE_SERIES_DEFAULT_START;
-  const endDate = endParam || formatDateOnly(new Date());
-  const parsedStartDate = parseDateOnlyString(startDate);
-  const parsedEndDate = parseDateOnlyString(endDate);
-  if (parsedStartDate && parsedEndDate && parsedStartDate > parsedEndDate) {
-    return res.status(400).json({ message: 'Invalid date range' });
-  }
-  try {
-    const payload = await loadSymbolPriceSeries(normalizedSymbol, startDate, endDate);
-    res.json(payload);
-  } catch (error) {
-    const message = error?.message || 'Failed to load price history';
-    res.status(500).json({ message, details: message });
   }
 });
 
