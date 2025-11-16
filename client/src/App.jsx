@@ -3048,6 +3048,7 @@ const TODO_AMOUNT_TOLERANCE = 0.01;
 const TODO_TYPE_ORDER = { rebalance: 0, cash: 1 };
 
 const RESERVE_FALLBACK_SYMBOL = 'VBIL';
+const PRICE_REFRESH_CONCURRENCY = 6;
 
 function normalizeSymbolKey(value) {
   if (typeof value !== 'string') {
@@ -3055,6 +3056,253 @@ function normalizeSymbolKey(value) {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed.toUpperCase() : '';
+}
+
+function derivePositionDayOpenPrice(position) {
+  if (!position) {
+    return null;
+  }
+  const currentPrice = coerceNumber(position.currentPrice);
+  const dayPnl = coerceNumber(position.dayPnl);
+  const quantity = coerceNumber(position.openQuantity);
+  if (
+    currentPrice === null ||
+    dayPnl === null ||
+    quantity === null ||
+    !Number.isFinite(quantity) ||
+    Math.abs(quantity) < 1e-9
+  ) {
+    return null;
+  }
+  return currentPrice - dayPnl / quantity;
+}
+
+function applyPriceSnapshotsToPositions(positions, priceSnapshots) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return positions;
+  }
+  if (!priceSnapshots || !(priceSnapshots instanceof Map) || priceSnapshots.size === 0) {
+    return positions;
+  }
+
+  let changed = false;
+  const updated = positions.map((position) => {
+    if (!position || !position.symbol) {
+      return position;
+    }
+    const symbolKey = normalizeSymbolKey(position.symbol);
+    if (!symbolKey) {
+      return position;
+    }
+    const snapshot = priceSnapshots.get(symbolKey);
+    if (!snapshot) {
+      return position;
+    }
+    const overridePrice = coercePositiveNumber(snapshot.price);
+    if (!overridePrice) {
+      return position;
+    }
+
+    const quantity = coerceNumber(position.openQuantity);
+    const startOfDayPrice = derivePositionDayOpenPrice(position);
+    const averageEntryPrice = coerceNumber(position.averageEntryPrice);
+
+    let nextMarketValue = position.currentMarketValue;
+    if (quantity !== null && Number.isFinite(quantity)) {
+      const computed = overridePrice * quantity;
+      if (Number.isFinite(computed)) {
+        nextMarketValue = computed;
+      }
+    }
+
+    let nextDayPnl = position.dayPnl;
+    if (startOfDayPrice !== null && quantity !== null && Number.isFinite(quantity)) {
+      nextDayPnl = (overridePrice - startOfDayPrice) * quantity;
+    }
+
+    let nextOpenPnl = position.openPnl;
+    if (averageEntryPrice !== null && quantity !== null && Number.isFinite(quantity)) {
+      nextOpenPnl = (overridePrice - averageEntryPrice) * quantity;
+    }
+
+    const existingPrice = coercePositiveNumber(position.currentPrice);
+    const priceChanged = existingPrice === null || Math.abs(existingPrice - overridePrice) > 1e-9;
+    const dayChanged = coerceNumber(position.dayPnl) !== nextDayPnl;
+    const openChanged = coerceNumber(position.openPnl) !== nextOpenPnl;
+
+    if (!priceChanged && !dayChanged && !openChanged) {
+      return position;
+    }
+
+    changed = true;
+    return {
+      ...position,
+      currentPrice: overridePrice,
+      currentMarketValue: nextMarketValue,
+      dayPnl: nextDayPnl,
+      openPnl: nextOpenPnl,
+      isRealTime: true,
+      priceAsOf: snapshot.asOf || null,
+    };
+  });
+
+  return changed ? updated : positions;
+}
+
+function applyPriceSnapshotsToBalances(balances, positions, currencyRates, baseCurrency = 'CAD') {
+  if (!balances || !positions || !positions.length) {
+    return balances;
+  }
+
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const perCurrencyTotals = new Map();
+  positions.forEach((position) => {
+    if (!position) {
+      return;
+    }
+    const currency = (position.currency || normalizedBase).toUpperCase();
+    const marketValue = coerceNumber(position.currentMarketValue);
+    const dayPnl = coerceNumber(position.dayPnl);
+    const openPnl = coerceNumber(position.openPnl);
+    let bucket = perCurrencyTotals.get(currency);
+    if (!bucket) {
+      bucket = { marketValue: 0, dayPnl: 0, openPnl: 0 };
+      perCurrencyTotals.set(currency, bucket);
+    }
+    if (marketValue !== null) {
+      bucket.marketValue += marketValue;
+    }
+    if (dayPnl !== null) {
+      bucket.dayPnl += dayPnl;
+    }
+    if (openPnl !== null) {
+      bucket.openPnl += openPnl;
+    }
+  });
+
+  if (perCurrencyTotals.size === 0) {
+    return balances;
+  }
+
+  const convertAmount = (amount, sourceCurrency, targetCurrency) => {
+    const numeric = coerceNumber(amount);
+    if (numeric === null) {
+      return 0;
+    }
+    return normalizeCurrencyAmount(numeric, sourceCurrency, currencyRates, targetCurrency);
+  };
+
+  const combinedTotalsCache = new Map();
+  const resolveCombinedTotals = (targetCurrency) => {
+    const key = (targetCurrency || normalizedBase).toUpperCase();
+    if (combinedTotalsCache.has(key)) {
+      return combinedTotalsCache.get(key);
+    }
+    const summary = { marketValue: 0, dayPnl: 0, openPnl: 0 };
+    perCurrencyTotals.forEach((values, currency) => {
+      summary.marketValue += convertAmount(values.marketValue, currency, key);
+      summary.dayPnl += convertAmount(values.dayPnl, currency, key);
+      summary.openPnl += convertAmount(values.openPnl, currency, key);
+    });
+    combinedTotalsCache.set(key, summary);
+    return summary;
+  };
+
+  let changed = false;
+  const nextBalances = { combined: undefined, perCurrency: undefined };
+
+  if (balances.combined) {
+    nextBalances.combined = {};
+    Object.entries(balances.combined).forEach(([currency, entry]) => {
+      const currencyKey = (typeof currency === 'string' && currency.trim()) || '';
+      const totals = resolveCombinedTotals(currencyKey || normalizedBase);
+      const nextEntry = entry && typeof entry === 'object' ? { ...entry } : {};
+      nextEntry.marketValue = totals.marketValue;
+      nextEntry.dayPnl = totals.dayPnl;
+      nextEntry.openPnl = totals.openPnl;
+      const cash = coerceNumber(entry?.cash);
+      const equityBase = Number.isFinite(nextEntry.marketValue) ? nextEntry.marketValue : 0;
+      nextEntry.totalEquity = (cash !== null ? cash : 0) + equityBase;
+      nextBalances.combined[currency] = nextEntry;
+      changed = true;
+    });
+  }
+
+  if (balances.perCurrency) {
+    nextBalances.perCurrency = {};
+    Object.entries(balances.perCurrency).forEach(([currency, entry]) => {
+      const currencyKey = (typeof currency === 'string' && currency.trim()) || '';
+      const normalizedCurrency = currencyKey ? currencyKey.toUpperCase() : normalizedBase;
+      const totals = perCurrencyTotals.get(normalizedCurrency) || { marketValue: 0, dayPnl: 0, openPnl: 0 };
+      const nextEntry = entry && typeof entry === 'object' ? { ...entry } : {};
+      nextEntry.marketValue = totals.marketValue;
+      nextEntry.dayPnl = totals.dayPnl;
+      nextEntry.openPnl = totals.openPnl;
+      const cash = coerceNumber(entry?.cash);
+      nextEntry.totalEquity = (cash !== null ? cash : 0) + (Number.isFinite(totals.marketValue) ? totals.marketValue : 0);
+      nextBalances.perCurrency[currency] = nextEntry;
+      changed = true;
+    });
+  }
+
+  return changed ? nextBalances : balances;
+}
+
+async function fetchQuotesForSymbols(symbols) {
+  if (!Array.isArray(symbols) || !symbols.length) {
+    return { snapshots: new Map(), failures: [] };
+  }
+
+  const normalizedSymbols = Array.from(
+    new Set(
+      symbols
+        .map((symbol) => normalizeSymbolKey(symbol))
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalizedSymbols.length) {
+    return { snapshots: new Map(), failures: [] };
+  }
+
+  const snapshots = new Map();
+  const failures = [];
+  let cursor = 0;
+
+  const workers = Array.from({ length: Math.min(PRICE_REFRESH_CONCURRENCY, normalizedSymbols.length) }, () =>
+    (async () => {
+      while (cursor < normalizedSymbols.length) {
+        const index = cursor;
+        cursor += 1;
+        const symbol = normalizedSymbols[index];
+        if (!symbol) {
+          continue;
+        }
+        try {
+          const quote = await getQuote(symbol);
+          const price = coercePositiveNumber(quote?.price);
+          if (!price) {
+            failures.push({ symbol, error: new Error('Quote did not include a valid price') });
+            continue;
+          }
+          const payload = {
+            price,
+            currency:
+              typeof quote?.currency === 'string' && quote.currency.trim()
+                ? quote.currency.trim().toUpperCase()
+                : null,
+            asOf: typeof quote?.asOf === 'string' && quote.asOf ? quote.asOf : null,
+          };
+          snapshots.set(symbol, payload);
+        } catch (error) {
+          failures.push({ symbol, error });
+        }
+      }
+    })()
+  );
+
+  await Promise.all(workers);
+  return { snapshots, failures };
 }
 
 function normalizeQueryValue(value) {
@@ -5178,6 +5426,12 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState(() => initialAccountIdFromUrl || 'default');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [symbolPriceSnapshots, setSymbolPriceSnapshots] = useState(() => new Map());
+  const [priceRefreshState, setPriceRefreshState] = useState({
+    status: 'idle',
+    error: null,
+    refreshedAt: null,
+  });
   const [lastRebalanceOverrides, setLastRebalanceOverrides] = useState(() => new Map());
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
@@ -5367,6 +5621,12 @@ export default function App() {
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
+
+  useEffect(() => {
+    setSymbolPriceSnapshots(new Map());
+    setPriceRefreshState({ status: 'idle', error: null, refreshedAt: null });
+  }, [data]);
+  const priceRefreshInFlight = priceRefreshState.status === 'loading';
 
   useEffect(() => {
     if (!pendingMetadataOverrides.size) {
@@ -6276,7 +6536,11 @@ export default function App() {
     }
     return null;
   }, [selectedAccountInfo, isAggregateSelection, selectedRebalanceReminder]);
-  const rawPositions = useMemo(() => data?.positions ?? [], [data?.positions]);
+  const basePositions = useMemo(() => data?.positions ?? [], [data?.positions]);
+  const rawPositions = useMemo(
+    () => applyPriceSnapshotsToPositions(basePositions, symbolPriceSnapshots),
+    [basePositions, symbolPriceSnapshots]
+  );
   const rawOrders = useMemo(() => (Array.isArray(data?.orders) ? data.orders : []), [data?.orders]);
   const ordersFilterInputId = useId();
   const dividendTimeframeSelectId = useId();
@@ -6286,7 +6550,7 @@ export default function App() {
     }
     return DEFAULT_DIVIDEND_TIMEFRAME;
   }, [dividendTimeframe]);
-  const balances = data?.balances || null;
+  const baseBalances = data?.balances || null;
   const normalizedOrdersFilter = typeof ordersFilter === 'string' ? ordersFilter.trim() : '';
   const ordersFilterQuery = normalizedOrdersFilter.toLowerCase();
   const ordersForSelectedAccount = useMemo(() => {
@@ -7350,7 +7614,10 @@ export default function App() {
   }, [isNewsFeatureEnabled, newsTabContextMenuState.open]);
 
   const baseCurrency = 'CAD';
-  const currencyRates = useMemo(() => buildCurrencyRateMap(balances, baseCurrency), [balances]);
+  const currencyRates = useMemo(
+    () => buildCurrencyRateMap(baseBalances, baseCurrency),
+    [baseBalances, baseCurrency]
+  );
 
   const usdToCadRate = useMemo(() => {
     const apiRate = isFiniteNumber(data?.usdToCadRate) && data.usdToCadRate > 0 ? data.usdToCadRate : null;
@@ -7363,6 +7630,14 @@ export default function App() {
     }
     return null;
   }, [data?.usdToCadRate, currencyRates]);
+  const hasPriceSnapshots = symbolPriceSnapshots.size > 0;
+  const balances = useMemo(
+    () =>
+      hasPriceSnapshots
+        ? applyPriceSnapshotsToBalances(baseBalances, rawPositions, currencyRates, baseCurrency)
+        : baseBalances,
+    [hasPriceSnapshots, baseBalances, rawPositions, currencyRates, baseCurrency, symbolPriceSnapshots]
+  );
 
   const positions = useMemo(() => {
     if (isAggregateSelection) {
@@ -10410,7 +10685,7 @@ export default function App() {
   })();
 
   const hasData = Boolean(data);
-  const isRefreshing = loading && hasData;
+  const isRefreshing = (loading && hasData) || priceRefreshInFlight;
   const showContent = hasData;
 
   const handleShowPnlBreakdown = useCallback(
@@ -12134,7 +12409,69 @@ export default function App() {
     fetchQqqTemperature();
   }, [fetchQqqTemperature]);
 
+  const handlePriceOnlyRefresh = useCallback(async () => {
+    if (priceRefreshInFlight) {
+      return;
+    }
+    if (!rawPositions.length) {
+      return;
+    }
+    const symbols = rawPositions
+      .map((position) => (typeof position?.symbol === 'string' ? position.symbol : ''))
+      .filter(Boolean);
+    if (!symbols.length) {
+      return;
+    }
+    setPriceRefreshState((prev) => ({
+      status: 'loading',
+      error: null,
+      refreshedAt: prev.refreshedAt,
+    }));
+    try {
+      const { snapshots, failures } = await fetchQuotesForSymbols(symbols);
+      if (!snapshots.size) {
+        const failureMessage =
+          failures.length && failures[0]?.error && failures[0].error.message
+            ? failures[0].error.message
+            : 'Failed to refresh prices';
+        setPriceRefreshState((prev) => ({
+          status: 'error',
+          error: new Error(failureMessage),
+          refreshedAt: prev.refreshedAt,
+        }));
+        return;
+      }
+      setSymbolPriceSnapshots((prev) => {
+        const next = new Map(prev);
+        snapshots.forEach((value, key) => {
+          next.set(key, value);
+        });
+        return next;
+      });
+      if (failures.length) {
+        console.warn('Some symbols failed to refresh during price update', failures);
+      }
+      setPriceRefreshState({
+        status: 'success',
+        error: null,
+        refreshedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error('Failed to refresh prices');
+      setPriceRefreshState((prev) => ({
+        status: 'error',
+        error: normalizedError,
+        refreshedAt: prev.refreshedAt,
+      }));
+    }
+  }, [priceRefreshInFlight, rawPositions]);
+
   const handleRefresh = (event) => {
+    if (event?.altKey) {
+      event.preventDefault();
+      handlePriceOnlyRefresh();
+      return;
+    }
     if (event?.ctrlKey) {
       event.preventDefault();
       setAutoRefreshEnabled((value) => !value);

@@ -22,11 +22,14 @@ export default function TimePill({
   const resolvedClassName = classNames.join(' ');
   const refreshLabel = label ? `Refresh data (last updated ${label})` : 'Refresh data';
   const refreshingLabel = label ? `Refreshing data (last updated ${label})` : 'Refreshing data';
+  const priceRefreshHint = ' Alt-click to refresh prices only.';
   const autoRefreshHint = autoRefreshing
     ? ' Auto-refresh is on. Ctrl-click to stop auto-refresh.'
     : ' Ctrl-click to start auto-refresh.';
-  const buttonAriaLabel = `${refreshing ? refreshingLabel : refreshLabel}.${autoRefreshHint}`;
-  const title = autoRefreshing ? 'Auto-refresh is on. Ctrl-click to stop.' : 'Ctrl-click to start auto-refresh.';
+  const buttonAriaLabel = `${refreshing ? refreshingLabel : refreshLabel}.${autoRefreshHint}${priceRefreshHint}`;
+  const title = autoRefreshing
+    ? 'Auto-refresh is on. Ctrl-click to stop. Alt-click to refresh prices only.'
+    : 'Ctrl-click to start auto-refresh. Alt-click to refresh prices only.';
 
   const handleClick = (event) => {
     if (isInteractive) {
