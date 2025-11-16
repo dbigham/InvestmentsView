@@ -425,6 +425,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
     totalEquityCad: 0,
     reserveValueCad: 0,
     deployedValueCad: 0,
+    priceCad: 0,
   };
   const summaryCounts = {
     totalPnlCad: 0,
@@ -434,6 +435,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
     totalEquityCad: 0,
     reserveValueCad: 0,
     deployedValueCad: 0,
+    priceCad: 0,
   };
   let aggregatedStart = null;
   let aggregatedEnd = null;
@@ -488,6 +490,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
             reserveCount: 0,
             deployed: 0,
             deployedCount: 0,
+            priceCad: 0,
+            priceCadCount: 0,
+            priceNative: 0,
+            priceNativeCount: 0,
           };
           totalsByDate.set(dateKey, bucket);
         }
@@ -515,6 +521,16 @@ async function computeAggregateTotalPnlSeriesForContexts(
         if (Number.isFinite(deployedValue)) {
           bucket.deployed += deployedValue;
           bucket.deployedCount += 1;
+        }
+        const priceCad = point && Number.isFinite(point.priceCad) ? point.priceCad : null;
+        if (Number.isFinite(priceCad)) {
+          bucket.priceCad += priceCad;
+          bucket.priceCadCount += 1;
+        }
+        const priceNative = point && Number.isFinite(point.priceNative) ? point.priceNative : null;
+        if (Number.isFinite(priceNative)) {
+          bucket.priceNative += priceNative;
+          bucket.priceNativeCount += 1;
         }
       });
     }
@@ -549,6 +565,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
         summaryTotals.deployedValueCad += summary.deployedValueCad;
         summaryCounts.deployedValueCad += 1;
       }
+      if (Number.isFinite(summary.priceCad)) {
+        summaryTotals.priceCad += summary.priceCad;
+        summaryCounts.priceCad += 1;
+      }
     }
   });
 
@@ -567,6 +587,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
         totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
         reserveValueCad: bucket && bucket.reserveCount > 0 ? bucket.reserve : undefined,
         deployedValueCad: bucket && bucket.deployedCount > 0 ? bucket.deployed : undefined,
+        priceCad:
+          bucket && bucket.priceCadCount > 0 ? bucket.priceCad / bucket.priceCadCount : undefined,
+        priceNative:
+          bucket && bucket.priceNativeCount > 0 ? bucket.priceNative / bucket.priceNativeCount : undefined,
         deployedPercent:
           bucket &&
           bucket.deployedCount > 0 &&
@@ -611,6 +635,12 @@ async function computeAggregateTotalPnlSeriesForContexts(
     totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
     reserveValueCad: summaryCounts.reserveValueCad > 0 ? summaryTotals.reserveValueCad : null,
     deployedValueCad: summaryCounts.deployedValueCad > 0 ? summaryTotals.deployedValueCad : null,
+    priceCad:
+      summaryCounts.priceCad > 0
+        ? summaryTotals.priceCad / summaryCounts.priceCad
+        : combinedPoints.length && Number.isFinite(combinedPoints[combinedPoints.length - 1].priceCad)
+          ? combinedPoints[combinedPoints.length - 1].priceCad
+          : null,
   };
 
   if (
