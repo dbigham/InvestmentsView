@@ -4723,9 +4723,9 @@ function extractQuotePrice(quote) {
     return null;
   }
   const candidates = [
+    quote.regularMarketPrice,
     quote.postMarketPrice,
     quote.preMarketPrice,
-    quote.regularMarketPrice,
     quote.bid,
     quote.ask,
     quote.regularMarketDayHigh,
@@ -13407,31 +13407,12 @@ app.get('/api/quote', async function (req, res) {
       (quote &&
         (quote.longName || quote.shortName || quote.displayName || quote.symbol || normalizedSymbol)) ||
       normalizedSymbol;
+    const changePercent = coerceQuoteNumber(quote.regularMarketChangePercent);
     const previousClose = coerceQuoteNumber(
       quote.regularMarketPreviousClose !== undefined && quote.regularMarketPreviousClose !== null
         ? quote.regularMarketPreviousClose
         : quote.previousClose
     );
-    const changePercent = (() => {
-      const percentCandidates = [
-        quote.postMarketChangePercent,
-        quote.preMarketChangePercent,
-        quote.regularMarketChangePercent,
-      ];
-      for (const candidate of percentCandidates) {
-        const numeric = Number(candidate);
-        if (Number.isFinite(numeric)) {
-          return numeric;
-        }
-      }
-      if (Number.isFinite(price) && Number.isFinite(previousClose) && previousClose > 0) {
-        const computed = ((price - previousClose) / previousClose) * 100;
-        if (Number.isFinite(computed)) {
-          return computed;
-        }
-      }
-      return null;
-    })();
     const trailingPe = coerceQuoteNumber(quote.trailingPE);
     const forwardPe = coerceQuoteNumber(quote.forwardPE);
     const peRatio = Number.isFinite(trailingPe) && trailingPe > 0
