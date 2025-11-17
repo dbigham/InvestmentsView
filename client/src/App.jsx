@@ -13611,6 +13611,19 @@ export default function App() {
               const cost = Number.isFinite(totalP) ? mv - totalP : null;
               let rate = null;
               const startKey = (function resolveStart(){
+                // Prefer the symbol’s own Total P&L series start so the
+                // annualized return matches the symbol chart timeframe.
+                if (
+                  selectedSymbolTotalPnlSeriesForChart &&
+                  Array.isArray(selectedSymbolTotalPnlSeriesForChart.points) &&
+                  selectedSymbolTotalPnlSeriesForChart.points.length > 0
+                ) {
+                  const firstPoint = selectedSymbolTotalPnlSeriesForChart.points[0] || {};
+                  const rawDate = typeof firstPoint.date === 'string' ? firstPoint.date.trim() : '';
+                  if (rawDate) {
+                    return rawDate.slice(0, 10);
+                  }
+                }
                 if (typeof cagrStartDate === 'string' && cagrStartDate) return cagrStartDate;
                 const s1 = fundingSummaryForDisplay?.annualizedReturnStartDate;
                 if (typeof s1 === 'string' && s1) return s1;
