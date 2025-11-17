@@ -12944,6 +12944,11 @@ export default function App() {
     if (usedFallback && Number.isFinite(total) && Number.isFinite(focusedSymbolDividendsCad)) {
       total -= focusedSymbolDividendsCad;
     }
+    // Approximate symbol Total P&L as-of now by
+    // adjusting the series/fallback baseline with today's intraday P&L.
+    if (Number.isFinite(total) && Number.isFinite(day) && Math.abs(day) > 1e-6) {
+      total += day;
+    }
     return { dayPnl: day, openPnl: open, totalPnl: Number.isFinite(total) ? total : null };
   }, [
     focusedSymbol,

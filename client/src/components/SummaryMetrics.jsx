@@ -1036,11 +1036,34 @@ export default function SummaryMetrics({
     if (!totalPnlSeries) {
       return [];
     }
-    return buildTotalPnlDisplaySeries(totalPnlSeries.points, chartTimeframe, {
+    const baseSeries = buildTotalPnlDisplaySeries(totalPnlSeries.points, chartTimeframe, {
       displayStartDate: totalPnlSeries.displayStartDate,
       displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
     });
-  }, [totalPnlSeries, chartTimeframe]);
+    const targetTotal = Number.isFinite(totalPnlValue) ? totalPnlValue : null;
+    if (!baseSeries.length || targetTotal === null) {
+      return baseSeries;
+    }
+    const lastIndex = baseSeries.length - 1;
+    const last = baseSeries[lastIndex];
+    const baseTotal = Number.isFinite(last?.totalPnl) ? last.totalPnl : null;
+    if (baseTotal === null) {
+      return baseSeries;
+    }
+    const delta = targetTotal - baseTotal;
+    if (Math.abs(delta) < 1e-6) {
+      return baseSeries;
+    }
+    const adjusted = baseSeries.slice();
+    const nextLast = { ...last, totalPnl: targetTotal };
+    if (Number.isFinite(nextLast.totalPnlDelta)) {
+      nextLast.totalPnlDelta += delta;
+    } else {
+      nextLast.totalPnlDelta = delta;
+    }
+    adjusted[lastIndex] = nextLast;
+    return adjusted;
+  }, [totalPnlSeries, chartTimeframe, totalPnlValue]);
 
   const priceChartSeries = useMemo(() => {
     if (!symbolMode || !Array.isArray(symbolPriceSeries?.points)) {
