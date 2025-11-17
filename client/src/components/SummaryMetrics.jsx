@@ -593,6 +593,9 @@ export default function SummaryMetrics({
   symbolPriceSeries,
   symbolPriceSeriesStatus,
   symbolPriceSeriesError,
+  symbolPriceSymbol,
+  symbolPriceOptions = [],
+  onSymbolPriceSymbolChange,
   onAdjustDeployment,
   symbolMode = false,
   childAccounts,
@@ -670,6 +673,7 @@ export default function SummaryMetrics({
   const isTotalPnlMetric = chartMetricConfig.valueKey === 'totalPnl';
   const totalPnlRangeId = useId();
   const chartMetricSelectId = useId();
+  const priceSymbolSelectId = useId();
   useEffect(() => {
     if (!availableChartMetricOptions.some((option) => option.value === chartMetric)) {
       setChartMetric(DEFAULT_CHART_METRIC);
@@ -1726,6 +1730,12 @@ export default function SummaryMetrics({
 
   // Always allow the Total P&L chart to render; caller controls series and status.
   const showTotalPnlChart = true;
+  const showPriceSymbolSelector =
+    symbolMode &&
+    isPriceMetric &&
+    Array.isArray(symbolPriceOptions) &&
+    symbolPriceOptions.length > 1 &&
+    typeof onSymbolPriceSymbolChange === 'function';
 
   const normalizedChildAccounts = Array.isArray(childAccounts)
     ? childAccounts
@@ -2315,6 +2325,27 @@ export default function SummaryMetrics({
               ))}
             </select>
           </div>
+          {showPriceSymbolSelector && (
+            <div className="equity-card__total-pnl-chart-selector">
+              <label className="visually-hidden" htmlFor={priceSymbolSelectId}>
+                Select price symbol
+              </label>
+                <select
+                  id={priceSymbolSelectId}
+                  className="equity-card__total-pnl-chart-select"
+                  aria-label="Select price symbol"
+                  title="Select price symbol"
+                  value={symbolPriceSymbol || symbolPriceOptions[0]?.value}
+                  onChange={(event) => onSymbolPriceSymbolChange(event.target.value)}
+                >
+                  {symbolPriceOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label || option.value}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
         </div>
       )}
       {showTotalPnlChart && (
@@ -2803,6 +2834,14 @@ SummaryMetrics.propTypes = {
   }),
   symbolPriceSeriesStatus: PropTypes.oneOf(['idle', 'loading', 'success', 'error']),
   symbolPriceSeriesError: PropTypes.instanceOf(Error),
+  symbolPriceSymbol: PropTypes.string,
+  symbolPriceOptions: PropTypes.arrayOf(
+    PropTypes.shape({
+      value: PropTypes.string.isRequired,
+      label: PropTypes.string,
+    })
+  ),
+  onSymbolPriceSymbolChange: PropTypes.func,
   totalPnlRangeOptions: PropTypes.arrayOf(
     PropTypes.shape({
       value: PropTypes.string.isRequired,
@@ -2878,6 +2917,9 @@ SummaryMetrics.defaultProps = {
   symbolPriceSeries: null,
   symbolPriceSeriesStatus: 'idle',
   symbolPriceSeriesError: null,
+  symbolPriceSymbol: null,
+  symbolPriceOptions: [],
+  onSymbolPriceSymbolChange: null,
   totalPnlRangeOptions: [],
   selectedTotalPnlRange: null,
   onTotalPnlRangeChange: null,

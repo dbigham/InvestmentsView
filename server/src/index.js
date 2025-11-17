@@ -66,6 +66,11 @@ const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
 const deploymentDisplay = require('../../shared/deploymentDisplay.cjs');
 const {
+  SYMBOL_GROUPS,
+  getSymbolGroupByKey,
+  getSymbolGroupForSymbol,
+} = require('../../shared/symbolGroups.cjs');
+const {
   CASH_FLOW_EPSILON,
   DAY_IN_MS,
   normalizeCashFlowsForXirr,
@@ -193,6 +198,20 @@ const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
   }
   return 5 * 60 * 1000; // default 5 minutes
 })();
+const SYMBOL_GROUPS_VERSION = (() => {
+  try {
+    const payload = JSON.stringify(
+      SYMBOL_GROUPS.map((group) => ({
+        key: group.key,
+        symbols: group.symbols,
+        defaultPriceSymbol: group.defaultPriceSymbol,
+      }))
+    );
+    return crypto.createHash('sha1').update(payload).digest('hex').slice(0, 12);
+  } catch (_) {
+    return null;
+  }
+})();
 
 const DEBUG_SUMMARY_CACHE = parseBooleanEnv(process.env.DEBUG_SUMMARY_CACHE, false);
 const DEBUG_YAHOO_PEG = parseBooleanEnv(process.env.DEBUG_YAHOO_PEG, false);
@@ -276,6 +295,9 @@ function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
   const symbol = typeof params.symbol === 'string' ? params.symbol.trim().toUpperCase() : '';
   if (symbol) {
     parts.push(`symbol:${symbol}`);
+    if (SYMBOL_GROUPS_VERSION) {
+      parts.push(`symver:${SYMBOL_GROUPS_VERSION}`);
+    }
   }
   const rk = params && params.refreshKey !== undefined && params.refreshKey !== null ? String(params.refreshKey) : '';
   if (rk) {
@@ -11338,6 +11360,18 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   if (!targetSymbol) {
     return null;
   }
+  const symbolGroup =
+    getSymbolGroupByKey(targetSymbol) || getSymbolGroupForSymbol(targetSymbol);
+  const symbolMembers = Array.isArray(symbolGroup?.symbols) && symbolGroup.symbols.length
+    ? symbolGroup.symbols
+    : [targetSymbol];
+  const symbolMemberSet = new Set(symbolMembers);
+  const priceDisplaySymbol =
+    symbolGroup &&
+    symbolGroup.defaultPriceSymbol &&
+    symbolMemberSet.has(symbolGroup.defaultPriceSymbol)
+      ? symbolGroup.defaultPriceSymbol
+      : targetSymbol;
 
   const accountKey = account.id;
   const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
@@ -11393,9 +11427,10 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
 
   await ensureUsdToCadRates(dateKeys);
 
-  // Build symbol metadata and activity list for this symbol only
+  // Build symbol metadata and activity list for this symbol (including variants)
   const processedActivities = [];
   const symbolIds = new Set();
+  const symbolIdToSymbols = new Map();
   const symbolMeta = new Map();
   const nonTradeQtyByDate = new Map();
   const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
@@ -11406,36 +11441,86 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     if (!dateKey) return;
     const directSymbol = normalizeSymbol(activity.symbol);
     const resolved = directSymbol || resolveActivitySymbol(activity) || null;
-    if (!resolved || normalizeSymbol(resolved) !== targetSymbol) return;
-    processedActivities.push({ activity, timestamp, dateKey, symbol: targetSymbol });
+    const normalizedResolved = normalizeSymbol(resolved);
+    if (!normalizedResolved || !symbolMemberSet.has(normalizedResolved)) return;
+    processedActivities.push({ activity, timestamp, dateKey, symbol: normalizedResolved });
     const symbolId = Number(activity.symbolId);
-    if (Number.isFinite(symbolId) && symbolId > 0) symbolIds.add(symbolId);
+    if (Number.isFinite(symbolId) && symbolId > 0) {
+      symbolIds.add(symbolId);
+      if (!symbolIdToSymbols.has(symbolId)) {
+        symbolIdToSymbols.set(symbolId, new Set());
+      }
+      symbolIdToSymbols.get(symbolId).add(normalizedResolved);
+    }
     const activityCurrency = normalizeCurrency(activity.currency) || null;
-    if (!symbolMeta.has(targetSymbol)) {
-      symbolMeta.set(targetSymbol, {
+    if (!symbolMeta.has(normalizedResolved)) {
+      symbolMeta.set(normalizedResolved, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
-        currency: inferSymbolCurrency(targetSymbol) || activityCurrency || null,
+        currency: inferSymbolCurrency(normalizedResolved) || activityCurrency || null,
       });
+    } else {
+      const meta = symbolMeta.get(normalizedResolved);
+      if (meta) {
+        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
+          meta.symbolId = symbolId;
+        }
+        if (!meta.currency) {
+          meta.currency = inferSymbolCurrency(normalizedResolved) || activityCurrency || null;
+        }
+      }
     }
 
     // Track non-trade quantity deltas (journals/transfers) so we can treat their value as invested cash
     const qty = Number(activity.quantity);
     const isTradeLike = isOrderLikeActivity(activity);
     if (!isTradeLike && Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-      adjustNumericMap(nonTradeQtyByDate, dateKey, qty, LEDGER_QUANTITY_EPSILON);
+      if (!nonTradeQtyByDate.has(dateKey)) {
+        nonTradeQtyByDate.set(dateKey, new Map());
+      }
+      const perSymbolQty = nonTradeQtyByDate.get(dateKey);
+      adjustNumericMap(perSymbolQty, normalizedResolved, qty, LEDGER_QUANTITY_EPSILON);
+      if (perSymbolQty.size === 0) {
+        nonTradeQtyByDate.delete(dateKey);
+      }
+    }
+  });
+  // Ensure every group member has at least a metadata entry so currency inference works consistently
+  symbolMembers.forEach((memberSymbol) => {
+    if (!symbolMeta.has(memberSymbol)) {
+      symbolMeta.set(memberSymbol, {
+        symbolId: null,
+        currency: inferSymbolCurrency(memberSymbol) || null,
+      });
     }
   });
   // If we have symbolIds but missing currency, try details
   if (symbolIds.size > 0) {
     try {
       const details = await fetchSymbolsDetails(login, Array.from(symbolIds));
-      const one = Object.values(details)[0];
-      if (one) {
-        const meta = symbolMeta.get(targetSymbol) || {};
-        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(one.symbolId)) meta.symbolId = one.symbolId;
-        if (!meta.currency && one.currency) meta.currency = normalizeCurrency(one.currency);
-        symbolMeta.set(targetSymbol, meta);
-      }
+      Object.values(details || {}).forEach((detail) => {
+        if (!detail) {
+          return;
+        }
+        const detailSymbolId = Number(detail.symbolId);
+        const normalizedDetailSymbol = normalizeSymbol(detail.symbol);
+        const relatedSymbols = new Set();
+        if (Number.isFinite(detailSymbolId) && symbolIdToSymbols.has(detailSymbolId)) {
+          symbolIdToSymbols.get(detailSymbolId).forEach((sym) => relatedSymbols.add(sym));
+        }
+        if (normalizedDetailSymbol && symbolMemberSet.has(normalizedDetailSymbol)) {
+          relatedSymbols.add(normalizedDetailSymbol);
+        }
+        relatedSymbols.forEach((sym) => {
+          const meta = symbolMeta.get(sym) || {};
+          if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(detailSymbolId) && detailSymbolId > 0) {
+            meta.symbolId = detailSymbolId;
+          }
+          if (!meta.currency && detail.currency) {
+            meta.currency = normalizeCurrency(detail.currency);
+          }
+          symbolMeta.set(sym, meta);
+        });
+      });
     } catch (e) {
       // ignore
     }
@@ -11445,14 +11530,17 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   const priceSeriesMap = new Map();
   const startKey = dateKeys[0];
   const endKey = dateKeys[dateKeys.length - 1];
-  try {
-    const meta = symbolMeta.get(targetSymbol) || {};
-    const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
-    const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
-    const history = await fetchSymbolPriceHistory(targetSymbol, startKey, endKey, { login, symbolId, accountKey });
-    priceSeriesMap.set(targetSymbol, buildDailyPriceSeries(history || [], dateKeys));
-  } catch (e) {
-    priceSeriesMap.set(targetSymbol, new Map());
+  const symbolsForPricing = symbolMembers.length ? symbolMembers : [targetSymbol];
+  for (const symbol of symbolsForPricing) {
+    try {
+      const meta = symbolMeta.get(symbol) || {};
+      const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
+      const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
+      const history = await fetchSymbolPriceHistory(symbol, startKey, endKey, { login, symbolId, accountKey });
+      priceSeriesMap.set(symbol, buildDailyPriceSeries(history || [], dateKeys));
+    } catch (e) {
+      priceSeriesMap.set(symbol, new Map());
+    }
   }
 
   // Build daily invested cash map for this symbol: trades only (buys positive, sells negative)
@@ -11489,9 +11577,9 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if (entry.dateKey !== dateKey) continue;
       const qty = Number(entry.activity.quantity);
       if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-        adjustHolding(holdings, targetSymbol, qty);
+        adjustHolding(holdings, entry.symbol, qty);
       }
-      // Apply cash effects for income (dividends/interest) only — exclude trade cash to
+      // Apply cash effects for income (dividends/interest) only – exclude trade cash to
       // avoid cancelling out invested principal in symbol-scope equity.
       const activityDesc = [entry.activity.type || '', entry.activity.action || '', entry.activity.description || ''].join(' ');
       const isIncome = INCOME_ACTIVITY_REGEX.test(activityDesc);
@@ -11510,11 +11598,18 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     }
     const usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
 
-    const series = priceSeriesMap.get(targetSymbol) || new Map();
-    const nativePrice = series.get(dateKey);
+    const displaySeries =
+      priceSeriesMap.get(priceDisplaySymbol) ||
+      priceSeriesMap.get(targetSymbol) ||
+      new Map();
+    const nativePrice = displaySeries.get(dateKey);
     let priceCad = null;
     if (Number.isFinite(nativePrice)) {
-      const priceCurrency = (symbolMeta.get(targetSymbol) && symbolMeta.get(targetSymbol).currency) || 'CAD';
+      const priceMeta =
+        symbolMeta.get(priceDisplaySymbol) ||
+        symbolMeta.get(targetSymbol) ||
+        { currency: 'CAD' };
+      const priceCurrency = priceMeta.currency || 'CAD';
       if (priceCurrency === 'USD') {
         priceCad = Number.isFinite(usdRate) && usdRate > 0 ? nativePrice * usdRate : null;
       } else {
@@ -11522,11 +11617,33 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       }
     }
 
-    // Treat non-trade share transfers as deposits/withdrawals at the day's price
-    const qtyDelta = nonTradeQtyByDate.has(dateKey) ? nonTradeQtyByDate.get(dateKey) : 0;
-    if (Number.isFinite(qtyDelta) && Math.abs(qtyDelta) >= LEDGER_QUANTITY_EPSILON) {
-      if (Number.isFinite(priceCad) && Math.abs(priceCad) > 0) {
-        const deltaInvested = qtyDelta * priceCad;
+    // Treat non-trade share transfers as deposits/withdrawals at each symbol's price
+    const qtyDeltaMap = nonTradeQtyByDate.has(dateKey) ? nonTradeQtyByDate.get(dateKey) : null;
+    if (qtyDeltaMap && qtyDeltaMap.size) {
+      for (const [symbol, qtyDelta] of qtyDeltaMap.entries()) {
+        if (!Number.isFinite(qtyDelta) || Math.abs(qtyDelta) < LEDGER_QUANTITY_EPSILON) {
+          continue;
+        }
+        const series = priceSeriesMap.get(symbol);
+        if (!series || !series.size) {
+          continue;
+        }
+        const symbolNativePrice = series.get(dateKey);
+        if (!Number.isFinite(symbolNativePrice)) {
+          continue;
+        }
+        const meta = symbolMeta.get(symbol) || {};
+        const currency = meta.currency || inferSymbolCurrency(symbol) || 'CAD';
+        let priceCadForSymbol = null;
+        if (currency === 'USD') {
+          priceCadForSymbol = Number.isFinite(usdRate) && usdRate > 0 ? symbolNativePrice * usdRate : null;
+        } else {
+          priceCadForSymbol = symbolNativePrice;
+        }
+        if (!Number.isFinite(priceCadForSymbol) || Math.abs(priceCadForSymbol) <= 0) {
+          continue;
+        }
+        const deltaInvested = qtyDelta * priceCadForSymbol;
         if (Math.abs(deltaInvested) >= CASH_FLOW_EPSILON / 10) {
           cumulativeInvested += deltaInvested;
         }
@@ -11581,6 +11698,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     displayStartDate: formatDateOnly(displayStartDate),
     points,
     summary,
+    includedSymbols: Array.from(symbolMemberSet),
   };
 }
 
@@ -16413,6 +16531,7 @@ function getLoginById(loginId) {
 module.exports = {
   app,
   computeTotalPnlSeries,
+  computeTotalPnlSeriesForSymbol,
   computeTotalPnlBySymbol,
   computeNetDeposits,
   computeNetDepositsCore,

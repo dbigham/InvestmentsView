@@ -1,0 +1,20 @@
+[
+  {
+    "key": "ENB",
+    "label": "Enbridge",
+    "symbols": ["ENB", "ENB.TO"],
+    "defaultPriceSymbol": "ENB.TO"
+  },
+  {
+    "key": "QQQ",
+    "label": "Invesco QQQ",
+    "symbols": ["QQQ", "QQQM"],
+    "defaultPriceSymbol": "QQQ"
+  },
+  {
+    "key": "DLR",
+    "label": "Horizons DLR",
+    "symbols": ["DLR", "DLR.TO", "DLR.U"],
+    "defaultPriceSymbol": "DLR.TO"
+  }
+]
