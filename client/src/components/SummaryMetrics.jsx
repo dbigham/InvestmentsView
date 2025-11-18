@@ -1046,21 +1046,45 @@ export default function SummaryMetrics({
     }
     const lastIndex = baseSeries.length - 1;
     const last = baseSeries[lastIndex];
-    const baseTotal = Number.isFinite(last?.totalPnl) ? last.totalPnl : null;
-    if (baseTotal === null) {
-      return baseSeries;
-    }
-    const delta = targetTotal - baseTotal;
-    if (Math.abs(delta) < 1e-6) {
-      return baseSeries;
-    }
     const adjusted = baseSeries.slice();
-    const nextLast = { ...last, totalPnl: targetTotal };
-    if (Number.isFinite(nextLast.totalPnlDelta)) {
-      nextLast.totalPnlDelta += delta;
+    const nextLast = { ...last };
+
+    // When a displayStartDate is present, the chart uses deltas from that
+    // baseline. In this mode, interpret totalPnlValue as a since-start P&L
+    // and align the last point's delta to that value while keeping the
+    // absolute series shape consistent.
+    if (totalPnlSeries.displayStartDate) {
+      const first = adjusted[0];
+      const baseline =
+        first && Number.isFinite(first.totalPnl)
+          ? (Number.isFinite(first.totalPnlDelta)
+              ? first.totalPnl - first.totalPnlDelta
+              : first.totalPnl)
+          : null;
+      nextLast.totalPnlDelta = targetTotal;
+      if (Number.isFinite(baseline)) {
+        const absoluteTotal = baseline + targetTotal;
+        nextLast.totalPnl = Math.abs(absoluteTotal) < 1e-6 ? 0 : absoluteTotal;
+      }
     } else {
-      nextLast.totalPnlDelta = delta;
+      // Without a display start date, the chart uses absolute Total P&L.
+      // Treat totalPnlValue as an absolute and adjust the last point only.
+      const baseTotal = Number.isFinite(last?.totalPnl) ? last.totalPnl : null;
+      if (baseTotal === null) {
+        return baseSeries;
+      }
+      const delta = targetTotal - baseTotal;
+      if (Math.abs(delta) < 1e-6) {
+        return baseSeries;
+      }
+      nextLast.totalPnl = targetTotal;
+      if (Number.isFinite(nextLast.totalPnlDelta)) {
+        nextLast.totalPnlDelta += delta;
+      } else {
+        nextLast.totalPnlDelta = delta;
+      }
     }
+
     adjusted[lastIndex] = nextLast;
     return adjusted;
   }, [totalPnlSeries, chartTimeframe, totalPnlValue]);
