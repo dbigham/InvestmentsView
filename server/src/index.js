@@ -15892,7 +15892,8 @@ app.get('/api/summary', async function (req, res) {
       cacheScope: refreshKeyParam ? { refreshKey: refreshKeyParam, pinned: true } : undefined,
     });
 
-    if (includeAllAccounts) {
+    const supersetWasAvailable = Boolean(supersetEntry);
+    if (includeAllAccounts || !supersetWasAvailable) {
       const balancesRawByAccountId = new Map();
       selectedContexts.forEach(function (context, index) {
         if (context && context.account && context.account.id) {
