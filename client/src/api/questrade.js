@@ -144,6 +144,17 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   if (params && typeof params.symbol === 'string' && params.symbol.trim()) {
     url.searchParams.set('symbol', params.symbol.trim());
   }
+  if (params && typeof params.symbolGroupKey === 'string' && params.symbolGroupKey.trim()) {
+    url.searchParams.set('symbolGroupKey', params.symbolGroupKey.trim());
+  }
+  if (params && Array.isArray(params.symbols)) {
+    params.symbols.forEach((sym) => {
+      const trimmed = typeof sym === 'string' ? sym.trim() : '';
+      if (trimmed) {
+        url.searchParams.append('symbols', trimmed);
+      }
+    });
+  }
   if (params && params.refreshKey !== undefined && params.refreshKey !== null) {
     url.searchParams.set('refreshKey', String(params.refreshKey));
   }

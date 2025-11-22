@@ -84,6 +84,50 @@ const RESERVE_SYMBOLS = new Set(
     : []
 );
 
+const CRYPTO_THEME_DEFINITIONS = Object.freeze([
+  { key: 'CRYPTO-BITCOIN', label: 'Bitcoin', keywords: ['bitcoin'] },
+  { key: 'CRYPTO-ETHEREUM', label: 'Ethereum', keywords: ['ethereum'] },
+  {
+    key: 'CRYPTO-CURRENCIES',
+    label: 'Crypto currencies',
+    keywords: ['crypto', 'cryptocurrency', 'cryptocurrencies'],
+  },
+]);
+const CRYPTO_PRICE_SYMBOL_BY_KEY = Object.freeze({
+  [normalizeSymbolGroupKey('CRYPTO-BITCOIN')]: 'BTC-USD',
+  [normalizeSymbolGroupKey('CRYPTO-ETHEREUM')]: 'ETH-USD',
+});
+const CRYPTO_DISPLAY_LABEL_BY_KEY = Object.freeze({
+  [normalizeSymbolGroupKey('CRYPTO-BITCOIN')]: 'BITCOIN',
+  [normalizeSymbolGroupKey('CRYPTO-ETHEREUM')]: 'ETHEREUM',
+  [normalizeSymbolGroupKey('CRYPTO-CURRENCIES')]: 'CRYPTO',
+});
+const CRYPTO_AGGREGATE_KEY = normalizeSymbolGroupKey('CRYPTO-CURRENCIES');
+const CRYPTO_THEME_KEY_SET = new Set(
+  CRYPTO_THEME_DEFINITIONS.map((theme) => normalizeSymbolGroupKey(theme?.key)).filter(Boolean)
+);
+
+function areSymbolGroupMapsEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.size !== b.size) return false;
+  for (const [key, groupA] of a.entries()) {
+    const groupB = b.get(key);
+    if (!groupB) return false;
+    if (groupA.label !== groupB.label) return false;
+    if (groupA.defaultPriceSymbol !== groupB.defaultPriceSymbol) return false;
+    const aSymbols = Array.isArray(groupA.symbols) ? groupA.symbols : [];
+    const bSymbols = Array.isArray(groupB.symbols) ? groupB.symbols : [];
+    if (aSymbols.length !== bSymbols.length) return false;
+    for (let i = 0; i < aSymbols.length; i += 1) {
+      if (aSymbols[i] !== bSymbols[i]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function buildRebalanceOverrideKey(accountNumber, model) {
   const acct = typeof accountNumber === 'string' ? accountNumber.trim() : accountNumber != null ? String(accountNumber).trim() : '';
   const mod = typeof model === 'string' ? model.trim().toUpperCase() : '';
@@ -5552,6 +5596,7 @@ export default function App() {
   const [focusedSymbol, setFocusedSymbol] = useState(null);
   const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
   const [focusedSymbolPriceSymbol, setFocusedSymbolPriceSymbol] = useState(null);
+  const [dynamicSymbolGroups, setDynamicSymbolGroups] = useState(new Map());
   const [pendingSymbolAction, setPendingSymbolAction] = useState(null);
   const [focusedSymbolQuoteState, setFocusedSymbolQuoteState] = useState({
     status: 'idle',
@@ -5621,6 +5666,15 @@ export default function App() {
     if (!normalized) {
       return null;
     }
+    const cryptoPriceOverride = CRYPTO_PRICE_SYMBOL_BY_KEY[normalized] || null;
+    const dynamicGroup = dynamicSymbolGroups.get(normalized);
+    if (dynamicGroup && Array.isArray(dynamicGroup.symbols) && dynamicGroup.symbols.length) {
+      const defaultPriceSymbol = dynamicGroup.defaultPriceSymbol || dynamicGroup.symbols[0] || normalized;
+      return {
+        canonical: dynamicGroup.key || normalized,
+        priceSymbol: defaultPriceSymbol,
+      };
+    }
     const group =
       getSymbolGroupForSymbol(normalized) || getSymbolGroupByKey(normalized);
     const canonical = group ? group.key : normalized;
@@ -5629,9 +5683,9 @@ export default function App() {
       canonical;
     return {
       canonical,
-      priceSymbol: defaultPrice,
+      priceSymbol: cryptoPriceOverride || defaultPrice,
     };
-  }, []);
+  }, [dynamicSymbolGroups]);
 
   useEffect(() => {
     const s = initialSymbolFromUrl?.symbol || null;
@@ -5654,8 +5708,41 @@ export default function App() {
     if (!normalizedFocusedSymbolKey) {
       return null;
     }
-    return getSymbolGroupByKey(normalizedFocusedSymbolKey) || null;
+    return (
+      dynamicSymbolGroups.get(normalizedFocusedSymbolKey) ||
+      getSymbolGroupByKey(normalizedFocusedSymbolKey) ||
+      null
+    );
+  }, [normalizedFocusedSymbolKey, dynamicSymbolGroups]);
+  const focusedSymbolCryptoTheme = useMemo(() => {
+    if (!normalizedFocusedSymbolKey || !CRYPTO_THEME_KEY_SET.has(normalizedFocusedSymbolKey)) {
+      return null;
+    }
+    const labelOverride = CRYPTO_DISPLAY_LABEL_BY_KEY[normalizedFocusedSymbolKey];
+    const matchedTheme = CRYPTO_THEME_DEFINITIONS.find(
+      (theme) => normalizeSymbolGroupKey(theme?.key) === normalizedFocusedSymbolKey
+    );
+    const fallbackLabel =
+      (matchedTheme && typeof matchedTheme.label === 'string' && matchedTheme.label.trim()
+        ? matchedTheme.label.trim()
+        : null) || normalizedFocusedSymbolKey;
+    return {
+      key: normalizedFocusedSymbolKey,
+      label: labelOverride || fallbackLabel,
+    };
   }, [normalizedFocusedSymbolKey]);
+  const focusedSymbolTitle = useMemo(
+    () => focusedSymbolCryptoTheme?.label || focusedSymbol || '',
+    [focusedSymbol, focusedSymbolCryptoTheme]
+  );
+  const focusedSymbolIsCryptoAggregate =
+    focusedSymbolCryptoTheme?.key === CRYPTO_AGGREGATE_KEY;
+  const isFocusedSymbolDynamicGroup = useMemo(() => {
+    if (!normalizedFocusedSymbolKey) {
+      return false;
+    }
+    return dynamicSymbolGroups.has(normalizedFocusedSymbolKey);
+  }, [dynamicSymbolGroups, normalizedFocusedSymbolKey]);
   const focusedSymbolMembers = useMemo(() => {
     if (!normalizedFocusedSymbolKey) {
       return [];
@@ -6713,6 +6800,32 @@ export default function App() {
   const baseBalances = data?.balances || null;
   const normalizedOrdersFilter = typeof ordersFilter === 'string' ? ordersFilter.trim() : '';
   const ordersFilterQuery = normalizedOrdersFilter.toLowerCase();
+  const parsedOrdersFilterTokens = useMemo(() => {
+    if (!ordersFilterQuery) {
+      return null;
+    }
+    if (!/\b(?:and|or)\b/i.test(ordersFilterQuery)) {
+      return null;
+    }
+    const parts = ordersFilterQuery
+      .split(/\s*\b(and|or)\b\s*/i)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (!parts.length) {
+      return null;
+    }
+    const tokens = parts.map((part) => {
+      if (/^and$/i.test(part)) {
+        return { type: 'and' };
+      }
+      if (/^or$/i.test(part)) {
+        return { type: 'or' };
+      }
+      return { type: 'term', value: part.toLowerCase() };
+    });
+    const hasTerm = tokens.some((token) => token.type === 'term' && token.value);
+    return hasTerm ? tokens : null;
+  }, [ordersFilterQuery]);
   const ordersForSelectedAccount = useMemo(() => {
     if (!rawOrders.length) {
       return [];
@@ -6778,14 +6891,47 @@ export default function App() {
       if (Number.isFinite(order.openQuantity)) {
         fields.push(String(order.openQuantity));
       }
-      return fields.some((value) => {
-        if (value === null || value === undefined) {
+      const searchable = fields
+        .map((value) => {
+          if (value === null || value === undefined) {
+            return null;
+          }
+          return String(value).toLowerCase();
+        })
+        .filter(Boolean);
+      const matchesTerm = (term) => {
+        if (!term) {
           return false;
         }
-        return String(value).toLowerCase().includes(ordersFilterQuery);
-      });
+        return searchable.some((value) => value.includes(term));
+      };
+      if (parsedOrdersFilterTokens && parsedOrdersFilterTokens.length) {
+        let result = null;
+        let op = 'and';
+        parsedOrdersFilterTokens.forEach((token) => {
+          if (token.type === 'term') {
+            const termMatch = matchesTerm(token.value);
+            if (result === null) {
+              result = termMatch;
+            } else if (op === 'or') {
+              result = result || termMatch;
+            } else {
+              result = result && termMatch;
+            }
+            op = 'and'; // default to AND between implicit terms
+          } else if (token.type === 'or') {
+            op = 'or';
+          } else if (token.type === 'and') {
+            op = 'and';
+          }
+        });
+        if (result !== null) {
+          return result;
+        }
+      }
+      return matchesTerm(ordersFilterQuery);
     });
-  }, [ordersForSelectedAccount, ordersFilterQuery]);
+  }, [ordersForSelectedAccount, ordersFilterQuery, parsedOrdersFilterTokens]);
   const hasOrdersFilter = normalizedOrdersFilter.length > 0;
   const ordersEmptyMessage = hasOrdersFilter
     ? 'No orders match the current filter.'
@@ -7505,7 +7651,52 @@ export default function App() {
       setFocusedSymbol(resolution.canonical);
       setFocusedSymbolDescription(meta?.description || null);
       setFocusedSymbolPriceSymbol(resolution.priceSymbol);
-      setOrdersFilter(resolution.canonical);
+      const normalizedCanonical = normalizeSymbolGroupKey(resolution.canonical);
+      const matchedTheme =
+        normalizedCanonical &&
+        CRYPTO_THEME_DEFINITIONS.find(
+          (theme) => normalizeSymbolGroupKey(theme?.key) === normalizedCanonical
+        );
+      let nextOrdersFilter = resolution.canonical;
+      if (matchedTheme) {
+        const preferKeyword =
+          Array.isArray(matchedTheme.keywords) &&
+          matchedTheme.keywords.find((kw) => typeof kw === 'string' && kw.trim());
+        if (normalizeSymbolGroupKey(matchedTheme.key) === normalizeSymbolGroupKey('CRYPTO-CURRENCIES')) {
+          const childKeywords = [];
+          CRYPTO_THEME_DEFINITIONS.forEach((theme) => {
+            if (normalizeSymbolGroupKey(theme?.key) === normalizeSymbolGroupKey(matchedTheme.key)) {
+              return;
+            }
+            const normalizedChildKey = normalizeSymbolGroupKey(theme?.key);
+            if (normalizedChildKey && dynamicSymbolGroups.has(normalizedChildKey)) {
+              const childKeyword =
+                Array.isArray(theme.keywords) &&
+                theme.keywords.find((kw) => typeof kw === 'string' && kw.trim());
+              if (childKeyword) {
+                childKeywords.push(childKeyword.trim());
+              }
+            }
+          });
+          if (childKeywords.length) {
+            nextOrdersFilter = childKeywords.join(' OR ');
+          } else if (preferKeyword) {
+            nextOrdersFilter = preferKeyword.trim();
+          } else if (matchedTheme.label) {
+            nextOrdersFilter = matchedTheme.label;
+          }
+        } else if (preferKeyword) {
+          nextOrdersFilter = preferKeyword.trim();
+        } else if (matchedTheme.label) {
+          nextOrdersFilter = matchedTheme.label;
+        }
+      } else if (normalizedCanonical) {
+        const dynamicGroup = dynamicSymbolGroups.get(normalizedCanonical);
+        if (dynamicGroup?.label) {
+          nextOrdersFilter = dynamicGroup.label;
+        }
+      }
+      setOrdersFilter(nextOrdersFilter);
 
       const desiredTabRaw = typeof meta?.targetTab === 'string' ? meta.targetTab.trim().toLowerCase() : '';
       if (desiredTabRaw === 'orders') {
@@ -7518,13 +7709,17 @@ export default function App() {
 
       const intentRaw = typeof meta?.intent === 'string' ? meta.intent.trim().toLowerCase() : '';
       if (intentRaw === 'buy' || intentRaw === 'sell') {
-        setPendingSymbolAction({ symbol: up, intent: intentRaw });
+        setPendingSymbolAction({
+          symbol: resolution.priceSymbol || resolution.canonical,
+          intent: intentRaw,
+        });
       } else {
         setPendingSymbolAction(null);
       }
     },
     [
       handleShowDividendsPanel,
+      dynamicSymbolGroups,
       resolveSymbolFocus,
       setOrdersFilter,
       setPendingSymbolAction,
@@ -8199,6 +8394,107 @@ export default function App() {
     return list;
   }, [positionsWithShare]);
 
+  useEffect(() => {
+    const keywordMatches = CRYPTO_THEME_DEFINITIONS.map(() => new Set());
+    const cryptoAggregateKey = normalizeSymbolGroupKey('CRYPTO-CURRENCIES');
+    const cryptoAggregateIndex = CRYPTO_THEME_DEFINITIONS.findIndex(
+      (theme) => normalizeSymbolGroupKey(theme?.key) === cryptoAggregateKey
+    );
+    const considerEntry = (symbolCandidate, description, rawSymbols) => {
+      const desc =
+        typeof description === 'string' && description.trim()
+          ? description.toLowerCase()
+          : '';
+      if (!desc) {
+        return;
+      }
+      const symbols = [];
+      const normalizedSymbol = normalizeSymbolGroupKey(symbolCandidate);
+      if (normalizedSymbol) {
+        symbols.push(normalizedSymbol);
+      }
+      if (Array.isArray(rawSymbols)) {
+        rawSymbols.forEach((rawSymbol) => {
+          const normalizedRaw = normalizeSymbolGroupKey(rawSymbol);
+          if (normalizedRaw) {
+            symbols.push(normalizedRaw);
+          }
+        });
+      }
+      CRYPTO_THEME_DEFINITIONS.forEach((theme, index) => {
+        if (!theme || !Array.isArray(theme.keywords)) {
+          return;
+        }
+        const hasKeyword = theme.keywords.some((keyword) => desc.includes(keyword));
+        if (!hasKeyword) {
+          return;
+        }
+        symbols.forEach((sym) => keywordMatches[index].add(sym));
+      });
+    };
+
+    positions.forEach((p) => considerEntry(p?.symbol, p?.description, p?.rawSymbols));
+
+    const dividendEntries = Array.isArray(selectedAccountDividends?.entries)
+      ? selectedAccountDividends.entries
+      : [];
+    dividendEntries.forEach((entry) =>
+      considerEntry(entry?.symbol || entry?.displaySymbol, entry?.description, entry?.rawSymbols)
+    );
+
+    const ordList = Array.isArray(ordersForSelectedAccount) ? ordersForSelectedAccount : [];
+    ordList.forEach((order) => considerEntry(order?.symbol, order?.description, order?.rawSymbols));
+
+    // Fold all crypto-related themes into the aggregate "crypto" theme so users can
+    // search for "crypto" even if positions only mention Bitcoin/Ethereum.
+    if (cryptoAggregateIndex >= 0) {
+      const aggregateSet = keywordMatches[cryptoAggregateIndex];
+      keywordMatches.forEach((set, index) => {
+        if (index === cryptoAggregateIndex) {
+          return;
+        }
+        set.forEach((symbol) => aggregateSet.add(symbol));
+      });
+    }
+
+    const nextMap = new Map();
+    CRYPTO_THEME_DEFINITIONS.forEach((theme, index) => {
+      const normalizedKey = normalizeSymbolGroupKey(theme?.key);
+      if (!normalizedKey) {
+        return;
+      }
+      const matchedSymbols = Array.from(keywordMatches[index]).filter(Boolean);
+      if (!matchedSymbols.length && !CRYPTO_PRICE_SYMBOL_BY_KEY[normalizedKey]) {
+        return;
+      }
+      const overridePriceSymbol = CRYPTO_PRICE_SYMBOL_BY_KEY[normalizedKey] || null;
+      const symbols = (() => {
+        const base = matchedSymbols.slice().sort();
+        if (!overridePriceSymbol) {
+          return base;
+        }
+        return [overridePriceSymbol, ...base.filter((sym) => sym !== overridePriceSymbol)];
+      })();
+      if (!symbols.length) {
+        return;
+      }
+      const labelOverride = CRYPTO_DISPLAY_LABEL_BY_KEY[normalizedKey];
+      nextMap.set(normalizedKey, {
+        key: normalizedKey,
+        label: labelOverride || theme.label || normalizedKey,
+        symbols,
+        defaultPriceSymbol: overridePriceSymbol || symbols[0],
+      });
+    });
+
+    setDynamicSymbolGroups((prev) => {
+      if (areSymbolGroupMapsEqual(prev, nextMap)) {
+        return prev;
+      }
+      return nextMap;
+    });
+  }, [positions, selectedAccountDividends, ordersForSelectedAccount]);
+
   // Build symbol suggestions for search (after positions are initialized)
   const searchSymbols = useMemo(() => {
     const seen = new Set();
@@ -8223,8 +8519,37 @@ export default function App() {
       seen.add(sym);
       list.push({ symbol: sym, description: (o?.description || '').toString() });
     });
+    if (dynamicSymbolGroups && typeof dynamicSymbolGroups.forEach === 'function') {
+      const themeEntries = [];
+      dynamicSymbolGroups.forEach((group) => {
+        if (!group || !group.key || !Array.isArray(group.symbols) || !group.symbols.length) {
+          return;
+        }
+        const preview = group.symbols.slice(0, 3).join(', ');
+        const remainingCount = group.symbols.length - Math.min(group.symbols.length, 3);
+        const parts = [`${group.label || group.key} theme`, `${group.symbols.length} symbol${group.symbols.length === 1 ? '' : 's'}`];
+        if (preview) {
+          parts.push(`e.g. ${preview}${remainingCount > 0 ? '...' : ''}`);
+        }
+        themeEntries.push({
+          symbol: group.key,
+          label: group.label || group.key,
+          description: parts.join(' - '),
+        });
+      });
+      themeEntries
+        .sort((a, b) => (a.label || a.symbol).localeCompare(b.label || b.symbol))
+        .forEach((entry) => {
+          const sym = (entry?.symbol || '').toString().trim().toUpperCase();
+          if (!sym || seen.has(sym)) {
+            return;
+          }
+          seen.add(sym);
+          list.push(entry);
+        });
+    }
     return list;
-  }, [positions, selectedAccountDividends, ordersForSelectedAccount]);
+  }, [positions, selectedAccountDividends, ordersForSelectedAccount, dynamicSymbolGroups]);
 
   const resolveLocalDescriptionForFocusedSymbol = useCallback(() => {
     if (!focusedSymbol) {
@@ -10471,14 +10796,32 @@ export default function App() {
         : '';
     const symbolGroupKey = symbol ? (rawGroupKey || symbol) : null;
     const baseOptions = options && typeof options === 'object' ? { ...options } : {};
-    if (baseOptions && Object.prototype.hasOwnProperty.call(baseOptions, 'symbolGroupKey')) {
-      delete baseOptions.symbolGroupKey;
-    }
+    const normalizedSymbols =
+      symbol && Array.isArray(baseOptions.symbols)
+        ? Array.from(
+            new Set(
+              baseOptions.symbols
+                .map((sym) => (typeof sym === 'string' ? sym.trim().toUpperCase() : ''))
+                .filter(Boolean)
+            )
+          )
+        : null;
     const normalizedOptions = {
       ...(baseOptions || {}),
       applyAccountCagrStartDate: applyCagr,
       refreshKey,
     };
+    if (!symbol) {
+      delete normalizedOptions.symbolGroupKey;
+      delete normalizedOptions.symbols;
+    } else {
+      normalizedOptions.symbolGroupKey = symbolGroupKey;
+      if (normalizedSymbols && normalizedSymbols.length) {
+        normalizedOptions.symbols = normalizedSymbols;
+      } else {
+        delete normalizedOptions.symbols;
+      }
+    }
     setTotalPnlSeriesState((prev) => ({
       status: 'loading',
       data:
@@ -10519,6 +10862,38 @@ export default function App() {
     }
   }, [refreshKey]);
 
+  const doesSeriesMatchFocus = useCallback(
+    (state) => {
+      if (!focusedSymbol || !selectedAccountKey) return false;
+      if (!state || state.accountKey !== selectedAccountKey) return false;
+      const desiredGroupKey = focusedSymbolGroupKey || focusedSymbol || null;
+      if ((state.symbolGroupKey || null) !== (desiredGroupKey || null)) {
+        return false;
+      }
+      if ((state.symbol || null) === (focusedSymbol || null)) {
+        return true;
+      }
+      if (!isFocusedSymbolDynamicGroup) {
+        return false;
+      }
+      if (normalizedFocusedPriceSymbol && state.symbol === normalizedFocusedPriceSymbol) {
+        return true;
+      }
+      if (focusedSymbolMembers.length && state.symbol === focusedSymbolMembers[0]) {
+        return true;
+      }
+      return false;
+    },
+    [
+      focusedSymbol,
+      focusedSymbolGroupKey,
+      focusedSymbolMembers,
+      isFocusedSymbolDynamicGroup,
+      normalizedFocusedPriceSymbol,
+      selectedAccountKey,
+    ]
+  );
+
   // When a symbol is focused, proactively fetch its Total P&L series for the
   // current selection using earliest-hold start (no account CAGR shift),
   // avoiding extra user actions to see the chart.
@@ -10531,19 +10906,23 @@ export default function App() {
       return;
     }
     const desiredGroupKey = focusedSymbolGroupKey || focusedSymbol || null;
+    const desiredSeriesSymbol = isFocusedSymbolDynamicGroup
+      ? normalizedFocusedPriceSymbol ||
+        (focusedSymbolMembers.length ? focusedSymbolMembers[0] : null) ||
+        focusedSymbol
+      : focusedSymbol;
     const alreadyActive =
-      totalPnlSeriesState.accountKey === targetKey &&
-      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
-      (totalPnlSeriesState.symbolGroupKey || null) === (desiredGroupKey || null) &&
+      doesSeriesMatchFocus(totalPnlSeriesState) &&
       (totalPnlSeriesState.status === 'loading' || totalPnlSeriesState.status === 'success');
     if (alreadyActive) {
       return;
     }
     // For symbol series, start from the first date any relevant account held the symbol.
     fetchTotalPnlSeries(targetKey, {
-      symbol: focusedSymbol,
+      symbol: desiredSeriesSymbol,
       applyAccountCagrStartDate: false,
       symbolGroupKey: desiredGroupKey,
+      symbols: focusedSymbolMembers,
     });
   }, [
     focusedSymbol,
@@ -10554,6 +10933,10 @@ export default function App() {
     totalPnlSeriesState.symbolGroupKey,
     totalPnlSeriesState.status,
     fetchTotalPnlSeries,
+    isFocusedSymbolDynamicGroup,
+    normalizedFocusedPriceSymbol,
+    focusedSymbolMembers,
+    doesSeriesMatchFocus,
   ]);
 
   useEffect(() => {
@@ -10673,6 +11056,11 @@ export default function App() {
           ? normalizedOptions.mode
           : null;
       const desiredMode = supportsCagrToggle ? preferredMode ?? 'cagr' : 'all';
+      const desiredGroupKey = focusedSymbol ? focusedSymbolGroupKey || focusedSymbol : null;
+      const desiredSeriesSymbol =
+        focusedSymbol && isFocusedSymbolDynamicGroup
+          ? normalizedFocusedPriceSymbol || (focusedSymbolMembers.length ? focusedSymbolMembers[0] : null) || focusedSymbol
+          : focusedSymbol;
       setTotalPnlDialogContext({
         accountKey: normalizedKey,
         label: resolvedLabel,
@@ -10680,19 +11068,18 @@ export default function App() {
         cagrStartDate: resolvedCagrStart,
       });
       setShowTotalPnlDialog(true);
-      if (
+      const needsFetch =
         totalPnlSeriesState.accountKey !== normalizedKey ||
         totalPnlSeriesState.mode !== desiredMode ||
-        (totalPnlSeriesState.symbol || null) !== (focusedSymbol || null) ||
-        (focusedSymbol &&
-          (totalPnlSeriesState.symbolGroupKey || null) !== ((focusedSymbolGroupKey || focusedSymbol) || null)) ||
+        (focusedSymbol ? !doesSeriesMatchFocus(totalPnlSeriesState) : Boolean(totalPnlSeriesState.symbol)) ||
         totalPnlSeriesState.status === 'error' ||
-        totalPnlSeriesState.status === 'idle'
-      ) {
+        totalPnlSeriesState.status === 'idle';
+      if (needsFetch) {
         const fetchOpts = { applyAccountCagrStartDate: focusedSymbol ? false : desiredMode !== 'all' };
         if (focusedSymbol) {
-          fetchOpts.symbol = focusedSymbol;
-          fetchOpts.symbolGroupKey = focusedSymbolGroupKey || focusedSymbol;
+          fetchOpts.symbol = desiredSeriesSymbol || focusedSymbol;
+          fetchOpts.symbolGroupKey = desiredGroupKey;
+          fetchOpts.symbols = focusedSymbolMembers;
         }
         fetchTotalPnlSeries(normalizedKey, fetchOpts);
       }
@@ -10704,6 +11091,10 @@ export default function App() {
       totalPnlSeriesState,
       focusedSymbol,
       focusedSymbolGroupKey,
+      focusedSymbolMembers,
+      isFocusedSymbolDynamicGroup,
+      normalizedFocusedPriceSymbol,
+      doesSeriesMatchFocus,
     ]
   );
 
@@ -10720,8 +11111,19 @@ export default function App() {
       return;
     }
     const applyCagr = totalPnlSeriesState.mode !== 'all';
+    const desiredGroupKey = focusedSymbol ? focusedSymbolGroupKey || focusedSymbol : null;
+    const desiredSeriesSymbol =
+      focusedSymbol && isFocusedSymbolDynamicGroup
+        ? normalizedFocusedPriceSymbol ||
+          (focusedSymbolMembers.length ? focusedSymbolMembers[0] : null) ||
+          focusedSymbol
+        : focusedSymbol;
     const opts = { applyAccountCagrStartDate: focusedSymbol ? false : applyCagr };
-    if (focusedSymbol) opts.symbol = focusedSymbol;
+    if (focusedSymbol) {
+      opts.symbol = desiredSeriesSymbol || focusedSymbol;
+      opts.symbolGroupKey = desiredGroupKey;
+      opts.symbols = focusedSymbolMembers;
+    }
     fetchTotalPnlSeries(targetKey, opts);
   }, [
     fetchTotalPnlSeries,
@@ -10729,6 +11131,10 @@ export default function App() {
     totalPnlDialogContext.accountKey,
     totalPnlSeriesState.mode,
     focusedSymbol,
+    focusedSymbolGroupKey,
+    focusedSymbolMembers,
+    isFocusedSymbolDynamicGroup,
+    normalizedFocusedPriceSymbol,
   ]);
 
   const handleCloseTotalPnlDialog = useCallback(() => {
@@ -10759,8 +11165,19 @@ export default function App() {
         return;
       }
       const applyCagr = normalizedMode !== 'all';
+      const desiredGroupKey = focusedSymbol ? focusedSymbolGroupKey || focusedSymbol : null;
+      const desiredSeriesSymbol =
+        focusedSymbol && isFocusedSymbolDynamicGroup
+          ? normalizedFocusedPriceSymbol ||
+            (focusedSymbolMembers.length ? focusedSymbolMembers[0] : null) ||
+            focusedSymbol
+          : focusedSymbol;
       const opts = { applyAccountCagrStartDate: applyCagr };
-      if (focusedSymbol) opts.symbol = focusedSymbol;
+      if (focusedSymbol) {
+        opts.symbol = desiredSeriesSymbol || focusedSymbol;
+        opts.symbolGroupKey = desiredGroupKey;
+        opts.symbols = focusedSymbolMembers;
+      }
       fetchTotalPnlSeries(targetKey, opts);
     },
     [
@@ -10771,6 +11188,10 @@ export default function App() {
       totalPnlSeriesState.status,
       fetchTotalPnlSeries,
       focusedSymbol,
+      focusedSymbolGroupKey,
+      focusedSymbolMembers,
+      isFocusedSymbolDynamicGroup,
+      normalizedFocusedPriceSymbol,
     ]
   );
 
@@ -12791,24 +13212,15 @@ export default function App() {
   // Resolve symbol Total P&L series for header chart (when focusing a symbol)
   const selectedSymbolTotalPnlSeries = useMemo(() => {
     if (!focusedSymbol || !selectedAccountKey) return null;
-    if (
-      totalPnlSeriesState.accountKey === selectedAccountKey &&
-      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
-      (totalPnlSeriesState.symbolGroupKey || null) === ((focusedSymbolGroupKey || focusedSymbol) || null) &&
-      totalPnlSeriesState.status === 'success'
-    ) {
+    if (doesSeriesMatchFocus(totalPnlSeriesState) && totalPnlSeriesState.status === 'success') {
       return totalPnlSeriesState.data || null;
     }
     return null;
   }, [
     focusedSymbol,
-    focusedSymbolGroupKey,
     selectedAccountKey,
-    totalPnlSeriesState.accountKey,
-    totalPnlSeriesState.symbol,
-    totalPnlSeriesState.symbolGroupKey,
-    totalPnlSeriesState.status,
-    totalPnlSeriesState.data,
+    totalPnlSeriesState,
+    doesSeriesMatchFocus,
   ]);
 
   // For symbol charts, start on the first date the symbol is actually held
@@ -12841,44 +13253,28 @@ export default function App() {
 
   const selectedSymbolTotalPnlSeriesStatus = useMemo(() => {
     if (!focusedSymbol || !selectedAccountKey) return 'idle';
-    if (
-      totalPnlSeriesState.accountKey === selectedAccountKey &&
-      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
-      (totalPnlSeriesState.symbolGroupKey || null) === ((focusedSymbolGroupKey || focusedSymbol) || null)
-    ) {
+    if (doesSeriesMatchFocus(totalPnlSeriesState)) {
       return totalPnlSeriesState.status;
     }
     return 'idle';
   }, [
     focusedSymbol,
-    focusedSymbolGroupKey,
     selectedAccountKey,
-    totalPnlSeriesState.accountKey,
-    totalPnlSeriesState.symbol,
-    totalPnlSeriesState.symbolGroupKey,
-    totalPnlSeriesState.status,
+    totalPnlSeriesState,
+    doesSeriesMatchFocus,
   ]);
 
   const selectedSymbolTotalPnlSeriesError = useMemo(() => {
     if (!focusedSymbol || !selectedAccountKey) return null;
-    if (
-      totalPnlSeriesState.accountKey === selectedAccountKey &&
-      (totalPnlSeriesState.symbol || null) === (focusedSymbol || null) &&
-      (totalPnlSeriesState.symbolGroupKey || null) === ((focusedSymbolGroupKey || focusedSymbol) || null) &&
-      totalPnlSeriesState.status === 'error'
-    ) {
+    if (doesSeriesMatchFocus(totalPnlSeriesState) && totalPnlSeriesState.status === 'error') {
       return totalPnlSeriesState.error || null;
     }
     return null;
   }, [
     focusedSymbol,
-    focusedSymbolGroupKey,
     selectedAccountKey,
-    totalPnlSeriesState.accountKey,
-    totalPnlSeriesState.symbol,
-    totalPnlSeriesState.symbolGroupKey,
-    totalPnlSeriesState.status,
-    totalPnlSeriesState.error,
+    totalPnlSeriesState,
+    doesSeriesMatchFocus,
   ]);
   // Compute quick symbol-level P&L summary for the focused symbol.
   // Prefer the chart series so totals always match the header sparkline.
@@ -13081,6 +13477,7 @@ export default function App() {
       ? Number(focusedSymbolQuote.marketCap)
       : null;
   const quoteHasMarketCap = rawMarketCap !== null && rawMarketCap > 0;
+  const hideFocusedSymbolFundamentals = focusedSymbolIsCryptoAggregate;
   const quotePeValue =
     focusedSymbolQuote && Number.isFinite(focusedSymbolQuote.peRatio)
       ? formatNumber(focusedSymbolQuote.peRatio, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
@@ -13149,6 +13546,9 @@ export default function App() {
     if (!quoteHasMarketCap) {
       return null;
     }
+    if (focusedSymbolCryptoTheme) {
+      return null;
+    }
 
     const base = (focusedSymbol || '').toString().trim();
     if (!base) {
@@ -13199,6 +13599,10 @@ export default function App() {
     }
     return null;
   })();
+  const showFocusedSymbolDescription =
+    typeof focusedSymbolDescription === 'string' &&
+    focusedSymbolDescription.trim() &&
+    !focusedSymbolCryptoTheme;
   const summaryButtonTitleBase =
     'Open quote (Perplexity). Ctrl-click for Questrade, Alt-click for Yahoo Finance.';
   const summaryButtonTitle = focusedSymbolQuoteError
@@ -13374,9 +13778,9 @@ export default function App() {
                           )}
                         </span>
                         <span className="symbol-view__text">
-                          <strong>{focusedSymbol}</strong>
-                          {focusedSymbolDescription ? (
-                            <span className="symbol-view__desc">— {focusedSymbolDescription}</span>
+                          <strong>{focusedSymbolTitle}</strong>
+                          {showFocusedSymbolDescription ? (
+                            <span className="symbol-view__desc">- {focusedSymbolDescription.trim()}</span>
                           ) : null}
                         </span>
                       </span>
@@ -13401,68 +13805,70 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="symbol-view__details">
-                    {quoteMessage ? (
-                      <span className="symbol-view__detail symbol-view__detail--message">{quoteMessage}</span>
-                    ) : (
-                      <>
-                        <span className="symbol-view__detail symbol-view__detail--price">
-                          <span className="symbol-view__detail-price">{quotePriceDisplay}</span>
-                          {quoteChangeDisplay ? (
-                            <span
-                              className={`symbol-view__detail-change symbol-view__detail-change--${quoteChangeTone}`}
-                            >
-                              ({quoteChangeDisplay})
+                  {!focusedSymbolIsCryptoAggregate ? (
+                    <div className="symbol-view__details">
+                      {quoteMessage ? (
+                        <span className="symbol-view__detail symbol-view__detail--message">{quoteMessage}</span>
+                      ) : (
+                        <>
+                          <span className="symbol-view__detail symbol-view__detail--price">
+                            <span className="symbol-view__detail-price">{quotePriceDisplay}</span>
+                            {quoteChangeDisplay ? (
+                              <span
+                                className={`symbol-view__detail-change symbol-view__detail-change--${quoteChangeTone}`}
+                              >
+                                ({quoteChangeDisplay})
+                              </span>
+                            ) : null}
+                          </span>
+                          {!hideFocusedSymbolFundamentals && quotePeValue ? (
+                            <span className="symbol-view__detail">
+                              <span className="symbol-view__detail-label">P/E</span>
+                              <span className="symbol-view__detail-value">{quotePeValue}</span>
                             </span>
                           ) : null}
-                        </span>
-                        {quotePeValue ? (
-                          <span className="symbol-view__detail">
-                            <span className="symbol-view__detail-label">P/E</span>
-                            <span className="symbol-view__detail-value">{quotePeValue}</span>
-                          </span>
-                        ) : null}
-                        {quotePegValue ? (
-                          <span
-                            className="symbol-view__detail"
-                            title={quotePegTooltip || undefined}
-                          >
-                            <span className="symbol-view__detail-label">PEG</span>
-                            <span className={quotePegValueClassName}>{quotePegValue}</span>
-                          </span>
-                        ) : null}
-                        {quoteMarketCapValue ? (
-                          quoteMarketCapHistoryUrl ? (
-                            <a
-                              className="symbol-view__detail symbol-view__detail-link"
-                              href={quoteMarketCapHistoryUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                          {!hideFocusedSymbolFundamentals && quotePegValue ? (
+                            <span
+                              className="symbol-view__detail"
+                              title={quotePegTooltip || undefined}
                             >
-                              <span className="symbol-view__detail-label">Market cap</span>
-                              <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
-                            </a>
-                          ) : (
-                            <span className="symbol-view__detail">
-                              <span className="symbol-view__detail-label">Market cap</span>
-                              <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                              <span className="symbol-view__detail-label">PEG</span>
+                              <span className={quotePegValueClassName}>{quotePegValue}</span>
                             </span>
-                          )
-                        ) : null}
-                        {quoteDividendValue ? (
-                          <button
-                            type="button"
-                            className="symbol-view__detail symbol-view__detail-button symbol-view__detail-link"
-                            onClick={handleShowDividendsPanel}
-                            title={quoteDividendTooltip || undefined}
-                          >
-                            <span className="symbol-view__detail-label">Dividend yield</span>
-                            <span className="symbol-view__detail-value">{quoteDividendValue}</span>
-                          </button>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
+                          ) : null}
+                          {quoteMarketCapValue ? (
+                            quoteMarketCapHistoryUrl ? (
+                              <a
+                                className="symbol-view__detail symbol-view__detail-link"
+                                href={quoteMarketCapHistoryUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                <span className="symbol-view__detail-label">Market cap</span>
+                                <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                              </a>
+                            ) : (
+                              <span className="symbol-view__detail">
+                                <span className="symbol-view__detail-label">Market cap</span>
+                                <span className="symbol-view__detail-value">{quoteMarketCapValue}</span>
+                              </span>
+                            )
+                          ) : null}
+                          {!hideFocusedSymbolFundamentals && quoteDividendValue ? (
+                            <button
+                              type="button"
+                              className="symbol-view__detail symbol-view__detail-button symbol-view__detail-link"
+                              onClick={handleShowDividendsPanel}
+                              title={quoteDividendTooltip || undefined}
+                            >
+                              <span className="symbol-view__detail-label">Dividend yield</span>
+                              <span className="symbol-view__detail-value">{quoteDividendValue}</span>
+                            </button>
+                          ) : null}
+                        </>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -14084,7 +14490,7 @@ export default function App() {
           error={totalPnlDialogError}
           onRetry={handleRetryTotalPnlSeries}
           accountLabel={totalPnlDialogContext.label}
-          symbolLabel={focusedSymbol || null}
+          symbolLabel={focusedSymbolTitle || focusedSymbol || null}
           supportsCagrToggle={Boolean(totalPnlDialogContext.supportsCagrToggle)}
           mode={totalPnlSeriesState.mode}
           onModeChange={handleChangeTotalPnlSeriesMode}

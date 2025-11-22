@@ -82,11 +82,12 @@ export default function GlobalSearch({
       const sym = normalize(entry.symbol).toUpperCase();
       if (!sym || seen.has(sym)) return;
       seen.add(sym);
+      const displayLabel = normalize(entry.label) || sym;
       const desc = normalize(entry.description);
       items.push({
         kind: 'symbol',
         key: sym,
-        label: sym,
+        label: displayLabel,
         sublabel: desc || null,
       });
     });

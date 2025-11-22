@@ -277,6 +277,32 @@ function formatExpiryIso(ms) {
   }
 }
 
+function normalizeSymbolList(raw) {
+  if (raw === null || raw === undefined) {
+    return [];
+  }
+  const values = [];
+  if (Array.isArray(raw)) {
+    values.push(...raw);
+  } else if (raw instanceof Set) {
+    raw.forEach((value) => values.push(value));
+  } else if (typeof raw === 'string') {
+    values.push(...raw.split(','));
+  } else {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  values.forEach((value) => {
+    const normalizedSymbol = normalizeSymbol(value);
+    if (normalizedSymbol && !seen.has(normalizedSymbol)) {
+      seen.add(normalizedSymbol);
+      normalized.push(normalizedSymbol);
+    }
+  });
+  return normalized;
+}
+
 function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
   const normalizedKey = typeof accountKey === 'string' ? accountKey.trim().toLowerCase() : '';
   if (!normalizedKey) {
@@ -295,6 +321,17 @@ function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
   const symbol = typeof params.symbol === 'string' ? params.symbol.trim().toUpperCase() : '';
   if (symbol) {
     parts.push(`symbol:${symbol}`);
+    const normalizedGroupKey =
+      typeof params.symbolGroupKey === 'string' && params.symbolGroupKey.trim()
+        ? params.symbolGroupKey.trim().toUpperCase()
+        : '';
+    if (normalizedGroupKey) {
+      parts.push(`symgroup:${normalizedGroupKey}`);
+    }
+    const normalizedSymbols = normalizeSymbolList(params.symbols);
+    if (normalizedSymbols.length) {
+      parts.push(`symbols:${normalizedSymbols.join(',')}`);
+    }
     if (SYMBOL_GROUPS_VERSION) {
       parts.push(`symver:${SYMBOL_GROUPS_VERSION}`);
     }
@@ -383,22 +420,28 @@ async function computeAggregateTotalPnlSeriesForContexts(
         }
         const baseOptions = activityContext ? { ...options, activityContext } : { ...options };
         // If caller supplied a positions map, pass per-account positions downward to avoid refetch
-        try {
-          const positionsMap = options && options.positionsByAccountId ? options.positionsByAccountId : null;
-          if (positionsMap) {
-            const accountId = context && context.account && context.account.id;
-            let providedPositions = null;
-            if (accountId && positionsMap instanceof Map) {
-              providedPositions = positionsMap.get(accountId) || null;
-            } else if (accountId && typeof positionsMap === 'object') {
-              providedPositions = positionsMap[accountId] || null;
+        // Avoid injecting provided positions for symbol series to prevent synthetic
+        // baseline holdings from appearing before real activity (aggregate views were
+        // showing pre-activity spikes). For account-level series we still reuse
+        // cached positions to save provider calls.
+        if (!options.symbol) {
+          try {
+            const positionsMap = options && options.positionsByAccountId ? options.positionsByAccountId : null;
+            if (positionsMap) {
+              const accountId = context && context.account && context.account.id;
+              let providedPositions = null;
+              if (accountId && positionsMap instanceof Map) {
+                providedPositions = positionsMap.get(accountId) || null;
+              } else if (accountId && typeof positionsMap === 'object') {
+                providedPositions = positionsMap[accountId] || null;
+              }
+              if (Array.isArray(providedPositions)) {
+                baseOptions.providedPositions = providedPositions;
+              }
             }
-            if (Array.isArray(providedPositions)) {
-              baseOptions.providedPositions = providedPositions;
-            }
+          } catch (_) {
+            // non-fatal: proceed without provided positions
           }
-        } catch (_) {
-          // non-fatal: proceed without provided positions
         }
         const series = symbolParam
           ? await computeTotalPnlSeriesForSymbol(
@@ -434,6 +477,37 @@ async function computeAggregateTotalPnlSeriesForContexts(
   const successfulSeries = seriesResults.filter((result) => result && result.series);
   if (!successfulSeries.length) {
     return null;
+  }
+
+  // For symbol-level aggregation, trim leading zero-valued dates so the series
+  // begins when the symbol is first held in any included account. This mirrors
+  // the client-side behaviour and avoids rendering misleading spikes before
+  // the first real activity (for example, when aggregating across accounts).
+  let earliestSymbolActivityDate = null;
+  if (symbolParam) {
+    successfulSeries.forEach(({ series }) => {
+      if (!series || !Array.isArray(series.points)) {
+        return;
+      }
+      const firstActivePoint = series.points.find((point) => {
+        if (!point || typeof point.date !== 'string') {
+          return false;
+        }
+        const equity = Number(point.equityCad);
+        const deposits = Number(point.cumulativeNetDepositsCad);
+        const pnl = Number(point.totalPnlCad);
+        return (
+          (Number.isFinite(equity) && Math.abs(equity) > CASH_FLOW_EPSILON) ||
+          (Number.isFinite(deposits) && Math.abs(deposits) > CASH_FLOW_EPSILON) ||
+          (Number.isFinite(pnl) && Math.abs(pnl) > CASH_FLOW_EPSILON)
+        );
+      });
+      if (firstActivePoint && typeof firstActivePoint.date === 'string') {
+        if (!earliestSymbolActivityDate || firstActivePoint.date < earliestSymbolActivityDate) {
+          earliestSymbolActivityDate = firstActivePoint.date;
+        }
+      }
+    });
   }
 
   const totalsByDate = new Map();
@@ -599,7 +673,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
   }
 
   const sortedDates = Array.from(totalsByDate.keys()).sort();
-  const combinedPoints = sortedDates
+  let combinedPoints = sortedDates
     .map((dateKey) => {
       const bucket = totalsByDate.get(dateKey);
       return {
@@ -637,6 +711,35 @@ async function computeAggregateTotalPnlSeriesForContexts(
     return null;
   }
 
+  // Fallback trim: if the aggregated series still contains only zeros before the
+  // first meaningful symbol values, drop those leading points so charts start
+  // when the symbol is actually present.
+  const firstNonZeroAggregated = combinedPoints.find((point) => {
+    if (!point) {
+      return false;
+    }
+    const equity = Number(point.equityCad);
+    const deposits = Number(point.cumulativeNetDepositsCad);
+    const pnl = Number(point.totalPnlCad);
+    return (
+      (Number.isFinite(equity) && Math.abs(equity) > CASH_FLOW_EPSILON) ||
+      (Number.isFinite(deposits) && Math.abs(deposits) > CASH_FLOW_EPSILON) ||
+      (Number.isFinite(pnl) && Math.abs(pnl) > CASH_FLOW_EPSILON)
+    );
+  });
+  if (!earliestSymbolActivityDate && firstNonZeroAggregated && typeof firstNonZeroAggregated.date === 'string') {
+    earliestSymbolActivityDate = firstNonZeroAggregated.date;
+  }
+
+  if (earliestSymbolActivityDate) {
+    const trimmed = combinedPoints.filter(
+      (point) => point && typeof point.date === 'string' && point.date >= earliestSymbolActivityDate
+    );
+    if (trimmed.length) {
+      combinedPoints = trimmed;
+    }
+  }
+
   const summaryPayload = {
     totalPnlCad: summaryCounts.totalPnlCad > 0 ? summaryTotals.totalPnlCad : null,
     totalPnlAllTimeCad:
@@ -671,7 +774,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
 
   const payload = {
     accountId: outputAccountId,
-    periodStartDate: aggregatedStart || combinedPoints[0].date,
+    periodStartDate:
+      (earliestSymbolActivityDate && aggregatedStart && earliestSymbolActivityDate > aggregatedStart
+        ? earliestSymbolActivityDate
+        : aggregatedStart) || earliestSymbolActivityDate || combinedPoints[0].date,
     periodEndDate: aggregatedEnd || combinedPoints[combinedPoints.length - 1].date,
     points: combinedPoints,
     summary: summaryPayload,
@@ -11360,18 +11466,63 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   if (!targetSymbol) {
     return null;
   }
+  const normalizedGroupKey =
+    typeof options.symbolGroupKey === 'string' && options.symbolGroupKey.trim()
+      ? normalizeSymbol(options.symbolGroupKey) || options.symbolGroupKey.trim().toUpperCase()
+      : '';
+  const providedSymbols = normalizeSymbolList(options.symbols);
   const symbolGroup =
-    getSymbolGroupByKey(targetSymbol) || getSymbolGroupForSymbol(targetSymbol);
-  const symbolMembers = Array.isArray(symbolGroup?.symbols) && symbolGroup.symbols.length
-    ? symbolGroup.symbols
-    : [targetSymbol];
+    (normalizedGroupKey ? getSymbolGroupByKey(normalizedGroupKey) : null) ||
+    getSymbolGroupByKey(targetSymbol) ||
+    getSymbolGroupForSymbol(targetSymbol);
+  const symbolMembers = (() => {
+    const members = [];
+    const seen = new Set();
+    const add = (value) => {
+      const normalized = normalizeSymbol(value);
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      members.push(normalized);
+    };
+    providedSymbols.forEach(add);
+    if (Array.isArray(symbolGroup?.symbols)) {
+      symbolGroup.symbols.forEach(add);
+    }
+    add(targetSymbol);
+    return members.length ? members : [targetSymbol];
+  })();
   const symbolMemberSet = new Set(symbolMembers);
-  const priceDisplaySymbol =
-    symbolGroup &&
-    symbolGroup.defaultPriceSymbol &&
-    symbolMemberSet.has(symbolGroup.defaultPriceSymbol)
-      ? symbolGroup.defaultPriceSymbol
-      : targetSymbol;
+  const providedPositionsBySymbol = new Map();
+  if (Array.isArray(options.providedPositions)) {
+    options.providedPositions.forEach((pos) => {
+      if (!pos || (pos.accountId !== undefined && pos.accountId !== null && String(pos.accountId).trim() !== String(account.id).trim())) {
+        return;
+      }
+      const sym =
+        normalizeSymbol(pos.symbol) ||
+        (typeof pos.displaySymbol === 'string' ? normalizeSymbol(pos.displaySymbol) : null);
+      if (!sym) {
+        return;
+      }
+      providedPositionsBySymbol.set(sym, pos);
+    });
+  }
+  const priceDisplaySymbol = (() => {
+    const preferred = normalizeSymbol(options.priceSymbol || rawSymbol);
+    if (preferred && symbolMemberSet.has(preferred)) {
+      return preferred;
+    }
+    if (
+      symbolGroup &&
+      symbolGroup.defaultPriceSymbol &&
+      symbolMemberSet.has(symbolGroup.defaultPriceSymbol)
+    ) {
+      return symbolGroup.defaultPriceSymbol;
+    }
+    return symbolMembers[0];
+  })();
 
   const accountKey = account.id;
   const activityContext = await resolveAccountActivityContext(login, account, options.activityContext);
@@ -11484,6 +11635,78 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       }
     }
   });
+  const activityQtyBySymbol = new Map();
+  processedActivities.forEach((entry) => {
+    const qty = Number(entry?.activity?.quantity);
+    if (!entry || !entry.symbol || !Number.isFinite(qty)) {
+      return;
+    }
+    adjustNumericMap(activityQtyBySymbol, entry.symbol, qty, LEDGER_QUANTITY_EPSILON);
+  });
+  if (providedPositionsBySymbol.size) {
+    const syntheticDateKey = formatDateOnly(startDate);
+    providedPositionsBySymbol.forEach((pos, sym) => {
+      if (!symbolMemberSet.has(sym)) {
+        return;
+      }
+      const targetQty = Number(pos.openQuantity);
+      if (!Number.isFinite(targetQty) || Math.abs(targetQty) < LEDGER_QUANTITY_EPSILON) {
+        return;
+      }
+      const recordedQty = activityQtyBySymbol.has(sym) ? activityQtyBySymbol.get(sym) : 0;
+      const missingQty = targetQty - recordedQty;
+      if (Math.abs(missingQty) < LEDGER_QUANTITY_EPSILON) {
+        return;
+      }
+      const avgPrice =
+        (Number(pos.averageEntryPrice) && pos.averageEntryPrice > 0 ? Number(pos.averageEntryPrice) : null) ||
+        (Number(pos.totalCost) && Number(targetQty) ? Number(pos.totalCost) / Number(targetQty) : null) ||
+        (Number(pos.currentPrice) && pos.currentPrice > 0 ? Number(pos.currentPrice) : null);
+      const currency =
+        normalizeCurrency(pos.currency) ||
+        (symbolMeta.get(sym) && symbolMeta.get(sym).currency) ||
+        inferSymbolCurrency(sym) ||
+        null;
+      const syntheticActivity = {
+        type: 'SyntheticPosition',
+        action: missingQty >= 0 ? 'SyntheticBuy' : 'SyntheticSell',
+        quantity: missingQty,
+        netAmount: Number.isFinite(avgPrice) ? -missingQty * avgPrice : 0,
+        currency,
+        description: 'Synthetic baseline from provided positions',
+        symbol: sym,
+        symbolId: Number(pos.symbolId),
+      };
+      if (syntheticDateKey) {
+        const syntheticTimestamp =
+          startDate instanceof Date && !Number.isNaN(startDate.getTime())
+            ? startDate
+            : new Date(`${syntheticDateKey}T00:00:00Z`);
+        processedActivities.push({
+          activity: syntheticActivity,
+          timestamp: syntheticTimestamp,
+          dateKey: syntheticDateKey,
+          symbol: sym,
+        });
+        adjustNumericMap(activityQtyBySymbol, sym, missingQty, LEDGER_QUANTITY_EPSILON);
+      }
+      if (!symbolMeta.has(sym)) {
+        symbolMeta.set(sym, {
+          symbolId: Number.isFinite(Number(pos.symbolId)) && Number(pos.symbolId) > 0 ? Number(pos.symbolId) : null,
+          currency,
+        });
+      } else {
+        const meta = symbolMeta.get(sym) || {};
+        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(Number(pos.symbolId)) && Number(pos.symbolId) > 0) {
+          meta.symbolId = Number(pos.symbolId);
+        }
+        if (!meta.currency && currency) {
+          meta.currency = currency;
+        }
+        symbolMeta.set(sym, meta);
+      }
+    });
+  }
   // Ensure every group member has at least a metadata entry so currency inference works consistently
   symbolMembers.forEach((memberSymbol) => {
     if (!symbolMeta.has(memberSymbol)) {
@@ -16067,6 +16290,11 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
   const refreshKeyParam = typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim() ? req.query.refreshKey.trim() : '';
   const symbolParam =
     typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
+  const symbolGroupKeyParam =
+    symbolParam && typeof req.query.symbolGroupKey === 'string' && req.query.symbolGroupKey.trim()
+      ? req.query.symbolGroupKey.trim()
+      : null;
+  const symbolListParam = symbolParam ? normalizeSymbolList(req.query.symbols) : [];
   const startDateParam =
     typeof req.query.startDate === 'string' && req.query.startDate.trim() ? req.query.startDate.trim() : null;
   const endDateParam =
@@ -16084,6 +16312,8 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     endDate: endDateParam,
     applyAccountCagrStartDate,
     symbol: symbolParam,
+    symbolGroupKey: symbolGroupKeyParam,
+    symbols: symbolListParam && symbolListParam.length ? symbolListParam : undefined,
     refreshKey: refreshKeyParam,
   };
   const cacheKey = buildTotalPnlSeriesCacheKey(normalizedKey, queryOptions);
@@ -16251,6 +16481,24 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       } catch (_) {
         positionsByAccountIdForAgg = null;
       }
+      if (!positionsByAccountIdForAgg && symbolParam) {
+        try {
+          const results = await Promise.all(
+            targetContexts.map((context) => fetchPositions(context.login, context.account.number))
+          );
+          const map = {};
+          results.forEach((arr, index) => {
+            const context = targetContexts[index];
+            if (!context || !context.account || !context.account.id) {
+              return;
+            }
+            map[context.account.id] = Array.isArray(arr) ? arr : [];
+          });
+          positionsByAccountIdForAgg = map;
+        } catch (_) {
+          positionsByAccountIdForAgg = null;
+        }
+      }
 
       const aggregateOptionsWithPositions = positionsByAccountIdForAgg
         ? { ...aggregateOptions, positionsByAccountId: positionsByAccountIdForAgg }
@@ -16300,17 +16548,31 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     });
 
     let perAccountCombinedBalances = {};
+    let providedPositions = null;
     // For symbol series, reuse superset balances if available to avoid provider calls
     if (symbolParam) {
       const superset = getSupersetCacheEntry();
       if (superset && superset.perAccountCombinedBalances) {
         perAccountCombinedBalances = superset.perAccountCombinedBalances;
       }
+      if (superset && superset.payload && Array.isArray(superset.payload.flattenedPositions)) {
+        providedPositions = superset.payload.flattenedPositions.filter((p) => {
+          if (!p || p.accountId === undefined || p.accountId === null) return false;
+          return String(p.accountId).trim() === String(accountId).trim();
+        });
+      }
     }
-    if (!symbolParam) {
+    if (!symbolParam || !perAccountCombinedBalances || !perAccountCombinedBalances[accountId]) {
       const balancesRaw = await fetchBalances(login, effectiveAccount.number);
       const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
       perAccountCombinedBalances = { [accountId]: balanceSummary };
+    }
+    if (symbolParam && !providedPositions) {
+      try {
+        providedPositions = await fetchPositions(login, effectiveAccount.number);
+      } catch (_) {
+        providedPositions = null;
+      }
     }
 
     const options = {};
@@ -16334,6 +16596,9 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
           ? superset.activityContextsByAccountId[accountId]
           : null;
       const computedOptions = activityCtx ? { ...options, activityContext: activityCtx, symbol: symbolParam } : { ...options, symbol: symbolParam };
+      if (providedPositions && Array.isArray(providedPositions) && providedPositions.length) {
+        computedOptions.providedPositions = providedPositions;
+      }
       series = await computeTotalPnlSeriesForSymbol(
         login,
         effectiveAccount,
