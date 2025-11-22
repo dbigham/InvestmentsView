@@ -8149,31 +8149,32 @@ export default function App() {
         return;
       }
       const key = String(focusedSymbol).trim().toUpperCase();
-      if (!key) {
+      const quoteSymbol = String(focusedSymbolPriceSymbol || key).trim().toUpperCase();
+      if (!quoteSymbol) {
         return;
       }
 
       if (event.ctrlKey || event.metaKey) {
-        const url = buildQuoteUrl(key, 'questrade');
+        const url = buildQuoteUrl(quoteSymbol, 'questrade');
         if (!url) {
           return;
         }
         event.preventDefault();
         event.stopPropagation();
-        openQuote(key, 'questrade');
+        openQuote(quoteSymbol, 'questrade');
         return;
       }
 
       const provider = event.altKey ? 'yahoo' : 'perplexity';
-      const url = buildQuoteUrl(key, provider);
+      const url = buildQuoteUrl(quoteSymbol, provider);
       if (!url) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      openQuote(key, provider);
+      openQuote(quoteSymbol, provider);
     },
-    [focusedSymbol]
+    [focusedSymbol, focusedSymbolPriceSymbol]
   );
 
   const handleFocusedSymbolSummaryFocus = useCallback((event) => {
@@ -13492,7 +13493,9 @@ export default function App() {
       : null;
   const quotePegDiagnostics = normalizePegDiagnostics(focusedSymbolQuote?.pegDiagnostics);
   const shouldShowPeg =
-    quoteHasMarketCap && (formattedPegRatio !== null || quotePegDiagnostics !== null);
+    !focusedSymbolCryptoTheme &&
+    quoteHasMarketCap &&
+    (formattedPegRatio !== null || quotePegDiagnostics !== null);
   const quotePegValue =
     formattedPegRatio !== null
       ? formattedPegRatio
