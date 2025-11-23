@@ -28,6 +28,7 @@ const {
   applyAccountSettingsOverrides,
   buildAccountActivityContext,
   computeTotalPnlSeriesForSymbol,
+  computeTotalPnlBySymbol,
   fetchBalances,
   summarizeAccountBalances,
   computeNetDeposits,
@@ -271,6 +272,23 @@ async function main() {
     // Funding summary is best-effort; ignore failures and just print symbol metrics.
   }
 
+  let xirrFromCashFlows = null;
+  try {
+    const totals = await computeTotalPnlBySymbol(login, account, {
+      activityContext,
+      applyAccountCagrStartDate: false,
+    });
+    if (totals && Array.isArray(totals.entries)) {
+      const match = totals.entries.find((entry) => normalizeSymbolKey(entry?.symbol) === symbolKey);
+      const annualized = match && match.annualizedReturn;
+      if (annualized && Number.isFinite(annualized.rate)) {
+        xirrFromCashFlows = annualized.rate;
+      }
+    }
+  } catch (symbolError) {
+    // Non-fatal: leave null if unavailable
+  }
+
   const payload = {
     accountId: account.id,
     accountNumber: account.number,
@@ -289,6 +307,7 @@ async function main() {
       : null,
     accountStartDate,
     accountPeriodEnd,
+    annualizedXirrPercent: Number.isFinite(xirrFromCashFlows) ? xirrFromCashFlows * 100 : null,
   };
 
   console.log(JSON.stringify(payload, null, 2));
@@ -299,4 +318,3 @@ main().catch((error) => {
   console.error('[inspect-symbol-annualized] Error:', message);
   process.exit(1);
 });
-

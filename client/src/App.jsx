@@ -13210,6 +13210,98 @@ export default function App() {
     });
   }, [activeTotalPnlAccountKey, data?.accountTotalPnlSeries]);
 
+  const resolveSymbolTotalsContainer = useCallback(
+    (map) => {
+      if (!map || typeof map !== 'object') {
+        return null;
+      }
+      if (isAggregateSelection) {
+        const key =
+          typeof selectedAccount === 'string' && selectedAccount.trim()
+            ? selectedAccount.trim()
+            : 'all';
+        return map[key] || map.all || map['all'] || null;
+      }
+      if (selectedAccountInfo?.id) {
+        return map[selectedAccountInfo.id] || null;
+      }
+      return null;
+    },
+    [isAggregateSelection, selectedAccount, selectedAccountInfo?.id]
+  );
+
+  const focusedSymbolTotalsEntry = useMemo(() => {
+    if (!focusedSymbol) {
+      return { current: null, allTime: null };
+    }
+    const findEntry = (container) => {
+      if (!container || !Array.isArray(container.entries)) {
+        return null;
+      }
+      return container.entries.find((entry) => {
+        if (matchesFocusedSymbol(entry?.symbol)) {
+          return true;
+        }
+        if (Array.isArray(entry?.components)) {
+          return entry.components.some((component) => matchesFocusedSymbol(component?.symbol));
+        }
+        return false;
+      });
+    };
+    const currentContainer = resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol);
+    const allContainer = resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll);
+    return {
+      current: findEntry(currentContainer),
+      allTime: findEntry(allContainer),
+    };
+  }, [
+    focusedSymbol,
+    matchesFocusedSymbol,
+    resolveSymbolTotalsContainer,
+    data?.accountTotalPnlBySymbol,
+    data?.accountTotalPnlBySymbolAll,
+  ]);
+
+  const symbolAnnualizedMapForPositions = useMemo(() => {
+    const map = new Map();
+    const container =
+      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll) ||
+      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol);
+    const normalizeKey = (value) => normalizeSymbolGroupKey(value || '');
+    if (!container || !Array.isArray(container.entries)) {
+      return map;
+    }
+    container.entries.forEach((entry) => {
+      const annualized = entry?.annualizedReturn || null;
+      const annualizedNoFx = entry?.annualizedReturnNoFx || null;
+      if (!annualized) {
+        return;
+      }
+      const payload = {
+        rate: Number.isFinite(Number(annualized.rate)) ? Number(annualized.rate) : null,
+        rateNoFx: Number.isFinite(Number(annualizedNoFx?.rate)) ? Number(annualizedNoFx.rate) : null,
+        startDate:
+          typeof annualized.startDate === 'string' && annualized.startDate.trim()
+            ? annualized.startDate.trim()
+            : null,
+        incomplete: annualized.incomplete === true,
+      };
+      const entryKey = normalizeKey(entry.symbol);
+      if (entryKey) {
+        map.set(entryKey, payload);
+      }
+      if (Array.isArray(entry.components)) {
+        entry.components.forEach((component) => {
+          const compKey = normalizeKey(component?.symbol);
+          if (compKey && !map.has(compKey)) {
+            map.set(compKey, payload);
+          }
+        });
+      }
+    });
+    return map;
+  }, [data?.accountTotalPnlBySymbolAll, data?.accountTotalPnlBySymbol, resolveSymbolTotalsContainer]);
+
   // Resolve symbol Total P&L series for header chart (when focusing a symbol)
   const selectedSymbolTotalPnlSeries = useMemo(() => {
     if (!focusedSymbol || !selectedAccountKey) return null;
@@ -13358,6 +13450,56 @@ export default function App() {
     selectedAccount,
     selectedAccountInfo?.id,
     focusedSymbolDividendsCad,
+  ]);
+
+  const focusedSymbolFundingSummary = useMemo(() => {
+    if (!focusedSymbol) {
+      return null;
+    }
+    const entry = focusedSymbolTotalsEntry.current || focusedSymbolTotalsEntry.allTime || null;
+    if (!entry) {
+      return null;
+    }
+    const annualized = entry.annualizedReturn || focusedSymbolTotalsEntry.allTime?.annualizedReturn || null;
+    const annualizedRate = Number.isFinite(Number(annualized?.rate)) ? Number(annualized.rate) : null;
+    const annualizedAsOf =
+      typeof annualized?.asOf === 'string' && annualized.asOf.trim()
+        ? annualized.asOf.trim()
+        : asOf;
+    const annualizedStart =
+      typeof annualized?.startDate === 'string' && annualized.startDate.trim()
+        ? annualized.startDate.trim()
+        : null;
+    const annualizedIncomplete = annualized?.incomplete === true;
+    const totalPnlCad = Number.isFinite(entry.totalPnlCad)
+      ? entry.totalPnlCad
+      : Number.isFinite(focusedSymbolPnl?.totalPnl)
+        ? focusedSymbolPnl.totalPnl
+        : null;
+    const equityFromPositions = Number(symbolFilteredPositions.total);
+    const totalEquityCad = Number.isFinite(entry.marketValueCad)
+      ? entry.marketValueCad
+      : Number.isFinite(equityFromPositions)
+        ? equityFromPositions
+        : null;
+    const netDepositsCad = Number.isFinite(entry.investedCad) ? entry.investedCad : null;
+    return {
+      netDepositsCad,
+      totalPnlCad,
+      totalEquityCad,
+      periodStartDate: annualizedStart || null,
+      periodEndDate: annualizedAsOf ? annualizedAsOf.slice(0, 10) : null,
+      annualizedReturnRate: annualizedRate,
+      annualizedReturnAsOf: annualizedAsOf,
+      annualizedReturnStartDate: annualizedStart || null,
+      annualizedReturnIncomplete: annualizedIncomplete,
+    };
+  }, [
+    focusedSymbol,
+    focusedSymbolTotalsEntry,
+    focusedSymbolPnl?.totalPnl,
+    symbolFilteredPositions.total,
+    asOf,
   ]);
 
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
@@ -14015,12 +14157,15 @@ export default function App() {
             deploymentSummary={focusedSymbol ? null : activeDeploymentSummary}
             pnl={focusedSymbol ? { dayPnl: focusedSymbolPnl?.dayPnl ?? 0, openPnl: focusedSymbolPnl?.openPnl ?? 0, totalPnl: focusedSymbolPnl?.totalPnl ?? null } : activePnl}
             fundingSummary={focusedSymbol ? (function buildSymbolFunding(){
+              if (focusedSymbolFundingSummary) {
+                return focusedSymbolFundingSummary;
+              }
               const mv = Number(symbolFilteredPositions.total) || 0;
               const totalP = Number(focusedSymbolPnl?.totalPnl);
               const cost = Number.isFinite(totalP) ? mv - totalP : null;
               let rate = null;
               const startKey = (function resolveStart(){
-                // Prefer the symbol’s own Total P&L series start so the
+                // Prefer the symbol's own Total P&L series start so the
                 // annualized return matches the symbol chart timeframe.
                 if (
                   selectedSymbolTotalPnlSeriesForChart &&
@@ -14250,6 +14395,7 @@ export default function App() {
                 hideTargetColumn={Boolean(focusedSymbol)}
                 hideDetailsOption={Boolean(focusedSymbol)}
                 accountsById={accountsById}
+                symbolAnnualizedMap={symbolAnnualizedMapForPositions}
               />
             </div>
 

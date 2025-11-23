@@ -127,6 +127,14 @@ function truncateDescription(value) {
   return `${normalized.slice(0, 21).trimEnd()}...`;
 }
 
+function normalizeSymbolKey(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim().toUpperCase();
+  return trimmed || '';
+}
+
 function compareRows(header, direction, accessorOverride) {
   const multiplier = direction === 'asc' ? 1 : -1;
   const accessor = typeof accessorOverride === 'function' ? accessorOverride : header.accessor;
@@ -234,6 +242,7 @@ function PositionsTable({
   hideTargetColumn = false,
   hideDetailsOption = false,
   accountsById = null,
+  symbolAnnualizedMap = null,
 }) {
   // No local mapping required when using Logo.dev ticker endpoint
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
@@ -713,8 +722,7 @@ function PositionsTable({
             position.symbolId ?? position.symbol ?? index
           }`;
           const rowKey = position.rowId || fallbackKey;
-          const normalizedSymbol =
-            typeof position.symbol === 'string' ? position.symbol.trim().toUpperCase() : '';
+          const normalizedSymbol = normalizeSymbolKey(position.symbol);
           const symbolLabel =
             typeof position.symbol === 'string' && position.symbol.trim()
               ? position.symbol.trim()
@@ -754,9 +762,37 @@ function PositionsTable({
           const openPnlTooltipExtras = [];
           if (isUsdPosition && Number.isFinite(position.normalizedOpenPnl)) {
             const cadFormatted = formatSignedMoney(position.normalizedOpenPnl);
-            if (cadFormatted && cadFormatted !== '—') {
+            if (cadFormatted && cadFormatted !== '-') {
               openPnlTooltipExtras.push(`${cadFormatted} CAD`);
             }
+          }
+          const annualizedEntry =
+            symbolAnnualizedMap instanceof Map
+              ? symbolAnnualizedMap.get(normalizedSymbol) || null
+              : null;
+          const annualizedTooltip = (() => {
+            if (!annualizedEntry) {
+              return null;
+            }
+            if (Number.isFinite(annualizedEntry.rate)) {
+              const formattedRate = formatSignedPercent(annualizedEntry.rate * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+              const formattedNoFx = Number.isFinite(annualizedEntry.rateNoFx)
+                ? formatSignedPercent(annualizedEntry.rateNoFx * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                : null;
+              const startSuffix = annualizedEntry.startDate ? ` (since ${annualizedEntry.startDate})` : '';
+              const lines = [`XIRR w/ FX: ${formattedRate}${startSuffix}`];
+              if (formattedNoFx) {
+                lines.push(`XIRR w/o FX: ${formattedNoFx}${startSuffix}`);
+              }
+              return lines.join('\n');
+            }
+            if (annualizedEntry.incomplete) {
+              return 'XIRR: unavailable (insufficient cash flows)';
+            }
+            return null;
+          })();
+          if (annualizedTooltip) {
+            openPnlTooltipExtras.push(annualizedTooltip);
           }
 
           return (
@@ -1050,6 +1086,7 @@ PositionsTable.propTypes = {
   hideTargetColumn: PropTypes.bool,
   hideDetailsOption: PropTypes.bool,
   accountsById: PropTypes.instanceOf(Map),
+  symbolAnnualizedMap: PropTypes.instanceOf(Map),
 };
 
 PositionsTable.defaultProps = {
@@ -1073,6 +1110,7 @@ PositionsTable.defaultProps = {
   hideTargetColumn: false,
   hideDetailsOption: false,
   accountsById: null,
+  symbolAnnualizedMap: null,
 };
 
 export default PositionsTable;

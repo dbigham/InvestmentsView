@@ -200,3 +200,36 @@ test('symbols closed before range are excluded', async () => {
   });
   assert.equal(result.entries.length, 0, 'No entries when symbol closed before range');
 });
+
+test('annualizedReturn is computed from symbol cash flows', async () => {
+  const account = { id: 'test:7', number: 'test:7', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2026-01-01';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ABC', quantity: 1, netAmount: -100, currency: 'CAD', tradeDate: start },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC', new Map([[d(start), 100], [d(end), 110]])],
+  ]);
+  const endHoldings = new Map([['ABC', 1]]);
+  const usdRates = new Map([[d(start), 1], [d(end), 1]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: false,
+    displayStartKey: d(start),
+    displayEndKey: d(end),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+    usdRatesByDate: usdRates,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(abc.annualizedReturn, 'annualized return populated');
+  assert.equal(abc.annualizedReturn.cashFlowCount, 2);
+  assert.equal(abc.annualizedReturn.startDate, d(start));
+  assert.ok(Math.abs(abc.annualizedReturn.rate - 0.1) < 1e-6, 'XIRR close to 10%');
+  assert.ok(abc.annualizedReturnNoFx, 'no-FX annualized present');
+  assert.ok(Math.abs(abc.annualizedReturnNoFx.rate - 0.1) < 1e-6, 'no-FX XIRR close to 10%');
+});

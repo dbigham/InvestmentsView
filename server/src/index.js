@@ -1672,6 +1672,12 @@ function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
     const existing = bucket.get(key);
     if (!existing) {
       const clone = cloneJsonSafe(sourceEntry) || {};
+      if (Array.isArray(sourceEntry.cashFlowsCad) && sourceEntry.cashFlowsCad.length) {
+        clone.cashFlowsCad = sourceEntry.cashFlowsCad.map((flow) => ({ ...flow }));
+      }
+      if (Array.isArray(sourceEntry.cashFlowsNoFxCad) && sourceEntry.cashFlowsNoFxCad.length) {
+        clone.cashFlowsNoFxCad = sourceEntry.cashFlowsNoFxCad.map((flow) => ({ ...flow }));
+      }
       bucket.set(key, clone);
       return;
     }
@@ -1683,6 +1689,14 @@ function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
         existing[field] = value;
       }
     });
+    if (Array.isArray(sourceEntry.cashFlowsCad) && sourceEntry.cashFlowsCad.length) {
+      const currentFlows = Array.isArray(existing.cashFlowsCad) ? existing.cashFlowsCad : [];
+      existing.cashFlowsCad = currentFlows.concat(sourceEntry.cashFlowsCad.map((flow) => ({ ...flow })));
+    }
+    if (Array.isArray(sourceEntry.cashFlowsNoFxCad) && sourceEntry.cashFlowsNoFxCad.length) {
+      const currentFlowsNoFx = Array.isArray(existing.cashFlowsNoFxCad) ? existing.cashFlowsNoFxCad : [];
+      existing.cashFlowsNoFxCad = currentFlowsNoFx.concat(sourceEntry.cashFlowsNoFxCad.map((flow) => ({ ...flow })));
+    }
   };
 
   normalizedIds.forEach((accountId) => {
@@ -1711,6 +1725,88 @@ function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
   const aggregateEntriesNoFxArray = Array.from(aggregateEntriesNoFx.values()).filter(
     (entry) => entry && typeof entry === 'object'
   );
+
+  const buildAnnualizedFromFlows = (entry) => {
+    if (!entry || !Array.isArray(entry.cashFlowsCad) || !entry.cashFlowsCad.length) {
+      return null;
+    }
+    const normalized = entry.cashFlowsCad
+      .map((flow) => {
+        const amount = Number(flow?.amount);
+        const dateValue = flow?.date;
+        const date =
+          dateValue instanceof Date && !Number.isNaN(dateValue.getTime())
+            ? dateValue
+            : typeof dateValue === 'string' && dateValue.trim()
+              ? new Date(dateValue.trim())
+              : null;
+        if (!Number.isFinite(amount) || !(date instanceof Date) || Number.isNaN(date.getTime())) {
+          return null;
+        }
+        return { amount, date };
+      })
+      .filter(Boolean);
+    if (!normalized.length) {
+      return null;
+    }
+    const rate = computeAccountAnnualizedReturn(normalized, 'aggregate:' + (normalizedIds.join(',') || 'all'));
+    let earliest = null;
+    let latest = null;
+    normalized.forEach((flow) => {
+      if (flow.date instanceof Date && !Number.isNaN(flow.date.getTime())) {
+        if (!earliest || flow.date < earliest) {
+          earliest = flow.date;
+        }
+        if (!latest || flow.date > latest) {
+          latest = flow.date;
+        }
+      }
+    });
+    const startDateIso = earliest ? earliest.toISOString().slice(0, 10) : undefined;
+    const asOfIso = latest ? latest.toISOString() : latestAsOf;
+    if (Number.isFinite(rate)) {
+      return {
+        rate,
+        method: 'xirr',
+        cashFlowCount: normalized.length,
+        startDate: startDateIso,
+        asOf: asOfIso,
+      };
+    }
+    return {
+      method: 'xirr',
+      cashFlowCount: normalized.length,
+      startDate: startDateIso,
+      asOf: asOfIso,
+      incomplete: true,
+    };
+  };
+
+  aggregateEntriesArray.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const annualized = buildAnnualizedFromFlows(entry);
+    const annualizedNoFx = buildAnnualizedFromFlows(entry && entry.cashFlowsNoFxCad ? { cashFlowsCad: entry.cashFlowsNoFxCad } : null);
+    if (annualized) {
+      entry.annualizedReturn = annualized;
+    }
+    if (annualizedNoFx) {
+      entry.annualizedReturnNoFx = annualizedNoFx;
+    }
+    delete entry.cashFlowsCad;
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsNoFxCad')) {
+      delete entry.cashFlowsNoFxCad;
+    }
+  });
+  aggregateEntriesNoFxArray.forEach((entry) => {
+    if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsCad')) {
+      delete entry.cashFlowsCad;
+    }
+    if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsNoFxCad')) {
+      delete entry.cashFlowsNoFxCad;
+    }
+  });
 
   aggregateEntriesArray.sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
   aggregateEntriesNoFxArray.sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
@@ -12172,12 +12268,30 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   const cashUsdBySymbol = new Map(); // since effective start (USD only)
   const cashCadFromUsdBySymbol = new Map(); // portion of CAD cash originating from USD flows
   const investedOutflowCadBySymbol = new Map(); // since effective start
+  const cashFlowRecordsBySymbol = new Map(); // raw cash flow schedule per symbol (native currency)
   const holdings = new Map(); // trade deltas on/after effective start
   const baselineHoldings = new Map(); // trade deltas before effective start
   const nonTradeDeltaSinceStart = new Map(); // non-trade deltas on/after effective start
   const qtyDeltaSinceStart = new Map(); // all quantity deltas on/after start (trade + non-trade)
   const qtyDeltaBeforeStart = new Map(); // all quantity deltas before start
   const usdRateCache = new Map();
+  const recordCashFlow = (symbol, amount, currency, dateKey) => {
+    if (!symbol || !dateKey) return;
+    const normalizedSymbol = normalizeSymbol(symbol) || symbol;
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || Math.abs(numericAmount) < CASH_FLOW_EPSILON / 10) return;
+    const normalizedDate = typeof dateKey === 'string' ? dateKey.trim() : '';
+    if (!normalizedDate) return;
+    const curr = normalizeCurrency(currency) || 'CAD';
+    if (!cashFlowRecordsBySymbol.has(normalizedSymbol)) {
+      cashFlowRecordsBySymbol.set(normalizedSymbol, []);
+    }
+    cashFlowRecordsBySymbol.get(normalizedSymbol).push({
+      amount: numericAmount,
+      currency: curr,
+      dateKey: normalizedDate,
+    });
+  };
 
   for (const entry of processedActivities) {
     if (!entry || !entry.activity) {
@@ -12294,6 +12408,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         }
       }
       if (Number.isFinite(amountCad)) {
+        recordCashFlow(symbol, netAmount, currency, dateKey);
         const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
         cashCadBySymbol.set(symbol, current + amountCad);
         if (amountCad < 0) {
@@ -12374,18 +12489,19 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         }
         valueCad = qty * price * r;
         // Track USD-native book-value cash so we can recompute at a constant end rate.
-        const bookCashUsd = -(qty * price); // Transfer out (−qty) => inflow (+)
-        const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
-        cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
-        const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
-        // Track the exact CAD cash increment we applied due to USD-sourced book cash
-        // so we can back it out when building a no-FX variant.
-        cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
-      }
-      const bookCashCad = -valueCad; // Transfer out (−qty) => inflow (+)
-      const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
-      cashCadBySymbol.set(symbol, current + bookCashCad);
+      const bookCashUsd = -(qty * price); // Transfer out (-qty) => inflow (+)
+      const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+      cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
+      const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+      // Track the exact CAD cash increment we applied due to USD-sourced book cash
+      // so we can back it out when building a no-FX variant.
+      cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
     }
+    const bookCashCad = -valueCad; // Transfer out (-qty) => inflow (+)
+    recordCashFlow(symbol, bookCurrency === 'USD' ? -(qty * price) : bookCashCad, bookCurrency, dateKey);
+    const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
+    cashCadBySymbol.set(symbol, current + bookCashCad);
+  }
   }
 
   let result = [];
@@ -12424,17 +12540,67 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     const isUsd = meta.currency === 'USD';
     let marketValueCad = 0;
     let marketValueStartCad = 0;
+    let rawValue = null;
+    let rawStart = null;
     if (Number.isFinite(endQty) && Math.abs(endQty) >= LEDGER_QUANTITY_EPSILON && Number.isFinite(price) && price > 0) {
-      const rawValue = endQty * price;
+      rawValue = endQty * price;
       marketValueCad = isUsd && Number.isFinite(endUsdRate) && endUsdRate > 0 ? rawValue * endUsdRate : rawValue;
     }
     if (Number.isFinite(startQty) && Math.abs(startQty) >= LEDGER_QUANTITY_EPSILON && Number.isFinite(startPrice) && startPrice > 0) {
-      const rawStart = startQty * startPrice;
+      rawStart = startQty * startPrice;
       marketValueStartCad = isUsd && Number.isFinite(startUsdRate) && startUsdRate > 0 ? rawStart * startUsdRate : rawStart;
     }
+    if (Number.isFinite(marketValueStartCad) && Math.abs(marketValueStartCad) >= CASH_FLOW_EPSILON / 10) {
+      const nativeStartValue = Number.isFinite(rawStart) ? rawStart : marketValueStartCad;
+      recordCashFlow(symbol, -nativeStartValue, isUsd ? 'USD' : meta.currency || 'CAD', effectiveStartKey);
+    }
+    if (Number.isFinite(marketValueCad) && Math.abs(marketValueCad) >= CASH_FLOW_EPSILON / 10) {
+      const nativeEndValue = Number.isFinite(rawValue) ? rawValue : marketValueCad;
+      recordCashFlow(symbol, nativeEndValue, isUsd ? 'USD' : meta.currency || 'CAD', endKey);
+    }
+    const flowKey = normalizeSymbol(symbol) || symbol;
     const cashCad = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
     const totalPnlCad = (marketValueCad - marketValueStartCad) + cashCad;
     const investedCad = investedOutflowCadBySymbol.has(symbol) ? investedOutflowCadBySymbol.get(symbol) : 0;
+    const buildCashFlowsForSymbol = async () => {
+      const records = cashFlowRecordsBySymbol.has(flowKey) ? cashFlowRecordsBySymbol.get(flowKey) : [];
+      const flows = [];
+      const flowsNoFx = [];
+      for (const record of records) {
+        const date = record.dateKey
+          ? new Date(`${record.dateKey}T00:00:00Z`)
+          : null;
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+          continue;
+        }
+        const currency = normalizeCurrency(record.currency) || 'CAD';
+        let historicalAmount = null;
+        let noFxAmount = null;
+        if (currency === 'USD') {
+          const rateHistorical = await lookupUsdRate(record.dateKey);
+          const rateNoFx = Number.isFinite(endUsdRate) && endUsdRate > 0 ? endUsdRate : rateHistorical;
+          if (Number.isFinite(rateHistorical) && rateHistorical > 0) {
+            historicalAmount = record.amount * rateHistorical;
+          }
+          if (Number.isFinite(rateNoFx) && rateNoFx > 0) {
+            noFxAmount = record.amount * rateNoFx;
+          }
+        } else {
+          historicalAmount = record.amount;
+          noFxAmount = record.amount;
+        }
+        if (Number.isFinite(historicalAmount)) {
+          flows.push({ amount: historicalAmount, date });
+        }
+        if (Number.isFinite(noFxAmount)) {
+          flowsNoFx.push({ amount: noFxAmount, date });
+        }
+      }
+      return { flows, flowsNoFx };
+    };
+
+    const { flows: cashFlowsCad, flowsNoFx: cashFlowsNoFxCad } = await buildCashFlowsForSymbol();
+
     const entry = {
       symbol,
       symbolId: Number.isFinite(meta.symbolId) ? meta.symbolId : null,
@@ -12443,6 +12609,22 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       openQuantity: Number.isFinite(endQty) ? endQty : null,
       marketValueCad: Number.isFinite(marketValueCad) ? marketValueCad : null,
       currency: isUsd ? 'USD' : 'CAD',
+      cashFlowsCad: cashFlowsCad && cashFlowsCad.length
+        ? cashFlowsCad.map((flow) => ({
+            amount: Number(flow.amount),
+            date: flow.date instanceof Date && !Number.isNaN(flow.date.getTime())
+              ? flow.date.toISOString()
+              : null,
+          })).filter((flow) => Number.isFinite(flow.amount) && flow.date)
+        : undefined,
+      cashFlowsNoFxCad: cashFlowsNoFxCad && cashFlowsNoFxCad.length
+        ? cashFlowsNoFxCad.map((flow) => ({
+            amount: Number(flow.amount),
+            date: flow.date instanceof Date && !Number.isNaN(flow.date.getTime())
+              ? flow.date.toISOString()
+              : null,
+          })).filter((flow) => Number.isFinite(flow.amount) && flow.date)
+        : undefined,
     };
     // Build no-FX variant: convert all USD cash and USD MV deltas at end rate; keep CAD-native parts as-is.
     let totalPnlNoFxCad = null;
@@ -12587,6 +12769,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           components: Array.isArray(entry.components)
             ? entry.components.map((componentEntry) => ({ ...componentEntry }))
             : [],
+          cashFlowsCad: Array.isArray(entry.cashFlowsCad)
+            ? entry.cashFlowsCad.map((flow) => ({ ...flow }))
+            : undefined,
         });
       } else {
         const add = (v) => (Number.isFinite(v) ? v : 0);
@@ -12601,6 +12786,10 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           existing.currency = entry.currency;
         }
         existing.components = mergeComponents(existing.components, entry.components);
+        if (Array.isArray(entry.cashFlowsCad) && entry.cashFlowsCad.length) {
+          const currentFlows = Array.isArray(existing.cashFlowsCad) ? existing.cashFlowsCad : [];
+          existing.cashFlowsCad = currentFlows.concat(entry.cashFlowsCad.map((flow) => ({ ...flow })));
+        }
       }
     }
     for (const entry of resultNoFx) {
@@ -12639,6 +12828,76 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   }
 
   // Sort by magnitude of contribution
+  const buildAnnualizedFromFlows = (flows, symbolLabel) => {
+    if (!Array.isArray(flows) || !flows.length) {
+      return null;
+    }
+    const normalized = flows
+      .map((flow) => {
+        const amount = Number(flow?.amount);
+        const dateValue = flow?.date;
+        const date =
+          dateValue instanceof Date && !Number.isNaN(dateValue.getTime())
+            ? dateValue
+            : typeof dateValue === 'string' && dateValue.trim()
+              ? new Date(dateValue.trim())
+              : null;
+        if (!Number.isFinite(amount) || !(date instanceof Date) || Number.isNaN(date.getTime())) {
+          return null;
+        }
+        return { amount, date };
+      })
+      .filter(Boolean);
+    if (!normalized.length) {
+      return null;
+    }
+    const rate = computeAccountAnnualizedReturn(normalized, symbolLabel || accountKey);
+    let earliest = null;
+    let latest = null;
+    normalized.forEach((entry) => {
+      if (entry.date instanceof Date && !Number.isNaN(entry.date.getTime())) {
+        if (!earliest || entry.date < earliest) {
+          earliest = entry.date;
+        }
+        if (!latest || entry.date > latest) {
+          latest = entry.date;
+        }
+      }
+    });
+    const startDateIso = earliest ? earliest.toISOString().slice(0, 10) : undefined;
+    const asOfIso = latest ? latest.toISOString() : (endKey ? `${endKey}T00:00:00Z` : undefined);
+    if (Number.isFinite(rate)) {
+      return {
+        rate,
+        method: 'xirr',
+        cashFlowCount: normalized.length,
+        startDate: startDateIso,
+        asOf: asOfIso,
+      };
+    }
+    return {
+      method: 'xirr',
+      cashFlowCount: normalized.length,
+      startDate: startDateIso,
+      asOf: asOfIso,
+      incomplete: true,
+    };
+  };
+
+  result.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const annualized = buildAnnualizedFromFlows(entry.cashFlowsCad, entry.symbol);
+    const annualizedNoFx = buildAnnualizedFromFlows(entry.cashFlowsNoFxCad, entry.symbol);
+    if (annualized) {
+      entry.annualizedReturn = annualized;
+    }
+    if (annualizedNoFx) {
+      entry.annualizedReturnNoFx = annualizedNoFx;
+    }
+  });
+
   result.sort((a, b) => {
     const aMag = Math.abs(Number(a.totalPnlCad) || 0);
     const bMag = Math.abs(Number(b.totalPnlCad) || 0);
@@ -15766,6 +16025,31 @@ app.get('/api/summary', async function (req, res) {
         delete entry.cashFlowsCad;
       }
     });
+    const stripSymbolCashFlows = (target) => {
+      if (!target || typeof target !== 'object') {
+        return;
+      }
+      Object.values(target).forEach((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        ['entries', 'entriesNoFx'].forEach((field) => {
+          if (!Array.isArray(entry[field])) {
+            return;
+          }
+          entry[field].forEach((symbolEntry) => {
+            if (symbolEntry && typeof symbolEntry === 'object' && Object.prototype.hasOwnProperty.call(symbolEntry, 'cashFlowsCad')) {
+              delete symbolEntry.cashFlowsCad;
+            }
+            if (symbolEntry && typeof symbolEntry === 'object' && Object.prototype.hasOwnProperty.call(symbolEntry, 'cashFlowsNoFxCad')) {
+              delete symbolEntry.cashFlowsNoFxCad;
+            }
+          });
+        });
+      });
+    };
+    stripSymbolCashFlows(accountTotalPnlBySymbol);
+    stripSymbolCashFlows(accountTotalPnlBySymbolAll);
 
     const responseAccounts = allAccounts.map(function (account) {
       const models = resolveAccountInvestmentModels(account);
