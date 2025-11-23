@@ -12772,6 +12772,9 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           cashFlowsCad: Array.isArray(entry.cashFlowsCad)
             ? entry.cashFlowsCad.map((flow) => ({ ...flow }))
             : undefined,
+          cashFlowsNoFxCad: Array.isArray(entry.cashFlowsNoFxCad)
+            ? entry.cashFlowsNoFxCad.map((flow) => ({ ...flow }))
+            : undefined,
         });
       } else {
         const add = (v) => (Number.isFinite(v) ? v : 0);
@@ -12789,6 +12792,10 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         if (Array.isArray(entry.cashFlowsCad) && entry.cashFlowsCad.length) {
           const currentFlows = Array.isArray(existing.cashFlowsCad) ? existing.cashFlowsCad : [];
           existing.cashFlowsCad = currentFlows.concat(entry.cashFlowsCad.map((flow) => ({ ...flow })));
+        }
+        if (Array.isArray(entry.cashFlowsNoFxCad) && entry.cashFlowsNoFxCad.length) {
+          const currentFlowsNoFx = Array.isArray(existing.cashFlowsNoFxCad) ? existing.cashFlowsNoFxCad : [];
+          existing.cashFlowsNoFxCad = currentFlowsNoFx.concat(entry.cashFlowsNoFxCad.map((flow) => ({ ...flow })));
         }
       }
     }
@@ -15422,14 +15429,6 @@ app.get('/api/summary', async function (req, res) {
         }
       );
 
-      const symbolAggregateMap = new Map();
-      const symbolAggregateMapAll = new Map();
-      const symbolAggregateNoFxMap = new Map();
-      const symbolAggregateNoFxMapAll = new Map();
-      let aggregateAsOf = null;
-      let aggregateAsOfAll = null;
-      let aggregateFxEffectCad = 0;
-      let aggregateFxEffectCadAll = 0;
       const cloneSymbolEntries = function cloneSymbolEntries(list) {
         if (!Array.isArray(list) || list.length === 0) {
           return [];
@@ -15478,9 +15477,12 @@ app.get('/api/summary', async function (req, res) {
         target[accountId] = payload;
       };
 
+      const aggregateAccountIds = new Set();
+
       perAccountSymbolTotals.forEach(function (entry) {
         const accountId = entry && entry.context && entry.context.account && entry.context.account.id;
         if (accountId) {
+          aggregateAccountIds.add(accountId);
           if (entry && entry.result) {
             storePerAccountSymbolTotals(accountTotalPnlBySymbol, accountId, entry.result);
           }
@@ -15488,173 +15490,30 @@ app.get('/api/summary', async function (req, res) {
             storePerAccountSymbolTotals(accountTotalPnlBySymbolAll, accountId, entry.resultAll);
           }
         }
-        if (!entry || !entry.result || !Array.isArray(entry.result.entries)) {
-          // keep going; maybe resultAll is present
-        } else {
-          if (typeof entry.result.endDate === 'string' && entry.result.endDate) {
-            if (!aggregateAsOf || entry.result.endDate > aggregateAsOf) {
-              aggregateAsOf = entry.result.endDate;
-            }
-          }
-          if (Number.isFinite(entry.result.fxEffectCad)) {
-            aggregateFxEffectCad += entry.result.fxEffectCad;
-          }
-          entry.result.entries.forEach(function (symbolEntry) {
-            const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
-            if (!key) return;
-            const existing = symbolAggregateMap.get(key) || {
-              symbol: symbolEntry.symbol,
-              symbolId: symbolEntry.symbolId || null,
-              totalPnlCad: 0,
-              investedCad: 0,
-              openQuantity: 0,
-              marketValueCad: 0,
-              currency: symbolEntry.currency || null,
-            };
-            const add = (v) => (Number.isFinite(v) ? v : 0);
-            existing.totalPnlCad += add(symbolEntry.totalPnlCad);
-            existing.investedCad += add(symbolEntry.investedCad);
-            existing.openQuantity += add(symbolEntry.openQuantity);
-            existing.marketValueCad += add(symbolEntry.marketValueCad);
-            if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
-              existing.symbolId = symbolEntry.symbolId;
-            }
-            if (!existing.currency && symbolEntry.currency) {
-              existing.currency = symbolEntry.currency;
-            }
-            symbolAggregateMap.set(key, existing);
-          });
-          if (Array.isArray(entry.result.entriesNoFx)) {
-            entry.result.entriesNoFx.forEach(function (symbolEntry) {
-              const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
-              if (!key) return;
-              const existing = symbolAggregateNoFxMap.get(key) || {
-                symbol: symbolEntry.symbol,
-                symbolId: symbolEntry.symbolId || null,
-                totalPnlCad: 0,
-                investedCad: 0,
-                openQuantity: 0,
-                marketValueCad: 0,
-                currency: symbolEntry.currency || null,
-              };
-              const add = (v) => (Number.isFinite(v) ? v : 0);
-              existing.totalPnlCad += add(symbolEntry.totalPnlCad);
-              existing.investedCad += add(symbolEntry.investedCad);
-              existing.openQuantity += add(symbolEntry.openQuantity);
-              existing.marketValueCad += add(symbolEntry.marketValueCad);
-              if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
-                existing.symbolId = symbolEntry.symbolId;
-              }
-              if (!existing.currency && symbolEntry.currency) {
-                existing.currency = symbolEntry.currency;
-              }
-              symbolAggregateNoFxMap.set(key, existing);
-            });
-          }
-        }
-        if (entry && entry.resultAll && Array.isArray(entry.resultAll.entries)) {
-          if (typeof entry.resultAll.endDate === 'string' && entry.resultAll.endDate) {
-            if (!aggregateAsOfAll || entry.resultAll.endDate > aggregateAsOfAll) {
-              aggregateAsOfAll = entry.resultAll.endDate;
-            }
-          }
-          if (Number.isFinite(entry.resultAll.fxEffectCad)) {
-            aggregateFxEffectCadAll += entry.resultAll.fxEffectCad;
-          }
-          entry.resultAll.entries.forEach(function (symbolEntry) {
-            const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
-            if (!key) return;
-            const existing = symbolAggregateMapAll.get(key) || {
-              symbol: symbolEntry.symbol,
-              symbolId: symbolEntry.symbolId || null,
-              totalPnlCad: 0,
-              investedCad: 0,
-              openQuantity: 0,
-              marketValueCad: 0,
-              currency: symbolEntry.currency || null,
-            };
-            const add = (v) => (Number.isFinite(v) ? v : 0);
-            existing.totalPnlCad += add(symbolEntry.totalPnlCad);
-            existing.investedCad += add(symbolEntry.investedCad);
-            existing.openQuantity += add(symbolEntry.openQuantity);
-            existing.marketValueCad += add(symbolEntry.marketValueCad);
-            if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
-              existing.symbolId = symbolEntry.symbolId;
-            }
-            if (!existing.currency && symbolEntry.currency) {
-              existing.currency = symbolEntry.currency;
-            }
-            symbolAggregateMapAll.set(key, existing);
-          });
-          if (Array.isArray(entry.resultAll.entriesNoFx)) {
-            entry.resultAll.entriesNoFx.forEach(function (symbolEntry) {
-              const key = symbolEntry && typeof symbolEntry.symbol === 'string' ? symbolEntry.symbol.trim().toUpperCase() : null;
-              if (!key) return;
-              const existing = symbolAggregateNoFxMapAll.get(key) || {
-                symbol: symbolEntry.symbol,
-                symbolId: symbolEntry.symbolId || null,
-                totalPnlCad: 0,
-                investedCad: 0,
-                openQuantity: 0,
-                marketValueCad: 0,
-                currency: symbolEntry.currency || null,
-              };
-              const add = (v) => (Number.isFinite(v) ? v : 0);
-              existing.totalPnlCad += add(symbolEntry.totalPnlCad);
-              existing.investedCad += add(symbolEntry.investedCad);
-              existing.openQuantity += add(symbolEntry.openQuantity);
-              existing.marketValueCad += add(symbolEntry.marketValueCad);
-              if (!existing.symbolId && Number.isFinite(symbolEntry.symbolId)) {
-                existing.symbolId = symbolEntry.symbolId;
-              }
-              if (!existing.currency && symbolEntry.currency) {
-                existing.currency = symbolEntry.currency;
-              }
-              symbolAggregateNoFxMapAll.set(key, existing);
-            });
-          }
-        }
       });
 
-      const aggregateEntries = Array.from(symbolAggregateMap.values())
-        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
-        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
-      const aggregateEntriesAll = Array.from(symbolAggregateMapAll.values())
-        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
-        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
-      const aggregateEntriesNoFx = Array.from(symbolAggregateNoFxMap.values())
-        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
-        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
-      const aggregateEntriesNoFxAll = Array.from(symbolAggregateNoFxMapAll.values())
-        .filter((e) => Number.isFinite(e.totalPnlCad) || Number.isFinite(e.marketValueCad))
-        .sort((a, b) => Math.abs(b.totalPnlCad || 0) - Math.abs(a.totalPnlCad || 0));
+      const aggregateAccountIdList = Array.from(aggregateAccountIds).filter(Boolean);
+      const aggregateSymbolTotals = aggregateAccountIdList.length
+        ? aggregateTotalPnlEntries(accountTotalPnlBySymbol, aggregateAccountIdList)
+        : null;
+      const aggregateSymbolTotalsAll = aggregateAccountIdList.length
+        ? aggregateTotalPnlEntries(accountTotalPnlBySymbolAll, aggregateAccountIdList)
+        : null;
 
       if (viewingAccountGroup && selectedAccountGroup && selectedAccountGroup.id) {
-        accountTotalPnlBySymbol[selectedAccountGroup.id] = {
-          entries: aggregateEntries,
-          entriesNoFx: aggregateEntriesNoFx.length ? aggregateEntriesNoFx : undefined,
-          fxEffectCad: Number.isFinite(aggregateFxEffectCad) ? aggregateFxEffectCad : undefined,
-          asOf: aggregateAsOf || null,
-        };
-        accountTotalPnlBySymbolAll[selectedAccountGroup.id] = {
-          entries: aggregateEntriesAll,
-          entriesNoFx: aggregateEntriesNoFxAll.length ? aggregateEntriesNoFxAll : undefined,
-          fxEffectCad: Number.isFinite(aggregateFxEffectCadAll) ? aggregateFxEffectCadAll : undefined,
-          asOf: aggregateAsOfAll || aggregateAsOf || null,
-        };
+        if (aggregateSymbolTotals) {
+          accountTotalPnlBySymbol[selectedAccountGroup.id] = aggregateSymbolTotals;
+        }
+        if (aggregateSymbolTotalsAll) {
+          accountTotalPnlBySymbolAll[selectedAccountGroup.id] = aggregateSymbolTotalsAll;
+        }
       } else {
-        accountTotalPnlBySymbol['all'] = {
-          entries: aggregateEntries,
-          entriesNoFx: aggregateEntriesNoFx.length ? aggregateEntriesNoFx : undefined,
-          fxEffectCad: Number.isFinite(aggregateFxEffectCad) ? aggregateFxEffectCad : undefined,
-          asOf: aggregateAsOf || null,
-        };
-        accountTotalPnlBySymbolAll['all'] = {
-          entries: aggregateEntriesAll,
-          entriesNoFx: aggregateEntriesNoFxAll.length ? aggregateEntriesNoFxAll : undefined,
-          fxEffectCad: Number.isFinite(aggregateFxEffectCadAll) ? aggregateFxEffectCadAll : undefined,
-          asOf: aggregateAsOfAll || aggregateAsOf || null,
-        };
+        if (aggregateSymbolTotals) {
+          accountTotalPnlBySymbol['all'] = aggregateSymbolTotals;
+        }
+        if (aggregateSymbolTotalsAll) {
+          accountTotalPnlBySymbolAll['all'] = aggregateSymbolTotalsAll;
+        }
       }
 
       const aggregateEntry = {};
