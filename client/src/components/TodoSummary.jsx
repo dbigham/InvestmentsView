@@ -116,7 +116,8 @@ export default function TodoSummary({ items, onSelectItem }) {
 
             const detailText = detailParts.filter(Boolean).join(' • ');
             const itemInteractive =
-              interactive && (item?.type === 'cash' || item?.type === 'rebalance');
+              interactive &&
+              (item?.type === 'cash' || item?.type === 'rebalance' || item?.type === 'norbert');
             const itemClassName = `todo-card__item todo-card__item--${item?.type || 'generic'}${itemInteractive ? ' todo-card__item--interactive' : ''}`;
 
             return (
@@ -160,6 +161,11 @@ TodoSummary.propTypes = {
       details: PropTypes.arrayOf(PropTypes.string),
       model: PropTypes.string,
       chartKey: PropTypes.string,
+      symbol: PropTypes.string,
+      journalDate: PropTypes.string,
+      direction: PropTypes.string,
+      quantity: PropTypes.number,
+      accountNumber: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     })
   ),
   onSelectItem: PropTypes.func,

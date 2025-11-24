@@ -8164,6 +8164,131 @@ function formatDateOnly(date) {
   return date.toISOString().slice(0, 10);
 }
 
+function normalizeDlrVariantSymbol(symbol) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const normalized = symbol.trim().toUpperCase();
+  if (!normalized || !normalized.startsWith('DLR')) {
+    return null;
+  }
+  if (normalized.includes('.U')) {
+    return normalized.endsWith('.TO') ? 'DLR.U.TO' : 'DLR.U';
+  }
+  return normalized.endsWith('.TO') ? 'DLR.TO' : 'DLR';
+}
+
+function detectNorbertJournalCompletion(activities) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return null;
+  }
+
+  const JOURNAL_REGEX = /journal/i;
+  const entries = [];
+  activities.forEach((activity) => {
+    const symbol = normalizeDlrVariantSymbol(resolveActivitySymbol(activity) || activity.symbol);
+    if (!symbol) {
+      return;
+    }
+    const combined = [activity?.type || '', activity?.action || '', activity?.description || ''].join(' ');
+    if (!JOURNAL_REGEX.test(combined)) {
+      return;
+    }
+    const quantity = Number(activity?.quantity);
+    if (!Number.isFinite(quantity) || Math.abs(quantity) <= 1e-8) {
+      return;
+    }
+    const timestamp = resolveActivityTimestamp(activity);
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+      return;
+    }
+    const dateKey = formatDateOnly(timestamp);
+    entries.push({ symbol, quantity, timestamp, dateKey });
+  });
+
+  if (!entries.length) {
+    return null;
+  }
+
+  const positives = entries.filter((entry) => entry.quantity > 0);
+  const negatives = entries.filter((entry) => entry.quantity < 0);
+  let latestPair = null;
+  const quantitiesMatch = (a, b) => {
+    const diff = Math.abs(Math.abs(a) - Math.abs(b));
+    const tolerance = Math.max(0.0001, Math.abs(a) * 0.001, Math.abs(b) * 0.001);
+    return diff <= tolerance;
+  };
+
+  positives.forEach((pos) => {
+    negatives.forEach((neg) => {
+      if (!pos.dateKey || pos.dateKey !== neg.dateKey) {
+        return;
+      }
+      if (pos.symbol === neg.symbol) {
+        return;
+      }
+      if (!quantitiesMatch(pos.quantity, neg.quantity)) {
+        return;
+      }
+      const pairTimestamp = pos.timestamp > neg.timestamp ? pos.timestamp : neg.timestamp;
+      if (!latestPair || pairTimestamp > latestPair.timestamp) {
+        latestPair = {
+          fromSymbol: normalizeDlrVariantSymbol(neg.symbol) || neg.symbol,
+          toSymbol: normalizeDlrVariantSymbol(pos.symbol) || pos.symbol,
+          quantity: Math.min(Math.abs(pos.quantity), Math.abs(neg.quantity)),
+          timestamp: pairTimestamp,
+        };
+      }
+    });
+  });
+
+  if (!latestPair) {
+    return null;
+  }
+
+  const hasInboundTradeAfterJournal = activities.some((activity) => {
+    const ts = resolveActivityTimestamp(activity);
+    if (!(ts instanceof Date) || Number.isNaN(ts.getTime())) {
+      return false;
+    }
+    if (ts <= latestPair.timestamp) {
+      return false;
+    }
+    const symbol = normalizeDlrVariantSymbol(resolveActivitySymbol(activity) || activity.symbol);
+    if (!symbol) {
+      return false;
+    }
+    const combined = [activity?.type || '', activity?.action || '', activity?.description || ''].join(' ');
+    if (JOURNAL_REGEX.test(combined)) {
+      return false;
+    }
+    const qty = Number(activity?.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return false;
+    }
+    return true;
+  });
+
+  if (hasInboundTradeAfterJournal) {
+    return null;
+  }
+
+  const journalDate = formatDateOnly(latestPair.timestamp);
+  const direction = latestPair.toSymbol && latestPair.toSymbol.includes('.U') ? 'to_usd' : 'to_cad';
+
+  return {
+    fromSymbol: latestPair.fromSymbol,
+    toSymbol: latestPair.toSymbol,
+    quantity: latestPair.quantity,
+    journalDate,
+    journalTimestamp:
+      latestPair.timestamp instanceof Date && !Number.isNaN(latestPair.timestamp.getTime())
+        ? latestPair.timestamp.toISOString()
+        : null,
+    direction,
+  };
+}
+
 async function resolveUsdToCadRate(date, accountKey) {
   let cursor = new Date(date.getTime());
   for (let i = 0; i < 7; i += 1) {
@@ -14864,6 +14989,27 @@ app.get('/api/summary', async function (req, res) {
       orderWindowStartIso = orderWindowEndIso;
     }
 
+    const accountNorbertJournals = {};
+    await Promise.all(
+      selectedContexts.map(async function (context) {
+        try {
+          const activityContext = await ensureAccountActivityContext(context);
+          const norbert = detectNorbertJournalCompletion(activityContext?.activities);
+          if (norbert) {
+            accountNorbertJournals[context.account.id] = Object.assign({}, norbert, {
+              accountId: context.account.id,
+              accountNumber: context.account.number || context.account.accountNumber || null,
+            });
+          }
+        } catch (norbertError) {
+          console.warn(
+            'Failed to evaluate Norbert journaling for account ' + context.account.id + ':',
+            norbertError?.message || norbertError
+          );
+        }
+      })
+    );
+
     const symbolIdsByLogin = new Map();
     flattenedPositions.forEach(function (position) {
       if (!position.symbolId) {
@@ -16243,6 +16389,7 @@ app.get('/api/summary', async function (req, res) {
       accountTotalPnlBySymbol,
       accountTotalPnlBySymbolAll,
       accountTotalPnlSeries,
+      accountNorbertJournals,
       asOf: new Date().toISOString(),
       usdToCadRate: latestUsdToCadRate,
     };
@@ -16345,6 +16492,7 @@ app.get('/api/summary', async function (req, res) {
         decoratedPositions,
         decoratedOrders,
         flattenedPositions,
+        accountNorbertJournals,
         balancesRawByAccountId,
         orderWindowsByAccountId,
         allAccountIds: selectedContexts.map(function (context) {
@@ -16380,6 +16528,7 @@ app.get('/api/summary', async function (req, res) {
       const supersetEntry = Object.assign({}, previous, {
         payload: responsePayload,
         perAccountCombinedBalances,
+        accountNorbertJournals,
         activityContextsByAccountId: resolvedActivityContexts,
         asOf: responsePayload.asOf,
       });
@@ -16946,6 +17095,7 @@ module.exports = {
   computeNetDepositsCore,
   buildAccountActivityContext,
   resolveAccountActivityContext,
+  detectNorbertJournalCompletion,
   filterFundingActivities,
   dedupeActivities,
   resolveActivityTimestamp,

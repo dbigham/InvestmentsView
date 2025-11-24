@@ -2440,6 +2440,26 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
     accountTotalPnlBySymbol: nextTotalPnlMap ?? baseData.accountTotalPnlBySymbol ?? null,
     accountTotalPnlBySymbolAll: nextTotalPnlAllMap ?? baseData.accountTotalPnlBySymbolAll ?? null,
     accountTotalPnlSeries: nextTotalPnlSeriesMap ?? baseData.accountTotalPnlSeries ?? null,
+    accountNorbertJournals: (function resolveNorbertMap() {
+      const source = baseData.accountNorbertJournals;
+      if (!source || typeof source !== 'object') {
+        return source ?? null;
+      }
+      if (!orderedAccountIds.length) {
+        return source;
+      }
+      const subset = {};
+      orderedAccountIds.forEach((id) => {
+        const key = id !== undefined && id !== null ? String(id).trim() : '';
+        if (!key) {
+          return;
+        }
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+          subset[key] = source[key];
+        }
+      });
+      return Object.keys(subset).length ? subset : source;
+    })(),
   };
 }
 
@@ -3096,7 +3116,8 @@ function buildCashBreakdownForCurrency({ currency, accountIds, accountsById, acc
 const TODO_CASH_THRESHOLD = 10;
 const TODO_AMOUNT_EPSILON = 0.009;
 const TODO_AMOUNT_TOLERANCE = 0.01;
-const TODO_TYPE_ORDER = { rebalance: 0, cash: 1 };
+const TODO_SHARE_EPSILON = 0.0001;
+const TODO_TYPE_ORDER = { rebalance: 0, norbert: 1, cash: 2 };
 
 const RESERVE_FALLBACK_SYMBOL = 'VBIL';
 const PRICE_REFRESH_CONCURRENCY = 6;
@@ -3368,7 +3389,110 @@ function normalizeQueryValue(value) {
   return null;
 }
 
-function buildTodoItems({ accountIds, accountsById, accountBalances, investmentModelSections }) {
+function normalizeDlrVariantSymbol(symbol) {
+  if (typeof symbol !== 'string') {
+    return null;
+  }
+  const normalized = symbol.trim().toUpperCase();
+  if (!normalized || !normalized.startsWith('DLR')) {
+    return null;
+  }
+  if (normalized.includes('.U')) {
+    return normalized.endsWith('.TO') ? 'DLR.U.TO' : 'DLR.U';
+  }
+  return normalized.endsWith('.TO') ? 'DLR.TO' : 'DLR';
+}
+
+function buildNorbertTodoForAccount({
+  accountId,
+  accountLabel,
+  accountNumber,
+  positions,
+  norbertJournalMap,
+}) {
+  if (!accountId || !norbertJournalMap || typeof norbertJournalMap !== 'object') {
+    return null;
+  }
+  const entry = norbertJournalMap[accountId];
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const toSymbol = normalizeDlrVariantSymbol(entry.toSymbol || entry.targetSymbol || '');
+  if (!toSymbol) {
+    return null;
+  }
+  const fromSymbol = normalizeDlrVariantSymbol(entry.fromSymbol || '');
+  const journalDate = typeof entry.journalDate === 'string' ? entry.journalDate.trim() : '';
+  const journalTimestamp =
+    typeof entry.journalTimestamp === 'string' && entry.journalTimestamp.trim()
+      ? entry.journalTimestamp.trim()
+      : '';
+  const journalQuantity = Number(entry.quantity);
+  const directionHint = typeof entry.direction === 'string' ? entry.direction.trim().toLowerCase() : '';
+  const direction = directionHint || (toSymbol.includes('.U') ? 'to_usd' : 'to_cad');
+
+  const accountPositions = Array.isArray(positions)
+    ? positions.filter((position) => position && String(position.accountId) === String(accountId))
+    : [];
+  const holdings = accountPositions.reduce(
+    (acc, position) => {
+      const variant = normalizeDlrVariantSymbol(position.symbol);
+      if (variant !== toSymbol) {
+        return acc;
+      }
+      const qty = Number(position.openQuantity);
+      const value = Number(position.currentMarketValue);
+      return {
+        quantity: Number.isFinite(qty) ? acc.quantity + qty : acc.quantity,
+        value: Number.isFinite(value) ? acc.value + value : acc.value,
+        currency: acc.currency || (typeof position.currency === 'string' ? position.currency.trim().toUpperCase() : null),
+      };
+    },
+    { quantity: 0, value: 0, currency: null }
+  );
+
+  if (!(holdings.quantity > TODO_SHARE_EPSILON)) {
+    return null;
+  }
+  if (Number.isFinite(journalQuantity) && journalQuantity > 0 && holdings.quantity > journalQuantity + TODO_SHARE_EPSILON) {
+    return null;
+  }
+
+  const details = [];
+  if (fromSymbol && journalDate) {
+    details.push(`Journaled from ${fromSymbol} on ${journalDate}`);
+  } else if (journalDate) {
+    details.push(`Journaled ${journalDate}`);
+  } else if (fromSymbol) {
+    details.push(`Journaled from ${fromSymbol}`);
+  }
+  details.push(`${formatNumber(holdings.quantity, { maximumFractionDigits: 2, minimumFractionDigits: 0 })} shares remaining`);
+
+  return {
+    id: `norbert:${accountId}:${journalTimestamp || journalDate || toSymbol}`,
+    type: 'norbert',
+    accountId,
+    accountNumber,
+    accountLabel,
+    symbol: toSymbol,
+    direction,
+    journalDate: journalDate || null,
+    journalTimestamp: journalTimestamp || null,
+    quantity: holdings.quantity,
+    details,
+    title: `Sell ${toSymbol} for ${direction === 'to_usd' ? 'USD' : 'CAD'} cash`,
+  };
+}
+
+function buildTodoItems({
+  accountIds,
+  accountsById,
+  accountBalances,
+  investmentModelSections,
+  positions,
+  norbertJournalMap,
+}) {
   if (!Array.isArray(accountIds) || accountIds.length === 0) {
     return [];
   }
@@ -3422,6 +3546,24 @@ function buildTodoItems({ accountIds, accountsById, accountBalances, investmentM
     }
     if (!accountLabel) {
       accountLabel = accountId;
+    }
+
+    const accountNumber =
+      account && account.number !== undefined && account.number !== null
+        ? String(account.number).trim()
+        : account && account.accountNumber !== undefined && account.accountNumber !== null
+          ? String(account.accountNumber).trim()
+          : null;
+
+    const norbertTodo = buildNorbertTodoForAccount({
+      accountId,
+      accountLabel,
+      accountNumber,
+      positions,
+      norbertJournalMap,
+    });
+    if (norbertTodo) {
+      items.push(norbertTodo);
     }
 
     const balanceSummary = normalizeAccountBalanceSummary(
@@ -3604,6 +3746,19 @@ function areTodoListsEqual(listA, listB) {
         return false;
       }
       if ((itemA.chartKey || '') !== (itemB.chartKey || '')) {
+        return false;
+      }
+    } else if (itemA.type === 'norbert') {
+      if ((itemA.symbol || '') !== (itemB.symbol || '')) {
+        return false;
+      }
+      if ((itemA.journalDate || '') !== (itemB.journalDate || '')) {
+        return false;
+      }
+      if (!amountsApproximatelyEqual(itemA.quantity, itemB.quantity, TODO_SHARE_EPSILON * 10)) {
+        return false;
+      }
+      if ((itemA.direction || '') !== (itemB.direction || '')) {
         return false;
       }
     } else if ((itemA.title || '') !== (itemB.title || '')) {
@@ -5543,11 +5698,19 @@ export default function App() {
     const accountId = normalizeQueryValue(initialTodoActionFromUrl.accountId);
     const model = normalizeQueryValue(initialTodoActionFromUrl.model);
     const chartKey = normalizeQueryValue(initialTodoActionFromUrl.chartKey);
+    const symbol = normalizeQueryValue(initialTodoActionFromUrl.symbol);
+    const journalDate = normalizeQueryValue(initialTodoActionFromUrl.journalDate);
+    const direction = normalizeQueryValue(initialTodoActionFromUrl.direction);
+    const accountNumber = normalizeQueryValue(initialTodoActionFromUrl.accountNumber);
     return {
       type,
       accountId,
       model,
       chartKey,
+      symbol,
+      journalDate,
+      direction,
+      accountNumber,
     };
   });
   const [selectedRebalanceReminder, setSelectedRebalanceReminder] = useState(() => {
@@ -6947,6 +7110,14 @@ export default function App() {
     [accountDividendSource]
   );
   const accountBalances = data?.accountBalances ?? EMPTY_OBJECT;
+  const accountNorbertJournalSource = data?.accountNorbertJournals;
+  const accountNorbertJournals = useMemo(
+    () =>
+      accountNorbertJournalSource && typeof accountNorbertJournalSource === 'object'
+        ? accountNorbertJournalSource
+        : EMPTY_OBJECT,
+    [accountNorbertJournalSource]
+  );
   const selectedAccountFunding = useMemo(() => {
     if (!isAggregateSelection) {
       if (!selectedAccountInfo) {
@@ -11542,8 +11713,10 @@ export default function App() {
       accountsById,
       accountBalances,
       investmentModelSections,
+      positions: rawPositions,
+      norbertJournalMap: accountNorbertJournals,
     });
-  }, [todoAccountIds, accountsById, accountBalances, investmentModelSections]);
+  }, [todoAccountIds, accountsById, accountBalances, investmentModelSections, rawPositions, accountNorbertJournals]);
 
   useEffect(() => {
     if (!showContent) {
@@ -11606,6 +11779,12 @@ export default function App() {
           item.accountNumber !== undefined && item.accountNumber !== null
             ? String(item.accountNumber).trim()
             : null,
+        todoSymbol:
+          normalizedType === 'norbert' && item.symbol ? String(item.symbol).toUpperCase() : null,
+        todoJournalDate:
+          normalizedType === 'norbert' && item.journalDate ? String(item.journalDate) : null,
+        todoDirection:
+          normalizedType === 'norbert' && item.direction ? String(item.direction) : null,
       };
       const targetUrl = buildAccountViewUrl(accountId, undefined, extraParams);
       if (targetUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
@@ -11627,6 +11806,25 @@ export default function App() {
         accountId,
         model: modelName || null,
         chartKey: chartKey || null,
+      });
+      return;
+    }
+
+    if (normalizedType === 'norbert') {
+      const symbol = typeof item.symbol === 'string' ? item.symbol.trim().toUpperCase() : null;
+      const journalDate = typeof item.journalDate === 'string' ? item.journalDate.trim() : null;
+      const direction = typeof item.direction === 'string' ? item.direction.trim().toLowerCase() : null;
+      const targetAccountNumber =
+        item.accountNumber !== undefined && item.accountNumber !== null
+          ? String(item.accountNumber).trim()
+          : null;
+      setPendingTodoAction({
+        type: 'norbert',
+        accountId,
+        symbol,
+        journalDate,
+        direction,
+        accountNumber: targetAccountNumber,
       });
     }
   }, [buildAccountViewUrl, setPendingTodoAction]);
@@ -12087,6 +12285,33 @@ export default function App() {
 
       handleShowAccountInvestmentModel(section);
       setPendingTodoAction(null);
+      return;
+    }
+
+    if (pendingTodoAction.type === 'norbert') {
+      if (
+        targetAccountId &&
+        !positionsAlignedWithAccount(orderedPositions, targetAccountId)
+      ) {
+        return;
+      }
+
+      const targetSymbol = pendingTodoAction.symbol
+        ? pendingTodoAction.symbol.toUpperCase()
+        : null;
+      if (targetSymbol) {
+        handleSearchSelectSymbol(targetSymbol);
+      }
+      setPortfolioViewTab('portfolio');
+
+      if (targetAccountId) {
+        const targetAccount = accountsById.get(targetAccountId);
+        if (targetAccount) {
+          openAccountSummary(targetAccount);
+        }
+      }
+
+      setPendingTodoAction(null);
     }
   }, [
     pendingTodoAction,
@@ -12103,6 +12328,9 @@ export default function App() {
     investmentModelSections,
     handleShowAccountInvestmentModel,
     orderedPositions,
+    handleSearchSelectSymbol,
+    setPortfolioViewTab,
+    openAccountSummary,
   ]);
 
   const getSummaryText = useCallback(() => {

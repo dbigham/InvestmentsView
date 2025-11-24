@@ -135,7 +135,7 @@ export function readTodoActionFromLocation(location) {
       return null;
     }
     const normalizedAction = actionParam.trim().toLowerCase();
-    if (normalizedAction !== 'cash' && normalizedAction !== 'rebalance') {
+    if (normalizedAction !== 'cash' && normalizedAction !== 'rebalance' && normalizedAction !== 'norbert') {
       return null;
     }
 
@@ -155,12 +155,29 @@ export function readTodoActionFromLocation(location) {
         ? accountNumberParam.trim()
         : null;
 
+    const symbolParam = params.get('todoSymbol');
+    const symbol =
+      typeof symbolParam === 'string' && symbolParam.trim() ? symbolParam.trim().toUpperCase() : null;
+
+    const journalDateParam = params.get('todoJournalDate');
+    const journalDate =
+      typeof journalDateParam === 'string' && journalDateParam.trim() ? journalDateParam.trim() : null;
+
+    const directionParam = params.get('todoDirection');
+    const direction =
+      typeof directionParam === 'string' && directionParam.trim()
+        ? directionParam.trim().toLowerCase()
+        : null;
+
     return {
       type: normalizedAction,
       accountId,
       model,
       chartKey,
       accountNumber,
+      symbol,
+      journalDate,
+      direction,
     };
   } catch (error) {
     console.warn('Failed to read TODO action from location', error);
