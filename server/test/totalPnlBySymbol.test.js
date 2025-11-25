@@ -233,3 +233,33 @@ test('annualizedReturn is computed from symbol cash flows', async () => {
   assert.ok(abc.annualizedReturnNoFx, 'no-FX annualized present');
   assert.ok(Math.abs(abc.annualizedReturnNoFx.rate - 0.1) < 1e-6, 'no-FX XIRR close to 10%');
 });
+
+test('net deposits reflect invested cash for a symbol', async () => {
+  const account = { id: 'test:8', number: 'test:8', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const buyDate = '2025-01-10';
+  const end = '2025-01-31';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ABC', quantity: 1, netAmount: -100, currency: 'CAD', tradeDate: buyDate },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC', new Map([[d(start), 100], [d(buyDate), 100], [d(end), 120]])],
+  ]);
+  const endHoldings = new Map([['ABC', 1]]);
+  const usdRates = new Map([[d(start), 1], [d(buyDate), 1], [d(end), 1]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+    usdRatesByDate: usdRates,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(Math.abs(abc.investedCad - 100) < 1e-9, 'invested cash matches net deposits');
+  assert.ok(Math.abs(abc.marketValueCad - 120) < 1e-9, 'market value reflects final price');
+  assert.ok(Math.abs(abc.totalPnlCad - 20) < 1e-6, 'P&L equals equity minus net deposits');
+});

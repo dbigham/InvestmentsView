@@ -14425,6 +14425,9 @@ export default function App() {
                 }
               }
               return {
+                netDepositsCad: Number.isFinite(cost) ? cost : null,
+                totalPnlCad: Number.isFinite(totalP) ? totalP : null,
+                totalEquityCad: Number.isFinite(mv) ? mv : null,
                 annualizedReturnRate: Number.isFinite(rate) ? rate : null,
                 annualizedReturnAsOf: asOf,
                 annualizedReturnStartDate: startKey,

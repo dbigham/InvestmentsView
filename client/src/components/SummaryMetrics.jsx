@@ -775,7 +775,7 @@ export default function SummaryMetrics({
   const netDepositsValue = Number.isFinite(fundingSummary?.netDepositsCad)
     ? fundingSummary.netDepositsCad
     : null;
-  const formattedNetDeposits = symbolMode ? null : (netDepositsValue !== null ? formatMoney(netDepositsValue) : null);
+  const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
 
   const annualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
     ? fundingSummary.annualizedReturnRate
