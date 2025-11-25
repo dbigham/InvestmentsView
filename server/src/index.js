@@ -14229,7 +14229,12 @@ app.get('/api/benchmark-returns', async function (req, res) {
 
 app.get('/api/qqq-temperature', async function (req, res) {
   try {
-    const summary = await getQqqTemperatureSummary();
+    const forceRefresh =
+      typeof req.query.force === 'string' && req.query.force.toLowerCase() === 'true';
+    const includeLivePrice =
+      forceRefresh ||
+      (typeof req.query.live === 'string' && req.query.live.toLowerCase() === 'true');
+    const summary = await getQqqTemperatureSummary({ forceRefresh, includeLivePrice });
     if (!summary) {
       return res.status(404).json({ message: 'QQQ temperature data unavailable' });
     }

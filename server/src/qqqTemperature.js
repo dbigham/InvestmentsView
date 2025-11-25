@@ -497,7 +497,62 @@ function roundTemperature(value) {
   return Number.parseFloat(value.toFixed(6));
 }
 
-async function refreshSummary() {
+function normalizeQuoteTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  const millis = numeric > 2_000_000_000 ? numeric : numeric * 1000;
+  const parsed = new Date(millis);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+async function fetchLiveQqqPrice() {
+  try {
+    const finance = ensureYahooFinance();
+    const quote = await finance.quote(TICKERS.qqq);
+    if (!quote || typeof quote !== 'object') {
+      return null;
+    }
+    const priceCandidates = [
+      { value: quote.regularMarketPrice, source: 'regular' },
+      { value: quote.postMarketPrice, source: 'post' },
+      { value: quote.preMarketPrice, source: 'pre' },
+    ];
+    const resolved = priceCandidates.find((entry) => Number.isFinite(entry.value) && entry.value > 0);
+    if (!resolved) {
+      return null;
+    }
+    const timeCandidates = [
+      { value: quote.regularMarketTime, source: 'regular' },
+      { value: quote.postMarketTime, source: 'post' },
+      { value: quote.preMarketTime, source: 'pre' },
+    ];
+    const match = timeCandidates.find((entry) => entry.source === resolved.source && entry.value);
+    const fallback = timeCandidates.find((entry) => entry.value);
+    const timestamp = normalizeQuoteTimestamp((match && match.value) || (fallback && fallback.value));
+    return {
+      price: Number(resolved.value),
+      asOf: timestamp ? timestamp.toISOString() : null,
+      source: resolved.source,
+    };
+  } catch (error) {
+    logErrorOnce('Failed to fetch live QQQ price', error);
+    return null;
+  }
+}
+
+async function refreshSummary(options = {}) {
+  const includeLivePrice = Boolean(options && options.includeLivePrice);
   ensureYahooFinance();
   const [qqqSeries, ndxSeries, ixicSeries] = await Promise.all([
     loadTickerSeries(TICKERS.qqq),
@@ -541,7 +596,7 @@ async function refreshSummary() {
 
   const latest = series[series.length - 1];
 
-  return {
+  let summary = {
     updated: new Date().toISOString(),
     rangeStart: series[0].date,
     rangeEnd: latest.date,
@@ -552,9 +607,52 @@ async function refreshSummary() {
       r: growth.r,
     },
   };
+
+  if (includeLivePrice) {
+    const liveQuote = await fetchLiveQqqPrice();
+    if (liveQuote && Number.isFinite(liveQuote.price) && liveQuote.price > 0) {
+      const liveDate = formatDate(liveQuote.asOf || new Date());
+      const startDate = parseDate(series[0].date);
+      const liveDateObj = parseDate(liveDate);
+      if (startDate && liveDateObj) {
+        const elapsedDays = (liveDateObj.getTime() - startDate.getTime()) / MS_PER_DAY;
+        const tLive = elapsedDays / DAYS_PER_YEAR;
+        const predicted = Number.isFinite(tLive) ? growth.A * Math.pow(1 + growth.r, tLive) : null;
+        if (Number.isFinite(predicted) && predicted > 0) {
+          const liveTemperature = roundTemperature(liveQuote.price / predicted);
+          if (liveTemperature !== null) {
+            const augmentedSeries = Array.isArray(summary.series) ? [...summary.series] : [];
+            const liveEntry = { date: liveDate, temperature: liveTemperature, source: 'live' };
+            const existingIndex = augmentedSeries.findIndex((entry) => entry && entry.date === liveDate);
+            if (existingIndex >= 0) {
+              augmentedSeries[existingIndex] = { ...augmentedSeries[existingIndex], ...liveEntry };
+            } else {
+              augmentedSeries.push(liveEntry);
+            }
+            augmentedSeries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+            summary = {
+              ...summary,
+              series: augmentedSeries,
+              rangeEnd: augmentedSeries[augmentedSeries.length - 1].date,
+              latest: augmentedSeries[augmentedSeries.length - 1],
+              livePrice: {
+                value: liveQuote.price,
+                asOf: liveQuote.asOf || null,
+                source: liveQuote.source || 'live',
+              },
+            };
+          }
+        }
+      }
+    }
+  }
+
+  return summary;
 }
 
-async function getQqqTemperatureSummary() {
+async function getQqqTemperatureSummary(options = {}) {
+  const forceRefresh = Boolean(options && options.forceRefresh);
+  const includeLivePrice = Boolean(options && options.includeLivePrice);
   const now = Date.now();
   // If the cached summary predates today by at least one full day,
   // bypass TTL so we always pull in yesterday's close first thing.
@@ -566,15 +664,17 @@ async function getQqqTemperatureSummary() {
     daysBetweenUTC(cachedSummary.rangeEnd, todayStr) >= 1
   );
 
-  if (cachedSummary && now < summaryExpiresAt && !isCacheStaleByDate) {
+  const bypassCache = forceRefresh || includeLivePrice;
+
+  if (!bypassCache && cachedSummary && now < summaryExpiresAt && !isCacheStaleByDate) {
     return cachedSummary;
   }
-  if (pendingRefresh) {
+  if (!bypassCache && pendingRefresh) {
     return pendingRefresh;
   }
 
-  pendingRefresh = (async () => {
-    const summary = await refreshSummary();
+  const refreshPromise = (async () => {
+    const summary = await refreshSummary({ includeLivePrice });
     if (summary) {
       cachedSummary = summary;
       summaryExpiresAt = Date.now() + SUMMARY_TTL_MS;
@@ -585,10 +685,14 @@ async function getQqqTemperatureSummary() {
     return summary;
   })();
 
+  pendingRefresh = refreshPromise;
+
   try {
-    return await pendingRefresh;
+    return await refreshPromise;
   } finally {
-    pendingRefresh = null;
+    if (pendingRefresh === refreshPromise) {
+      pendingRefresh = null;
+    }
   }
 }
 

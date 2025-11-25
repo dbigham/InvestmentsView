@@ -10909,13 +10909,14 @@ export default function App() {
     fetchInvestmentModelChart,
   ]);
 
-  const fetchQqqTemperature = useCallback(() => {
-    if (qqqLoading) {
+  const fetchQqqTemperature = useCallback((options = {}) => {
+    const force = Boolean(options && options.force);
+    if (qqqLoading && !force) {
       return;
     }
     setQqqLoading(true);
     setQqqError(null);
-    getQqqTemperature()
+    getQqqTemperature(options)
       .then((result) => {
         setQqqData(result);
       })
@@ -13232,7 +13233,11 @@ export default function App() {
   }, []);
 
   const handleRetryQqqDetails = useCallback(() => {
-    fetchQqqTemperature();
+    fetchQqqTemperature({ force: true, includeLivePrice: true });
+  }, [fetchQqqTemperature]);
+
+  const handleRefreshQqqTemperature = useCallback(() => {
+    fetchQqqTemperature({ force: true, includeLivePrice: true });
   }, [fetchQqqTemperature]);
 
   const handlePriceOnlyRefresh = useCallback(async () => {
@@ -14538,6 +14543,7 @@ export default function App() {
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAggregateAccounts}
             qqqSummary={qqqSummary}
+            onRefreshQqqTemperature={handleRefreshQqqTemperature}
             onShowInvestmentModel={
               showingAggregateAccounts ? handleShowInvestmentModelDialog : null
             }

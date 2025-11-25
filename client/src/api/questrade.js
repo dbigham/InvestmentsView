@@ -15,9 +15,15 @@ function buildUrl(accountId, options = {}) {
   return url.toString();
 }
 
-function buildQqqTemperatureUrl() {
+function buildQqqTemperatureUrl(options = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/qqq-temperature', base);
+  if (options && options.force === true) {
+    url.searchParams.set('force', 'true');
+  }
+  if (options && options.includeLivePrice === true) {
+    url.searchParams.set('live', 'true');
+  }
   return url.toString();
 }
 
@@ -208,8 +214,8 @@ export async function getSummary(accountId, options = {}) {
   return response.json();
 }
 
-export async function getQqqTemperature() {
-  const response = await fetch(buildQqqTemperatureUrl());
+export async function getQqqTemperature(options = {}) {
+  const response = await fetch(buildQqqTemperatureUrl(options));
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || 'Failed to load QQQ temperature data');

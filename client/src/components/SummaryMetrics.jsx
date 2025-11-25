@@ -582,6 +582,7 @@ export default function SummaryMetrics({
   chatUrl,
   showQqqTemperature,
   qqqSummary,
+  onRefreshQqqTemperature,
   onShowInvestmentModel,
   benchmarkComparison,
   totalPnlRangeOptions,
@@ -744,6 +745,7 @@ export default function SummaryMetrics({
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
   const formattedTotal = formatSignedMoney(totalPnlValue);
   const qqqStatus = qqqSummary?.status || 'loading';
+  const canRefreshQqqTemperature = typeof onRefreshQqqTemperature === 'function';
 
   // Delay the header Total P&L chart spinner to avoid brief flicker on fast loads
   const [showChartSpinner, setShowChartSpinner] = useState(false);
@@ -2043,6 +2045,115 @@ export default function SummaryMetrics({
     [childMenuTarget, onShowChildPnlBreakdown, onShowChildTotalPnl, closeChildMenu]
   );
 
+  const [qqqMenuState, setQqqMenuState] = useState({ open: false, x: 0, y: 0 });
+  const qqqMenuRef = useRef(null);
+
+  const closeQqqMenu = useCallback(() => {
+    setQqqMenuState((state) => (state.open ? { open: false, x: 0, y: 0 } : state));
+  }, []);
+
+  const openQqqMenu = useCallback(
+    (x, y) => {
+      if (!canRefreshQqqTemperature) {
+        return;
+      }
+      let targetX = x;
+      let targetY = y;
+      if (typeof window !== 'undefined') {
+        const padding = 12;
+        const estimatedWidth = 200;
+        const estimatedHeight = 60;
+        const viewportWidth = window.innerWidth || 0;
+        const viewportHeight = window.innerHeight || 0;
+        targetX = Math.min(Math.max(padding, targetX), Math.max(padding, viewportWidth - estimatedWidth));
+        targetY = Math.min(Math.max(padding, targetY), Math.max(padding, viewportHeight - estimatedHeight));
+      }
+      closeChildMenu();
+      closeTotalMenu();
+      setQqqMenuState({ open: true, x: targetX, y: targetY });
+    },
+    [canRefreshQqqTemperature, closeChildMenu, closeTotalMenu]
+  );
+
+  useEffect(() => {
+    if (!qqqMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (qqqMenuRef.current && qqqMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeQqqMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeQqqMenu();
+      }
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('contextmenu', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('contextmenu', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [qqqMenuState.open, closeQqqMenu]);
+
+  useEffect(() => {
+    if (!canRefreshQqqTemperature) {
+      closeQqqMenu();
+    }
+  }, [canRefreshQqqTemperature, closeQqqMenu]);
+
+  const handleQqqContextMenu = useCallback(
+    (event) => {
+      if (!canRefreshQqqTemperature) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const x = event.clientX ?? 0;
+      const y = event.clientY ?? 0;
+      openQqqMenu(x, y);
+    },
+    [canRefreshQqqTemperature, openQqqMenu]
+  );
+
+  const handleQqqKeyDown = useCallback(
+    (event) => {
+      if (!canRefreshQqqTemperature) {
+        return;
+      }
+      const isContextKey = event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10');
+      const isMenuActivation =
+        (event.key === 'Enter' || event.key === ' ') &&
+        (event.currentTarget?.tagName || '').toLowerCase() !== 'button';
+      if (!isContextKey && !isMenuActivation) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = event.currentTarget?.getBoundingClientRect();
+      let x = rect ? rect.left + rect.width / 2 : 0;
+      let y = rect ? rect.top + rect.height : 0;
+      if (!rect && typeof window !== 'undefined') {
+        x = window.innerWidth / 2;
+        y = window.innerHeight / 2;
+      }
+      openQqqMenu(x, y);
+    },
+    [canRefreshQqqTemperature, openQqqMenu]
+  );
+
+  const handleRefreshQqqTemperature = useCallback(() => {
+    closeQqqMenu();
+    if (canRefreshQqqTemperature) {
+      onRefreshQqqTemperature();
+    }
+  }, [canRefreshQqqTemperature, onRefreshQqqTemperature, closeQqqMenu]);
+
   const formatChildPnlPercent = (change, total) => {
     if (!Number.isFinite(change)) {
       if (change === 0) {
@@ -2260,6 +2371,45 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  const qqqContextMenu = qqqMenuState.open ? (
+    <div
+      ref={qqqMenuRef}
+      className="equity-card__context-menu"
+      style={{ top: `${qqqMenuState.y}px`, left: `${qqqMenuState.x}px` }}
+      role="menu"
+      aria-label="QQQ temperature actions"
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        className="equity-card__context-menu-item"
+        onClick={handleRefreshQqqTemperature}
+      >
+        Refresh
+      </button>
+    </div>
+  ) : null;
+
+  const qqqButtonContextProps = canRefreshQqqTemperature
+    ? {
+        onContextMenu: handleQqqContextMenu,
+        onKeyDown: handleQqqKeyDown,
+        'aria-haspopup': 'menu',
+        'aria-expanded': qqqMenuState.open ? 'true' : 'false',
+      }
+    : {};
+
+  const qqqLabelContextProps = canRefreshQqqTemperature
+    ? {
+        tabIndex: 0,
+        onContextMenu: handleQqqContextMenu,
+        onKeyDown: handleQqqKeyDown,
+        'aria-haspopup': 'menu',
+        'aria-expanded': qqqMenuState.open ? 'true' : 'false',
+      }
+    : {};
+
   return (
     <section className="equity-card">
       <header className="equity-card__header">
@@ -2297,6 +2447,7 @@ export default function SummaryMetrics({
                     className="equity-card__subtext-button"
                     onClick={onShowInvestmentModel}
                     disabled={qqqStatus === 'loading'}
+                    {...qqqButtonContextProps}
                   >
                     <span className="equity-card__subtext-value">{qqqLabel}</span>
                   </button>
@@ -2305,7 +2456,12 @@ export default function SummaryMetrics({
                   </span>
                 </>
               ) : (
-                <span className="equity-card__subtext-value" role="status" aria-live="polite">
+                <span
+                  className="equity-card__subtext-value"
+                  role="status"
+                  aria-live="polite"
+                  {...qqqLabelContextProps}
+                >
                   {qqqLabel}
                 </span>
               )}
@@ -2708,6 +2864,7 @@ export default function SummaryMetrics({
 
       {parentGroupList}
       {childAccountList}
+      {qqqContextMenu}
       {childContextMenu}
       {totalContextMenu}
 
@@ -2797,6 +2954,7 @@ SummaryMetrics.propTypes = {
     date: PropTypes.string,
     message: PropTypes.string,
   }),
+  onRefreshQqqTemperature: PropTypes.func,
   onShowInvestmentModel: PropTypes.func,
   benchmarkComparison: PropTypes.shape({
     status: PropTypes.string,
@@ -2955,6 +3113,7 @@ SummaryMetrics.defaultProps = {
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,
+  onRefreshQqqTemperature: null,
   fundingSummary: null,
   onShowInvestmentModel: null,
   benchmarkComparison: null,
