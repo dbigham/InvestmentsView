@@ -69,7 +69,6 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
   const inputId = useId();
   const [sliderValue, setSliderValue] = useState(() => clampPercent(plan?.targetDeployedPercent ?? 0));
   const [inputValue, setInputValue] = useState(() => formatPercentInput(plan?.targetDeployedPercent));
-  const [copyStatus, setCopyStatus] = useState(null);
   const [completedTransactions, setCompletedTransactions] = useState(() => new Set());
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
@@ -107,19 +106,6 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
-
-  useEffect(() => {
-    if (!copyStatus) {
-      return undefined;
-    }
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      setCopyStatus(null);
-    }, 2500);
-    return () => window.clearTimeout(timer);
-  }, [copyStatus]);
 
   useEffect(() => {
     setCompletedTransactions(new Set());
@@ -219,16 +205,14 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
   }, []);
 
   const copyValue = useCallback(
-    async (value, label) => {
+    async (value) => {
       if (!value || typeof copyToClipboard !== 'function') {
         return;
       }
       try {
         await copyToClipboard(value);
-        setCopyStatus({ message: `${label || 'Value'} copied to clipboard.`, tone: 'success' });
       } catch (error) {
         console.error('Failed to copy value', error);
-        setCopyStatus({ message: 'Unable to copy value. Copy manually if needed.', tone: 'error' });
       }
     },
     [copyToClipboard]
@@ -238,7 +222,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
     if (!plan?.summaryText) {
       return;
     }
-    copyValue(plan.summaryText, 'Plan summary');
+    copyValue(plan.summaryText);
   }, [plan?.summaryText, copyValue]);
 
   const transactionRows = useMemo(() => {
@@ -419,11 +403,6 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
           </div>
         </header>
         <div className="invest-plan-dialog__body">
-          {copyStatus && (
-            <div className={`invest-plan-dialog__status invest-plan-dialog__status--${copyStatus.tone}`}>
-              {copyStatus.message}
-            </div>
-          )}
           <section className="invest-plan-section">
             <h3 className="invest-plan-section__title">Target deployment</h3>
             <div className="deployment-plan-controls">
@@ -499,7 +478,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                         <button
                           type="button"
                           className="invest-plan-symbol__ticker"
-                          onClick={() => copyValue(conversion.symbol, `${conversion.symbol} symbol`)}
+                          onClick={() => copyValue(conversion.symbol)}
                           title="Copy symbol"
                           aria-label={`Copy ${conversion.symbol} symbol`}
                         >
@@ -521,7 +500,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                         <button
                           type="button"
                           className="invest-plan-copy-button"
-                          onClick={() => copyValue(conversion.amountCopy, `${conversion.symbol} amount`)}
+                          onClick={() => copyValue(conversion.amountCopy)}
                         >
                           Spend {conversion.amountLabel}
                         </button>
@@ -534,7 +513,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                         <button
                           type="button"
                           className="invest-plan-copy-button"
-                          onClick={() => copyValue(conversion.shareCopy, `${conversion.symbol} shares`)}
+                          onClick={() => copyValue(conversion.shareCopy)}
                         >
                           Buy {conversion.shareLabel}
                         </button>
@@ -601,7 +580,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                                 <button
                                   type="button"
                                   className="invest-plan-symbol__ticker"
-                                  onClick={() => copyValue(row.symbol, `${row.symbol} symbol`)}
+                                  onClick={() => copyValue(row.symbol)}
                                   title="Copy symbol"
                                   aria-label={`Copy ${row.symbol} symbol`}
                                 >
@@ -622,7 +601,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                               <button
                                 type="button"
                                 className="invest-plan-copy-button"
-                                onClick={() => copyValue(row.amountCopy, `${row.symbol} amount`)}
+                                onClick={() => copyValue(row.amountCopy)}
                               >
                                 {row.amountLabel}
                               </button>
@@ -637,7 +616,7 @@ export default function DeploymentAdjustmentDialog({ plan, onClose, onAdjustTarg
                               <button
                                 type="button"
                                 className="invest-plan-copy-button"
-                                onClick={() => copyValue(row.shareCopy, `${row.symbol} shares`)}
+                                onClick={() => copyValue(row.shareCopy)}
                               >
                                 {row.shareLabel}
                               </button>
