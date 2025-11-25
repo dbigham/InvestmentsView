@@ -6488,10 +6488,6 @@ export default function App() {
           typeof source.retirementHouseholdType === 'string' && source.retirementHouseholdType
             ? source.retirementHouseholdType
             : 'single',
-        retirementBirthDate1:
-          typeof source.retirementBirthDate1 === 'string' && source.retirementBirthDate1
-            ? source.retirementBirthDate1
-            : (typeof source.retirementBirthDate === 'string' && source.retirementBirthDate ? source.retirementBirthDate : null),
         retirementBirthDate2:
           typeof source.retirementBirthDate2 === 'string' && source.retirementBirthDate2
             ? source.retirementBirthDate2
@@ -13462,11 +13458,11 @@ export default function App() {
     if (!focusedSymbol) {
       return { current: null, allTime: null };
     }
-    const findEntry = (container) => {
+    const aggregateMatchingEntries = (container) => {
       if (!container || !Array.isArray(container.entries)) {
         return null;
       }
-      return container.entries.find((entry) => {
+      const matching = container.entries.filter((entry) => {
         if (matchesFocusedSymbol(entry?.symbol)) {
           return true;
         }
@@ -13475,12 +13471,93 @@ export default function App() {
         }
         return false;
       });
+      if (!matching.length) {
+        return null;
+      }
+      const sumField = (field) => {
+        let total = 0;
+        let count = 0;
+        matching.forEach((entry) => {
+          const value = Number(entry?.[field]);
+          if (Number.isFinite(value)) {
+            total += value;
+            count += 1;
+          }
+        });
+        return count ? total : null;
+      };
+      const summedTotalPnl = sumField('totalPnlCad');
+      const summedMarketValue = sumField('marketValueCad');
+      const summedInvested = sumField('investedCad');
+      // Derive a consistent net deposit from equity minus P&L so the identity holds
+      // even when investedCad omits baseline positions (e.g., crypto group themes).
+      const derivedInvested =
+        Number.isFinite(summedMarketValue) && Number.isFinite(summedTotalPnl)
+          ? summedMarketValue - summedTotalPnl
+          : null;
+      const mergedInvested =
+        derivedInvested !== null && (summedInvested === null || Number.isNaN(summedInvested))
+          ? derivedInvested
+          : derivedInvested !== null && Number.isFinite(summedInvested)
+            ? derivedInvested
+            : summedInvested;
+      const mergedComponents = (() => {
+        const map = new Map();
+        matching.forEach((entry) => {
+          if (!Array.isArray(entry?.components)) {
+            return;
+          }
+          entry.components.forEach((component) => {
+            const key = component?.symbol ? normalizeSymbolGroupKey(component.symbol) || component.symbol : null;
+            if (!key) {
+              return;
+            }
+            const add = (v) => (Number.isFinite(v) ? v : 0);
+            if (!map.has(key)) {
+              map.set(key, {
+                symbol: component.symbol || key,
+                totalPnlCad: add(component.totalPnlCad),
+                totalPnlWithFxCad: add(component.totalPnlWithFxCad),
+                totalPnlNoFxCad: add(component.totalPnlNoFxCad),
+                investedCad: add(component.investedCad),
+                openQuantity: add(component.openQuantity),
+                marketValueCad: add(component.marketValueCad),
+              });
+            } else {
+              const existing = map.get(key);
+              existing.totalPnlCad += add(component.totalPnlCad);
+              existing.totalPnlWithFxCad += add(component.totalPnlWithFxCad);
+              existing.totalPnlNoFxCad += add(component.totalPnlNoFxCad);
+              existing.investedCad += add(component.investedCad);
+              existing.openQuantity += add(component.openQuantity);
+              existing.marketValueCad += add(component.marketValueCad);
+              if (!existing.symbol && component.symbol) {
+                existing.symbol = component.symbol;
+              }
+            }
+          });
+        });
+        return map.size ? Array.from(map.values()) : undefined;
+      })();
+      const firstWithAnnualized = matching.find((entry) => entry?.annualizedReturn);
+      const firstWithAnnualizedNoFx = matching.find((entry) => entry?.annualizedReturnNoFx);
+      return {
+        symbol: focusedSymbol,
+        totalPnlCad: summedTotalPnl,
+        investedCad: mergedInvested,
+        openQuantity: sumField('openQuantity'),
+        marketValueCad: summedMarketValue,
+        currency: null,
+        components: mergedComponents,
+        annualizedReturn: firstWithAnnualized?.annualizedReturn || null,
+        annualizedReturnNoFx: firstWithAnnualizedNoFx?.annualizedReturnNoFx || null,
+      };
     };
     const currentContainer = resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol);
     const allContainer = resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll);
     return {
-      current: findEntry(currentContainer),
-      allTime: findEntry(allContainer),
+      current: aggregateMatchingEntries(currentContainer),
+      allTime: aggregateMatchingEntries(allContainer),
     };
   }, [
     focusedSymbol,

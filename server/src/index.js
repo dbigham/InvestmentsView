@@ -12686,7 +12686,12 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     const flowKey = normalizeSymbol(symbol) || symbol;
     const cashCad = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
     const totalPnlCad = (marketValueCad - marketValueStartCad) + cashCad;
-    const investedCad = investedOutflowCadBySymbol.has(symbol) ? investedOutflowCadBySymbol.get(symbol) : 0;
+    const investedOutflowCad = investedOutflowCadBySymbol.has(symbol) ? investedOutflowCadBySymbol.get(symbol) : 0;
+    const baselineInvestedCad =
+      Number.isFinite(marketValueStartCad) && Math.abs(marketValueStartCad) >= CASH_FLOW_EPSILON / 10
+        ? Math.max(0, marketValueStartCad)
+        : 0;
+    const investedCad = investedOutflowCad + baselineInvestedCad;
     const buildCashFlowsForSymbol = async () => {
       const records = cashFlowRecordsBySymbol.has(flowKey) ? cashFlowRecordsBySymbol.get(flowKey) : [];
       const flows = [];

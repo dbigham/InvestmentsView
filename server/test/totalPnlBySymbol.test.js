@@ -263,3 +263,37 @@ test('net deposits reflect invested cash for a symbol', async () => {
   assert.ok(Math.abs(abc.marketValueCad - 120) < 1e-9, 'market value reflects final price');
   assert.ok(Math.abs(abc.totalPnlCad - 20) < 1e-6, 'P&L equals equity minus net deposits');
 });
+
+test('baseline holdings before display start contribute to invested/net deposits', async () => {
+  const account = { id: 'test:9', number: 'test:9', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-01-31';
+  // Bought before start; no trades after start. Equity should equal start MV + P&L.
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'BTC-USD', quantity: 2, netAmount: -200, currency: 'USD', tradeDate: '2024-12-15' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['BTC-USD', new Map([[d(start), 120], [d(end), 130]])],
+  ]);
+  const usdRates = new Map([[d(start), 1.3], [d(end), 1.3]]);
+  const endHoldings = new Map([['BTC-USD', 2]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const btc = result.entries.find((e) => e.symbol === 'BTC-USD');
+  assert.ok(btc, 'BTC entry present');
+  const expectedStartMv = 2 * 120 * 1.3; // USD price * qty * FX
+  const expectedEndMv = 2 * 130 * 1.3;
+  const expectedPnl = expectedEndMv - expectedStartMv;
+  assert.ok(Math.abs((btc.marketValueCad || 0) - expectedEndMv) < 1e-6, 'end MV matches');
+  assert.ok(Math.abs((btc.totalPnlCad || 0) - expectedPnl) < 1e-6, 'P&L matches price delta');
+  assert.ok(Math.abs((btc.investedCad || 0) - expectedStartMv) < 1e-6, 'invested includes baseline holdings at start');
+  assert.ok(Math.abs((btc.investedCad || 0) + (btc.totalPnlCad || 0) - (btc.marketValueCad || 0)) < 1e-6, 'equity ≈ net deposits + P&L');
+});
