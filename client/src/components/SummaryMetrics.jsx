@@ -778,6 +778,18 @@ export default function SummaryMetrics({
     ? fundingSummary.netDepositsCad
     : null;
   const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
+  const autoFixInfo = fundingSummary?.autoFixPendingWithdrawls;
+  const autoFixApplied = autoFixInfo?.applied === true;
+  const autoFixAdjustmentCad = Number.isFinite(autoFixInfo?.adjustmentCad)
+    ? autoFixInfo.adjustmentCad
+    : null;
+  const autoFixAmountLabel =
+    autoFixAdjustmentCad !== null ? formatMoney(Math.abs(autoFixAdjustmentCad)) : null;
+  const autoFixBannerText =
+    autoFixInfo?.note ||
+    (autoFixAmountLabel
+      ? `Adjusted net deposits by ${autoFixAmountLabel} to offset a suspected missing withdrawal; today's Total P&L is treated as zero.`
+      : 'Applied an automated fix for a suspected missing withdrawal to keep Total P&L accurate.');
 
   const annualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
     ? fundingSummary.annualizedReturnRate
@@ -2511,6 +2523,13 @@ export default function SummaryMetrics({
         </div>
       </header>
 
+      {autoFixApplied && autoFixBannerText && (
+        <div className="equity-card__auto-fix-banner" role="status">
+          <span className="equity-card__auto-fix-icon" aria-hidden="true">⚙</span>
+          <p>{autoFixBannerText}</p>
+        </div>
+      )}
+
       {showTotalPnlChart && (
         <div className="equity-card__total-pnl-chart-header">
           <div className="equity-card__total-pnl-chart-selector">
@@ -2923,6 +2942,12 @@ SummaryMetrics.propTypes = {
         annualizedRate: PropTypes.number,
       })
     ),
+    autoFixPendingWithdrawls: PropTypes.shape({
+      applied: PropTypes.bool,
+      adjustmentCad: PropTypes.number,
+      appliedAt: PropTypes.string,
+      note: PropTypes.string,
+    }),
   }),
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,

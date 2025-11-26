@@ -9851,6 +9851,7 @@ export default function App() {
       totalEquityCad,
       returnBreakdown,
       periodEndDate,
+      autoFixPendingWithdrawls: selectedAccountFunding?.autoFixPendingWithdrawls || null,
     };
 
     const effectiveNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)

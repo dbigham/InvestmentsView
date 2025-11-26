@@ -135,6 +135,8 @@ const RESERVE_SYMBOL_SET = new Set(Array.isArray(deploymentDisplay?.RESERVE_SYMB
       typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''
     ).filter(Boolean)
   : []);
+// Minimum negative Total P&L (CAD) drop before we consider an automated fix.
+const AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD = 500;
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
@@ -5494,6 +5496,14 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     target.netDepositAdjustment = override.netDepositAdjustment;
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'autoFixPendingWithdrawls')) {
+    if (typeof override.autoFixPendingWithdrawls === 'boolean') {
+      target.autoFixPendingWithdrawls = override.autoFixPendingWithdrawls;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'autoFixPendingWithdrawls')) {
+      delete target.autoFixPendingWithdrawls;
+    }
+  }
+
   if (typeof override.rebalancePeriod === 'number' && Number.isFinite(override.rebalancePeriod)) {
     target.rebalancePeriod = Math.round(override.rebalancePeriod);
   }
@@ -9194,6 +9204,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   const breakdown = [];
   const cashFlowEntries = [];
   let missingCashFlowDates = false;
+  const fundingActivityDetails = [];
 
   for (const activity of fundingActivities) {
     const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
@@ -9201,6 +9212,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
       debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
       continue;
     }
+    fundingActivityDetails.push(details);
     const { amount, currency, timestamp, resolution } = details;
     const conversion = await convertAmountToCad(amount, currency, timestamp, accountKey);
     const cadAmount = conversion.cadAmount;
@@ -9302,13 +9314,6 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     }
   }
 
-  const perCurrencyObject = {};
-  for (const [currency, value] of perCurrencyTotals.entries()) {
-    perCurrencyObject[currency] = value;
-  }
-
-  const combinedCadValue = conversionIncomplete ? null : combinedCad;
-
   const accountBalanceSummary =
     perAccountCombinedBalances && perAccountCombinedBalances[account.id];
   const combinedBalances =
@@ -9320,10 +9325,98 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     ? Number(cadBalance.totalEquity)
     : null;
 
-  const totalPnlCad =
+  let combinedCadValue = conversionIncomplete ? null : combinedCad;
+  let totalPnlCad =
     Number.isFinite(totalEquityCad) && Number.isFinite(combinedCadValue)
       ? totalEquityCad - combinedCadValue
       : null;
+  const preFixTotalPnlCad = totalPnlCad;
+
+  const todayKey = formatDateOnly(now);
+  const hasWithdrawToday =
+    todayKey &&
+    fundingActivityDetails.some((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return false;
+      }
+      const amount = Number(entry.amount);
+      if (!Number.isFinite(amount) || amount >= 0) {
+        return false;
+      }
+      const timestamp =
+        entry.timestamp instanceof Date
+          ? entry.timestamp
+          : typeof entry.timestamp === 'string' && entry.timestamp
+            ? new Date(entry.timestamp)
+            : null;
+      if (!timestamp || Number.isNaN(timestamp.getTime())) {
+        return false;
+      }
+      return formatDateOnly(timestamp) === todayKey;
+    });
+  const autoFixFlag =
+    account &&
+    (account.autoFixPendingWithdrawls === true ||
+      account.autoFixPendingWithdrawls === 'true' ||
+      account.autoFixPendingWithdrawls === 1);
+  let autoFixPendingWithdrawls = null;
+  if (
+    autoFixFlag &&
+    !conversionIncomplete &&
+    Number.isFinite(preFixTotalPnlCad) &&
+    preFixTotalPnlCad < -AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD &&
+    todayKey &&
+    !hasWithdrawToday
+  ) {
+    const adjustmentCad = preFixTotalPnlCad;
+    console.log('[autoFix] triggered for account', account.id, adjustmentCad);
+    const existingCad = perCurrencyTotals.has('CAD') ? perCurrencyTotals.get('CAD') : 0;
+    perCurrencyTotals.set('CAD', existingCad + adjustmentCad);
+    combinedCad += adjustmentCad;
+    if (combinedCadValue !== null) {
+      combinedCadValue += adjustmentCad;
+    }
+    cashFlowEntries.push({ amount: -adjustmentCad, date: nowIsoString });
+    breakdown.push({
+      amount: adjustmentCad,
+      currency: 'CAD',
+      cadAmount: adjustmentCad,
+      usdAmount: null,
+      fxRate: 1,
+      resolvedAmountSource: 'autoFixPendingWithdrawls',
+      resolvedAmountField: 'adjustmentCad',
+      descriptionExtracted: false,
+      description: 'Automated fix for suspected missing withdrawal.',
+      type: 'Adjustment',
+      action: 'autoFixPendingWithdrawls',
+      timestamp: todayKey,
+    });
+    autoFixPendingWithdrawls = {
+      applied: true,
+      adjustmentCad,
+      appliedAt: nowIsoString,
+      note:
+        'Detected a large negative Total P&L without any recorded withdrawal today; net deposits were adjusted to compensate.',
+      originalTotalPnlCad: preFixTotalPnlCad,
+      thresholdCad: AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD,
+    };
+    debugTotalPnl(accountKey, 'Applied auto fix for suspected missing withdrawal', {
+      adjustmentCad,
+      previousTotalPnlCad: preFixTotalPnlCad,
+      thresholdCad: AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD,
+      todayKey,
+      hasWithdrawToday,
+    });
+    totalPnlCad =
+      Number.isFinite(totalEquityCad) && Number.isFinite(combinedCadValue)
+        ? totalEquityCad - combinedCadValue
+        : null;
+  }
+
+  const perCurrencyObject = {};
+  for (const [currency, value] of perCurrencyTotals.entries()) {
+    perCurrencyObject[currency] = value;
+  }
 
   if (Number.isFinite(totalEquityCad) && Math.abs(totalEquityCad) >= CASH_FLOW_EPSILON) {
     cashFlowEntries.push({ amount: totalEquityCad, date: nowIsoString });
@@ -9637,6 +9730,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
             netDepositsCad: accountAdjustment,
           }
         : undefined,
+    autoFixPendingWithdrawls: autoFixPendingWithdrawls || undefined,
     periodStartDate: normalizedPeriodStart || undefined,
     periodEndDate: normalizedPeriodEnd || undefined,
     cagrStartDate: appliedCagrStartDate ? formatDateOnly(appliedCagrStartDate) : undefined,
@@ -12305,6 +12399,29 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       displayStartTotals: undefined,
     };
   })();
+
+  const autoFixInfo = netDepositsSummary?.autoFixPendingWithdrawls;
+  if (autoFixInfo && autoFixInfo.applied && Number.isFinite(autoFixInfo.adjustmentCad)) {
+    const adjustmentCad = autoFixInfo.adjustmentCad;
+    const lastPoint = points.length ? points[points.length - 1] : null;
+    if (lastPoint) {
+      lastPoint.cumulativeNetDepositsCad =
+        Number.isFinite(lastPoint.cumulativeNetDepositsCad)
+          ? lastPoint.cumulativeNetDepositsCad + adjustmentCad
+          : adjustmentCad;
+      lastPoint.totalPnlCad = 0;
+      if (lastPoint.totalPnlSinceDisplayStartCad !== undefined) {
+        lastPoint.totalPnlSinceDisplayStartCad = 0;
+      }
+    }
+    summary.netDepositsCad =
+      Number.isFinite(summary.netDepositsCad) ? summary.netDepositsCad + adjustmentCad : adjustmentCad;
+    summary.totalPnlCad = 0;
+    summary.totalPnlAllTimeCad = 0;
+    if (summary.totalPnlSinceDisplayStartCad !== undefined) {
+      summary.totalPnlSinceDisplayStartCad = 0;
+    }
+  }
 
   return {
     accountId: accountKey,

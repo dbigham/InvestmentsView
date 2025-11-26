@@ -333,6 +333,19 @@ function applyNetDepositAdjustmentSetting(target, key, value) {
   container.netDepositAdjustment = normalized;
 }
 
+function applyAutoFixPendingWithdrawlsSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = coerceBoolean(value);
+  if (normalized === null) {
+    delete container.autoFixPendingWithdrawls;
+    return;
+  }
+  container.autoFixPendingWithdrawls = normalized;
+}
+
 function applyCagrStartDateSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -1543,6 +1556,13 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'netDepositAdjustment')) {
       applyNetDepositAdjustmentSetting(settingsTarget, resolvedKey, entry.netDepositAdjustment);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'autoFixPendingWithdrawls')) {
+      applyAutoFixPendingWithdrawlsSetting(
+        settingsTarget,
+        resolvedKey,
+        entry.autoFixPendingWithdrawls
+      );
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'cagrStartDate')) {
       applyCagrStartDateSetting(settingsTarget, resolvedKey, entry.cagrStartDate);

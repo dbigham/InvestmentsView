@@ -14,6 +14,8 @@
   --color-divider: #edf1f7;
   --color-accent: #389B3C;
   --color-accent-soft: #E6F3E7;
+  --color-warning: #ba5c17;
+  --color-warning-soft: #fff4e1;
   --color-focus-outline: #2563eb;
   --color-negative: #d04b4b;
   --color-negative-soft: #fdecee;
@@ -862,6 +864,27 @@ textarea {
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
+}
+.equity-card__auto-fix-banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--color-warning-soft);
+  border: 1px solid rgba(186, 92, 23, 0.35);
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-card);
+  padding: 12px 16px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+.equity-card__auto-fix-banner p {
+  margin: 0;
+  line-height: 1.5;
+}
+.equity-card__auto-fix-icon {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--color-warning);
 }
 
 .equity-card__actions {
