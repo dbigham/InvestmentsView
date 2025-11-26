@@ -10389,12 +10389,28 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     }
   }
 
+  const questradeSymbolDetail =
+    options && options.questradeSymbolDetail ? options.questradeSymbolDetail : null;
+
   if (!normalized.length && options && options.login) {
     const rawSymbolId = Number.isFinite(options.symbolId)
       ? options.symbolId
       : Number(options.symbolId);
     const symbolId = Number.isFinite(rawSymbolId) ? rawSymbolId : null;
     if (symbolId && symbolId > 0) {
+      const questradeSymbolIsUnquotable =
+        questradeSymbolDetail &&
+        (questradeSymbolDetail.isQuotable === false || questradeSymbolDetail.isTradable === false);
+      if (questradeSymbolIsUnquotable) {
+        if (DEBUG_TOTAL_PNL) {
+          debugTotalPnl(options.accountKey, 'Skipping Questrade candles for unquotable symbol', {
+            symbol,
+            symbolId,
+            symbolDescription: questradeSymbolDetail.description || null,
+          });
+        }
+        return normalized;
+      }
       if (DEBUG_TOTAL_PNL) {
         debugTotalPnl(options.accountKey, 'Falling back to Questrade candles for price history', {
           symbol,
@@ -11207,6 +11223,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
             login,
             symbolId: normalizedSymbolId,
             accountKey,
+            questradeSymbolDetail:
+              normalizedSymbolId && symbolDetails ? symbolDetails[normalizedSymbolId] : null,
           });
         } catch (priceError) {
           history = null;
@@ -11980,7 +11998,12 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       const meta = symbolMeta.get(symbol) || {};
       const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
       const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
-      const history = await fetchSymbolPriceHistory(symbol, startKey, endKey, { login, symbolId, accountKey });
+      const history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+        login,
+        symbolId,
+        accountKey,
+        questradeSymbolDetail: symbolId && symbolDetails ? symbolDetails[symbolId] : null,
+      });
       priceSeriesMap.set(symbol, buildDailyPriceSeries(history || [], dateKeys));
     } catch (e) {
       priceSeriesMap.set(symbol, new Map());
@@ -12371,6 +12394,8 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
             login,
             symbolId: normalizedSymbolId,
             accountKey,
+            questradeSymbolDetail:
+              normalizedSymbolId && symbolDetails ? symbolDetails[normalizedSymbolId] : null,
           });
         } catch (priceError) {
           history = null;
@@ -14499,11 +14524,16 @@ app.get('/api/summary', async function (req, res) {
   let normalizedSelection = normalizeSummaryRequestKey(requestedAccountId);
   let supersetEntry = null;
   const forceRefresh = req.query.force === 'true' || req.query.force === '1';
-  const refreshKeyParam = typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim() ? req.query.refreshKey.trim() : '';
+  const rawRefreshKey =
+    typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim()
+      ? req.query.refreshKey.trim()
+      : '';
+  const manualRefreshKey = rawRefreshKey && rawRefreshKey !== '0' ? rawRefreshKey : '';
+  const effectiveRefreshKey = manualRefreshKey || '0';
 
   // When the client increments refreshKey, treat as manual cache invalidation
-  if (refreshKeyParam && refreshKeyParam !== activeRefreshKey) {
-    activeRefreshKey = refreshKeyParam;
+  if (effectiveRefreshKey !== activeRefreshKey) {
+    activeRefreshKey = effectiveRefreshKey;
     try {
       summaryCacheStore.clear();
       totalPnlSeriesCacheStore.clear();
@@ -14515,7 +14545,7 @@ app.get('/api/summary', async function (req, res) {
   }
 
   // Scope cache keys to the provided refreshKey (if any)
-  const cacheKeyPrefix = refreshKeyParam ? `rk:${refreshKeyParam}::` : 'rk:0::';
+  const cacheKeyPrefix = `rk:${effectiveRefreshKey}::`;
   normalizedSelection.cacheKey = `${cacheKeyPrefix}${normalizedSelection.cacheKey}`;
 
   try {
@@ -14559,7 +14589,7 @@ app.get('/api/summary', async function (req, res) {
             requestedId: normalizedSelection.requestedId,
             source: 'superset',
             originalRequestedId: normalizedSelection.originalRequestedId || null,
-            cacheScope: refreshKeyParam ? { refreshKey: refreshKeyParam, pinned: true } : undefined,
+            cacheScope: manualRefreshKey ? { refreshKey: manualRefreshKey, pinned: true } : undefined,
           });
           debugSummaryCache('served from superset cache', normalizedSelection.cacheKey, {
             requestedId: normalizedSelection.requestedId,
@@ -16412,7 +16442,7 @@ app.get('/api/summary', async function (req, res) {
       requestedId: normalizedSelection.requestedId,
       source: 'live',
       originalRequestedId: normalizedSelection.originalRequestedId || null,
-      cacheScope: refreshKeyParam ? { refreshKey: refreshKeyParam, pinned: true } : undefined,
+      cacheScope: manualRefreshKey ? { refreshKey: manualRefreshKey, pinned: true } : undefined,
     });
 
     const supersetWasAvailable = Boolean(supersetEntry);
@@ -16483,7 +16513,7 @@ app.get('/api/summary', async function (req, res) {
       cacheKey: normalizedSelection.cacheKey,
       payload: responsePayload,
       timestamp: supersetTimestamp,
-    expiresAt: refreshKeyParam ? PINNED_EXPIRY_MS : supersetTimestamp + SUMMARY_CACHE_TTL_MS,
+      expiresAt: manualRefreshKey ? PINNED_EXPIRY_MS : supersetTimestamp + SUMMARY_CACHE_TTL_MS,
       accounts: responseAccounts,
       accountGroups: responseAccountGroups,
       accountsById,
@@ -16589,7 +16619,11 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
 
   const normalizedKey = rawAccountKey.toLowerCase();
   const isGroupKey = normalizedKey.startsWith('group:');
-  const refreshKeyParam = typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim() ? req.query.refreshKey.trim() : '';
+  const rawRefreshKey =
+    typeof req.query.refreshKey === 'string' && req.query.refreshKey.trim()
+      ? req.query.refreshKey.trim()
+      : '';
+  const refreshKeyParam = rawRefreshKey && rawRefreshKey !== '0' ? rawRefreshKey : '';
   const symbolParam =
     typeof req.query.symbol === 'string' && req.query.symbol.trim() ? req.query.symbol.trim() : null;
   const symbolGroupKeyParam =

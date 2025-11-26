@@ -3113,7 +3113,7 @@ function buildCashBreakdownForCurrency({ currency, accountIds, accountsById, acc
   };
 }
 
-const TODO_CASH_THRESHOLD = 10;
+const TODO_CASH_THRESHOLD = 20;
 const TODO_AMOUNT_EPSILON = 0.009;
 const TODO_AMOUNT_TOLERANCE = 0.01;
 const TODO_SHARE_EPSILON = 0.0001;
@@ -3577,7 +3577,14 @@ function buildTodoItems({
         : null;
     if (balanceSummary) {
       ['CAD', 'USD'].forEach((currency) => {
-        const cashValue = resolveCashForCurrency(balanceSummary, currency);
+        // Prefer the combined bucket (net of cross-currency offsets) when available so we
+        // don't flag TODOs for cash that is effectively offset by a deficit in the other
+        // currency. Fall back to per-currency when combined data is missing.
+        const combinedOnly = balanceSummary && balanceSummary.combined ? { combined: balanceSummary.combined } : null;
+        const hasCombinedEntry = combinedOnly && findBalanceEntryForCurrency(combinedOnly, currency);
+        const cashValue = hasCombinedEntry
+          ? resolveCashForCurrency(combinedOnly, currency)
+          : resolveCashForCurrency(balanceSummary, currency);
         if (
           Number.isFinite(cashValue) &&
           cashValue > 0 &&
