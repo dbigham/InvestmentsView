@@ -617,12 +617,12 @@ async function computeAggregateTotalPnlSeriesForContexts(
           bucket.deployedCount += 1;
         }
         if (symbolParam) {
-          const pointPriceCad = Number(point.priceCad);
-          if (Number.isFinite(pointPriceCad) && !Number.isFinite(bucket.priceCad)) {
+          const pointPriceCad = point && Number.isFinite(point.priceCad) ? point.priceCad : null;
+          if (pointPriceCad !== null && !Number.isFinite(bucket.priceCad)) {
             bucket.priceCad = pointPriceCad;
           }
-          const pointPriceNative = Number(point.priceNative);
-          if (Number.isFinite(pointPriceNative) && !Number.isFinite(bucket.priceNative)) {
+          const pointPriceNative = point && Number.isFinite(point.priceNative) ? point.priceNative : null;
+          if (pointPriceNative !== null && !Number.isFinite(bucket.priceNative)) {
             bucket.priceNative = pointPriceNative;
           }
         }
@@ -10320,6 +10320,7 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     return null;
   }
 
+  const normalizedSymbolKey = normalizeSymbol(symbol) || symbol;
   const startDate = new Date(`${startDateKey}T00:00:00Z`);
   const endDate = new Date(`${endDateKey}T00:00:00Z`);
   if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
@@ -10365,8 +10366,10 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     try {
       const cacheKey = getPriceHistoryCacheKey(candidate, startDateKey, endDateKey);
       const cached = getCachedPriceHistory(cacheKey);
-      if (cached && cached.hit) {
+      if (cached && cached.hit && Array.isArray(cached.value) && cached.value.length > 0) {
         return cached.value;
+      } else if (cached && cached.hit) {
+        priceHistoryCache.delete(cacheKey);
       }
     } catch (_) { /* ignore cache errors */ }
     let history = null;
@@ -10383,7 +10386,9 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     if (normalized.length) {
       try {
         const cacheKey = getPriceHistoryCacheKey(candidate, startDateKey, endDateKey);
-        setCachedPriceHistory(cacheKey, normalized);
+        if (cacheKey) {
+          setCachedPriceHistory(cacheKey, normalized);
+        }
       } catch (_) { /* ignore cache errors */ }
       break;
     }
@@ -10427,6 +10432,51 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
         options.accountKey,
         symbol
       );
+    }
+  }
+
+  if (!normalized.length && normalizedSymbolKey) {
+    try {
+      const cachedSeries = readPriceSeriesCache(normalizedSymbolKey);
+      if (cachedSeries && Array.isArray(cachedSeries.points) && cachedSeries.points.length) {
+        normalized = cachedSeries.points
+          .map((point) => {
+            const parsedDate =
+              point && typeof point.date === 'string'
+                ? parseDateOnlyString(point.date) || new Date(`${point.date}T00:00:00Z`)
+                : point?.date instanceof Date
+                  ? point.date
+                  : null;
+            const priceValue = Number(point?.price);
+            return {
+              date: parsedDate,
+              price: priceValue,
+            };
+          })
+          .filter((entry) => {
+            if (!(entry.date instanceof Date) || Number.isNaN(entry.date.getTime())) {
+              return false;
+            }
+            const time = entry.date.getTime();
+            if (time < startDate.getTime() || time > exclusiveEnd.getTime()) {
+              return false;
+            }
+            return Number.isFinite(entry.price) && entry.price > 0;
+          })
+          .sort((a, b) => a.date.getTime() - b.date.getTime());
+        if (normalized.length) {
+          try {
+            const cacheKey = getPriceHistoryCacheKey(normalizedSymbolKey, startDateKey, endDateKey);
+            if (cacheKey) {
+              setCachedPriceHistory(cacheKey, normalized);
+            }
+          } catch (_) {
+            // ignore cache write errors
+          }
+        }
+      }
+    } catch (cacheError) {
+      // ignore cache read errors; fall through to return normalized (possibly empty)
     }
   }
 
@@ -11209,8 +11259,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       let history = null;
       if (cacheKey) {
         const cached = getCachedPriceHistory(cacheKey);
-        if (cached.hit) {
+        if (cached.hit && Array.isArray(cached.value) && cached.value.length > 0) {
           history = cached.value;
+        } else if (cached.hit) {
+          priceHistoryCache.delete(cacheKey);
         }
       }
       if (!history) {
@@ -11229,7 +11281,27 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         } catch (priceError) {
           history = null;
         }
-        if (Array.isArray(history) && cacheKey) {
+        if (!Array.isArray(history) || history.length === 0) {
+          try {
+            const loaded = await loadSymbolPriceSeries(symbol, startKey, endKey);
+            if (loaded && Array.isArray(loaded.points) && loaded.points.length) {
+              history = loaded.points
+                .map((point) => ({
+                  date:
+                    point && typeof point.date === 'string'
+                      ? parseDateOnlyString(point.date) || new Date(`${point.date}T00:00:00Z`)
+                      : point?.date instanceof Date
+                        ? point.date
+                        : null,
+                  price: Number(point && point.price),
+                }))
+                .filter((entry) => entry.date instanceof Date && !Number.isNaN(entry.date.getTime()) && Number.isFinite(entry.price) && entry.price > 0);
+            }
+          } catch (_) {
+            // ignore fallback failure
+          }
+        }
+        if (Array.isArray(history) && history.length > 0 && cacheKey) {
           setCachedPriceHistory(cacheKey, history);
         }
       }
@@ -11956,10 +12028,11 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     }
   });
   // If we have symbolIds but missing currency, try details
+  let symbolDetails = {};
   if (symbolIds.size > 0) {
     try {
-      const details = await fetchSymbolsDetails(login, Array.from(symbolIds));
-      Object.values(details || {}).forEach((detail) => {
+      symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
+      Object.values(symbolDetails || {}).forEach((detail) => {
         if (!detail) {
           return;
         }
@@ -11984,6 +12057,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         });
       });
     } catch (e) {
+      symbolDetails = {};
       // ignore
     }
   }
@@ -12004,9 +12078,83 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         accountKey,
         questradeSymbolDetail: symbolId && symbolDetails ? symbolDetails[symbolId] : null,
       });
-      priceSeriesMap.set(symbol, buildDailyPriceSeries(history || [], dateKeys));
+      let effectiveHistory = Array.isArray(history) ? history : null;
+      if (!effectiveHistory || effectiveHistory.length === 0) {
+        try {
+          const loaded = await loadSymbolPriceSeries(symbol, startKey, endKey);
+          if (loaded && Array.isArray(loaded.points) && loaded.points.length) {
+            effectiveHistory = loaded.points
+              .map((point) => ({
+                date:
+                  point && typeof point.date === 'string'
+                    ? parseDateOnlyString(point.date) || new Date(`${point.date}T00:00:00Z`)
+                    : point?.date instanceof Date
+                      ? point.date
+                      : null,
+                price: Number(point && point.price),
+              }))
+              .filter((entry) => entry.date instanceof Date && !Number.isNaN(entry.date.getTime()) && Number.isFinite(entry.price) && entry.price > 0);
+          }
+        } catch (_) {
+          // ignore fallback failure
+        }
+      }
+      if ((!Array.isArray(history) || history.length === 0) && DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Symbol price history empty for computeTotalPnlSeriesForSymbol', {
+          symbol,
+          startKey,
+          endKey,
+          symbolId,
+        });
+      }
+      const historyForSeries = Array.isArray(effectiveHistory) ? effectiveHistory : [];
+      if (DEBUG_TOTAL_PNL && historyForSeries.length === 0) {
+        debugTotalPnl(accountKey, 'No effective price history available for symbol', {
+          symbol,
+          startKey,
+          endKey,
+          symbolId,
+          rawHistoryType: history === null ? 'null' : Array.isArray(history) ? 'array' : typeof history,
+          rawHistoryLength: Array.isArray(history) ? history.length : null,
+          fallbackHistoryLength: Array.isArray(effectiveHistory) ? effectiveHistory.length : null,
+        });
+      }
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Symbol price history details', {
+          symbol,
+          rawHistoryLength: Array.isArray(history) ? history.length : null,
+          effectiveHistoryLength: Array.isArray(effectiveHistory) ? effectiveHistory.length : null,
+          rawHistorySample: Array.isArray(history) ? history.slice(0, 2) : null,
+          effectiveHistorySample: Array.isArray(effectiveHistory) ? effectiveHistory.slice(0, 2) : null,
+        });
+      }
+      priceSeriesMap.set(symbol, buildDailyPriceSeries(historyForSeries, dateKeys));
     } catch (e) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(accountKey, 'Failed to build price series for symbol', {
+          symbol,
+          error: e && e.message ? e.message : String(e),
+        });
+      }
       priceSeriesMap.set(symbol, new Map());
+    }
+  }
+  if (DEBUG_TOTAL_PNL) {
+    debugTotalPnl(accountKey, 'Symbol price series map prepared', {
+      symbolsForPricing,
+      mapKeys: Array.from(priceSeriesMap.keys()),
+      displaySymbol: priceDisplaySymbol,
+      displaySeriesSize: priceSeriesMap.has(priceDisplaySymbol) ? priceSeriesMap.get(priceDisplaySymbol).size : 0,
+    });
+    const displaySeries = priceSeriesMap.has(priceDisplaySymbol) ? priceSeriesMap.get(priceDisplaySymbol) : null;
+    if (displaySeries && displaySeries.size === 0) {
+      debugTotalPnl(accountKey, 'Built empty price series for display symbol', {
+        symbol: priceDisplaySymbol,
+        historySample: symbolsForPricing.map((sym) => {
+          const series = priceSeriesMap.get(sym);
+          return { sym, size: series ? series.size : 0 };
+        }),
+      });
     }
   }
 
