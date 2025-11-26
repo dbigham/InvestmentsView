@@ -1,0 +1,18 @@
+[dotenv@17.2.2] injecting env (9) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.2.2] injecting env (9) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+[summary-cache] debug logging disabled. Set DEBUG_SUMMARY_CACHE=true in server/.env (or export it) before starting the server to enable diagnostics.
+[FX] Loaded 560 cached USD/CAD rate entries from disk.
+Server listening on port 4000
+[Questrade][refresh] Persisting new refresh token for login daniel.bigham@gmail.com (Op3G…dAf0 → vaSN…Qie0)
+[Questrade][refresh] Persisting new refresh token for login meredith.bigham@gmail.com (4DME…2Bf0 → jigI…vq70)
+Please consider completing the survey at https://bit.ly/yahoo-finance-api-feedback if you haven't already; for more info see https://github.com/gadicc/node-yahoo-finance2/issues/764#issuecomment-2056623851.  This will only be shown once, but you can suppress this message in future with `yahooFinance.suppressNotices(['yahooSurvey'])`.
+Fetching crumb and cookies from https://finance.yahoo.com/quote/AAPL...
+Success. Cookie expires on Thu Nov 26 2026 14:02:36 GMT-0500 (Eastern Standard Time)
+fetch https://query1.finance.yahoo.com/v1/test/getcrumb
+[Questrade][refresh] Persisting new refresh token for login daniel.bigham@gmail.com (vaSN…Qie0 → cRSM…lwG0)
+New crumb: 4OSPX3rUcBI
+[Questrade][refresh] Persisting new refresh token for login meredith.bigham@gmail.com (jigI…vq70 → XKlo…RPI0)
+[Questrade][refresh] Persisting new refresh token for login daniel.bigham@gmail.com (cRSM…lwG0 → aws2…Kzs0)
+[Questrade][refresh] Persisting new refresh token for login meredith.bigham@gmail.com (XKlo…RPI0 → tib3…nhx0)
+[Questrade][refresh] Persisting new refresh token for login daniel.bigham@gmail.com (aws2…Kzs0 → CCZ0…Jj50)
+[Questrade][refresh] Persisting new refresh token for login meredith.bigham@gmail.com (tib3…nhx0 → eUht…6eI0)

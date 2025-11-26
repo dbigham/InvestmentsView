@@ -13534,6 +13534,7 @@ const workers = [];
 
 const MAX_ORDER_HISTORY_CONCURRENCY = 3;
 const MAX_AGGREGATE_FUNDING_CONCURRENCY = 4;
+const MAX_PREVIOUS_CLOSE_CONCURRENCY = 6;
 
 function buildInvestmentModelPositions(positions, accountId) {
   if (!Array.isArray(positions) || !accountId) {
@@ -13567,6 +13568,71 @@ function buildInvestmentModelPositions(positions, accountId) {
   });
 
   return results;
+}
+
+function resolvePreviousCloseFromSymbolInfo(symbolInfo) {
+  if (!symbolInfo || typeof symbolInfo !== 'object') {
+    return null;
+  }
+  const candidates = [
+    symbolInfo.prevDayClosePrice,
+    symbolInfo.previousDayClosePrice,
+    symbolInfo.prevDayClose,
+    symbolInfo.previousClose,
+  ];
+  for (const candidate of candidates) {
+    const numeric = coerceQuoteNumber(candidate);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+async function fetchPreviousCloseMap(symbols) {
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    return new Map();
+  }
+  const seen = new Set();
+  const normalized = [];
+  symbols.forEach((symbol) => {
+    const key = normalizeSymbol(symbol);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    normalized.push(key);
+  });
+
+  const result = new Map();
+  if (normalized.length === 0) {
+    return result;
+  }
+
+  const limit = Math.min(MAX_PREVIOUS_CLOSE_CONCURRENCY, normalized.length);
+  await mapWithConcurrency(normalized, limit, async function (symbol) {
+    const cachedQuote = quoteCache.get(symbol);
+    if (cachedQuote && Number.isFinite(cachedQuote.previousClose)) {
+      result.set(symbol, cachedQuote.previousClose);
+      return;
+    }
+    try {
+      const quote = await fetchYahooQuote(symbol);
+      const previousClose = coerceQuoteNumber(
+        quote && quote.regularMarketPreviousClose !== undefined && quote.regularMarketPreviousClose !== null
+          ? quote.regularMarketPreviousClose
+          : quote && quote.previousClose
+      );
+      if (Number.isFinite(previousClose)) {
+        result.set(symbol, previousClose);
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn('Failed to fetch previous close for symbol ' + symbol + ':', message);
+    }
+  });
+
+  return result;
 }
 
 function findAccountCadBalance(accountId, perAccountBalances) {
@@ -13686,10 +13752,19 @@ function buildInvestmentModelRequest(account, positions, perAccountBalances, mod
   return payload;
 }
 
-function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap) {
+function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap, options = {}) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return [];
+  }
+
+  const previousCloseMap =
+    options && options.previousCloseMap instanceof Map ? options.previousCloseMap : null;
+
   return positions.map(function (position) {
-    const symbolInfo = symbolsMap[position.symbolId];
-    const accountInfo = accountsMap[position.accountId] || accountsMap[position.accountNumber] || null;
+    const symbolInfo = position && position.symbolId ? symbolsMap[position.symbolId] : null;
+    const accountInfo = position
+      ? accountsMap[position.accountId] || accountsMap[position.accountNumber] || null
+      : null;
     const symbolKey =
       typeof position.symbol === 'string' && position.symbol.trim()
         ? position.symbol.trim().toUpperCase()
@@ -13741,6 +13816,26 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap)
         }
       }
     }
+
+    const previousCloseCandidate =
+      previousCloseMap && symbolKey && previousCloseMap.has(symbolKey)
+        ? previousCloseMap.get(symbolKey)
+        : null;
+    const previousClose =
+      coerceQuoteNumber(previousCloseCandidate) ?? resolvePreviousCloseFromSymbolInfo(symbolInfo);
+    const quantity = toFiniteNumber(position && position.openQuantity);
+    const currentPrice = toFiniteNumber(position && position.currentPrice);
+    const rawDayPnl = toFiniteNumber(position && position.dayPnl);
+    let dayPnl = rawDayPnl;
+    if (
+      Number.isFinite(previousClose) &&
+      Number.isFinite(currentPrice) &&
+      Number.isFinite(quantity) &&
+      Math.abs(quantity) >= 1e-9
+    ) {
+      dayPnl = (currentPrice - previousClose) * quantity;
+    }
+
     const accountNotesEntry = {
       accountId: accountInfo ? accountInfo.id || position.accountId || null : position.accountId || null,
       accountNumber: accountInfo ? accountInfo.number || position.accountNumber || null : position.accountNumber || null,
@@ -13772,7 +13867,8 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap)
       currentPrice: position.currentPrice,
       currentMarketValue: position.currentMarketValue,
       averageEntryPrice: position.averageEntryPrice,
-      dayPnl: position.dayPnl,
+      dayPnl,
+      rawDayPnl: rawDayPnl !== null ? rawDayPnl : undefined,
       openPnl: position.openPnl,
       totalCost: position.totalCost,
       isRealTime: position.isRealTime,
@@ -13781,6 +13877,7 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap)
       accountDisplayName,
       accountNotes,
       dividendYieldPercent,
+      previousClose: Number.isFinite(previousClose) ? previousClose : null,
     };
   });
 }
@@ -15177,6 +15274,27 @@ app.get('/api/summary', async function (req, res) {
       orderWindowStartIso = orderWindowEndIso;
     }
 
+    const symbolsWithTodayOrders = new Set();
+    const todayKey = getTorontoDateKey(new Date());
+    if (todayKey) {
+      dedupedOrders.forEach(function (order) {
+        if (!order || !order.symbol) {
+          return;
+        }
+        const filledQuantity = Number(order.filledQuantity);
+        if (!Number.isFinite(filledQuantity) || Math.abs(filledQuantity) < 1e-9) {
+          return;
+        }
+        const creationKey = getTorontoDateKey(order.creationTime);
+        if (creationKey && creationKey === todayKey) {
+          const normalizedSymbol = normalizeSymbol(order.symbol);
+          if (normalizedSymbol) {
+            symbolsWithTodayOrders.add(normalizedSymbol);
+          }
+        }
+      });
+    }
+
     const accountNorbertJournals = {};
     await Promise.all(
       selectedContexts.map(async function (context) {
@@ -15232,6 +15350,11 @@ app.get('/api/summary', async function (req, res) {
       accountsMap[account.id] = account;
     });
 
+    const previousCloseMap =
+      symbolsWithTodayOrders.size > 0
+        ? await fetchPreviousCloseMap(Array.from(symbolsWithTodayOrders))
+        : new Map();
+
     const dividendSymbolEntriesMap = new Map();
     flattenedPositions.forEach(function (position) {
       if (!position) {
@@ -15258,10 +15381,11 @@ app.get('/api/summary', async function (req, res) {
       flattenedPositions,
       symbolsMap,
       accountsMap,
-      dividendYieldMap
+      dividendYieldMap,
+      { previousCloseMap }
     );
     const decoratedOrders = decorateOrders(dedupedOrders, symbolsMap, accountsMap);
-    const pnl = mergePnL(flattenedPositions);
+    const pnl = mergePnL(decoratedPositions);
     const balancesSummary = mergeBalances(balancesResults);
     finalizeBalances(balancesSummary);
 

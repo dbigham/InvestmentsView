@@ -1,0 +1,24 @@
+[Questrade][api] Received 401, refreshing token before retry { login: 'daniel.bigham@gmail.com', path: '/v1/accounts', attempt: 1 }
+We expected a redirect to guce.yahoo.com, but got https://finance.yahoo.com/quote/AAPL/
+We'll try to continue anyway - you can safely ignore this if the request succeeds
+[Questrade][api] Received 401, refreshing token before retry {
+  login: 'meredith.bigham@gmail.com',
+  path: '/v1/accounts',
+  attempt: 1
+}
+[Questrade][api] Received 401, refreshing token before retry {
+  login: 'daniel.bigham@gmail.com',
+  path: '/v1/accounts/53502792/orders',
+  attempt: 1
+}
+[Questrade][api] Received 401, refreshing token before retry {
+  login: 'daniel.bigham@gmail.com',
+  path: '/v1/accounts/53579534/orders',
+  attempt: 1
+}
+Failed to refresh Questrade token for login daniel.bigham@gmail.com 400 Bad Request
+Failed to fetch orders for account daniel:53579534: Unable to refresh Questrade token: 400
+Failed to refresh Questrade token for login daniel.bigham@gmail.com 400 Bad Request
+Failed to prepare activity history for order lookup for account daniel:53546660: Unable to refresh Questrade token: 400
+Failed to refresh Questrade token for login daniel.bigham@gmail.com 400 Bad Request
+Failed to refresh Questrade token for login daniel.bigham@gmail.com 400 Bad Request
