@@ -251,6 +251,8 @@ const HEATMAP_SYMBOL_LABELS = {
   ENB: "Enbridge"
 };
 
+const USD_TRUST_SYMBOL_IDS = new Set([1729]);
+
 function resolveDisplaySymbol(symbol) {
   if (!symbol) {
     return symbol;
@@ -802,7 +804,9 @@ export default function PnlHeatmapDialog({
           const normalizedSymbol = symbol.trim().toUpperCase();
           const withoutTo = normalizedSymbol.endsWith('.TO') ? normalizedSymbol.slice(0, -3) : normalizedSymbol;
           const baseSymbol = withoutTo.endsWith('.U') ? withoutTo.slice(0, -2) : withoutTo;
-          const isUsdCad = normalizedSymbol === 'USD/CAD';
+          const entrySymbolId = Number.isFinite(entry.symbolId) ? entry.symbolId : null;
+          const isUsdTrustSymbol = entrySymbolId !== null && USD_TRUST_SYMBOL_IDS.has(entrySymbolId);
+          const isUsdCad = normalizedSymbol === 'USD/CAD' || isUsdTrustSymbol;
           if (isUsdCad) {
             if (!usdCadEntry) {
               usdCadEntry = entry;
