@@ -806,8 +806,7 @@ export default function SummaryMetrics({
     annualizedReturnRate > 0 ? 'positive' : annualizedReturnRate < 0 ? 'negative' : 'neutral';
   const canShowReturnBreakdown =
     typeof onShowAnnualizedReturn === 'function' &&
-    Array.isArray(fundingSummary?.returnBreakdown) &&
-    fundingSummary.returnBreakdown.length > 0;
+    Array.isArray(fundingSummary?.returnBreakdown);
 
   const safeTotalEquity = Number.isFinite(totalEquity)
     ? totalEquity

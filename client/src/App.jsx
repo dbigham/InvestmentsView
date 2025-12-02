@@ -13225,7 +13225,7 @@ export default function App() {
     if (!showReturnBreakdown) {
       return;
     }
-    if (!fundingSummaryForDisplay?.returnBreakdown?.length) {
+    if (!Array.isArray(fundingSummaryForDisplay?.returnBreakdown)) {
       setShowReturnBreakdown(false);
     }
   }, [showReturnBreakdown, fundingSummaryForDisplay]);
@@ -13330,7 +13330,7 @@ export default function App() {
   };
 
   const handleShowAnnualizedReturnDetails = useCallback(() => {
-    if (!fundingSummaryForDisplay?.returnBreakdown?.length) {
+    if (!Array.isArray(fundingSummaryForDisplay?.returnBreakdown)) {
       return;
     }
     setShowReturnBreakdown(true);
@@ -14899,7 +14899,7 @@ export default function App() {
           </ul>
         </div>
       ) : null}
-      {showReturnBreakdown && fundingSummaryForDisplay?.returnBreakdown?.length > 0 && (
+      {showReturnBreakdown && Array.isArray(fundingSummaryForDisplay?.returnBreakdown) && (
         <AnnualizedReturnDialog
           onClose={handleCloseAnnualizedReturnDetails}
           annualizedRate={fundingSummaryForDisplay.annualizedReturnRate}
