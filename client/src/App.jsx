@@ -2992,6 +2992,37 @@ function resolveCashForCurrency(balances, currency) {
   return 0;
 }
 
+function resolveCashForTodo(balances, currency) {
+  if (!balances || !currency) {
+    return null;
+  }
+
+  // Prefer per-currency cash and only fall back to combined balances when they
+  // materially reduce the magnitude (i.e., netting cross-currency offsets) so we
+  // avoid flagging TODOs for cash that only exists in another currency.
+  const perCurrencyOnly = balances.perCurrency ? { perCurrency: balances.perCurrency } : null;
+  const combinedOnly = balances.combined ? { combined: balances.combined } : null;
+
+  const perCurrencyEntry = perCurrencyOnly && findBalanceEntryForCurrency(perCurrencyOnly, currency);
+  const perCurrencyCash = perCurrencyEntry ? resolveCashForCurrency(perCurrencyOnly, currency) : null;
+
+  const combinedEntry = combinedOnly && findBalanceEntryForCurrency(combinedOnly, currency);
+  const combinedCash = combinedEntry ? resolveCashForCurrency(combinedOnly, currency) : null;
+
+  if (!Number.isFinite(perCurrencyCash)) {
+    return Number.isFinite(combinedCash) ? combinedCash : null;
+  }
+
+  if (
+    Number.isFinite(combinedCash) &&
+    Math.abs(combinedCash) + TODO_AMOUNT_EPSILON < Math.abs(perCurrencyCash)
+  ) {
+    return combinedCash;
+  }
+
+  return perCurrencyCash;
+}
+
 function normalizeAccountBalanceSummary(balances) {
   if (!balances || typeof balances !== 'object') {
     return null;
@@ -3577,14 +3608,7 @@ function buildTodoItems({
         : null;
     if (balanceSummary) {
       ['CAD', 'USD'].forEach((currency) => {
-        // Prefer the combined bucket (net of cross-currency offsets) when available so we
-        // don't flag TODOs for cash that is effectively offset by a deficit in the other
-        // currency. Fall back to per-currency when combined data is missing.
-        const combinedOnly = balanceSummary && balanceSummary.combined ? { combined: balanceSummary.combined } : null;
-        const hasCombinedEntry = combinedOnly && findBalanceEntryForCurrency(combinedOnly, currency);
-        const cashValue = hasCombinedEntry
-          ? resolveCashForCurrency(combinedOnly, currency)
-          : resolveCashForCurrency(balanceSummary, currency);
+        const cashValue = resolveCashForTodo(balanceSummary, currency);
         if (
           Number.isFinite(cashValue) &&
           cashValue > 0 &&
