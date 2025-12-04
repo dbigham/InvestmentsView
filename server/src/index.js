@@ -177,17 +177,12 @@ const MODEL_PRICING_PER_MTOK = {
   'gpt-5-pro': { input: 15.0, output: 120.0 },
 };
 
-const SUMMARY_CACHE_TTL_MS = (() => {
-  const value = Number(process.env.SUMMARY_CACHE_TTL_MS);
-  if (Number.isFinite(value) && value > 0) {
-    return value;
-  }
-  const minutes = Number(process.env.SUMMARY_CACHE_TTL_MINUTES);
-  if (Number.isFinite(minutes) && minutes > 0) {
-    return Math.round(minutes * 60 * 1000);
-  }
-  return 2 * 60 * 1000; // default 2 minutes
-})();
+// Keep summary caches effectively "pinned" until the user triggers a manual refresh.
+// This prevents accidental expiration during long-running sessions.
+// Keep caches effectively pinned until manual refresh; used by summary/superset caches.
+const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
+
+const SUMMARY_CACHE_TTL_MS = PINNED_EXPIRY_MS;
 
 const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
   const value = Number(process.env.TOTAL_PNL_SERIES_CACHE_TTL_MS);
@@ -221,7 +216,6 @@ if (DEBUG_YAHOO_PEG) {
   console.log('[peg-debug] Yahoo PEG ratio debugging enabled');
 }
 // Max valid JS Date timestamp in ms is ±8.64e15; use slightly below as a pinned expiry
-const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
 const PREHEAT_GROUP_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_GROUP_TOTAL_PNL, false);
 const PREHEAT_ACCOUNT_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_ACCOUNT_TOTAL_PNL, false);
 const PREHEAT_MAX_CONCURRENCY = (() => {
@@ -833,15 +827,7 @@ function normalizeSummaryRequestKey(rawAccountId) {
 }
 
 function pruneSummaryCache() {
-  const now = nowMs();
-  for (const [key, entry] of summaryCacheStore.entries()) {
-    if (!entry || entry.expiresAt <= now) {
-      summaryCacheStore.delete(key);
-    }
-  }
-  if (supersetSummaryCache && supersetSummaryCache.expiresAt <= now) {
-    supersetSummaryCache = null;
-  }
+  // TTL-based pruning disabled; caches persist until manual refresh.
 }
 
 function getSummaryCacheEntry(cacheKey) {
@@ -858,7 +844,7 @@ function setSummaryCacheEntry(cacheKey, payload, metadata = {}) {
     return;
   }
   const timestamp = nowMs();
-  const pinned = metadata && metadata.cacheScope && metadata.cacheScope.pinned === true;
+  const pinned = true;
   const entry = {
     payload,
     metadata,
@@ -922,7 +908,6 @@ function setRangeBreakdownCacheEntry(key, payload) {
 }
 
 function getSupersetCacheEntry() {
-  pruneSummaryCache();
   return supersetSummaryCache;
 }
 
@@ -13434,7 +13419,11 @@ async function fetchSymbolsDetails(login, symbolIds) {
     const id = Number(idRaw);
     if (!Number.isFinite(id)) continue;
     const cacheKey = getSymbolDetailsCacheKey(login.id, id);
-    if (cacheKey && symbolDetailsCache.has(cacheKey)) {
+    if (!cacheKey) {
+      toFetch.push(id);
+      continue;
+    }
+    if (symbolDetailsCache.has(cacheKey)) {
       results[id] = symbolDetailsCache.get(cacheKey);
     } else {
       toFetch.push(id);
@@ -14899,6 +14888,7 @@ app.get('/api/summary', async function (req, res) {
     try {
       summaryCacheStore.clear();
       totalPnlSeriesCacheStore.clear();
+      symbolDetailsCache.clear();
       supersetSummaryCache = null;
       debugSummaryCache('manual refreshKey changed; caches cleared', activeRefreshKey);
     } catch (_) {
@@ -16902,7 +16892,7 @@ app.get('/api/summary', async function (req, res) {
       cacheKey: normalizedSelection.cacheKey,
       payload: responsePayload,
       timestamp: supersetTimestamp,
-      expiresAt: manualRefreshKey ? PINNED_EXPIRY_MS : supersetTimestamp + SUMMARY_CACHE_TTL_MS,
+      expiresAt: PINNED_EXPIRY_MS,
       accounts: responseAccounts,
       accountGroups: responseAccountGroups,
       accountsById,
