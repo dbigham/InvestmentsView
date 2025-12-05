@@ -296,6 +296,11 @@ function aggregatePositionsByMergedSymbol(positions) {
 
   entries.forEach((position, index) => {
     const { key, display, raw } = normalizeMergedSymbol(position, `__merged_${index}`);
+    const rawSymbolsFromPosition = Array.isArray(position.rawSymbols)
+      ? position.rawSymbols
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .filter(Boolean)
+      : [];
     const resolvedCost = resolveTotalCost(position);
     const normalizedMarketValue = isFiniteNumber(position.normalizedMarketValue)
       ? position.normalizedMarketValue
@@ -388,6 +393,7 @@ function aggregatePositionsByMergedSymbol(positions) {
         }
       }
       entry.rawSymbols.add(raw);
+      rawSymbolsFromPosition.forEach((rawSymbol) => entry.rawSymbols.add(rawSymbol));
     } else {
       groups.set(key, {
         id: `${key}-merged`,
@@ -410,7 +416,7 @@ function aggregatePositionsByMergedSymbol(positions) {
         openQuantity,
         accountNumber,
         accountId,
-        rawSymbols: new Set([raw]),
+        rawSymbols: new Set([raw, ...rawSymbolsFromPosition]),
       });
     }
   });
@@ -429,6 +435,7 @@ function aggregatePositionsByMergedSymbol(positions) {
     return {
       ...rest,
       averageEntryPrice: resolvedAverage,
+      rawSymbols: Array.from(rawSymbols),
       rowId: Array.from(rawSymbols).join(','),
     };
   });
@@ -470,6 +477,7 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
         currentPrice: isFiniteNumber(position.currentPrice) ? position.currentPrice : null,
         metricValue,
         percentChange,
+        rawSymbols: Array.isArray(position.rawSymbols) ? position.rawSymbols : undefined,
         positionDetail: position,
       };
     })
@@ -1080,6 +1088,20 @@ export default function PnlHeatmapDialog({
         }
         const key = String(entry.symbol).toUpperCase();
         const base = bySymbol.get(key) || {};
+        const rawSymbolSet = new Set();
+        const addRaw = (value) => {
+          const normalized = (value || '').toString().trim();
+          if (normalized) {
+            rawSymbolSet.add(normalized.toUpperCase());
+          }
+        };
+        addRaw(entry.symbol);
+        if (Array.isArray(entry.rawSymbols)) {
+          entry.rawSymbols.forEach(addRaw);
+        }
+        if (Array.isArray(entry.components)) {
+          entry.components.forEach((component) => addRaw(component?.symbol));
+        }
         return {
           symbol: entry.symbol,
           symbolId: entry.symbolId ?? base.symbolId ?? null,
@@ -1095,6 +1117,7 @@ export default function PnlHeatmapDialog({
           totalCost: Number.isFinite(entry.investedCad) ? entry.investedCad : null,
           openQuantity: Number.isFinite(entry.openQuantity) ? entry.openQuantity : null,
           breakdown: entry.breakdown || null,
+          rawSymbols: rawSymbolSet.size ? Array.from(rawSymbolSet) : undefined,
           components: Array.isArray(entry.components)
             ? entry.components.map((component) => (component ? { ...component } : null)).filter(Boolean)
             : null,
@@ -1183,16 +1206,50 @@ export default function PnlHeatmapDialog({
       return;
     }
     const base = targetNode.positionDetail || targetNode;
-    const rawSymbol = (base.symbol || '').toString().trim();
-    if (!rawSymbol) {
+    const addSymbol = (value, bucket) => {
+      const normalized = (value || '').toString().trim().toUpperCase();
+      if (normalized) {
+        bucket.add(normalized);
+      }
+    };
+    const symbolSet = new Set();
+    if (Array.isArray(base.rawSymbols)) {
+      base.rawSymbols.forEach((sym) => addSymbol(sym, symbolSet));
+    }
+    if (symbolSet.size === 0) {
+      addSymbol((base.symbol || '').toString().trim(), symbolSet);
+    }
+    if (!symbolSet.size) {
       return;
     }
+    const symbolList = (() => {
+      const list = Array.from(symbolSet);
+      if (list.length <= 1) {
+        return list;
+      }
+      const preferred =
+        list.find((sym) => sym.includes('.')) ||
+        list.find((sym) => sym.includes('/')) ||
+        list[0];
+      if (!preferred || preferred === list[0]) {
+        return list;
+      }
+      return [preferred, ...list.filter((sym) => sym !== preferred)];
+    })();
+    const primarySymbol = symbolList[0];
     const description =
       (typeof base.description === 'string' && base.description.trim()) ||
       (typeof targetNode.description === 'string' && targetNode.description.trim()) ||
       null;
-    onFocusSymbol(rawSymbol, { description });
-  }, [closeContextMenu, contextMenuState.node, onFocusSymbol]);
+    const label =
+      symbolList.length > 1
+        ? symbolList.join(' + ')
+        : targetNode.displaySymbol || targetNode.symbol || primarySymbol;
+    onFocusSymbol(primarySymbol, { description, symbols: symbolList, label });
+    if (typeof onClose === 'function') {
+      onClose();
+    }
+  }, [closeContextMenu, contextMenuState.node, onClose, onFocusSymbol]);
 
   const handleOpenBuySell = useCallback(() => {
     const position = getContextMenuPosition();
@@ -1201,7 +1258,10 @@ export default function PnlHeatmapDialog({
       return;
     }
     onBuySell(position);
-  }, [closeContextMenu, getContextMenuPosition, onBuySell]);
+    if (typeof onClose === 'function') {
+      onClose();
+    }
+  }, [closeContextMenu, getContextMenuPosition, onBuySell, onClose]);
 
   const handleOpenOrders = useCallback(() => {
     const position = getContextMenuPosition();
@@ -1210,7 +1270,10 @@ export default function PnlHeatmapDialog({
       return;
     }
     onShowOrders(position);
-  }, [closeContextMenu, getContextMenuPosition, onShowOrders]);
+    if (typeof onClose === 'function') {
+      onClose();
+    }
+  }, [closeContextMenu, getContextMenuPosition, onClose, onShowOrders]);
 
   const handleOpenNotes = useCallback(() => {
     const position = getContextMenuPosition();
@@ -1219,7 +1282,10 @@ export default function PnlHeatmapDialog({
       return;
     }
     onShowNotes(position);
-  }, [closeContextMenu, getContextMenuPosition, onShowNotes]);
+    if (typeof onClose === 'function') {
+      onClose();
+    }
+  }, [closeContextMenu, getContextMenuPosition, onClose, onShowNotes]);
 
   const handleGoToAccount = useCallback(() => {
     const position = getContextMenuPosition();
@@ -1229,7 +1295,10 @@ export default function PnlHeatmapDialog({
     }
     const account = resolveAccountForPosition(position, accountsById);
     onGoToAccount(position, account);
-  }, [accountsById, closeContextMenu, getContextMenuPosition, onGoToAccount]);
+    if (typeof onClose === 'function') {
+      onClose();
+    }
+  }, [accountsById, closeContextMenu, getContextMenuPosition, onClose, onGoToAccount]);
 
   const handleExplainMovement = useCallback(async () => {
     const targetNode = contextMenuState.node;

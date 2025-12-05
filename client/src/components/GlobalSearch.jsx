@@ -369,6 +369,62 @@ export default function GlobalSearch({
     matchSymbolLeadingIntent('orders', ['orders', 'order']);
     matchSymbolLeadingIntent('dividends', ['dividends', 'dividend']);
 
+    const buildMultiSymbolResult = () => {
+      const separatorPattern = /(?:\s*\+\s*|\s*,\s*|\s+and\s+|\s*&\s*)/i;
+      if (!separatorPattern.test(rawQuery)) {
+        return null;
+      }
+      const tokens = rawQuery
+        .split(separatorPattern)
+        .map((part) => normalize(part).toUpperCase())
+        .filter(Boolean);
+      const uniqueTokens = Array.from(new Set(tokens));
+      if (uniqueTokens.length < 2) {
+        return null;
+      }
+      const resolved = [];
+      uniqueTokens.forEach((token) => {
+        if (symbolIndex.has(token)) {
+          resolved.push(symbolIndex.get(token));
+          return;
+        }
+        const suggestion = findSymbolSuggestions(token)[0];
+        if (suggestion) {
+          resolved.push(suggestion);
+        }
+      });
+      const deduped = [];
+      const seenSymbols = new Set();
+      resolved.forEach((item) => {
+        const key = normalize(item?.key).toUpperCase();
+        if (!key || seenSymbols.has(key)) return;
+        seenSymbols.add(key);
+        deduped.push(item);
+      });
+      if (deduped.length < 2) {
+        return null;
+      }
+      const symbols = deduped.map((item) => item.key);
+      const labelCore = symbols.join(' + ');
+      const sublabelParts = deduped
+        .map((item) => item.sublabel || null)
+        .filter(Boolean);
+      const sublabel =
+        sublabelParts.length > 0
+          ? `Includes: ${sublabelParts.slice(0, 2).join(' | ')}${
+              sublabelParts.length > 2 ? '...' : ''
+            }`
+          : 'View combined symbols';
+      return {
+        kind: 'symbol-list',
+        key: symbols.join('|'),
+        label: `Symbols: ${labelCore}`,
+        displayLabel: labelCore,
+        sublabel,
+        symbols,
+      };
+    };
+
     const rank = (item) => {
       if (!item) return -1;
       const base = scoreMatch(item.label, q);
@@ -389,13 +445,18 @@ export default function GlobalSearch({
         boost += 25;
       } else if (item.kind === 'symbol-action') {
         boost += 35;
+      } else if (item.kind === 'symbol-list') {
+        boost += 30;
       } else if (item.kind === 'template') {
         // Template suggestions also prominent while composing
         boost += 20;
       }
       return base + boost;
     };
-    const poolBase = [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
+    const multiSymbolResult = buildMultiSymbolResult();
+    const poolBase = multiSymbolResult
+      ? [multiSymbolResult, ...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized]
+      : [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
     const pool = retireAction
       ? [retireAction, ...templateActions, ...symbolActions, ...poolBase]
       : [...templateActions, ...symbolActions, ...poolBase];
@@ -420,6 +481,9 @@ export default function GlobalSearch({
       }
       if (item.kind === 'symbol') {
         return `symbol:${baseKey.toUpperCase()}`;
+      }
+      if (item.kind === 'symbol-list') {
+        return `symbol-list:${baseKey}`;
       }
       if (item.kind === 'account' || item.kind === 'group') {
         return `${item.kind}:${baseKey}`;
@@ -511,6 +575,14 @@ export default function GlobalSearch({
       ) {
         onNavigate(item.intent);
       }
+    } else if (item.kind === 'symbol-list' && typeof onSelectSymbol === 'function') {
+      const symbols = Array.isArray(item.symbols) ? item.symbols : [];
+      const primary = symbols[0] || item.key;
+      onSelectSymbol(primary, {
+        description: item.sublabel || null,
+        symbols,
+        label: item.displayLabel || item.label || null,
+      });
     } else if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
       onSelectSymbol(item.key, { description: item.sublabel || null });
     } else if (item.kind === 'account' && typeof onSelectAccount === 'function') {
