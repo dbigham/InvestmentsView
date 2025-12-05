@@ -13952,16 +13952,17 @@ export default function App() {
         ? annualized.startDate.trim()
         : null;
     const annualizedIncomplete = annualized?.incomplete === true;
-    const totalPnlCad = Number.isFinite(entry.totalPnlCad)
-      ? entry.totalPnlCad
-      : Number.isFinite(focusedSymbolPnl?.totalPnl)
-        ? focusedSymbolPnl.totalPnl
+    const positionsTotalPnl = Number(focusedSymbolPnl?.totalPnl);
+    const totalPnlCad = Number.isFinite(positionsTotalPnl)
+      ? positionsTotalPnl
+      : Number.isFinite(entry.totalPnlCad)
+        ? entry.totalPnlCad
         : null;
     const equityFromPositions = Number(symbolFilteredPositions.total);
-    const totalEquityCad = Number.isFinite(entry.marketValueCad)
-      ? entry.marketValueCad
-      : Number.isFinite(equityFromPositions)
-        ? equityFromPositions
+    const totalEquityCad = Number.isFinite(equityFromPositions)
+      ? equityFromPositions
+      : Number.isFinite(entry.marketValueCad)
+        ? entry.marketValueCad
         : null;
     const netDepositsCad = Number.isFinite(entry.investedCad) ? entry.investedCad : null;
     return {
