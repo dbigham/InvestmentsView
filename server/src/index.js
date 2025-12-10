@@ -12733,6 +12733,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   });
 
   processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+  const splitEventsBySymbol = collectSplitEventsFromActivities(processedActivities);
 
   // Detect bases that participate in journaling so we can safely
   // consolidate share-class variants (e.g., DLR and DLR.U, ENB and ENB.TO)
