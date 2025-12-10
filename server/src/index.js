@@ -3516,6 +3516,9 @@ const priceHistoryCache = new Map();
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
 const PRICE_SERIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'prices');
 const PRICE_SERIES_DEFAULT_START = '1990-01-01';
+// Limit how far we carry forward the last known price when filling a daily series.
+// Allows weekends/holidays, but prevents using a stale close across many missing days.
+const PRICE_CARRY_FORWARD_MAX_DAYS = 3;
 // Cache of Questrade symbol details keyed by `${loginId}|${symbolId}` to avoid
 // repeated /v1/symbols lookups when data was already fetched during summary.
 const symbolDetailsCache = new Map();
@@ -6445,6 +6448,158 @@ function isSplitLikeActivity(activity) {
   return SPLIT_ACTIVITY_REGEX.test(combined);
 }
 
+function parseSplitRatioFromText(text) {
+  if (!text || typeof text !== 'string') {
+    return null;
+  }
+  const match = /(\d+(?:\.\d+)?)\s*(?:[:\/]|for|to)\s*(\d+(?:\.\d+)?)/i.exec(text);
+  if (match) {
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    if (Number.isFinite(first) && Number.isFinite(second) && second > 0) {
+      return first / second;
+    }
+  }
+  return null;
+}
+
+function inferSplitRatioFromActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const combined = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
+  return parseSplitRatioFromText(combined);
+}
+
+function collectSplitEventsFromActivities(processedActivities) {
+  const bySymbol = new Map();
+  if (!Array.isArray(processedActivities) || !processedActivities.length) {
+    return bySymbol;
+  }
+  const buckets = new Map(); // `${symbol}|${dateKey}` -> { symbol, dateKey, pos, neg, ratio }
+  processedActivities.forEach((entry) => {
+    if (!entry || !entry.activity) {
+      return;
+    }
+    const { activity, symbol, dateKey } = entry;
+    if (!symbol || !dateKey || !isSplitLikeActivity(activity)) {
+      return;
+    }
+    const key = `${symbol}|${dateKey}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, { symbol, dateKey, pos: 0, neg: 0, ratio: null });
+    }
+    const bucket = buckets.get(key);
+    const ratioFromText = inferSplitRatioFromActivity(activity);
+    if (Number.isFinite(ratioFromText) && ratioFromText > 0) {
+      bucket.ratio = ratioFromText;
+    }
+    const qty = Number(activity.quantity);
+    if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
+      if (qty > 0) {
+        bucket.pos += qty;
+      } else {
+        bucket.neg += Math.abs(qty);
+      }
+    }
+  });
+  for (const bucket of buckets.values()) {
+    let ratio = Number(bucket.ratio);
+    if (!(Number.isFinite(ratio) && ratio > 0) && bucket.pos > 0 && bucket.neg > 0) {
+      const implied = bucket.pos / bucket.neg;
+      if (Number.isFinite(implied) && implied > 0) {
+        ratio = implied;
+      }
+    }
+    if (!(Number.isFinite(ratio) && ratio > 0)) {
+      continue;
+    }
+    if (!bySymbol.has(bucket.symbol)) {
+      bySymbol.set(bucket.symbol, []);
+    }
+    bySymbol.get(bucket.symbol).push({
+      dateKey: bucket.dateKey,
+      ratio,
+    });
+  }
+  for (const arr of bySymbol.values()) {
+    arr.sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+  }
+  return bySymbol;
+}
+
+function applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol) {
+  if (!(priceSeriesMap instanceof Map) || !(splitEventsBySymbol instanceof Map)) {
+    return;
+  }
+  for (const [symbol, events] of splitEventsBySymbol.entries()) {
+    const series = priceSeriesMap.get(symbol);
+    if (!(series instanceof Map) || !Array.isArray(events) || events.length === 0) {
+      continue;
+    }
+    const sortedEvents = events
+      .filter((evt) => evt && typeof evt.dateKey === 'string' && Number.isFinite(evt.ratio) && evt.ratio > 0)
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    if (!sortedEvents.length) {
+      continue;
+    }
+    const keys = Array.from(series.keys()).filter(Boolean).sort();
+    if (!keys.length) {
+      continue;
+    }
+    for (const event of sortedEvents) {
+      const { dateKey, ratio } = event;
+      if (!dateKey || !(Number.isFinite(ratio) && ratio > 0)) {
+        continue;
+      }
+      let priceBefore = null;
+      let priceAfter = null;
+      for (let i = keys.length - 1; i >= 0; i -= 1) {
+        const k = keys[i];
+        if (k < dateKey && series.has(k)) {
+          const p = series.get(k);
+          if (Number.isFinite(p) && p > 0) {
+            priceBefore = p;
+            break;
+          }
+        }
+      }
+      for (let i = 0; i < keys.length; i += 1) {
+        const k = keys[i];
+        if (k >= dateKey && series.has(k)) {
+          const p = series.get(k);
+          if (Number.isFinite(p) && p > 0) {
+            priceAfter = p;
+            break;
+          }
+        }
+      }
+      let shouldAdjust = true;
+      if (Number.isFinite(priceBefore) && Number.isFinite(priceAfter)) {
+        const observedRatio = priceAfter / priceBefore;
+        const expectedRatio = 1 / ratio;
+        if (Number.isFinite(observedRatio) && Number.isFinite(expectedRatio) && expectedRatio > 0) {
+          const logDiff = Math.abs(Math.log(observedRatio) - Math.log(expectedRatio));
+          if (logDiff <= 0.4) {
+            shouldAdjust = false; // price history already reflects the split reasonably
+          }
+        }
+      }
+      if (!shouldAdjust) {
+        continue;
+      }
+      for (const key of keys) {
+        if (key < dateKey) {
+          const price = series.get(key);
+          if (Number.isFinite(price) && price > 0) {
+            series.set(key, price * ratio);
+          }
+        }
+      }
+    }
+  }
+}
+
 function resolveActivityOrderAction(activity, rawQuantity) {
   if (activity && typeof activity.action === 'string') {
     const trimmed = activity.action.trim();
@@ -8108,7 +8263,16 @@ async function ensureUsdToCadRates(dateKeys) {
   if (!usdCadRateCache.has(firstKey) || !usdCadRateCache.has(lastKey)) {
     await fetchUsdToCadRateRange(firstKey, lastKey);
   }
+  const daysBetweenKeys = (a, b) => {
+    const da = parseDateOnlyString(a);
+    const db = parseDateOnlyString(b);
+    if (!(da instanceof Date) || !(db instanceof Date)) {
+      return null;
+    }
+    return Math.abs(da.getTime() - db.getTime()) / DAY_IN_MS;
+  };
   let lastKnown = null;
+  let lastKnownKey = null;
   uniqueKeys.forEach((key) => {
     if (!key) {
       return;
@@ -8116,10 +8280,16 @@ async function ensureUsdToCadRates(dateKeys) {
     const cached = usdCadRateCache.get(key);
     if (Number.isFinite(cached) && cached > 0) {
       lastKnown = cached;
+      lastKnownKey = key;
       return;
     }
-    if (lastKnown !== null) {
-      updateUsdCadRateCache(key, lastKnown);
+    if (lastKnown !== null && lastKnownKey) {
+      const gapDays = daysBetweenKeys(key, lastKnownKey);
+      // Only bridge small gaps (e.g., weekends). Avoid propagating a single stale
+      // rate across long spans when the provider data is unavailable.
+      if (Number.isFinite(gapDays) && gapDays <= 4) {
+        updateUsdCadRateCache(key, lastKnown);
+      }
     }
   });
 }
@@ -10661,6 +10831,7 @@ function buildDailyPriceSeries(normalizedHistory, dateKeys) {
   }
   let cursorIndex = 0;
   let lastPrice = null;
+  let lastKnownDateKey = null;
   for (const dateKey of dateKeys) {
     const targetDate = parseDateOnlyString(dateKey);
     const targetTime =
@@ -10679,35 +10850,24 @@ function buildDailyPriceSeries(normalizedHistory, dateKeys) {
       lastPrice = normalizedHistory[cursorIndex].price;
       cursorIndex += 1;
     }
-    if (Number.isFinite(lastPrice)) {
-      series.set(dateKey, lastPrice);
-    }
-  }
-  if (series.size > 0) {
-    let carry = null;
-    for (const dateKey of dateKeys) {
-      if (!dateKey) {
-        continue;
-      }
-      if (series.has(dateKey)) {
-        const value = series.get(dateKey);
-        if (Number.isFinite(value)) {
-          carry = value;
-        }
-      } else if (Number.isFinite(carry)) {
-        series.set(dateKey, carry);
+    if (
+      cursorIndex > 0 &&
+      normalizedHistory[cursorIndex - 1] &&
+      normalizedHistory[cursorIndex - 1].date instanceof Date &&
+      !Number.isNaN(normalizedHistory[cursorIndex - 1].date.getTime())
+    ) {
+      const consumedKey = formatDateOnly(normalizedHistory[cursorIndex - 1].date);
+      if (consumedKey) {
+        lastKnownDateKey = consumedKey;
       }
     }
-    const firstKnownKey = dateKeys.find((key) => Number.isFinite(series.get(key)));
-    if (firstKnownKey) {
-      const firstValue = series.get(firstKnownKey);
-      for (const dateKey of dateKeys) {
-        if (dateKey === firstKnownKey) {
-          break;
-        }
-        if (!series.has(dateKey) && Number.isFinite(firstValue)) {
-          series.set(dateKey, firstValue);
-        }
+    if (Number.isFinite(lastPrice) && lastKnownDateKey) {
+      const gapDays =
+        targetDate instanceof Date && lastKnownDateKey
+          ? Math.abs(targetDate.getTime() - parseDateOnlyString(lastKnownDateKey).getTime()) / DAY_IN_MS
+          : 0;
+      if (!Number.isFinite(gapDays) || gapDays <= PRICE_CARRY_FORWARD_MAX_DAYS) {
+        series.set(dateKey, lastPrice);
       }
     }
   }
@@ -11098,6 +11258,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   });
 
   processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+  const splitEventsBySymbol = collectSplitEventsFromActivities(processedActivities);
 
   // Fetch symbol details early and augment activities missing symbols using symbolId
   let symbolDetails = {};
@@ -11330,11 +11491,12 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const symbols = Array.from(symbolMeta.keys());
   const priceSeriesMap = new Map();
   const missingPriceSymbols = new Set();
+  const debugPriceSeries = [];
+  const priceSeriesStartKey = dateKeys[0];
+  const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
   if (symbols.length) {
-    const startKey = dateKeys[0];
-    const endKey = dateKeys[dateKeys.length - 1];
     await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
-      const cacheKey = getPriceHistoryCacheKey(symbol, startKey, endKey);
+      const cacheKey = getPriceHistoryCacheKey(symbol, priceSeriesStartKey, priceSeriesEndKey);
       let history = null;
       if (cacheKey) {
         const cached = getCachedPriceHistory(cacheKey);
@@ -11350,7 +11512,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           const rawSymbolId =
             typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
           const normalizedSymbolId = Number.isFinite(rawSymbolId) && rawSymbolId > 0 ? rawSymbolId : null;
-          history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+          history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
             login,
             symbolId: normalizedSymbolId,
             accountKey,
@@ -11362,7 +11524,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         }
         if (!Array.isArray(history) || history.length === 0) {
           try {
-            const loaded = await loadSymbolPriceSeries(symbol, startKey, endKey);
+            const loaded = await loadSymbolPriceSeries(symbol, priceSeriesStartKey, priceSeriesEndKey);
             if (loaded && Array.isArray(loaded.points) && loaded.points.length) {
               history = loaded.points
                 .map((point) => ({
@@ -11390,10 +11552,49 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         priceSeriesMap.set(symbol, new Map());
         missingPriceSymbols.add(symbol);
       }
+      if (options && options.debugPriceSeries) {
+        const series = priceSeriesMap.get(symbol) || new Map();
+        const keys = Array.from(series.keys()).sort();
+        const lastKey = keys.length ? keys[keys.length - 1] : null;
+        const firstKey = keys.length ? keys[0] : null;
+        const lastPrice = lastKey ? series.get(lastKey) : null;
+        const startPrice = series.has(priceSeriesStartKey) ? series.get(priceSeriesStartKey) : null;
+        const endPrice = series.has(priceSeriesEndKey) ? series.get(priceSeriesEndKey) : null;
+        debugPriceSeries.push({
+          symbol,
+          firstDate: firstKey || null,
+          lastDate: lastKey || null,
+          lastPrice: Number.isFinite(lastPrice) ? lastPrice : null,
+          startPrice: Number.isFinite(startPrice) ? startPrice : null,
+          endPrice: Number.isFinite(endPrice) ? endPrice : null,
+          pointCount: series.size,
+        });
+      }
     });
   }
 
-  
+  applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
+  if (options && options.debugPriceSeries) {
+    debugPriceSeries.length = 0;
+    symbols.forEach((symbol) => {
+      const series = priceSeriesMap.get(symbol) || new Map();
+      const keys = Array.from(series.keys()).sort();
+      const lastKey = keys.length ? keys[keys.length - 1] : null;
+      const firstKey = keys.length ? keys[0] : null;
+      const lastPrice = lastKey ? series.get(lastKey) : null;
+      const startPrice = series.has(priceSeriesStartKey) ? series.get(priceSeriesStartKey) : null;
+      const endPrice = series.has(priceSeriesEndKey) ? series.get(priceSeriesEndKey) : null;
+      debugPriceSeries.push({
+        symbol,
+        firstDate: firstKey || null,
+        lastDate: lastKey || null,
+        lastPrice: Number.isFinite(lastPrice) ? lastPrice : null,
+        startPrice: Number.isFinite(startPrice) ? startPrice : null,
+        endPrice: Number.isFinite(endPrice) ? endPrice : null,
+        pointCount: series.size,
+      });
+    });
+  }
 
   const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(
     activityContext,
@@ -11407,6 +11608,12 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const usdRateCache = new Map();
   const points = [];
   const issues = new Set();
+  let holdingsAtEnd = null;
+  const debugEquitySnapshots = [];
+  const debugDates =
+    options && Array.isArray(options.debugEquityDates)
+      ? options.debugEquityDates.filter((d) => typeof d === 'string' && d.trim()).map((d) => d.trim())
+      : [];
   let cumulativeNetDeposits = 0;
   const effectiveNetDepositsCad =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
@@ -11535,6 +11742,41 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       deployedPercent: Number.isFinite(deployedPercent) ? deployedPercent : undefined,
       reservePercent: Number.isFinite(reservePercent) ? reservePercent : undefined,
     });
+
+    if (debugDates.includes(dateKey)) {
+      const perSymbol = [];
+      for (const [sym, qty] of holdings.entries()) {
+        const series = priceSeriesMap.get(sym) || new Map();
+        const price = series.has(dateKey) ? series.get(dateKey) : null;
+        const meta = symbolMeta.get(sym) || {};
+        const currency = meta.currency || inferSymbolCurrency(sym) || 'USD';
+        perSymbol.push({
+          symbol: sym,
+          quantity: qty,
+          price,
+          currency,
+          valueCad:
+            Number.isFinite(qty) && Number.isFinite(price)
+              ? currency === 'USD' && Number.isFinite(usdRate)
+                ? qty * price * usdRate
+                : qty * price
+              : null,
+        });
+      }
+      debugEquitySnapshots.push({
+        date: dateKey,
+        usdRate: Number.isFinite(usdRate) ? usdRate : null,
+        cadCash: cashByCurrency.has('CAD') ? cashByCurrency.get('CAD') : 0,
+        usdCash: cashByCurrency.has('USD') ? cashByCurrency.get('USD') : 0,
+        perSymbol,
+      });
+    }
+  }
+  if (options && options.debugPriceSeries) {
+    holdingsAtEnd = Array.from(holdings.entries()).map(([symbol, quantity]) => ({
+      symbol,
+      quantity,
+    }));
   }
 
   const rawFirstPnl = points.length ? points[0].totalPnlCad : null;
@@ -11815,6 +12057,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     displayStartDate: displayStartDate ? formatDateOnly(displayStartDate) : undefined,
     periodEndDate: effectivePeriodEnd,
     points: normalizedPoints,
+    debugPriceSeries: options && options.debugPriceSeries && debugPriceSeries.length ? debugPriceSeries : undefined,
+    debugHoldingsEnd: options && options.debugPriceSeries && holdingsAtEnd ? holdingsAtEnd : undefined,
+    debugEquitySnapshots: debugEquitySnapshots.length ? debugEquitySnapshots : undefined,
     summary: {
       totalPnlCad: summaryTotalPnl,
       totalPnlAllTimeCad: summaryTotalPnlAllTime,
@@ -12141,17 +12386,19 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     }
   }
 
+  const splitEventsBySymbol = collectSplitEventsFromActivities(processedActivities);
+
   // Price series
   const priceSeriesMap = new Map();
-  const startKey = dateKeys[0];
-  const endKey = dateKeys[dateKeys.length - 1];
+  const priceSeriesStartKey = dateKeys[0];
+  const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
   const symbolsForPricing = symbolMembers.length ? symbolMembers : [targetSymbol];
   for (const symbol of symbolsForPricing) {
     try {
       const meta = symbolMeta.get(symbol) || {};
       const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
       const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
-      const history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+      const history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
         login,
         symbolId,
         accountKey,
@@ -12160,7 +12407,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       let effectiveHistory = Array.isArray(history) ? history : null;
       if (!effectiveHistory || effectiveHistory.length === 0) {
         try {
-          const loaded = await loadSymbolPriceSeries(symbol, startKey, endKey);
+          const loaded = await loadSymbolPriceSeries(symbol, priceSeriesStartKey, priceSeriesEndKey);
           if (loaded && Array.isArray(loaded.points) && loaded.points.length) {
             effectiveHistory = loaded.points
               .map((point) => ({
@@ -12181,8 +12428,8 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if ((!Array.isArray(history) || history.length === 0) && DEBUG_TOTAL_PNL) {
         debugTotalPnl(accountKey, 'Symbol price history empty for computeTotalPnlSeriesForSymbol', {
           symbol,
-          startKey,
-          endKey,
+          startKey: priceSeriesStartKey,
+          endKey: priceSeriesEndKey,
           symbolId,
         });
       }
@@ -12190,8 +12437,8 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if (DEBUG_TOTAL_PNL && historyForSeries.length === 0) {
         debugTotalPnl(accountKey, 'No effective price history available for symbol', {
           symbol,
-          startKey,
-          endKey,
+          startKey: priceSeriesStartKey,
+          endKey: priceSeriesEndKey,
           symbolId,
           rawHistoryType: history === null ? 'null' : Array.isArray(history) ? 'array' : typeof history,
           rawHistoryLength: Array.isArray(history) ? history.length : null,
@@ -12218,6 +12465,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       priceSeriesMap.set(symbol, new Map());
     }
   }
+  applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
   if (DEBUG_TOTAL_PNL) {
     debugTotalPnl(accountKey, 'Symbol price series map prepared', {
       symbolsForPricing,
@@ -12618,16 +12866,16 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   // Fetch price series per symbol (allow test override)
   const symbols = Array.from(symbolMeta.keys());
   const priceSeriesMap = new Map();
+  const priceSeriesStartKey = dateKeys[0];
+  const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
   const overrideSeries = options && options.priceSeriesBySymbol instanceof Map ? options.priceSeriesBySymbol : null;
   if (symbols.length) {
-    const startKey = dateKeys[0];
-    const endKey = dateKeys[dateKeys.length - 1];
     await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
       if (overrideSeries && overrideSeries.has(symbol)) {
         priceSeriesMap.set(symbol, new Map(overrideSeries.get(symbol)));
         return;
       }
-      const cacheKey = getPriceHistoryCacheKey(symbol, startKey, endKey);
+      const cacheKey = getPriceHistoryCacheKey(symbol, priceSeriesStartKey, priceSeriesEndKey);
       let history = null;
       if (cacheKey) {
         const cached = getCachedPriceHistory(cacheKey);
@@ -12640,7 +12888,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           const meta = symbolMeta.get(symbol) || {};
           const rawSymbolId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
           const normalizedSymbolId = Number.isFinite(rawSymbolId) && rawSymbolId > 0 ? rawSymbolId : null;
-          history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+          history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
             login,
             symbolId: normalizedSymbolId,
             accountKey,
@@ -12661,6 +12909,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       }
     });
   }
+  applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
 
   const cashCadBySymbol = new Map(); // since effective start
   // Track USD-currency cash flows in native USD so we can recompute a no-FX variant.
