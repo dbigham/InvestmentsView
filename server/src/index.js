@@ -6724,7 +6724,9 @@ function convertActivityToOrder(activity, context) {
     );
   }
 
-  const orderId = 'activity:' + identifier;
+  const normalizedIdentifier = typeof identifier === 'string' ? identifier.trim() : String(identifier || '');
+  const orderId = normalizedIdentifier || null;
+  const activityOrderId = normalizedIdentifier ? 'activity:' + normalizedIdentifier : null;
   const quantity = Math.abs(rawQuantity);
   const price = resolveActivityOrderPrice(activity, rawQuantity);
   const action = resolveActivityOrderAction(activity, rawQuantity);
@@ -6743,6 +6745,7 @@ function convertActivityToOrder(activity, context) {
   return {
     id: orderId,
     orderId,
+    activityOrderId,
     accountId,
     accountNumber,
     loginId,
@@ -7127,6 +7130,57 @@ function resolveOrderIdentifier(order) {
     return null;
   }
   return 'fallback:' + keyParts.join('|');
+}
+
+function resolveOrderApproximateKey(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const normalize = function (value) {
+    return typeof value === 'string' ? value.trim().toUpperCase() : '';
+  };
+  const symbol = normalize(order.symbol);
+  const action = normalize(order.action || order.side);
+  const quantity =
+    toFiniteNumber(order.filledQuantity) ??
+    toFiniteNumber(order.totalQuantity) ??
+    toFiniteNumber(order.openQuantity);
+  const dayKey = getTorontoDateKey(
+    order.creationTime ||
+      order.createdTime ||
+      order.updateTime ||
+      order.updatedTime ||
+      order.time ||
+      null
+  );
+  if (!symbol || !action || quantity === null || !dayKey) {
+    return null;
+  }
+  const price = resolveAggregationPrice(order);
+  const quantityKey = quantity.toFixed(6);
+  const priceKey = Number.isFinite(price) ? price.toFixed(6) : 'noprice';
+  return ['approx', symbol, action, dayKey, 'qty:' + quantityKey, 'px:' + priceKey].join('|');
+}
+
+function pickPreferredOrder(existing, candidate) {
+  if (!existing) {
+    return candidate;
+  }
+  if (!candidate) {
+    return existing;
+  }
+  const isActivity = function (order) {
+    return typeof order?.source === 'string' && order.source.toLowerCase() === 'activity';
+  };
+  const existingIsActivity = isActivity(existing);
+  const candidateIsActivity = isActivity(candidate);
+  if (existingIsActivity && !candidateIsActivity) {
+    return candidate;
+  }
+  if (candidateIsActivity && !existingIsActivity) {
+    return existing;
+  }
+  return pickMoreRecentOrder(existing, candidate);
 }
 
 function pickMoreRecentOrder(existing, candidate) {
@@ -14321,44 +14375,72 @@ function dedupeOrdersByIdentifier(orders) {
   });
 
   const deduped = Array.from(uniqueMap.values());
-  if (fallback.length === 0) {
-    return deduped;
+
+  if (fallback.length > 0) {
+    const fallbackMap = new Map();
+    fallback.forEach(function (order, index) {
+      if (!order || typeof order !== 'object') {
+        return;
+      }
+      const accountKey =
+        order.accountId != null
+          ? 'acct:' + String(order.accountId)
+          : order.accountNumber != null
+            ? 'acct:' + String(order.accountNumber)
+            : 'acct:' + index;
+      const symbol = order.symbol != null ? String(order.symbol) : '';
+      const timestamp =
+        order.creationTime || order.createdTime || order.updateTime || order.updatedTime || String(index);
+      const side = order.side || order.action || '';
+      const quantityValue =
+        Number.isFinite(Number(order.totalQuantity))
+          ? 'qty:' + String(Number(order.totalQuantity))
+          : Number.isFinite(Number(order.openQuantity))
+            ? 'qty:' + String(Number(order.openQuantity))
+            : Number.isFinite(Number(order.filledQuantity))
+              ? 'qty:' + String(Number(order.filledQuantity))
+              : '';
+      const fallbackKey = ['fb', accountKey, symbol, timestamp, side, quantityValue].filter(Boolean).join('|');
+      const existing = fallbackMap.get(fallbackKey) || null;
+      const chosen = pickMoreRecentOrder(existing, order) || order;
+      fallbackMap.set(fallbackKey, chosen);
+    });
+
+    fallbackMap.forEach(function (order) {
+      deduped.push(order);
+    });
   }
 
-  const fallbackMap = new Map();
-  fallback.forEach(function (order, index) {
+  const approxMap = new Map();
+  deduped.forEach(function (order) {
     if (!order || typeof order !== 'object') {
       return;
     }
-    const accountKey =
-      order.accountId != null
-        ? 'acct:' + String(order.accountId)
-        : order.accountNumber != null
-          ? 'acct:' + String(order.accountNumber)
-          : 'acct:' + index;
-    const symbol = order.symbol != null ? String(order.symbol) : '';
-    const timestamp =
-      order.creationTime || order.createdTime || order.updateTime || order.updatedTime || String(index);
-    const side = order.side || order.action || '';
-    const quantityValue =
-      Number.isFinite(Number(order.totalQuantity))
-        ? 'qty:' + String(Number(order.totalQuantity))
-        : Number.isFinite(Number(order.openQuantity))
-          ? 'qty:' + String(Number(order.openQuantity))
-          : Number.isFinite(Number(order.filledQuantity))
-            ? 'qty:' + String(Number(order.filledQuantity))
-            : '';
-    const fallbackKey = ['fb', accountKey, symbol, timestamp, side, quantityValue].filter(Boolean).join('|');
-    const existing = fallbackMap.get(fallbackKey) || null;
-    const chosen = pickMoreRecentOrder(existing, order) || order;
-    fallbackMap.set(fallbackKey, chosen);
+    const key = resolveOrderApproximateKey(order);
+    if (!key) {
+      return;
+    }
+    const existing = approxMap.get(key) || null;
+    const chosen = pickPreferredOrder(existing, order);
+    approxMap.set(key, chosen);
   });
 
-  fallbackMap.forEach(function (order) {
-    deduped.push(order);
+  if (approxMap.size === 0) {
+    return deduped;
+  }
+
+  const merged = Array.from(approxMap.values());
+  deduped.forEach(function (order) {
+    if (!order || typeof order !== 'object') {
+      return;
+    }
+    const key = resolveOrderApproximateKey(order);
+    if (!key || !approxMap.has(key)) {
+      merged.push(order);
+    }
   });
 
-  return deduped;
+  return merged;
 }
 
 function toFiniteNumber(value) {
