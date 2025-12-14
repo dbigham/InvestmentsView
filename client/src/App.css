@@ -1424,8 +1424,8 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 220px;
-  max-width: 280px;
+  min-width: 264px;
+  max-width: 336px;
   pointer-events: auto;
   cursor: pointer;
 }
