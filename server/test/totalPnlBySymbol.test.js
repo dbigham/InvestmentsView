@@ -83,6 +83,59 @@ test('transfer out after start nets ~0 for SGOV', async () => {
   assert.ok(Math.abs(sgov.totalPnlCad) < 1e-6, 'SGOV transfer out ~0 P&L');
 });
 
+test('transfer uses book value when available', async () => {
+  const account = { id: 'test:9', number: 'test:9', cagrStartDate: '2025-10-01' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ENB', quantity: 10, netAmount: -1000, currency: 'CAD', tradeDate: '2025-10-02' },
+    { type: 'Transfers', action: 'TFO', symbol: 'ENB', quantity: -10, netAmount: 0, currency: 'CAD', description: 'TRANSFER BOOK VALUE 1000', tradeDate: '2025-10-10' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ENB', new Map([[d('2025-10-01'), 100], [d('2025-10-02'), 100], [d('2025-10-10'), 90], [d('2025-10-31'), 90]])],
+  ]);
+  const endHoldings = new Map([['ENB', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const enb = result.entries.find((e) => e.symbol === 'ENB');
+  assert.ok(enb, 'ENB entry present');
+  assert.ok(Math.abs(enb.totalPnlCad) < 1e-6, 'ENB transfer uses book value for ~0 P&L');
+});
+
+test('transfer cash applied once per date', async () => {
+  const account = { id: 'test:10', number: 'test:10', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-01-10';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ABC', quantity: 10, netAmount: -1000, currency: 'CAD', tradeDate: '2025-01-02' },
+    { type: 'Dividends', symbol: 'ABC', quantity: 0, netAmount: 5, currency: 'CAD', tradeDate: '2025-01-05' },
+    { type: 'Transfers', action: 'TFO', symbol: 'ABC', quantity: -10, netAmount: 0, currency: 'CAD', description: 'TRANSFER BOOK VALUE 1000', tradeDate: '2025-01-05' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC', new Map([[d('2025-01-01'), 100], [d('2025-01-05'), 100], [d('2025-01-10'), 100]])],
+  ]);
+  const endHoldings = new Map([['ABC', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(Math.abs(abc.totalPnlCad - 5) < 1e-6, 'ABC P&L reflects dividend only');
+});
+
 test('UNH small gain since start', async () => {
   const account = { id: 'test:3', number: 'test:3', cagrStartDate: '2025-10-01' };
   const login = { id: 'login' };

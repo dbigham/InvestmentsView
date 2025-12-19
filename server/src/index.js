@@ -7789,6 +7789,35 @@ const DIVIDEND_ACTIVITY_REGEX = /(dividend|distribution)/i;
 // For per-symbol Total P&L, some income (e.g., T-bill ETFs) is booked as
 // "interest" rather than dividend/distribution. Treat it as income here.
 const INCOME_ACTIVITY_REGEX = /(dividend|distribution|interest|coupon)/i;
+const BOOK_VALUE_REGEX = /book value[^0-9]*([0-9]+(?:[.,][0-9]+)?)/i;
+
+function extractBookValueFromDescription(description) {
+  if (typeof description !== 'string' || !description.trim()) {
+    return null;
+  }
+  const match = description.match(BOOK_VALUE_REGEX);
+  if (!match) {
+    return null;
+  }
+  const raw = match[1].replace(/,/g, '');
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function resolveTransferBookValuePerShare(activity, rawQty) {
+  const type = activity && typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
+  if (!type || type !== 'transfers') {
+    return null;
+  }
+  if (!Number.isFinite(rawQty) || Math.abs(rawQty) < LEDGER_QUANTITY_EPSILON) {
+    return null;
+  }
+  const total = extractBookValueFromDescription(activity.description);
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return total / Math.abs(rawQty);
+}
 
 const DIVIDEND_SYMBOL_CANONICAL_ALIASES = new Map([
   ['N003056', 'NVDA'],
@@ -12272,7 +12301,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   const symbolIds = new Set();
   const symbolIdToSymbols = new Map();
   const symbolMeta = new Map();
-  const nonTradeQtyByDate = new Map();
+  const nonTradeEntriesByDate = new Map();
   const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   rawActivities.forEach((activity) => {
     const timestamp = resolveActivityTimestamp(activity);
@@ -12310,20 +12339,65 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       }
     }
 
-    // Track non-trade quantity deltas (journals/transfers) so we can treat their value as invested cash
-    const qty = Number(activity.quantity);
-    const isTradeLike = isOrderLikeActivity(activity);
-    if (!isTradeLike && Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-      if (!nonTradeQtyByDate.has(dateKey)) {
-        nonTradeQtyByDate.set(dateKey, new Map());
-      }
-      const perSymbolQty = nonTradeQtyByDate.get(dateKey);
-      adjustNumericMap(perSymbolQty, normalizedResolved, qty, LEDGER_QUANTITY_EPSILON);
-      if (perSymbolQty.size === 0) {
-        nonTradeQtyByDate.delete(dateKey);
-      }
-    }
   });
+  // Detect bases that participate in journaling so we can safely allow
+  // share-class variants (e.g., DLR/DLR.U, ENB/ENB.TO) to go negative when merged.
+  const JOURNAL_REGEX = /journal/i;
+  const journalBases = new Set();
+  const stripToSuffix = (s) => (typeof s === 'string' && s.toUpperCase().endsWith('.TO') ? s.slice(0, -3) : s);
+  const baseOf = (s) => {
+    if (!s || typeof s !== 'string') return null;
+    const up = stripToSuffix(s.toUpperCase());
+    return up.endsWith('.U') ? up.slice(0, -2) : up;
+  };
+  for (const entry of processedActivities) {
+    const activity = entry && entry.activity;
+    if (!activity) continue;
+    const fields = [activity.type || '', activity.action || '', activity.description || ''];
+    const combined = fields.join(' ');
+    if (!JOURNAL_REGEX.test(combined)) continue;
+    const key = baseOf(entry.symbol || '');
+    if (key) {
+      journalBases.add(key);
+    }
+  }
+
+  // Clamp non-trade quantity deltas to avoid creating profit from transfers
+  // that exceed the tracked holdings within this window.
+  processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+  const runningHoldings = new Map();
+  for (const entry of processedActivities) {
+    const qty = Number(entry?.activity?.quantity);
+    if (!entry || !entry.symbol || !Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+      continue;
+    }
+    const symbol = entry.symbol;
+    const base = baseOf(symbol) || symbol;
+    const allowNegative = journalBases.has(base);
+    const isTradeLike = isOrderLikeActivity(entry.activity);
+    if (isTradeLike) {
+      adjustHolding(runningHoldings, symbol, qty);
+      continue;
+    }
+    let effectiveQty = qty;
+    if (!allowNegative && qty < 0) {
+      const current = runningHoldings.has(symbol) ? runningHoldings.get(symbol) : 0;
+      effectiveQty = Math.max(qty, -current);
+    }
+    if (Number.isFinite(effectiveQty) && Math.abs(effectiveQty) >= LEDGER_QUANTITY_EPSILON) {
+      if (!nonTradeEntriesByDate.has(entry.dateKey)) {
+        nonTradeEntriesByDate.set(entry.dateKey, []);
+      }
+      nonTradeEntriesByDate.get(entry.dateKey).push({
+        symbol,
+        qty: effectiveQty,
+        rawQty: qty,
+        activity: entry.activity,
+      });
+      adjustHolding(runningHoldings, symbol, effectiveQty);
+    }
+  }
+
   const activityQtyBySymbol = new Map();
   processedActivities.forEach((entry) => {
     const qty = Number(entry?.activity?.quantity);
@@ -12573,7 +12647,18 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if (entry.dateKey !== dateKey) continue;
       const qty = Number(entry.activity.quantity);
       if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-        adjustHolding(holdings, entry.symbol, qty);
+        const symbol = entry.symbol;
+        const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
+        const next = current + qty;
+        const base = baseOf(symbol) || symbol;
+        const allowNegative = journalBases.has(base);
+        if (Math.abs(next) < LEDGER_QUANTITY_EPSILON) {
+          holdings.delete(symbol);
+        } else if (!allowNegative && next < 0) {
+          holdings.set(symbol, 0);
+        } else {
+          holdings.set(symbol, next);
+        }
       }
       // Apply cash effects for income (dividends/interest) only – exclude trade cash to
       // avoid cancelling out invested principal in symbol-scope equity.
@@ -12613,38 +12698,56 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       }
     }
 
-    // Treat non-trade share transfers as deposits/withdrawals at each symbol's price
-    const qtyDeltaMap = nonTradeQtyByDate.has(dateKey) ? nonTradeQtyByDate.get(dateKey) : null;
-    if (qtyDeltaMap && qtyDeltaMap.size) {
-      for (const [symbol, qtyDelta] of qtyDeltaMap.entries()) {
+    // Treat non-trade share transfers as deposits/withdrawals at book value when available.
+    const nonTradeEntries = nonTradeEntriesByDate.has(dateKey)
+      ? nonTradeEntriesByDate.get(dateKey)
+      : null;
+    if (nonTradeEntries && nonTradeEntries.length) {
+      for (const entry of nonTradeEntries) {
+        if (!entry || !entry.symbol) {
+          continue;
+        }
+        const qtyDelta = Number(entry.qty);
         if (!Number.isFinite(qtyDelta) || Math.abs(qtyDelta) < LEDGER_QUANTITY_EPSILON) {
           continue;
         }
-        const series = priceSeriesMap.get(symbol);
-        if (!series || !series.size) {
-          continue;
-        }
-        const symbolNativePrice = series.get(dateKey);
-        if (!Number.isFinite(symbolNativePrice)) {
-          continue;
-        }
-        const meta = symbolMeta.get(symbol) || {};
-        const currency = meta.currency || inferSymbolCurrency(symbol) || 'CAD';
-        let priceCadForSymbol = null;
-        if (currency === 'USD') {
-          priceCadForSymbol = Number.isFinite(usdRate) && usdRate > 0 ? symbolNativePrice * usdRate : null;
+        const rawQty = Number(entry.rawQty);
+        const activity = entry.activity || {};
+        const meta = symbolMeta.get(entry.symbol) || {};
+        const currency = normalizeCurrency(activity.currency) || meta.currency || inferSymbolCurrency(entry.symbol) || 'CAD';
+        let perShareCad = null;
+        const bookPerShare = resolveTransferBookValuePerShare(activity, rawQty);
+        if (Number.isFinite(bookPerShare)) {
+          if (currency === 'USD') {
+            perShareCad = Number.isFinite(usdRate) && usdRate > 0 ? bookPerShare * usdRate : null;
+          } else {
+            perShareCad = bookPerShare;
+          }
         } else {
-          priceCadForSymbol = symbolNativePrice;
+          const series = priceSeriesMap.get(entry.symbol);
+          if (!series || !series.size) {
+            continue;
+          }
+          const symbolNativePrice = series.get(dateKey);
+          if (!Number.isFinite(symbolNativePrice)) {
+            continue;
+          }
+          if (currency === 'USD') {
+            perShareCad = Number.isFinite(usdRate) && usdRate > 0 ? symbolNativePrice * usdRate : null;
+          } else {
+            perShareCad = symbolNativePrice;
+          }
         }
-        if (!Number.isFinite(priceCadForSymbol) || Math.abs(priceCadForSymbol) <= 0) {
+        if (!Number.isFinite(perShareCad) || Math.abs(perShareCad) <= 0) {
           continue;
         }
-        const deltaInvested = qtyDelta * priceCadForSymbol;
+        const deltaInvested = qtyDelta * perShareCad;
         if (Math.abs(deltaInvested) >= CASH_FLOW_EPSILON / 10) {
           cumulativeInvested += deltaInvested;
         }
       }
     }
+
     const snapshot = computeLedgerEquitySnapshot(
       dateKey,
       holdings,
@@ -12976,6 +13079,8 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   const holdings = new Map(); // trade deltas on/after effective start
   const baselineHoldings = new Map(); // trade deltas before effective start
   const nonTradeDeltaSinceStart = new Map(); // non-trade deltas on/after effective start
+  const effectiveNonTradeEntriesByDate = new Map(); // clamped non-trade entries by date
+  const runningHoldings = new Map(); // running holdings to clamp non-trade transfers
   const qtyDeltaSinceStart = new Map(); // all quantity deltas on/after start (trade + non-trade)
   const qtyDeltaBeforeStart = new Map(); // all quantity deltas before start
   const usdRateCache = new Map();
@@ -13006,35 +13111,50 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       continue;
     }
     const rawQty = Number(activity.quantity);
+    const isTradeLike = isOrderLikeActivity(activity);
+    const base = symbol ? baseOf(symbol) || symbol : null;
+    const allowNegative = base ? journalBases.has(base) : false;
+    let effectiveQty = rawQty;
+
+    if (!isTradeLike && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+      if (!allowNegative && rawQty < 0) {
+        const current = runningHoldings.has(symbol) ? runningHoldings.get(symbol) : 0;
+        effectiveQty = Math.max(rawQty, -current);
+      }
+      if (Number.isFinite(effectiveQty) && Math.abs(effectiveQty) >= LEDGER_QUANTITY_EPSILON) {
+        if (dateKey >= effectiveStartKey && dateKey <= effectiveEndKey) {
+          if (!effectiveNonTradeEntriesByDate.has(dateKey)) {
+            effectiveNonTradeEntriesByDate.set(dateKey, []);
+          }
+          effectiveNonTradeEntriesByDate.get(dateKey).push({
+            symbol,
+            qty: effectiveQty,
+            rawQty,
+            activity,
+          });
+          const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
+          nonTradeDeltaSinceStart.set(symbol, cur + effectiveQty);
+        }
+        adjustHolding(runningHoldings, symbol, effectiveQty);
+      }
+    } else if (isTradeLike && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+      adjustHolding(runningHoldings, symbol, rawQty);
+    }
+
+    const qtyForDelta = isTradeLike ? rawQty : effectiveQty;
+
     // Only order-like activities affect holdings; split into baseline (before start)
     // and current (on/after start) so we can derive starting MV correctly.
-    if (isOrderLikeActivity(activity) && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+    if (isTradeLike && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
       const target = dateKey < effectiveStartKey ? baselineHoldings : holdings;
       const current = target.has(symbol) ? target.get(symbol) : 0;
       const next = current + rawQty;
-      const base = baseOf(symbol) || symbol;
-      // Allow negatives for symbols that participate in journaling so sells
-      // in one share-class can offset buys in another when merged.
-      const allowNegative = journalBases.has(base);
       const adjusted = Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : allowNegative ? next : Math.max(0, next);
       target.set(symbol, adjusted);
     }
 
-    // Track non-trade quantity changes since start (journals/transfers)
-    if (
-      !isOrderLikeActivity(activity) &&
-      symbol &&
-      dateKey >= effectiveStartKey &&
-      dateKey <= effectiveEndKey &&
-      Number.isFinite(rawQty) &&
-      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
-    ) {
-      const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
-      nonTradeDeltaSinceStart.set(symbol, cur + rawQty);
-    }
-
-    // Track total quantity deltas regardless of classification
-    if (symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+    // Track total quantity deltas (trade-like uses raw qty; non-trade uses clamped qty)
+    if (symbol && Number.isFinite(qtyForDelta) && Math.abs(qtyForDelta) >= LEDGER_QUANTITY_EPSILON) {
       const bucket =
         dateKey < effectiveStartKey
           ? qtyDeltaBeforeStart
@@ -13045,33 +13165,20 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         continue;
       }
       const cur = bucket.has(symbol) ? bucket.get(symbol) : 0;
-      bucket.set(symbol, cur + rawQty);
+      bucket.set(symbol, cur + qtyForDelta);
     }
 
     // Non-trade quantity before start contributes to baseline holdings
     if (
-      !isOrderLikeActivity(activity) &&
+      !isTradeLike &&
       symbol &&
       dateKey < effectiveStartKey &&
-      Number.isFinite(rawQty) &&
-      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
+      Number.isFinite(qtyForDelta) &&
+      Math.abs(qtyForDelta) >= LEDGER_QUANTITY_EPSILON
     ) {
       const current = baselineHoldings.has(symbol) ? baselineHoldings.get(symbol) : 0;
-      const next = current + rawQty;
+      const next = current + qtyForDelta;
       baselineHoldings.set(symbol, Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : next);
-    }
-
-    // Count non-trade quantity moves since start so we exclude them from start MV
-    if (
-      !isOrderLikeActivity(activity) &&
-      symbol &&
-      dateKey >= effectiveStartKey &&
-      dateKey <= effectiveEndKey &&
-      Number.isFinite(rawQty) &&
-      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
-    ) {
-      const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
-      nonTradeDeltaSinceStart.set(symbol, cur + rawQty);
     }
 
     const currency = normalizeCurrency(activity.currency);
@@ -13161,51 +13268,65 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   // Apply book-value cash for non-trade quantity movements since the display start
   // so that transfers/journals do not create artificial P&L within this account.
   if (processedActivities.length && priceSeriesMap.size) {
-    for (const entry of processedActivities) {
-      if (!entry || !entry.activity) {
+    for (const [dateKey, entries] of effectiveNonTradeEntriesByDate.entries()) {
+      if (!entries || !entries.length || dateKey < effectiveStartKey || dateKey > effectiveEndKey) {
         continue;
       }
-      const { activity, symbol, dateKey } = entry;
-      if (!symbol || !dateKey || dateKey < effectiveStartKey || dateKey > effectiveEndKey) {
-        continue;
-      }
-      const qty = Number(activity.quantity);
-      if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
-        continue;
-      }
+      for (const entry of entries) {
+        if (!entry || !entry.symbol || !entry.activity) {
+          continue;
+        }
+        const { activity, symbol } = entry;
+        const qty = Number(entry.qty);
+        if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+          continue;
+        }
       // Skip trades and stock splits/consolidations; splits should not
       // create artificial cash adjustments in per-symbol P&L.
       if (isOrderLikeActivity(activity) || isSplitLikeActivity(activity)) {
         continue;
       }
       const series = priceSeriesMap.get(symbol);
-      const price = series && series.size ? series.get(dateKey) : null;
-      if (!(Number.isFinite(price) && price > 0)) {
-        continue;
-      }
       const meta = symbolMeta.get(symbol) || {};
       const bookCurrency = normalizeCurrency(activity.currency) || meta.activityCurrency || meta.currency || 'CAD';
-      let valueCad = qty * price;
+      const rawQty = Number(entry.rawQty);
+      const bookPerShare = resolveTransferBookValuePerShare(activity, rawQty);
+      let valueNative = null;
+      if (Number.isFinite(bookPerShare)) {
+        valueNative = qty * bookPerShare;
+      } else {
+        const price = series && series.size ? series.get(dateKey) : null;
+        if (!(Number.isFinite(price) && price > 0)) {
+          continue;
+        }
+        valueNative = qty * price;
+      }
+      if (!Number.isFinite(valueNative) || Math.abs(valueNative) < CASH_FLOW_EPSILON / 10) {
+        continue;
+      }
+      let valueCad = valueNative;
       if (bookCurrency === 'USD') {
         const r = await lookupUsdRate(dateKey);
         if (!(Number.isFinite(r) && r > 0)) {
           continue;
         }
-        valueCad = qty * price * r;
+        valueCad = valueNative * r;
         // Track USD-native book-value cash so we can recompute at a constant end rate.
-      const bookCashUsd = -(qty * price); // Transfer out (-qty) => inflow (+)
-      const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
-      cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
-      const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
-      // Track the exact CAD cash increment we applied due to USD-sourced book cash
-      // so we can back it out when building a no-FX variant.
-      cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
+        const bookCashUsd = -valueNative; // Transfer out (-qty) => inflow (+)
+        const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+        cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
+        const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+        // Track the exact CAD cash increment we applied due to USD-sourced book cash
+        // so we can back it out when building a no-FX variant.
+        cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
+      }
+      const bookCashCad = -valueCad; // Transfer out (-qty) => inflow (+)
+      const bookCashNative = -valueNative;
+      recordCashFlow(symbol, bookCurrency === 'USD' ? bookCashNative : bookCashCad, bookCurrency, dateKey);
+      const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
+      cashCadBySymbol.set(symbol, current + bookCashCad);
+      }
     }
-    const bookCashCad = -valueCad; // Transfer out (-qty) => inflow (+)
-    recordCashFlow(symbol, bookCurrency === 'USD' ? -(qty * price) : bookCashCad, bookCurrency, dateKey);
-    const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
-    cashCadBySymbol.set(symbol, current + bookCashCad);
-  }
   }
 
   let result = [];
@@ -17631,6 +17752,12 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     }
     if (queryOptions.applyAccountCagrStartDate === false) {
       options.applyAccountCagrStartDate = false;
+    }
+    if (queryOptions.symbolGroupKey) {
+      options.symbolGroupKey = queryOptions.symbolGroupKey;
+    }
+    if (Array.isArray(queryOptions.symbols) && queryOptions.symbols.length) {
+      options.symbols = queryOptions.symbols;
     }
 
     let series = null;
