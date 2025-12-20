@@ -12714,10 +12714,19 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         const rawQty = Number(entry.rawQty);
         const activity = entry.activity || {};
         const meta = symbolMeta.get(entry.symbol) || {};
-        const currency = normalizeCurrency(activity.currency) || meta.currency || inferSymbolCurrency(entry.symbol) || 'CAD';
+        const symbolCurrency = meta.currency || inferSymbolCurrency(entry.symbol) || null;
+        const entryCurrency = normalizeCurrency(activity.currency) || symbolCurrency || 'CAD';
+        const useEntryCurrency = activity && activity.type === 'Transfers';
+        const currency =
+          useEntryCurrency && entryCurrency === symbolCurrency
+            ? entryCurrency
+            : (symbolCurrency || entryCurrency || 'CAD');
         let perShareCad = null;
         const bookPerShare = resolveTransferBookValuePerShare(activity, rawQty);
-        if (Number.isFinite(bookPerShare)) {
+        if (
+          Number.isFinite(bookPerShare) &&
+          (!symbolCurrency || !entryCurrency || entryCurrency === symbolCurrency)
+        ) {
           if (currency === 'USD') {
             perShareCad = Number.isFinite(usdRate) && usdRate > 0 ? bookPerShare * usdRate : null;
           } else {
@@ -13288,11 +13297,19 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       }
       const series = priceSeriesMap.get(symbol);
       const meta = symbolMeta.get(symbol) || {};
-      const bookCurrency = normalizeCurrency(activity.currency) || meta.activityCurrency || meta.currency || 'CAD';
+      const symbolCurrency = meta.currency || meta.activityCurrency || inferSymbolCurrency(symbol) || null;
+      const entryCurrency = normalizeCurrency(activity.currency) || symbolCurrency || 'CAD';
+      const bookCurrency =
+        activity && activity.type === 'Transfers' && entryCurrency === symbolCurrency
+          ? entryCurrency
+          : (symbolCurrency || entryCurrency || 'CAD');
       const rawQty = Number(entry.rawQty);
       const bookPerShare = resolveTransferBookValuePerShare(activity, rawQty);
       let valueNative = null;
-      if (Number.isFinite(bookPerShare)) {
+      if (
+        Number.isFinite(bookPerShare) &&
+        (!symbolCurrency || !entryCurrency || entryCurrency === symbolCurrency)
+      ) {
         valueNative = qty * bookPerShare;
       } else {
         const price = series && series.size ? series.get(dateKey) : null;
