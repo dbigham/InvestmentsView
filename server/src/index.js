@@ -137,6 +137,8 @@ const RESERVE_SYMBOL_SET = new Set(Array.isArray(deploymentDisplay?.RESERVE_SYMB
   : []);
 // Minimum negative Total P&L (CAD) drop before we consider an automated fix.
 const AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD = 500;
+// Minimum unexplained equity increase (CAD) before we treat it as a pending deposit.
+const AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD = 250;
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
@@ -11404,6 +11406,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const closingHoldings = new Map();
   const closingCashByCurrency = new Map();
+  let summaryDayPnlCad = null;
 
   if (perAccountCombinedBalances && perAccountCombinedBalances[accountKey]) {
     const balanceSummary = perAccountCombinedBalances[accountKey];
@@ -11418,6 +11421,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           return;
         }
         const currency = normalizeCurrency(entry.currency || key);
+        const dayPnlValue = Number(entry.dayPnl ?? entry.dayPnL);
+        if (currency === 'CAD' && Number.isFinite(dayPnlValue)) {
+          summaryDayPnlCad = dayPnlValue;
+        }
         const cashValue = Number(entry.cash);
         if (!currency || !Number.isFinite(cashValue) || Math.abs(cashValue) < 0.00001) {
           return;
@@ -11779,7 +11786,6 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       usdRate,
       { reserveSymbols }
     );
-
     if (snapshot.missingPrices.length) {
       snapshot.missingPrices.forEach((symbol) => missingPriceSymbols.add(symbol));
     }
@@ -11928,17 +11934,55 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   if (summaryTotalPnlAllTime === null && Number.isFinite(summaryTotalPnl)) {
     summaryTotalPnlAllTime = summaryTotalPnl;
   }
-  const summaryNetDeposits =
+  let summaryNetDeposits =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
       ? netDepositsSummary.netDeposits.combinedCad
       : null;
-  const summaryNetDepositsAllTime =
+  let summaryNetDepositsAllTime =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.allTimeCad)
       ? netDepositsSummary.netDeposits.allTimeCad
       : summaryNetDeposits;
   const summaryEquity = Number.isFinite(netDepositsSummary.totalEquityCad)
     ? netDepositsSummary.totalEquityCad
     : null;
+
+  let pendingDepositCad = null;
+  if (points.length && Number.isFinite(summaryEquity)) {
+    const lastPoint = points[points.length - 1];
+    const lastPointEquity = lastPoint && Number.isFinite(lastPoint.equityCad) ? lastPoint.equityCad : null;
+    const lastPointDate = lastPoint && typeof lastPoint.date === 'string' ? lastPoint.date : null;
+    const hasFundingToday =
+      lastPointDate &&
+      dailyNetDepositsMap.has(lastPointDate) &&
+      Math.abs(dailyNetDepositsMap.get(lastPointDate)) >= CASH_FLOW_EPSILON / 10;
+    if (!hasFundingToday && Number.isFinite(lastPointEquity)) {
+      const equityDelta = summaryEquity - lastPointEquity;
+      const dayPnlCad = Number.isFinite(summaryDayPnlCad) ? summaryDayPnlCad : null;
+      const nearDayPnl =
+        dayPnlCad !== null &&
+        Math.abs(equityDelta - dayPnlCad) < AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD;
+      if (!nearDayPnl && equityDelta >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD) {
+        pendingDepositCad = equityDelta;
+        if (Number.isFinite(lastPoint.cumulativeNetDepositsCad)) {
+          lastPoint.cumulativeNetDepositsCad += pendingDepositCad;
+          lastPoint.totalPnlCad = summaryEquity - lastPoint.cumulativeNetDepositsCad;
+          lastPoint.equityCad = summaryEquity;
+        }
+      }
+    }
+  }
+
+  if (pendingDepositCad !== null && Number.isFinite(summaryNetDeposits)) {
+    summaryNetDeposits += pendingDepositCad;
+    if (Number.isFinite(summaryNetDepositsAllTime)) {
+      summaryNetDepositsAllTime += pendingDepositCad;
+    }
+    if (Number.isFinite(summaryEquity)) {
+      const adjustedPnl = summaryEquity - summaryNetDeposits;
+      summaryTotalPnl = adjustedPnl;
+      summaryTotalPnlAllTime = adjustedPnl;
+    }
+  }
 
   if (points.length) {
     const first = points[0];
