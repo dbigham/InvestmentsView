@@ -12423,6 +12423,10 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       adjustHolding(runningHoldings, symbol, qty);
       continue;
     }
+    if (isSplitLikeActivity(entry.activity)) {
+      adjustHolding(runningHoldings, symbol, qty);
+      continue;
+    }
     let effectiveQty = qty;
     if (!allowNegative && qty < 0) {
       const current = runningHoldings.has(symbol) ? runningHoldings.get(symbol) : 0;
@@ -12757,6 +12761,9 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         }
         const rawQty = Number(entry.rawQty);
         const activity = entry.activity || {};
+        if (isSplitLikeActivity(activity)) {
+          continue;
+        }
         const meta = symbolMeta.get(entry.symbol) || {};
         const symbolCurrency = meta.currency || inferSymbolCurrency(entry.symbol) || null;
         const entryCurrency = normalizeCurrency(activity.currency) || symbolCurrency || 'CAD';
