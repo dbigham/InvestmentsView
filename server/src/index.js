@@ -8248,6 +8248,36 @@ async function fetchLatestUsdToCadRate() {
   return null;
 }
 
+async function fetchUsdToCadRateFromFrankfurter(dateKey) {
+  if (!dateKey) {
+    return null;
+  }
+  const url = `https://api.frankfurter.app/${dateKey}?from=USD&to=CAD`;
+  const response = await axios.get(url, { timeout: 5000 });
+  const rate = response && response.data && response.data.rates && Number(response.data.rates.CAD);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+async function fetchUsdToCadRateRangeFromFrankfurter(startDateKey, endDateKey) {
+  if (!startDateKey || !endDateKey) {
+    return new Set();
+  }
+  const url = `https://api.frankfurter.app/${startDateKey}..${endDateKey}?from=USD&to=CAD`;
+  const response = await axios.get(url, { timeout: 5000 });
+  const rates = response && response.data && response.data.rates;
+  const observed = new Set();
+  if (rates && typeof rates === 'object') {
+    Object.keys(rates).forEach((dateKey) => {
+      const rate = rates[dateKey] && Number(rates[dateKey].CAD);
+      if (Number.isFinite(rate) && rate > 0) {
+        updateUsdCadRateCache(dateKey, rate);
+        observed.add(dateKey);
+      }
+    });
+  }
+  return observed;
+}
+
 async function fetchUsdToCadRate(date) {
   const keyDate = formatDateOnly(date);
   if (!keyDate) {
@@ -8275,9 +8305,21 @@ async function fetchUsdToCadRate(date) {
     return usdCadRateCache.get(keyDate);
   }
 
+  try {
+    const frankfurterRate = await fetchUsdToCadRateFromFrankfurter(keyDate);
+    if (Number.isFinite(frankfurterRate) && frankfurterRate > 0) {
+      updateUsdCadRateCache(keyDate, frankfurterRate);
+      return frankfurterRate;
+    }
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.warn('[FX] Failed Frankfurter USD/CAD rate provider:', message);
+  }
+
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
-    throw new Error('Missing FRED_API_KEY environment variable');
+    updateUsdCadRateCache(keyDate, null);
+    return null;
   }
 
   const url = new URL('https://api.stlouisfed.org/fred/series/observations');
@@ -8301,41 +8343,53 @@ async function fetchUsdToCadRate(date) {
 }
 
 async function fetchUsdToCadRateRange(startDateKey, endDateKey) {
-  const apiKey = process.env.FRED_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing FRED_API_KEY environment variable');
-  }
-
-  const url = new URL('https://api.stlouisfed.org/fred/series/observations');
-  url.searchParams.set('series_id', USD_TO_CAD_SERIES);
-  url.searchParams.set('observation_start', startDateKey);
-  url.searchParams.set('observation_end', endDateKey);
-  url.searchParams.set('api_key', apiKey);
-  url.searchParams.set('file_type', 'json');
-
+  const observedKeys = new Set();
+  let frankfurterObserved = new Set();
   try {
-    const response = await performUndiciApiRequest({ url: url.toString() });
-    const observations = response.data && response.data.observations;
-    if (Array.isArray(observations)) {
-      observations.forEach((entry) => {
-        if (!entry || typeof entry !== 'object') {
-          return;
-        }
-        const dateKey = typeof entry.date === 'string' ? entry.date.trim() : null;
-        if (!dateKey) {
-          return;
-        }
-        const value = Number(entry.value);
-        if (Number.isFinite(value) && value > 0) {
-          updateUsdCadRateCache(dateKey, value);
-        } else if (!usdCadRateCache.has(dateKey)) {
-          updateUsdCadRateCache(dateKey, null);
-        }
-      });
-    }
+    frankfurterObserved = await fetchUsdToCadRateRangeFromFrankfurter(startDateKey, endDateKey);
+    frankfurterObserved.forEach((key) => observedKeys.add(key));
   } catch (error) {
-    console.warn('[FX] Failed to prefetch USD/CAD range:', error?.message || String(error));
+    console.warn('[FX] Failed Frankfurter USD/CAD range provider:', error?.message || String(error));
   }
+
+  const apiKey = process.env.FRED_API_KEY;
+  if (apiKey) {
+    const url = new URL('https://api.stlouisfed.org/fred/series/observations');
+    url.searchParams.set('series_id', USD_TO_CAD_SERIES);
+    url.searchParams.set('observation_start', startDateKey);
+    url.searchParams.set('observation_end', endDateKey);
+    url.searchParams.set('api_key', apiKey);
+    url.searchParams.set('file_type', 'json');
+
+    try {
+      const response = await performUndiciApiRequest({ url: url.toString() });
+      const observations = response.data && response.data.observations;
+      if (Array.isArray(observations)) {
+        observations.forEach((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return;
+          }
+          const dateKey = typeof entry.date === 'string' ? entry.date.trim() : null;
+          if (!dateKey) {
+            return;
+          }
+          if (observedKeys.has(dateKey)) {
+            return;
+          }
+          const value = Number(entry.value);
+          if (Number.isFinite(value) && value > 0) {
+            updateUsdCadRateCache(dateKey, value);
+            observedKeys.add(dateKey);
+          } else if (!usdCadRateCache.has(dateKey)) {
+            updateUsdCadRateCache(dateKey, null);
+          }
+        });
+      }
+    } catch (error) {
+      console.warn('[FX] Failed to prefetch USD/CAD range:', error?.message || String(error));
+    }
+  }
+  return observedKeys;
 }
 
 async function ensureUsdToCadRates(dateKeys) {
@@ -8345,8 +8399,29 @@ async function ensureUsdToCadRates(dateKeys) {
   const uniqueKeys = Array.from(new Set(dateKeys)).filter(Boolean).sort();
   const firstKey = uniqueKeys[0];
   const lastKey = uniqueKeys[uniqueKeys.length - 1];
+  const observedKeys = new Set();
+  const mergeObserved = (set) => {
+    if (!(set instanceof Set) || set.size === 0) {
+      return;
+    }
+    set.forEach((key) => observedKeys.add(key));
+  };
   if (!usdCadRateCache.has(firstKey) || !usdCadRateCache.has(lastKey)) {
-    await fetchUsdToCadRateRange(firstKey, lastKey);
+    const fetched = await fetchUsdToCadRateRange(firstKey, lastKey);
+    mergeObserved(fetched);
+  }
+  const recentRefreshDays = 7;
+  const lastDate = parseDateOnlyString(lastKey);
+  if (lastDate) {
+    const refreshStart = addDays(lastDate, -recentRefreshDays);
+    let refreshStartKey = refreshStart ? formatDateOnly(refreshStart) : null;
+    if (refreshStartKey && refreshStartKey < firstKey) {
+      refreshStartKey = firstKey;
+    }
+    if (refreshStartKey && refreshStartKey <= lastKey) {
+      const refreshed = await fetchUsdToCadRateRange(refreshStartKey, lastKey);
+      mergeObserved(refreshed);
+    }
   }
   const daysBetweenKeys = (a, b) => {
     const da = parseDateOnlyString(a);
@@ -8356,24 +8431,40 @@ async function ensureUsdToCadRates(dateKeys) {
     }
     return Math.abs(da.getTime() - db.getTime()) / DAY_IN_MS;
   };
-  let lastKnown = null;
-  let lastKnownKey = null;
+  const hasObservedValues = observedKeys.size > 0;
+  let lastObserved = null;
+  let lastObservedKey = null;
+  const recentLatestDays = 3;
   uniqueKeys.forEach((key) => {
     if (!key) {
       return;
     }
     const cached = usdCadRateCache.get(key);
-    if (Number.isFinite(cached) && cached > 0) {
-      lastKnown = cached;
-      lastKnownKey = key;
+    const daysFromEnd = daysBetweenKeys(key, lastKey);
+    const latestKey = key + ':latest';
+    const latestValue = usdCadRateCache.get(latestKey);
+    const isObserved = hasObservedValues ? observedKeys.has(key) : true;
+    if (
+      !isObserved &&
+      !observedKeys.has(key) &&
+      Number.isFinite(latestValue) &&
+      latestValue > 0 &&
+      Number.isFinite(daysFromEnd) &&
+      daysFromEnd <= recentLatestDays
+    ) {
+      updateUsdCadRateCache(key, latestValue);
       return;
     }
-    if (lastKnown !== null && lastKnownKey) {
-      const gapDays = daysBetweenKeys(key, lastKnownKey);
-      // Only bridge small gaps (e.g., weekends). Avoid propagating a single stale
-      // rate across long spans when the provider data is unavailable.
+    if (Number.isFinite(cached) && cached > 0 && isObserved) {
+      lastObserved = cached;
+      lastObservedKey = key;
+      return;
+    }
+    if (lastObserved !== null && lastObservedKey) {
+      const gapDays = daysBetweenKeys(key, lastObservedKey);
+      // Only bridge small gaps (e.g., weekends) using the last observed rate.
       if (Number.isFinite(gapDays) && gapDays <= 4) {
-        updateUsdCadRateCache(key, lastKnown);
+        updateUsdCadRateCache(key, lastObserved);
       }
     }
   });
