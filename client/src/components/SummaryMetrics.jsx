@@ -60,13 +60,23 @@ function parseDateString(value, { assumeDateOnly = false } = {}) {
 }
 
 function computeElapsedYears(startDate, endDate) {
-  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+  const normalize = (value) => {
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+    const parsedDateOnly = parseDateOnly(value);
+    if (parsedDateOnly) {
+      return parsedDateOnly;
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+  const normalizedStart = normalize(startDate);
+  const normalizedEnd = normalize(endDate);
+  if (!normalizedStart || !normalizedEnd) {
     return null;
   }
-  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
-    return null;
-  }
-  const diffMs = endDate.getTime() - startDate.getTime();
+  const diffMs = normalizedEnd.getTime() - normalizedStart.getTime();
   if (!Number.isFinite(diffMs) || diffMs <= 0) {
     return null;
   }
@@ -1571,6 +1581,29 @@ export default function SummaryMetrics({
   const selectionEndDateLabel = selectionSummary ? formatDate(selectionSummary.endPoint.date) : null;
   const selectionStartValueLabel = selectionSummary ? formatMoney(selectionSummary.startValue) : null;
   const selectionEndValueLabel = selectionSummary ? formatMoney(selectionSummary.endValue) : null;
+  const selectionDateRangeLabel = selectionSummary
+    ? selectionStartDateLabel && selectionEndDateLabel
+      ? `${selectionStartDateLabel} – ${selectionEndDateLabel}`
+      : selectionStartDateLabel || selectionEndDateLabel
+    : null;
+  const selectionDurationLabel = useMemo(() => {
+    if (!selectionSummary?.startPoint?.date || !selectionSummary?.endPoint?.date) {
+      return null;
+    }
+    const elapsedYears = computeElapsedYears(selectionSummary.startPoint.date, selectionSummary.endPoint.date);
+    if (!Number.isFinite(elapsedYears)) {
+      return null;
+    }
+    const elapsedMonths = elapsedYears * 12;
+    const useMonths = elapsedMonths < 3;
+    const value = useMonths ? elapsedMonths : elapsedYears;
+    const formatted = formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    if (!formatted || formatted === '—') {
+      return null;
+    }
+    const unit = Math.abs(value) === 1 ? (useMonths ? 'month' : 'year') : useMonths ? 'months' : 'years';
+    return `(${formatted} ${unit})`;
+  }, [selectionSummary]);
   const selectionSummaryClassNames = ['pnl-dialog__selection-summary'];
   if (selectionSummary?.isActive) {
     selectionSummaryClassNames.push('pnl-dialog__selection-summary--active');
@@ -2731,9 +2764,10 @@ export default function SummaryMetrics({
                       </span>
                     </div>
                     <div className="pnl-dialog__selection-dates">
-                      {selectionStartDateLabel && selectionEndDateLabel
-                        ? `${selectionStartDateLabel} – ${selectionEndDateLabel}`
-                        : selectionStartDateLabel || selectionEndDateLabel}
+                      {selectionDateRangeLabel}
+                      {selectionDurationLabel && (
+                        <span className="pnl-dialog__selection-duration">{` ${selectionDurationLabel}`}</span>
+                      )}
                     </div>
                     <div className="pnl-dialog__selection-values">
                       <span>

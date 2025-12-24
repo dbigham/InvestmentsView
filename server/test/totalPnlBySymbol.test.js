@@ -40,12 +40,14 @@ test('journaling pair nets to ~0', async () => {
     ['DLR.TO', new Map([[d('2025-10-01'), 10],[d('2025-10-10'),10],[d('2025-10-31'),10]])],
     ['DLR.U.TO', new Map([[d('2025-10-01'), 10],[d('2025-10-10'),10],[d('2025-10-31'),10]])],
   ]);
+  const usdRates = new Map([[d('2025-10-01'), 1], [d('2025-10-10'), 1], [d('2025-10-31'), 1]]);
   const endHoldings = new Map([['DLR', 0]]);
   const result = await computeTotalPnlBySymbol(login, account, {
     activityContext: ctx,
     applyAccountCagrStartDate: true,
     displayStartKey: d(start),
     priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
     endHoldingsBySymbol: endHoldings,
   });
   const dlr = result.entries.find(e => e.symbol === 'DLR') || result.entries.find(e => e.symbol === 'DLR.TO');
@@ -81,6 +83,87 @@ test('transfer out after start nets ~0 for SGOV', async () => {
   const sgov = result.entries.find(e => e.symbol === 'SGOV');
   assert.ok(sgov, 'SGOV entry present');
   assert.ok(Math.abs(sgov.totalPnlCad) < 1e-6, 'SGOV transfer out ~0 P&L');
+});
+
+test('transfer uses book value when available', async () => {
+  const account = { id: 'test:9', number: 'test:9', cagrStartDate: '2025-10-01' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ENB.TO', quantity: 10, netAmount: -1000, currency: 'CAD', tradeDate: '2025-10-02' },
+    { type: 'Transfers', action: 'TFO', symbol: 'ENB.TO', quantity: -10, netAmount: 0, currency: 'CAD', description: 'TRANSFER BOOK VALUE 1000', tradeDate: '2025-10-10' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ENB.TO', new Map([[d('2025-10-01'), 100], [d('2025-10-02'), 100], [d('2025-10-10'), 90], [d('2025-10-31'), 90]])],
+  ]);
+  const endHoldings = new Map([['ENB.TO', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const enb = result.entries.find((e) => e.symbol === 'ENB.TO') || result.entries.find((e) => e.symbol === 'ENB');
+  assert.ok(enb, 'ENB entry present');
+  assert.ok(Math.abs(enb.totalPnlCad) < 1e-6, 'ENB transfer uses book value for ~0 P&L');
+});
+
+test('transfer cash applied once per date', async () => {
+  const account = { id: 'test:10', number: 'test:10', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-01-10';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ABC.TO', quantity: 10, netAmount: -1000, currency: 'CAD', tradeDate: '2025-01-02' },
+    { type: 'Dividends', symbol: 'ABC.TO', quantity: 0, netAmount: 5, currency: 'CAD', tradeDate: '2025-01-05' },
+    { type: 'Transfers', action: 'TFO', symbol: 'ABC.TO', quantity: -10, netAmount: 0, currency: 'CAD', description: 'TRANSFER BOOK VALUE 1000', tradeDate: '2025-01-05' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC.TO', new Map([[d('2025-01-01'), 100], [d('2025-01-05'), 100], [d('2025-01-10'), 100]])],
+  ]);
+  const endHoldings = new Map([['ABC.TO', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC.TO') || result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(Math.abs(abc.totalPnlCad - 5) < 1e-6, 'ABC P&L reflects dividend only');
+});
+
+test('transfer with currency mismatch uses symbol currency', async () => {
+  const account = { id: 'test:11', number: 'test:11', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-01-31';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'XYZ', quantity: 10, netAmount: -1000, currency: 'USD', tradeDate: '2024-12-20' },
+    { type: 'Transfers', action: 'TFO', symbol: 'XYZ', quantity: -10, netAmount: 0, currency: 'CAD', description: 'TRANSFER BOOK VALUE 1500', tradeDate: '2025-01-10' },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['XYZ', new Map([[d('2025-01-01'), 100], [d('2025-01-10'), 100], [d('2025-01-31'), 100]])],
+  ]);
+  const usdRates = new Map([[d('2025-01-01'), 1.5], [d('2025-01-10'), 1.5], [d('2025-01-31'), 1.5]]);
+  const endHoldings = new Map([['XYZ', 0]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const xyz = result.entries.find((e) => e.symbol === 'XYZ');
+  assert.ok(xyz, 'XYZ entry present');
+  assert.ok(Math.abs(xyz.totalPnlCad) < 1e-6, 'XYZ transfer mismatch nets ~0 P&L');
 });
 
 test('UNH small gain since start', async () => {

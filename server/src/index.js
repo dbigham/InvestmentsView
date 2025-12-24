@@ -137,6 +137,8 @@ const RESERVE_SYMBOL_SET = new Set(Array.isArray(deploymentDisplay?.RESERVE_SYMB
   : []);
 // Minimum negative Total P&L (CAD) drop before we consider an automated fix.
 const AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD = 500;
+// Minimum unexplained equity increase (CAD) before we treat it as a pending deposit.
+const AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD = 250;
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
@@ -177,17 +179,12 @@ const MODEL_PRICING_PER_MTOK = {
   'gpt-5-pro': { input: 15.0, output: 120.0 },
 };
 
-const SUMMARY_CACHE_TTL_MS = (() => {
-  const value = Number(process.env.SUMMARY_CACHE_TTL_MS);
-  if (Number.isFinite(value) && value > 0) {
-    return value;
-  }
-  const minutes = Number(process.env.SUMMARY_CACHE_TTL_MINUTES);
-  if (Number.isFinite(minutes) && minutes > 0) {
-    return Math.round(minutes * 60 * 1000);
-  }
-  return 2 * 60 * 1000; // default 2 minutes
-})();
+// Keep summary caches effectively "pinned" until the user triggers a manual refresh.
+// This prevents accidental expiration during long-running sessions.
+// Keep caches effectively pinned until manual refresh; used by summary/superset caches.
+const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
+
+const SUMMARY_CACHE_TTL_MS = PINNED_EXPIRY_MS;
 
 const TOTAL_PNL_SERIES_CACHE_TTL_MS = (() => {
   const value = Number(process.env.TOTAL_PNL_SERIES_CACHE_TTL_MS);
@@ -221,7 +218,6 @@ if (DEBUG_YAHOO_PEG) {
   console.log('[peg-debug] Yahoo PEG ratio debugging enabled');
 }
 // Max valid JS Date timestamp in ms is ±8.64e15; use slightly below as a pinned expiry
-const PINNED_EXPIRY_MS = 8_640_000_000_000_000 - 1;
 const PREHEAT_GROUP_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_GROUP_TOTAL_PNL, false);
 const PREHEAT_ACCOUNT_TOTAL_PNL = parseBooleanEnv(process.env.PREHEAT_ACCOUNT_TOTAL_PNL, false);
 const PREHEAT_MAX_CONCURRENCY = (() => {
@@ -833,15 +829,7 @@ function normalizeSummaryRequestKey(rawAccountId) {
 }
 
 function pruneSummaryCache() {
-  const now = nowMs();
-  for (const [key, entry] of summaryCacheStore.entries()) {
-    if (!entry || entry.expiresAt <= now) {
-      summaryCacheStore.delete(key);
-    }
-  }
-  if (supersetSummaryCache && supersetSummaryCache.expiresAt <= now) {
-    supersetSummaryCache = null;
-  }
+  // TTL-based pruning disabled; caches persist until manual refresh.
 }
 
 function getSummaryCacheEntry(cacheKey) {
@@ -858,7 +846,7 @@ function setSummaryCacheEntry(cacheKey, payload, metadata = {}) {
     return;
   }
   const timestamp = nowMs();
-  const pinned = metadata && metadata.cacheScope && metadata.cacheScope.pinned === true;
+  const pinned = true;
   const entry = {
     payload,
     metadata,
@@ -922,7 +910,6 @@ function setRangeBreakdownCacheEntry(key, payload) {
 }
 
 function getSupersetCacheEntry() {
-  pruneSummaryCache();
   return supersetSummaryCache;
 }
 
@@ -3531,6 +3518,9 @@ const priceHistoryCache = new Map();
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
 const PRICE_SERIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'prices');
 const PRICE_SERIES_DEFAULT_START = '1990-01-01';
+// Limit how far we carry forward the last known price when filling a daily series.
+// Allows weekends/holidays, but prevents using a stale close across many missing days.
+const PRICE_CARRY_FORWARD_MAX_DAYS = 3;
 // Cache of Questrade symbol details keyed by `${loginId}|${symbolId}` to avoid
 // repeated /v1/symbols lookups when data was already fetched during summary.
 const symbolDetailsCache = new Map();
@@ -6460,6 +6450,158 @@ function isSplitLikeActivity(activity) {
   return SPLIT_ACTIVITY_REGEX.test(combined);
 }
 
+function parseSplitRatioFromText(text) {
+  if (!text || typeof text !== 'string') {
+    return null;
+  }
+  const match = /(\d+(?:\.\d+)?)\s*(?:[:\/]|for|to)\s*(\d+(?:\.\d+)?)/i.exec(text);
+  if (match) {
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    if (Number.isFinite(first) && Number.isFinite(second) && second > 0) {
+      return first / second;
+    }
+  }
+  return null;
+}
+
+function inferSplitRatioFromActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const combined = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
+  return parseSplitRatioFromText(combined);
+}
+
+function collectSplitEventsFromActivities(processedActivities) {
+  const bySymbol = new Map();
+  if (!Array.isArray(processedActivities) || !processedActivities.length) {
+    return bySymbol;
+  }
+  const buckets = new Map(); // `${symbol}|${dateKey}` -> { symbol, dateKey, pos, neg, ratio }
+  processedActivities.forEach((entry) => {
+    if (!entry || !entry.activity) {
+      return;
+    }
+    const { activity, symbol, dateKey } = entry;
+    if (!symbol || !dateKey || !isSplitLikeActivity(activity)) {
+      return;
+    }
+    const key = `${symbol}|${dateKey}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, { symbol, dateKey, pos: 0, neg: 0, ratio: null });
+    }
+    const bucket = buckets.get(key);
+    const ratioFromText = inferSplitRatioFromActivity(activity);
+    if (Number.isFinite(ratioFromText) && ratioFromText > 0) {
+      bucket.ratio = ratioFromText;
+    }
+    const qty = Number(activity.quantity);
+    if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
+      if (qty > 0) {
+        bucket.pos += qty;
+      } else {
+        bucket.neg += Math.abs(qty);
+      }
+    }
+  });
+  for (const bucket of buckets.values()) {
+    let ratio = Number(bucket.ratio);
+    if (!(Number.isFinite(ratio) && ratio > 0) && bucket.pos > 0 && bucket.neg > 0) {
+      const implied = bucket.pos / bucket.neg;
+      if (Number.isFinite(implied) && implied > 0) {
+        ratio = implied;
+      }
+    }
+    if (!(Number.isFinite(ratio) && ratio > 0)) {
+      continue;
+    }
+    if (!bySymbol.has(bucket.symbol)) {
+      bySymbol.set(bucket.symbol, []);
+    }
+    bySymbol.get(bucket.symbol).push({
+      dateKey: bucket.dateKey,
+      ratio,
+    });
+  }
+  for (const arr of bySymbol.values()) {
+    arr.sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+  }
+  return bySymbol;
+}
+
+function applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol) {
+  if (!(priceSeriesMap instanceof Map) || !(splitEventsBySymbol instanceof Map)) {
+    return;
+  }
+  for (const [symbol, events] of splitEventsBySymbol.entries()) {
+    const series = priceSeriesMap.get(symbol);
+    if (!(series instanceof Map) || !Array.isArray(events) || events.length === 0) {
+      continue;
+    }
+    const sortedEvents = events
+      .filter((evt) => evt && typeof evt.dateKey === 'string' && Number.isFinite(evt.ratio) && evt.ratio > 0)
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    if (!sortedEvents.length) {
+      continue;
+    }
+    const keys = Array.from(series.keys()).filter(Boolean).sort();
+    if (!keys.length) {
+      continue;
+    }
+    for (const event of sortedEvents) {
+      const { dateKey, ratio } = event;
+      if (!dateKey || !(Number.isFinite(ratio) && ratio > 0)) {
+        continue;
+      }
+      let priceBefore = null;
+      let priceAfter = null;
+      for (let i = keys.length - 1; i >= 0; i -= 1) {
+        const k = keys[i];
+        if (k < dateKey && series.has(k)) {
+          const p = series.get(k);
+          if (Number.isFinite(p) && p > 0) {
+            priceBefore = p;
+            break;
+          }
+        }
+      }
+      for (let i = 0; i < keys.length; i += 1) {
+        const k = keys[i];
+        if (k >= dateKey && series.has(k)) {
+          const p = series.get(k);
+          if (Number.isFinite(p) && p > 0) {
+            priceAfter = p;
+            break;
+          }
+        }
+      }
+      let shouldAdjust = true;
+      if (Number.isFinite(priceBefore) && Number.isFinite(priceAfter)) {
+        const observedRatio = priceAfter / priceBefore;
+        const expectedRatio = 1 / ratio;
+        if (Number.isFinite(observedRatio) && Number.isFinite(expectedRatio) && expectedRatio > 0) {
+          const logDiff = Math.abs(Math.log(observedRatio) - Math.log(expectedRatio));
+          if (logDiff <= 0.4) {
+            shouldAdjust = false; // price history already reflects the split reasonably
+          }
+        }
+      }
+      if (!shouldAdjust) {
+        continue;
+      }
+      for (const key of keys) {
+        if (key < dateKey) {
+          const price = series.get(key);
+          if (Number.isFinite(price) && price > 0) {
+            series.set(key, price * ratio);
+          }
+        }
+      }
+    }
+  }
+}
+
 function resolveActivityOrderAction(activity, rawQuantity) {
   if (activity && typeof activity.action === 'string') {
     const trimmed = activity.action.trim();
@@ -6584,7 +6726,9 @@ function convertActivityToOrder(activity, context) {
     );
   }
 
-  const orderId = 'activity:' + identifier;
+  const normalizedIdentifier = typeof identifier === 'string' ? identifier.trim() : String(identifier || '');
+  const orderId = normalizedIdentifier || null;
+  const activityOrderId = normalizedIdentifier ? 'activity:' + normalizedIdentifier : null;
   const quantity = Math.abs(rawQuantity);
   const price = resolveActivityOrderPrice(activity, rawQuantity);
   const action = resolveActivityOrderAction(activity, rawQuantity);
@@ -6603,6 +6747,7 @@ function convertActivityToOrder(activity, context) {
   return {
     id: orderId,
     orderId,
+    activityOrderId,
     accountId,
     accountNumber,
     loginId,
@@ -6987,6 +7132,57 @@ function resolveOrderIdentifier(order) {
     return null;
   }
   return 'fallback:' + keyParts.join('|');
+}
+
+function resolveOrderApproximateKey(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const normalize = function (value) {
+    return typeof value === 'string' ? value.trim().toUpperCase() : '';
+  };
+  const symbol = normalize(order.symbol);
+  const action = normalize(order.action || order.side);
+  const quantity =
+    toFiniteNumber(order.filledQuantity) ??
+    toFiniteNumber(order.totalQuantity) ??
+    toFiniteNumber(order.openQuantity);
+  const dayKey = getTorontoDateKey(
+    order.creationTime ||
+      order.createdTime ||
+      order.updateTime ||
+      order.updatedTime ||
+      order.time ||
+      null
+  );
+  if (!symbol || !action || quantity === null || !dayKey) {
+    return null;
+  }
+  const price = resolveAggregationPrice(order);
+  const quantityKey = quantity.toFixed(6);
+  const priceKey = Number.isFinite(price) ? price.toFixed(6) : 'noprice';
+  return ['approx', symbol, action, dayKey, 'qty:' + quantityKey, 'px:' + priceKey].join('|');
+}
+
+function pickPreferredOrder(existing, candidate) {
+  if (!existing) {
+    return candidate;
+  }
+  if (!candidate) {
+    return existing;
+  }
+  const isActivity = function (order) {
+    return typeof order?.source === 'string' && order.source.toLowerCase() === 'activity';
+  };
+  const existingIsActivity = isActivity(existing);
+  const candidateIsActivity = isActivity(candidate);
+  if (existingIsActivity && !candidateIsActivity) {
+    return candidate;
+  }
+  if (candidateIsActivity && !existingIsActivity) {
+    return existing;
+  }
+  return pickMoreRecentOrder(existing, candidate);
 }
 
 function pickMoreRecentOrder(existing, candidate) {
@@ -7595,6 +7791,35 @@ const DIVIDEND_ACTIVITY_REGEX = /(dividend|distribution)/i;
 // For per-symbol Total P&L, some income (e.g., T-bill ETFs) is booked as
 // "interest" rather than dividend/distribution. Treat it as income here.
 const INCOME_ACTIVITY_REGEX = /(dividend|distribution|interest|coupon)/i;
+const BOOK_VALUE_REGEX = /book value[^0-9]*([0-9]+(?:[.,][0-9]+)?)/i;
+
+function extractBookValueFromDescription(description) {
+  if (typeof description !== 'string' || !description.trim()) {
+    return null;
+  }
+  const match = description.match(BOOK_VALUE_REGEX);
+  if (!match) {
+    return null;
+  }
+  const raw = match[1].replace(/,/g, '');
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function resolveTransferBookValuePerShare(activity, rawQty) {
+  const type = activity && typeof activity.type === 'string' ? activity.type.toLowerCase() : '';
+  if (!type || type !== 'transfers') {
+    return null;
+  }
+  if (!Number.isFinite(rawQty) || Math.abs(rawQty) < LEDGER_QUANTITY_EPSILON) {
+    return null;
+  }
+  const total = extractBookValueFromDescription(activity.description);
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return total / Math.abs(rawQty);
+}
 
 const DIVIDEND_SYMBOL_CANONICAL_ALIASES = new Map([
   ['N003056', 'NVDA'],
@@ -8023,6 +8248,36 @@ async function fetchLatestUsdToCadRate() {
   return null;
 }
 
+async function fetchUsdToCadRateFromFrankfurter(dateKey) {
+  if (!dateKey) {
+    return null;
+  }
+  const url = `https://api.frankfurter.app/${dateKey}?from=USD&to=CAD`;
+  const response = await axios.get(url, { timeout: 5000 });
+  const rate = response && response.data && response.data.rates && Number(response.data.rates.CAD);
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+async function fetchUsdToCadRateRangeFromFrankfurter(startDateKey, endDateKey) {
+  if (!startDateKey || !endDateKey) {
+    return new Set();
+  }
+  const url = `https://api.frankfurter.app/${startDateKey}..${endDateKey}?from=USD&to=CAD`;
+  const response = await axios.get(url, { timeout: 5000 });
+  const rates = response && response.data && response.data.rates;
+  const observed = new Set();
+  if (rates && typeof rates === 'object') {
+    Object.keys(rates).forEach((dateKey) => {
+      const rate = rates[dateKey] && Number(rates[dateKey].CAD);
+      if (Number.isFinite(rate) && rate > 0) {
+        updateUsdCadRateCache(dateKey, rate);
+        observed.add(dateKey);
+      }
+    });
+  }
+  return observed;
+}
+
 async function fetchUsdToCadRate(date) {
   const keyDate = formatDateOnly(date);
   if (!keyDate) {
@@ -8050,9 +8305,21 @@ async function fetchUsdToCadRate(date) {
     return usdCadRateCache.get(keyDate);
   }
 
+  try {
+    const frankfurterRate = await fetchUsdToCadRateFromFrankfurter(keyDate);
+    if (Number.isFinite(frankfurterRate) && frankfurterRate > 0) {
+      updateUsdCadRateCache(keyDate, frankfurterRate);
+      return frankfurterRate;
+    }
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.warn('[FX] Failed Frankfurter USD/CAD rate provider:', message);
+  }
+
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
-    throw new Error('Missing FRED_API_KEY environment variable');
+    updateUsdCadRateCache(keyDate, null);
+    return null;
   }
 
   const url = new URL('https://api.stlouisfed.org/fred/series/observations');
@@ -8076,41 +8343,53 @@ async function fetchUsdToCadRate(date) {
 }
 
 async function fetchUsdToCadRateRange(startDateKey, endDateKey) {
-  const apiKey = process.env.FRED_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing FRED_API_KEY environment variable');
-  }
-
-  const url = new URL('https://api.stlouisfed.org/fred/series/observations');
-  url.searchParams.set('series_id', USD_TO_CAD_SERIES);
-  url.searchParams.set('observation_start', startDateKey);
-  url.searchParams.set('observation_end', endDateKey);
-  url.searchParams.set('api_key', apiKey);
-  url.searchParams.set('file_type', 'json');
-
+  const observedKeys = new Set();
+  let frankfurterObserved = new Set();
   try {
-    const response = await performUndiciApiRequest({ url: url.toString() });
-    const observations = response.data && response.data.observations;
-    if (Array.isArray(observations)) {
-      observations.forEach((entry) => {
-        if (!entry || typeof entry !== 'object') {
-          return;
-        }
-        const dateKey = typeof entry.date === 'string' ? entry.date.trim() : null;
-        if (!dateKey) {
-          return;
-        }
-        const value = Number(entry.value);
-        if (Number.isFinite(value) && value > 0) {
-          updateUsdCadRateCache(dateKey, value);
-        } else if (!usdCadRateCache.has(dateKey)) {
-          updateUsdCadRateCache(dateKey, null);
-        }
-      });
-    }
+    frankfurterObserved = await fetchUsdToCadRateRangeFromFrankfurter(startDateKey, endDateKey);
+    frankfurterObserved.forEach((key) => observedKeys.add(key));
   } catch (error) {
-    console.warn('[FX] Failed to prefetch USD/CAD range:', error?.message || String(error));
+    console.warn('[FX] Failed Frankfurter USD/CAD range provider:', error?.message || String(error));
   }
+
+  const apiKey = process.env.FRED_API_KEY;
+  if (apiKey) {
+    const url = new URL('https://api.stlouisfed.org/fred/series/observations');
+    url.searchParams.set('series_id', USD_TO_CAD_SERIES);
+    url.searchParams.set('observation_start', startDateKey);
+    url.searchParams.set('observation_end', endDateKey);
+    url.searchParams.set('api_key', apiKey);
+    url.searchParams.set('file_type', 'json');
+
+    try {
+      const response = await performUndiciApiRequest({ url: url.toString() });
+      const observations = response.data && response.data.observations;
+      if (Array.isArray(observations)) {
+        observations.forEach((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return;
+          }
+          const dateKey = typeof entry.date === 'string' ? entry.date.trim() : null;
+          if (!dateKey) {
+            return;
+          }
+          if (observedKeys.has(dateKey)) {
+            return;
+          }
+          const value = Number(entry.value);
+          if (Number.isFinite(value) && value > 0) {
+            updateUsdCadRateCache(dateKey, value);
+            observedKeys.add(dateKey);
+          } else if (!usdCadRateCache.has(dateKey)) {
+            updateUsdCadRateCache(dateKey, null);
+          }
+        });
+      }
+    } catch (error) {
+      console.warn('[FX] Failed to prefetch USD/CAD range:', error?.message || String(error));
+    }
+  }
+  return observedKeys;
 }
 
 async function ensureUsdToCadRates(dateKeys) {
@@ -8120,21 +8399,73 @@ async function ensureUsdToCadRates(dateKeys) {
   const uniqueKeys = Array.from(new Set(dateKeys)).filter(Boolean).sort();
   const firstKey = uniqueKeys[0];
   const lastKey = uniqueKeys[uniqueKeys.length - 1];
+  const observedKeys = new Set();
+  const mergeObserved = (set) => {
+    if (!(set instanceof Set) || set.size === 0) {
+      return;
+    }
+    set.forEach((key) => observedKeys.add(key));
+  };
   if (!usdCadRateCache.has(firstKey) || !usdCadRateCache.has(lastKey)) {
-    await fetchUsdToCadRateRange(firstKey, lastKey);
+    const fetched = await fetchUsdToCadRateRange(firstKey, lastKey);
+    mergeObserved(fetched);
   }
-  let lastKnown = null;
+  const recentRefreshDays = 7;
+  const lastDate = parseDateOnlyString(lastKey);
+  if (lastDate) {
+    const refreshStart = addDays(lastDate, -recentRefreshDays);
+    let refreshStartKey = refreshStart ? formatDateOnly(refreshStart) : null;
+    if (refreshStartKey && refreshStartKey < firstKey) {
+      refreshStartKey = firstKey;
+    }
+    if (refreshStartKey && refreshStartKey <= lastKey) {
+      const refreshed = await fetchUsdToCadRateRange(refreshStartKey, lastKey);
+      mergeObserved(refreshed);
+    }
+  }
+  const daysBetweenKeys = (a, b) => {
+    const da = parseDateOnlyString(a);
+    const db = parseDateOnlyString(b);
+    if (!(da instanceof Date) || !(db instanceof Date)) {
+      return null;
+    }
+    return Math.abs(da.getTime() - db.getTime()) / DAY_IN_MS;
+  };
+  const hasObservedValues = observedKeys.size > 0;
+  let lastObserved = null;
+  let lastObservedKey = null;
+  const recentLatestDays = 3;
   uniqueKeys.forEach((key) => {
     if (!key) {
       return;
     }
     const cached = usdCadRateCache.get(key);
-    if (Number.isFinite(cached) && cached > 0) {
-      lastKnown = cached;
+    const daysFromEnd = daysBetweenKeys(key, lastKey);
+    const latestKey = key + ':latest';
+    const latestValue = usdCadRateCache.get(latestKey);
+    const isObserved = hasObservedValues ? observedKeys.has(key) : true;
+    if (
+      !isObserved &&
+      !observedKeys.has(key) &&
+      Number.isFinite(latestValue) &&
+      latestValue > 0 &&
+      Number.isFinite(daysFromEnd) &&
+      daysFromEnd <= recentLatestDays
+    ) {
+      updateUsdCadRateCache(key, latestValue);
       return;
     }
-    if (lastKnown !== null) {
-      updateUsdCadRateCache(key, lastKnown);
+    if (Number.isFinite(cached) && cached > 0 && isObserved) {
+      lastObserved = cached;
+      lastObservedKey = key;
+      return;
+    }
+    if (lastObserved !== null && lastObservedKey) {
+      const gapDays = daysBetweenKeys(key, lastObservedKey);
+      // Only bridge small gaps (e.g., weekends) using the last observed rate.
+      if (Number.isFinite(gapDays) && gapDays <= 4) {
+        updateUsdCadRateCache(key, lastObserved);
+      }
     }
   });
 }
@@ -10676,6 +11007,7 @@ function buildDailyPriceSeries(normalizedHistory, dateKeys) {
   }
   let cursorIndex = 0;
   let lastPrice = null;
+  let lastKnownDateKey = null;
   for (const dateKey of dateKeys) {
     const targetDate = parseDateOnlyString(dateKey);
     const targetTime =
@@ -10694,35 +11026,24 @@ function buildDailyPriceSeries(normalizedHistory, dateKeys) {
       lastPrice = normalizedHistory[cursorIndex].price;
       cursorIndex += 1;
     }
-    if (Number.isFinite(lastPrice)) {
-      series.set(dateKey, lastPrice);
-    }
-  }
-  if (series.size > 0) {
-    let carry = null;
-    for (const dateKey of dateKeys) {
-      if (!dateKey) {
-        continue;
-      }
-      if (series.has(dateKey)) {
-        const value = series.get(dateKey);
-        if (Number.isFinite(value)) {
-          carry = value;
-        }
-      } else if (Number.isFinite(carry)) {
-        series.set(dateKey, carry);
+    if (
+      cursorIndex > 0 &&
+      normalizedHistory[cursorIndex - 1] &&
+      normalizedHistory[cursorIndex - 1].date instanceof Date &&
+      !Number.isNaN(normalizedHistory[cursorIndex - 1].date.getTime())
+    ) {
+      const consumedKey = formatDateOnly(normalizedHistory[cursorIndex - 1].date);
+      if (consumedKey) {
+        lastKnownDateKey = consumedKey;
       }
     }
-    const firstKnownKey = dateKeys.find((key) => Number.isFinite(series.get(key)));
-    if (firstKnownKey) {
-      const firstValue = series.get(firstKnownKey);
-      for (const dateKey of dateKeys) {
-        if (dateKey === firstKnownKey) {
-          break;
-        }
-        if (!series.has(dateKey) && Number.isFinite(firstValue)) {
-          series.set(dateKey, firstValue);
-        }
+    if (Number.isFinite(lastPrice) && lastKnownDateKey) {
+      const gapDays =
+        targetDate instanceof Date && lastKnownDateKey
+          ? Math.abs(targetDate.getTime() - parseDateOnlyString(lastKnownDateKey).getTime()) / DAY_IN_MS
+          : 0;
+      if (!Number.isFinite(gapDays) || gapDays <= PRICE_CARRY_FORWARD_MAX_DAYS) {
+        series.set(dateKey, lastPrice);
       }
     }
   }
@@ -11113,6 +11434,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   });
 
   processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+  const splitEventsBySymbol = collectSplitEventsFromActivities(processedActivities);
 
   // Fetch symbol details early and augment activities missing symbols using symbolId
   let symbolDetails = {};
@@ -11175,6 +11497,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const closingHoldings = new Map();
   const closingCashByCurrency = new Map();
+  let summaryDayPnlCad = null;
 
   if (perAccountCombinedBalances && perAccountCombinedBalances[accountKey]) {
     const balanceSummary = perAccountCombinedBalances[accountKey];
@@ -11189,6 +11512,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           return;
         }
         const currency = normalizeCurrency(entry.currency || key);
+        const dayPnlValue = Number(entry.dayPnl ?? entry.dayPnL);
+        if (currency === 'CAD' && Number.isFinite(dayPnlValue)) {
+          summaryDayPnlCad = dayPnlValue;
+        }
         const cashValue = Number(entry.cash);
         if (!currency || !Number.isFinite(cashValue) || Math.abs(cashValue) < 0.00001) {
           return;
@@ -11345,11 +11672,12 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const symbols = Array.from(symbolMeta.keys());
   const priceSeriesMap = new Map();
   const missingPriceSymbols = new Set();
+  const debugPriceSeries = [];
+  const priceSeriesStartKey = dateKeys[0];
+  const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
   if (symbols.length) {
-    const startKey = dateKeys[0];
-    const endKey = dateKeys[dateKeys.length - 1];
     await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
-      const cacheKey = getPriceHistoryCacheKey(symbol, startKey, endKey);
+      const cacheKey = getPriceHistoryCacheKey(symbol, priceSeriesStartKey, priceSeriesEndKey);
       let history = null;
       if (cacheKey) {
         const cached = getCachedPriceHistory(cacheKey);
@@ -11365,7 +11693,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           const rawSymbolId =
             typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
           const normalizedSymbolId = Number.isFinite(rawSymbolId) && rawSymbolId > 0 ? rawSymbolId : null;
-          history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+          history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
             login,
             symbolId: normalizedSymbolId,
             accountKey,
@@ -11377,7 +11705,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         }
         if (!Array.isArray(history) || history.length === 0) {
           try {
-            const loaded = await loadSymbolPriceSeries(symbol, startKey, endKey);
+            const loaded = await loadSymbolPriceSeries(symbol, priceSeriesStartKey, priceSeriesEndKey);
             if (loaded && Array.isArray(loaded.points) && loaded.points.length) {
               history = loaded.points
                 .map((point) => ({
@@ -11405,10 +11733,49 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         priceSeriesMap.set(symbol, new Map());
         missingPriceSymbols.add(symbol);
       }
+      if (options && options.debugPriceSeries) {
+        const series = priceSeriesMap.get(symbol) || new Map();
+        const keys = Array.from(series.keys()).sort();
+        const lastKey = keys.length ? keys[keys.length - 1] : null;
+        const firstKey = keys.length ? keys[0] : null;
+        const lastPrice = lastKey ? series.get(lastKey) : null;
+        const startPrice = series.has(priceSeriesStartKey) ? series.get(priceSeriesStartKey) : null;
+        const endPrice = series.has(priceSeriesEndKey) ? series.get(priceSeriesEndKey) : null;
+        debugPriceSeries.push({
+          symbol,
+          firstDate: firstKey || null,
+          lastDate: lastKey || null,
+          lastPrice: Number.isFinite(lastPrice) ? lastPrice : null,
+          startPrice: Number.isFinite(startPrice) ? startPrice : null,
+          endPrice: Number.isFinite(endPrice) ? endPrice : null,
+          pointCount: series.size,
+        });
+      }
     });
   }
 
-  
+  applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
+  if (options && options.debugPriceSeries) {
+    debugPriceSeries.length = 0;
+    symbols.forEach((symbol) => {
+      const series = priceSeriesMap.get(symbol) || new Map();
+      const keys = Array.from(series.keys()).sort();
+      const lastKey = keys.length ? keys[keys.length - 1] : null;
+      const firstKey = keys.length ? keys[0] : null;
+      const lastPrice = lastKey ? series.get(lastKey) : null;
+      const startPrice = series.has(priceSeriesStartKey) ? series.get(priceSeriesStartKey) : null;
+      const endPrice = series.has(priceSeriesEndKey) ? series.get(priceSeriesEndKey) : null;
+      debugPriceSeries.push({
+        symbol,
+        firstDate: firstKey || null,
+        lastDate: lastKey || null,
+        lastPrice: Number.isFinite(lastPrice) ? lastPrice : null,
+        startPrice: Number.isFinite(startPrice) ? startPrice : null,
+        endPrice: Number.isFinite(endPrice) ? endPrice : null,
+        pointCount: series.size,
+      });
+    });
+  }
 
   const { perDay: dailyNetDepositsMap, conversionIncomplete } = await computeDailyNetDeposits(
     activityContext,
@@ -11422,6 +11789,12 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const usdRateCache = new Map();
   const points = [];
   const issues = new Set();
+  let holdingsAtEnd = null;
+  const debugEquitySnapshots = [];
+  const debugDates =
+    options && Array.isArray(options.debugEquityDates)
+      ? options.debugEquityDates.filter((d) => typeof d === 'string' && d.trim()).map((d) => d.trim())
+      : [];
   let cumulativeNetDeposits = 0;
   const effectiveNetDepositsCad =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
@@ -11504,7 +11877,6 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       usdRate,
       { reserveSymbols }
     );
-
     if (snapshot.missingPrices.length) {
       snapshot.missingPrices.forEach((symbol) => missingPriceSymbols.add(symbol));
     }
@@ -11550,6 +11922,41 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       deployedPercent: Number.isFinite(deployedPercent) ? deployedPercent : undefined,
       reservePercent: Number.isFinite(reservePercent) ? reservePercent : undefined,
     });
+
+    if (debugDates.includes(dateKey)) {
+      const perSymbol = [];
+      for (const [sym, qty] of holdings.entries()) {
+        const series = priceSeriesMap.get(sym) || new Map();
+        const price = series.has(dateKey) ? series.get(dateKey) : null;
+        const meta = symbolMeta.get(sym) || {};
+        const currency = meta.currency || inferSymbolCurrency(sym) || 'USD';
+        perSymbol.push({
+          symbol: sym,
+          quantity: qty,
+          price,
+          currency,
+          valueCad:
+            Number.isFinite(qty) && Number.isFinite(price)
+              ? currency === 'USD' && Number.isFinite(usdRate)
+                ? qty * price * usdRate
+                : qty * price
+              : null,
+        });
+      }
+      debugEquitySnapshots.push({
+        date: dateKey,
+        usdRate: Number.isFinite(usdRate) ? usdRate : null,
+        cadCash: cashByCurrency.has('CAD') ? cashByCurrency.get('CAD') : 0,
+        usdCash: cashByCurrency.has('USD') ? cashByCurrency.get('USD') : 0,
+        perSymbol,
+      });
+    }
+  }
+  if (options && options.debugPriceSeries) {
+    holdingsAtEnd = Array.from(holdings.entries()).map(([symbol, quantity]) => ({
+      symbol,
+      quantity,
+    }));
   }
 
   const rawFirstPnl = points.length ? points[0].totalPnlCad : null;
@@ -11618,17 +12025,55 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   if (summaryTotalPnlAllTime === null && Number.isFinite(summaryTotalPnl)) {
     summaryTotalPnlAllTime = summaryTotalPnl;
   }
-  const summaryNetDeposits =
+  let summaryNetDeposits =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.combinedCad)
       ? netDepositsSummary.netDeposits.combinedCad
       : null;
-  const summaryNetDepositsAllTime =
+  let summaryNetDepositsAllTime =
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.allTimeCad)
       ? netDepositsSummary.netDeposits.allTimeCad
       : summaryNetDeposits;
   const summaryEquity = Number.isFinite(netDepositsSummary.totalEquityCad)
     ? netDepositsSummary.totalEquityCad
     : null;
+
+  let pendingDepositCad = null;
+  if (points.length && Number.isFinite(summaryEquity)) {
+    const lastPoint = points[points.length - 1];
+    const lastPointEquity = lastPoint && Number.isFinite(lastPoint.equityCad) ? lastPoint.equityCad : null;
+    const lastPointDate = lastPoint && typeof lastPoint.date === 'string' ? lastPoint.date : null;
+    const hasFundingToday =
+      lastPointDate &&
+      dailyNetDepositsMap.has(lastPointDate) &&
+      Math.abs(dailyNetDepositsMap.get(lastPointDate)) >= CASH_FLOW_EPSILON / 10;
+    if (!hasFundingToday && Number.isFinite(lastPointEquity)) {
+      const equityDelta = summaryEquity - lastPointEquity;
+      const dayPnlCad = Number.isFinite(summaryDayPnlCad) ? summaryDayPnlCad : null;
+      const nearDayPnl =
+        dayPnlCad !== null &&
+        Math.abs(equityDelta - dayPnlCad) < AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD;
+      if (!nearDayPnl && equityDelta >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD) {
+        pendingDepositCad = equityDelta;
+        if (Number.isFinite(lastPoint.cumulativeNetDepositsCad)) {
+          lastPoint.cumulativeNetDepositsCad += pendingDepositCad;
+          lastPoint.totalPnlCad = summaryEquity - lastPoint.cumulativeNetDepositsCad;
+          lastPoint.equityCad = summaryEquity;
+        }
+      }
+    }
+  }
+
+  if (pendingDepositCad !== null && Number.isFinite(summaryNetDeposits)) {
+    summaryNetDeposits += pendingDepositCad;
+    if (Number.isFinite(summaryNetDepositsAllTime)) {
+      summaryNetDepositsAllTime += pendingDepositCad;
+    }
+    if (Number.isFinite(summaryEquity)) {
+      const adjustedPnl = summaryEquity - summaryNetDeposits;
+      summaryTotalPnl = adjustedPnl;
+      summaryTotalPnlAllTime = adjustedPnl;
+    }
+  }
 
   if (points.length) {
     const first = points[0];
@@ -11830,6 +12275,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     displayStartDate: displayStartDate ? formatDateOnly(displayStartDate) : undefined,
     periodEndDate: effectivePeriodEnd,
     points: normalizedPoints,
+    debugPriceSeries: options && options.debugPriceSeries && debugPriceSeries.length ? debugPriceSeries : undefined,
+    debugHoldingsEnd: options && options.debugPriceSeries && holdingsAtEnd ? holdingsAtEnd : undefined,
+    debugEquitySnapshots: debugEquitySnapshots.length ? debugEquitySnapshots : undefined,
     summary: {
       totalPnlCad: summaryTotalPnl,
       totalPnlAllTimeCad: summaryTotalPnlAllTime,
@@ -11988,7 +12436,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   const symbolIds = new Set();
   const symbolIdToSymbols = new Map();
   const symbolMeta = new Map();
-  const nonTradeQtyByDate = new Map();
+  const nonTradeEntriesByDate = new Map();
   const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   rawActivities.forEach((activity) => {
     const timestamp = resolveActivityTimestamp(activity);
@@ -12026,20 +12474,69 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       }
     }
 
-    // Track non-trade quantity deltas (journals/transfers) so we can treat their value as invested cash
-    const qty = Number(activity.quantity);
-    const isTradeLike = isOrderLikeActivity(activity);
-    if (!isTradeLike && Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-      if (!nonTradeQtyByDate.has(dateKey)) {
-        nonTradeQtyByDate.set(dateKey, new Map());
-      }
-      const perSymbolQty = nonTradeQtyByDate.get(dateKey);
-      adjustNumericMap(perSymbolQty, normalizedResolved, qty, LEDGER_QUANTITY_EPSILON);
-      if (perSymbolQty.size === 0) {
-        nonTradeQtyByDate.delete(dateKey);
-      }
-    }
   });
+  // Detect bases that participate in journaling so we can safely allow
+  // share-class variants (e.g., DLR/DLR.U, ENB/ENB.TO) to go negative when merged.
+  const JOURNAL_REGEX = /journal/i;
+  const journalBases = new Set();
+  const stripToSuffix = (s) => (typeof s === 'string' && s.toUpperCase().endsWith('.TO') ? s.slice(0, -3) : s);
+  const baseOf = (s) => {
+    if (!s || typeof s !== 'string') return null;
+    const up = stripToSuffix(s.toUpperCase());
+    return up.endsWith('.U') ? up.slice(0, -2) : up;
+  };
+  for (const entry of processedActivities) {
+    const activity = entry && entry.activity;
+    if (!activity) continue;
+    const fields = [activity.type || '', activity.action || '', activity.description || ''];
+    const combined = fields.join(' ');
+    if (!JOURNAL_REGEX.test(combined)) continue;
+    const key = baseOf(entry.symbol || '');
+    if (key) {
+      journalBases.add(key);
+    }
+  }
+
+  // Clamp non-trade quantity deltas to avoid creating profit from transfers
+  // that exceed the tracked holdings within this window.
+  processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+  const runningHoldings = new Map();
+  for (const entry of processedActivities) {
+    const qty = Number(entry?.activity?.quantity);
+    if (!entry || !entry.symbol || !Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+      continue;
+    }
+    const symbol = entry.symbol;
+    const base = baseOf(symbol) || symbol;
+    const allowNegative = journalBases.has(base);
+    const isTradeLike = isOrderLikeActivity(entry.activity);
+    if (isTradeLike) {
+      adjustHolding(runningHoldings, symbol, qty);
+      continue;
+    }
+    if (isSplitLikeActivity(entry.activity)) {
+      adjustHolding(runningHoldings, symbol, qty);
+      continue;
+    }
+    let effectiveQty = qty;
+    if (!allowNegative && qty < 0) {
+      const current = runningHoldings.has(symbol) ? runningHoldings.get(symbol) : 0;
+      effectiveQty = Math.max(qty, -current);
+    }
+    if (Number.isFinite(effectiveQty) && Math.abs(effectiveQty) >= LEDGER_QUANTITY_EPSILON) {
+      if (!nonTradeEntriesByDate.has(entry.dateKey)) {
+        nonTradeEntriesByDate.set(entry.dateKey, []);
+      }
+      nonTradeEntriesByDate.get(entry.dateKey).push({
+        symbol,
+        qty: effectiveQty,
+        rawQty: qty,
+        activity: entry.activity,
+      });
+      adjustHolding(runningHoldings, symbol, effectiveQty);
+    }
+  }
+
   const activityQtyBySymbol = new Map();
   processedActivities.forEach((entry) => {
     const qty = Number(entry?.activity?.quantity);
@@ -12156,17 +12653,19 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     }
   }
 
+  const splitEventsBySymbol = collectSplitEventsFromActivities(processedActivities);
+
   // Price series
   const priceSeriesMap = new Map();
-  const startKey = dateKeys[0];
-  const endKey = dateKeys[dateKeys.length - 1];
+  const priceSeriesStartKey = dateKeys[0];
+  const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
   const symbolsForPricing = symbolMembers.length ? symbolMembers : [targetSymbol];
   for (const symbol of symbolsForPricing) {
     try {
       const meta = symbolMeta.get(symbol) || {};
       const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
       const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
-      const history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+      const history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
         login,
         symbolId,
         accountKey,
@@ -12175,7 +12674,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       let effectiveHistory = Array.isArray(history) ? history : null;
       if (!effectiveHistory || effectiveHistory.length === 0) {
         try {
-          const loaded = await loadSymbolPriceSeries(symbol, startKey, endKey);
+          const loaded = await loadSymbolPriceSeries(symbol, priceSeriesStartKey, priceSeriesEndKey);
           if (loaded && Array.isArray(loaded.points) && loaded.points.length) {
             effectiveHistory = loaded.points
               .map((point) => ({
@@ -12196,8 +12695,8 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if ((!Array.isArray(history) || history.length === 0) && DEBUG_TOTAL_PNL) {
         debugTotalPnl(accountKey, 'Symbol price history empty for computeTotalPnlSeriesForSymbol', {
           symbol,
-          startKey,
-          endKey,
+          startKey: priceSeriesStartKey,
+          endKey: priceSeriesEndKey,
           symbolId,
         });
       }
@@ -12205,8 +12704,8 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if (DEBUG_TOTAL_PNL && historyForSeries.length === 0) {
         debugTotalPnl(accountKey, 'No effective price history available for symbol', {
           symbol,
-          startKey,
-          endKey,
+          startKey: priceSeriesStartKey,
+          endKey: priceSeriesEndKey,
           symbolId,
           rawHistoryType: history === null ? 'null' : Array.isArray(history) ? 'array' : typeof history,
           rawHistoryLength: Array.isArray(history) ? history.length : null,
@@ -12233,6 +12732,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       priceSeriesMap.set(symbol, new Map());
     }
   }
+  applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
   if (DEBUG_TOTAL_PNL) {
     debugTotalPnl(accountKey, 'Symbol price series map prepared', {
       symbolsForPricing,
@@ -12286,7 +12786,18 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if (entry.dateKey !== dateKey) continue;
       const qty = Number(entry.activity.quantity);
       if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-        adjustHolding(holdings, entry.symbol, qty);
+        const symbol = entry.symbol;
+        const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
+        const next = current + qty;
+        const base = baseOf(symbol) || symbol;
+        const allowNegative = journalBases.has(base);
+        if (Math.abs(next) < LEDGER_QUANTITY_EPSILON) {
+          holdings.delete(symbol);
+        } else if (!allowNegative && next < 0) {
+          holdings.set(symbol, 0);
+        } else {
+          holdings.set(symbol, next);
+        }
       }
       // Apply cash effects for income (dividends/interest) only – exclude trade cash to
       // avoid cancelling out invested principal in symbol-scope equity.
@@ -12326,38 +12837,68 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       }
     }
 
-    // Treat non-trade share transfers as deposits/withdrawals at each symbol's price
-    const qtyDeltaMap = nonTradeQtyByDate.has(dateKey) ? nonTradeQtyByDate.get(dateKey) : null;
-    if (qtyDeltaMap && qtyDeltaMap.size) {
-      for (const [symbol, qtyDelta] of qtyDeltaMap.entries()) {
+    // Treat non-trade share transfers as deposits/withdrawals at book value when available.
+    const nonTradeEntries = nonTradeEntriesByDate.has(dateKey)
+      ? nonTradeEntriesByDate.get(dateKey)
+      : null;
+    if (nonTradeEntries && nonTradeEntries.length) {
+      for (const entry of nonTradeEntries) {
+        if (!entry || !entry.symbol) {
+          continue;
+        }
+        const qtyDelta = Number(entry.qty);
         if (!Number.isFinite(qtyDelta) || Math.abs(qtyDelta) < LEDGER_QUANTITY_EPSILON) {
           continue;
         }
-        const series = priceSeriesMap.get(symbol);
-        if (!series || !series.size) {
+        const rawQty = Number(entry.rawQty);
+        const activity = entry.activity || {};
+        if (isSplitLikeActivity(activity)) {
           continue;
         }
-        const symbolNativePrice = series.get(dateKey);
-        if (!Number.isFinite(symbolNativePrice)) {
-          continue;
-        }
-        const meta = symbolMeta.get(symbol) || {};
-        const currency = meta.currency || inferSymbolCurrency(symbol) || 'CAD';
-        let priceCadForSymbol = null;
-        if (currency === 'USD') {
-          priceCadForSymbol = Number.isFinite(usdRate) && usdRate > 0 ? symbolNativePrice * usdRate : null;
+        const meta = symbolMeta.get(entry.symbol) || {};
+        const symbolCurrency = meta.currency || inferSymbolCurrency(entry.symbol) || null;
+        const entryCurrency = normalizeCurrency(activity.currency) || symbolCurrency || 'CAD';
+        const useEntryCurrency = activity && activity.type === 'Transfers';
+        const currency =
+          useEntryCurrency && entryCurrency === symbolCurrency
+            ? entryCurrency
+            : (symbolCurrency || entryCurrency || 'CAD');
+        let perShareCad = null;
+        const bookPerShare = resolveTransferBookValuePerShare(activity, rawQty);
+        if (
+          Number.isFinite(bookPerShare) &&
+          (!symbolCurrency || !entryCurrency || entryCurrency === symbolCurrency)
+        ) {
+          if (currency === 'USD') {
+            perShareCad = Number.isFinite(usdRate) && usdRate > 0 ? bookPerShare * usdRate : null;
+          } else {
+            perShareCad = bookPerShare;
+          }
         } else {
-          priceCadForSymbol = symbolNativePrice;
+          const series = priceSeriesMap.get(entry.symbol);
+          if (!series || !series.size) {
+            continue;
+          }
+          const symbolNativePrice = series.get(dateKey);
+          if (!Number.isFinite(symbolNativePrice)) {
+            continue;
+          }
+          if (currency === 'USD') {
+            perShareCad = Number.isFinite(usdRate) && usdRate > 0 ? symbolNativePrice * usdRate : null;
+          } else {
+            perShareCad = symbolNativePrice;
+          }
         }
-        if (!Number.isFinite(priceCadForSymbol) || Math.abs(priceCadForSymbol) <= 0) {
+        if (!Number.isFinite(perShareCad) || Math.abs(perShareCad) <= 0) {
           continue;
         }
-        const deltaInvested = qtyDelta * priceCadForSymbol;
+        const deltaInvested = qtyDelta * perShareCad;
         if (Math.abs(deltaInvested) >= CASH_FLOW_EPSILON / 10) {
           cumulativeInvested += deltaInvested;
         }
       }
     }
+
     const snapshot = computeLedgerEquitySnapshot(
       dateKey,
       holdings,
@@ -12500,6 +13041,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   });
 
   processedActivities.sort((a, b) => a.timestamp - b.timestamp);
+  const splitEventsBySymbol = collectSplitEventsFromActivities(processedActivities);
 
   // Detect bases that participate in journaling so we can safely
   // consolidate share-class variants (e.g., DLR and DLR.U, ENB and ENB.TO)
@@ -12633,16 +13175,16 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   // Fetch price series per symbol (allow test override)
   const symbols = Array.from(symbolMeta.keys());
   const priceSeriesMap = new Map();
+  const priceSeriesStartKey = dateKeys[0];
+  const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
   const overrideSeries = options && options.priceSeriesBySymbol instanceof Map ? options.priceSeriesBySymbol : null;
   if (symbols.length) {
-    const startKey = dateKeys[0];
-    const endKey = dateKeys[dateKeys.length - 1];
     await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
       if (overrideSeries && overrideSeries.has(symbol)) {
         priceSeriesMap.set(symbol, new Map(overrideSeries.get(symbol)));
         return;
       }
-      const cacheKey = getPriceHistoryCacheKey(symbol, startKey, endKey);
+      const cacheKey = getPriceHistoryCacheKey(symbol, priceSeriesStartKey, priceSeriesEndKey);
       let history = null;
       if (cacheKey) {
         const cached = getCachedPriceHistory(cacheKey);
@@ -12655,7 +13197,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           const meta = symbolMeta.get(symbol) || {};
           const rawSymbolId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
           const normalizedSymbolId = Number.isFinite(rawSymbolId) && rawSymbolId > 0 ? rawSymbolId : null;
-          history = await fetchSymbolPriceHistory(symbol, startKey, endKey, {
+          history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
             login,
             symbolId: normalizedSymbolId,
             accountKey,
@@ -12676,6 +13218,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       }
     });
   }
+  applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
 
   const cashCadBySymbol = new Map(); // since effective start
   // Track USD-currency cash flows in native USD so we can recompute a no-FX variant.
@@ -12687,6 +13230,8 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   const holdings = new Map(); // trade deltas on/after effective start
   const baselineHoldings = new Map(); // trade deltas before effective start
   const nonTradeDeltaSinceStart = new Map(); // non-trade deltas on/after effective start
+  const effectiveNonTradeEntriesByDate = new Map(); // clamped non-trade entries by date
+  const runningHoldings = new Map(); // running holdings to clamp non-trade transfers
   const qtyDeltaSinceStart = new Map(); // all quantity deltas on/after start (trade + non-trade)
   const qtyDeltaBeforeStart = new Map(); // all quantity deltas before start
   const usdRateCache = new Map();
@@ -12717,35 +13262,50 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       continue;
     }
     const rawQty = Number(activity.quantity);
+    const isTradeLike = isOrderLikeActivity(activity);
+    const base = symbol ? baseOf(symbol) || symbol : null;
+    const allowNegative = base ? journalBases.has(base) : false;
+    let effectiveQty = rawQty;
+
+    if (!isTradeLike && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+      if (!allowNegative && rawQty < 0) {
+        const current = runningHoldings.has(symbol) ? runningHoldings.get(symbol) : 0;
+        effectiveQty = Math.max(rawQty, -current);
+      }
+      if (Number.isFinite(effectiveQty) && Math.abs(effectiveQty) >= LEDGER_QUANTITY_EPSILON) {
+        if (dateKey >= effectiveStartKey && dateKey <= effectiveEndKey) {
+          if (!effectiveNonTradeEntriesByDate.has(dateKey)) {
+            effectiveNonTradeEntriesByDate.set(dateKey, []);
+          }
+          effectiveNonTradeEntriesByDate.get(dateKey).push({
+            symbol,
+            qty: effectiveQty,
+            rawQty,
+            activity,
+          });
+          const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
+          nonTradeDeltaSinceStart.set(symbol, cur + effectiveQty);
+        }
+        adjustHolding(runningHoldings, symbol, effectiveQty);
+      }
+    } else if (isTradeLike && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+      adjustHolding(runningHoldings, symbol, rawQty);
+    }
+
+    const qtyForDelta = isTradeLike ? rawQty : effectiveQty;
+
     // Only order-like activities affect holdings; split into baseline (before start)
     // and current (on/after start) so we can derive starting MV correctly.
-    if (isOrderLikeActivity(activity) && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+    if (isTradeLike && symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
       const target = dateKey < effectiveStartKey ? baselineHoldings : holdings;
       const current = target.has(symbol) ? target.get(symbol) : 0;
       const next = current + rawQty;
-      const base = baseOf(symbol) || symbol;
-      // Allow negatives for symbols that participate in journaling so sells
-      // in one share-class can offset buys in another when merged.
-      const allowNegative = journalBases.has(base);
       const adjusted = Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : allowNegative ? next : Math.max(0, next);
       target.set(symbol, adjusted);
     }
 
-    // Track non-trade quantity changes since start (journals/transfers)
-    if (
-      !isOrderLikeActivity(activity) &&
-      symbol &&
-      dateKey >= effectiveStartKey &&
-      dateKey <= effectiveEndKey &&
-      Number.isFinite(rawQty) &&
-      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
-    ) {
-      const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
-      nonTradeDeltaSinceStart.set(symbol, cur + rawQty);
-    }
-
-    // Track total quantity deltas regardless of classification
-    if (symbol && Number.isFinite(rawQty) && Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON) {
+    // Track total quantity deltas (trade-like uses raw qty; non-trade uses clamped qty)
+    if (symbol && Number.isFinite(qtyForDelta) && Math.abs(qtyForDelta) >= LEDGER_QUANTITY_EPSILON) {
       const bucket =
         dateKey < effectiveStartKey
           ? qtyDeltaBeforeStart
@@ -12756,33 +13316,20 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         continue;
       }
       const cur = bucket.has(symbol) ? bucket.get(symbol) : 0;
-      bucket.set(symbol, cur + rawQty);
+      bucket.set(symbol, cur + qtyForDelta);
     }
 
     // Non-trade quantity before start contributes to baseline holdings
     if (
-      !isOrderLikeActivity(activity) &&
+      !isTradeLike &&
       symbol &&
       dateKey < effectiveStartKey &&
-      Number.isFinite(rawQty) &&
-      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
+      Number.isFinite(qtyForDelta) &&
+      Math.abs(qtyForDelta) >= LEDGER_QUANTITY_EPSILON
     ) {
       const current = baselineHoldings.has(symbol) ? baselineHoldings.get(symbol) : 0;
-      const next = current + rawQty;
+      const next = current + qtyForDelta;
       baselineHoldings.set(symbol, Math.abs(next) < LEDGER_QUANTITY_EPSILON ? 0 : next);
-    }
-
-    // Count non-trade quantity moves since start so we exclude them from start MV
-    if (
-      !isOrderLikeActivity(activity) &&
-      symbol &&
-      dateKey >= effectiveStartKey &&
-      dateKey <= effectiveEndKey &&
-      Number.isFinite(rawQty) &&
-      Math.abs(rawQty) >= LEDGER_QUANTITY_EPSILON
-    ) {
-      const cur = nonTradeDeltaSinceStart.has(symbol) ? nonTradeDeltaSinceStart.get(symbol) : 0;
-      nonTradeDeltaSinceStart.set(symbol, cur + rawQty);
     }
 
     const currency = normalizeCurrency(activity.currency);
@@ -12872,51 +13419,73 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   // Apply book-value cash for non-trade quantity movements since the display start
   // so that transfers/journals do not create artificial P&L within this account.
   if (processedActivities.length && priceSeriesMap.size) {
-    for (const entry of processedActivities) {
-      if (!entry || !entry.activity) {
+    for (const [dateKey, entries] of effectiveNonTradeEntriesByDate.entries()) {
+      if (!entries || !entries.length || dateKey < effectiveStartKey || dateKey > effectiveEndKey) {
         continue;
       }
-      const { activity, symbol, dateKey } = entry;
-      if (!symbol || !dateKey || dateKey < effectiveStartKey || dateKey > effectiveEndKey) {
-        continue;
-      }
-      const qty = Number(activity.quantity);
-      if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
-        continue;
-      }
+      for (const entry of entries) {
+        if (!entry || !entry.symbol || !entry.activity) {
+          continue;
+        }
+        const { activity, symbol } = entry;
+        const qty = Number(entry.qty);
+        if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+          continue;
+        }
       // Skip trades and stock splits/consolidations; splits should not
       // create artificial cash adjustments in per-symbol P&L.
       if (isOrderLikeActivity(activity) || isSplitLikeActivity(activity)) {
         continue;
       }
       const series = priceSeriesMap.get(symbol);
-      const price = series && series.size ? series.get(dateKey) : null;
-      if (!(Number.isFinite(price) && price > 0)) {
+      const meta = symbolMeta.get(symbol) || {};
+      const symbolCurrency = meta.currency || meta.activityCurrency || inferSymbolCurrency(symbol) || null;
+      const entryCurrency = normalizeCurrency(activity.currency) || symbolCurrency || 'CAD';
+      const bookCurrency =
+        activity && activity.type === 'Transfers' && entryCurrency === symbolCurrency
+          ? entryCurrency
+          : (symbolCurrency || entryCurrency || 'CAD');
+      const rawQty = Number(entry.rawQty);
+      const bookPerShare = resolveTransferBookValuePerShare(activity, rawQty);
+      let valueNative = null;
+      if (
+        Number.isFinite(bookPerShare) &&
+        (!symbolCurrency || !entryCurrency || entryCurrency === symbolCurrency)
+      ) {
+        valueNative = qty * bookPerShare;
+      } else {
+        const price = series && series.size ? series.get(dateKey) : null;
+        if (!(Number.isFinite(price) && price > 0)) {
+          continue;
+        }
+        valueNative = qty * price;
+      }
+      if (!Number.isFinite(valueNative) || Math.abs(valueNative) < CASH_FLOW_EPSILON / 10) {
         continue;
       }
-      const meta = symbolMeta.get(symbol) || {};
-      const bookCurrency = normalizeCurrency(activity.currency) || meta.activityCurrency || meta.currency || 'CAD';
-      let valueCad = qty * price;
+      let valueCad = valueNative;
       if (bookCurrency === 'USD') {
         const r = await lookupUsdRate(dateKey);
         if (!(Number.isFinite(r) && r > 0)) {
           continue;
         }
-        valueCad = qty * price * r;
+        valueCad = valueNative * r;
         // Track USD-native book-value cash so we can recompute at a constant end rate.
-      const bookCashUsd = -(qty * price); // Transfer out (-qty) => inflow (+)
-      const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
-      cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
-      const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
-      // Track the exact CAD cash increment we applied due to USD-sourced book cash
-      // so we can back it out when building a no-FX variant.
-      cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
+        const bookCashUsd = -valueNative; // Transfer out (-qty) => inflow (+)
+        const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+        cashUsdBySymbol.set(symbol, curUsd + bookCashUsd);
+        const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+        // Track the exact CAD cash increment we applied due to USD-sourced book cash
+        // so we can back it out when building a no-FX variant.
+        cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + (-valueCad));
+      }
+      const bookCashCad = -valueCad; // Transfer out (-qty) => inflow (+)
+      const bookCashNative = -valueNative;
+      recordCashFlow(symbol, bookCurrency === 'USD' ? bookCashNative : bookCashCad, bookCurrency, dateKey);
+      const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
+      cashCadBySymbol.set(symbol, current + bookCashCad);
+      }
     }
-    const bookCashCad = -valueCad; // Transfer out (-qty) => inflow (+)
-    recordCashFlow(symbol, bookCurrency === 'USD' ? -(qty * price) : bookCashCad, bookCurrency, dateKey);
-    const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
-    cashCadBySymbol.set(symbol, current + bookCashCad);
-  }
   }
 
   let result = [];
@@ -13434,7 +14003,11 @@ async function fetchSymbolsDetails(login, symbolIds) {
     const id = Number(idRaw);
     if (!Number.isFinite(id)) continue;
     const cacheKey = getSymbolDetailsCacheKey(login.id, id);
-    if (cacheKey && symbolDetailsCache.has(cacheKey)) {
+    if (!cacheKey) {
+      toFetch.push(id);
+      continue;
+    }
+    if (symbolDetailsCache.has(cacheKey)) {
       results[id] = symbolDetailsCache.get(cacheKey);
     } else {
       toFetch.push(id);
@@ -14082,44 +14655,72 @@ function dedupeOrdersByIdentifier(orders) {
   });
 
   const deduped = Array.from(uniqueMap.values());
-  if (fallback.length === 0) {
-    return deduped;
+
+  if (fallback.length > 0) {
+    const fallbackMap = new Map();
+    fallback.forEach(function (order, index) {
+      if (!order || typeof order !== 'object') {
+        return;
+      }
+      const accountKey =
+        order.accountId != null
+          ? 'acct:' + String(order.accountId)
+          : order.accountNumber != null
+            ? 'acct:' + String(order.accountNumber)
+            : 'acct:' + index;
+      const symbol = order.symbol != null ? String(order.symbol) : '';
+      const timestamp =
+        order.creationTime || order.createdTime || order.updateTime || order.updatedTime || String(index);
+      const side = order.side || order.action || '';
+      const quantityValue =
+        Number.isFinite(Number(order.totalQuantity))
+          ? 'qty:' + String(Number(order.totalQuantity))
+          : Number.isFinite(Number(order.openQuantity))
+            ? 'qty:' + String(Number(order.openQuantity))
+            : Number.isFinite(Number(order.filledQuantity))
+              ? 'qty:' + String(Number(order.filledQuantity))
+              : '';
+      const fallbackKey = ['fb', accountKey, symbol, timestamp, side, quantityValue].filter(Boolean).join('|');
+      const existing = fallbackMap.get(fallbackKey) || null;
+      const chosen = pickMoreRecentOrder(existing, order) || order;
+      fallbackMap.set(fallbackKey, chosen);
+    });
+
+    fallbackMap.forEach(function (order) {
+      deduped.push(order);
+    });
   }
 
-  const fallbackMap = new Map();
-  fallback.forEach(function (order, index) {
+  const approxMap = new Map();
+  deduped.forEach(function (order) {
     if (!order || typeof order !== 'object') {
       return;
     }
-    const accountKey =
-      order.accountId != null
-        ? 'acct:' + String(order.accountId)
-        : order.accountNumber != null
-          ? 'acct:' + String(order.accountNumber)
-          : 'acct:' + index;
-    const symbol = order.symbol != null ? String(order.symbol) : '';
-    const timestamp =
-      order.creationTime || order.createdTime || order.updateTime || order.updatedTime || String(index);
-    const side = order.side || order.action || '';
-    const quantityValue =
-      Number.isFinite(Number(order.totalQuantity))
-        ? 'qty:' + String(Number(order.totalQuantity))
-        : Number.isFinite(Number(order.openQuantity))
-          ? 'qty:' + String(Number(order.openQuantity))
-          : Number.isFinite(Number(order.filledQuantity))
-            ? 'qty:' + String(Number(order.filledQuantity))
-            : '';
-    const fallbackKey = ['fb', accountKey, symbol, timestamp, side, quantityValue].filter(Boolean).join('|');
-    const existing = fallbackMap.get(fallbackKey) || null;
-    const chosen = pickMoreRecentOrder(existing, order) || order;
-    fallbackMap.set(fallbackKey, chosen);
+    const key = resolveOrderApproximateKey(order);
+    if (!key) {
+      return;
+    }
+    const existing = approxMap.get(key) || null;
+    const chosen = pickPreferredOrder(existing, order);
+    approxMap.set(key, chosen);
   });
 
-  fallbackMap.forEach(function (order) {
-    deduped.push(order);
+  if (approxMap.size === 0) {
+    return deduped;
+  }
+
+  const merged = Array.from(approxMap.values());
+  deduped.forEach(function (order) {
+    if (!order || typeof order !== 'object') {
+      return;
+    }
+    const key = resolveOrderApproximateKey(order);
+    if (!key || !approxMap.has(key)) {
+      merged.push(order);
+    }
   });
 
-  return deduped;
+  return merged;
 }
 
 function toFiniteNumber(value) {
@@ -14899,6 +15500,7 @@ app.get('/api/summary', async function (req, res) {
     try {
       summaryCacheStore.clear();
       totalPnlSeriesCacheStore.clear();
+      symbolDetailsCache.clear();
       supersetSummaryCache = null;
       debugSummaryCache('manual refreshKey changed; caches cleared', activeRefreshKey);
     } catch (_) {
@@ -16902,7 +17504,7 @@ app.get('/api/summary', async function (req, res) {
       cacheKey: normalizedSelection.cacheKey,
       payload: responsePayload,
       timestamp: supersetTimestamp,
-      expiresAt: manualRefreshKey ? PINNED_EXPIRY_MS : supersetTimestamp + SUMMARY_CACHE_TTL_MS,
+      expiresAt: PINNED_EXPIRY_MS,
       accounts: responseAccounts,
       accountGroups: responseAccountGroups,
       accountsById,
@@ -17309,6 +17911,12 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     }
     if (queryOptions.applyAccountCagrStartDate === false) {
       options.applyAccountCagrStartDate = false;
+    }
+    if (queryOptions.symbolGroupKey) {
+      options.symbolGroupKey = queryOptions.symbolGroupKey;
+    }
+    if (Array.isArray(queryOptions.symbols) && queryOptions.symbols.length) {
+      options.symbols = queryOptions.symbols;
     }
 
     let series = null;

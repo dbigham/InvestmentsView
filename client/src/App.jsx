@@ -2992,6 +2992,37 @@ function resolveCashForCurrency(balances, currency) {
   return 0;
 }
 
+function resolveCashForTodo(balances, currency) {
+  if (!balances || !currency) {
+    return null;
+  }
+
+  // Prefer per-currency cash and only fall back to combined balances when they
+  // materially reduce the magnitude (i.e., netting cross-currency offsets) so we
+  // avoid flagging TODOs for cash that only exists in another currency.
+  const perCurrencyOnly = balances.perCurrency ? { perCurrency: balances.perCurrency } : null;
+  const combinedOnly = balances.combined ? { combined: balances.combined } : null;
+
+  const perCurrencyEntry = perCurrencyOnly && findBalanceEntryForCurrency(perCurrencyOnly, currency);
+  const perCurrencyCash = perCurrencyEntry ? resolveCashForCurrency(perCurrencyOnly, currency) : null;
+
+  const combinedEntry = combinedOnly && findBalanceEntryForCurrency(combinedOnly, currency);
+  const combinedCash = combinedEntry ? resolveCashForCurrency(combinedOnly, currency) : null;
+
+  if (!Number.isFinite(perCurrencyCash)) {
+    return Number.isFinite(combinedCash) ? combinedCash : null;
+  }
+
+  if (
+    Number.isFinite(combinedCash) &&
+    Math.abs(combinedCash) + TODO_AMOUNT_EPSILON < Math.abs(perCurrencyCash)
+  ) {
+    return combinedCash;
+  }
+
+  return perCurrencyCash;
+}
+
 function normalizeAccountBalanceSummary(balances) {
   if (!balances || typeof balances !== 'object') {
     return null;
@@ -3577,14 +3608,7 @@ function buildTodoItems({
         : null;
     if (balanceSummary) {
       ['CAD', 'USD'].forEach((currency) => {
-        // Prefer the combined bucket (net of cross-currency offsets) when available so we
-        // don't flag TODOs for cash that is effectively offset by a deficit in the other
-        // currency. Fall back to per-currency when combined data is missing.
-        const combinedOnly = balanceSummary && balanceSummary.combined ? { combined: balanceSummary.combined } : null;
-        const hasCombinedEntry = combinedOnly && findBalanceEntryForCurrency(combinedOnly, currency);
-        const cashValue = hasCombinedEntry
-          ? resolveCashForCurrency(combinedOnly, currency)
-          : resolveCashForCurrency(balanceSummary, currency);
+        const cashValue = resolveCashForTodo(balanceSummary, currency);
         if (
           Number.isFinite(cashValue) &&
           cashValue > 0 &&
@@ -5766,6 +5790,7 @@ export default function App() {
   const [focusedSymbol, setFocusedSymbol] = useState(null);
   const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
   const [focusedSymbolPriceSymbol, setFocusedSymbolPriceSymbol] = useState(null);
+  const [adHocSymbolGroup, setAdHocSymbolGroup] = useState(null);
   const [dynamicSymbolGroups, setDynamicSymbolGroups] = useState(new Map());
   const [pendingSymbolAction, setPendingSymbolAction] = useState(null);
   const [focusedSymbolQuoteState, setFocusedSymbolQuoteState] = useState({
@@ -5785,6 +5810,7 @@ export default function App() {
     setFocusedSymbol(null);
     setFocusedSymbolDescription(null);
     setFocusedSymbolPriceSymbol(null);
+    setAdHocSymbolGroup(null);
   }, []);
   const positionsCardRef = useRef(null);
 
@@ -5836,6 +5862,19 @@ export default function App() {
     if (!normalized) {
       return null;
     }
+    const adHocMatch =
+      adHocSymbolGroup &&
+      normalizeSymbolGroupKey(adHocSymbolGroup.key) === normalized
+        ? adHocSymbolGroup
+        : null;
+    if (adHocMatch && Array.isArray(adHocMatch.symbols) && adHocMatch.symbols.length) {
+      const defaultPriceSymbol =
+        adHocMatch.defaultPriceSymbol || adHocMatch.symbols[0] || normalized;
+      return {
+        canonical: adHocMatch.key || normalized,
+        priceSymbol: defaultPriceSymbol,
+      };
+    }
     const cryptoPriceOverride = CRYPTO_PRICE_SYMBOL_BY_KEY[normalized] || null;
     const dynamicGroup = dynamicSymbolGroups.get(normalized);
     if (dynamicGroup && Array.isArray(dynamicGroup.symbols) && dynamicGroup.symbols.length) {
@@ -5855,7 +5894,7 @@ export default function App() {
       canonical,
       priceSymbol: cryptoPriceOverride || defaultPrice,
     };
-  }, [dynamicSymbolGroups]);
+  }, [adHocSymbolGroup, dynamicSymbolGroups]);
 
   useEffect(() => {
     const s = initialSymbolFromUrl?.symbol || null;
@@ -5878,12 +5917,18 @@ export default function App() {
     if (!normalizedFocusedSymbolKey) {
       return null;
     }
+    if (
+      adHocSymbolGroup &&
+      normalizeSymbolGroupKey(adHocSymbolGroup.key) === normalizedFocusedSymbolKey
+    ) {
+      return adHocSymbolGroup;
+    }
     return (
       dynamicSymbolGroups.get(normalizedFocusedSymbolKey) ||
       getSymbolGroupByKey(normalizedFocusedSymbolKey) ||
       null
     );
-  }, [normalizedFocusedSymbolKey, dynamicSymbolGroups]);
+  }, [adHocSymbolGroup, normalizedFocusedSymbolKey, dynamicSymbolGroups]);
   const focusedSymbolCryptoTheme = useMemo(() => {
     if (!normalizedFocusedSymbolKey || !CRYPTO_THEME_KEY_SET.has(normalizedFocusedSymbolKey)) {
       return null;
@@ -5902,8 +5947,22 @@ export default function App() {
     };
   }, [normalizedFocusedSymbolKey]);
   const focusedSymbolTitle = useMemo(
-    () => focusedSymbolCryptoTheme?.label || focusedSymbol || '',
-    [focusedSymbol, focusedSymbolCryptoTheme]
+    () => {
+      if (
+        adHocSymbolGroup &&
+        normalizeSymbolGroupKey(adHocSymbolGroup.key) === normalizedFocusedSymbolKey
+      ) {
+        return adHocSymbolGroup.label || adHocSymbolGroup.key || focusedSymbol || '';
+      }
+      if (focusedSymbolCryptoTheme?.label) {
+        return focusedSymbolCryptoTheme.label;
+      }
+      if (focusedSymbolGroup?.label) {
+        return focusedSymbolGroup.label;
+      }
+      return focusedSymbol || '';
+    },
+    [adHocSymbolGroup, focusedSymbol, focusedSymbolCryptoTheme, focusedSymbolGroup, normalizedFocusedSymbolKey]
   );
   const focusedSymbolIsCryptoAggregate =
     focusedSymbolCryptoTheme?.key === CRYPTO_AGGREGATE_KEY;
@@ -5911,8 +5970,14 @@ export default function App() {
     if (!normalizedFocusedSymbolKey) {
       return false;
     }
+    if (
+      adHocSymbolGroup &&
+      normalizeSymbolGroupKey(adHocSymbolGroup.key) === normalizedFocusedSymbolKey
+    ) {
+      return true;
+    }
     return dynamicSymbolGroups.has(normalizedFocusedSymbolKey);
-  }, [dynamicSymbolGroups, normalizedFocusedSymbolKey]);
+  }, [adHocSymbolGroup, dynamicSymbolGroups, normalizedFocusedSymbolKey]);
   const focusedSymbolMembers = useMemo(() => {
     if (!normalizedFocusedSymbolKey) {
       return [];
@@ -7818,21 +7883,72 @@ export default function App() {
 
   const handleSearchSelectSymbol = useCallback(
     (symbol, meta) => {
-      const resolution = resolveSymbolFocus(symbol);
-      if (!resolution) {
+      const normalizeList = (list) =>
+        Array.from(
+          new Set(
+            (Array.isArray(list) ? list : [])
+              .map((value) => normalizeSymbolGroupKey(value))
+              .filter(Boolean)
+          )
+        );
+      const metaSymbols = normalizeList(meta?.symbols);
+      const normalizedPrimary = normalizeSymbolGroupKey(symbol);
+      const symbolList = metaSymbols.length
+        ? metaSymbols
+        : normalizedPrimary
+        ? [normalizedPrimary]
+        : [];
+      if (!symbolList.length) {
         return;
       }
-      setFocusedSymbol(resolution.canonical);
+
+      const adHocGroup = (() => {
+        if (symbolList.length <= 1) {
+          return null;
+        }
+        const ordered =
+          normalizedPrimary && symbolList.includes(normalizedPrimary)
+            ? [normalizedPrimary, ...symbolList.filter((s) => s !== normalizedPrimary)]
+            : symbolList;
+        const labelOverride =
+          typeof meta?.label === 'string' && meta.label.trim() ? meta.label.trim() : null;
+        const label = labelOverride || ordered.join(' + ');
+        const priceSymbol = ordered[0];
+        return {
+          key: ordered.join('|'),
+          label,
+          symbols: ordered,
+          defaultPriceSymbol: priceSymbol,
+        };
+      })();
+
+      const targetSymbol = adHocGroup
+        ? adHocGroup.defaultPriceSymbol || adHocGroup.symbols[0]
+        : symbolList[0];
+      const resolution = resolveSymbolFocus(targetSymbol);
+      if (!resolution) {
+        setAdHocSymbolGroup(null);
+        return;
+      }
+
+      const canonical = adHocGroup ? adHocGroup.key : resolution.canonical;
+      const priceSymbol = adHocGroup
+        ? adHocGroup.defaultPriceSymbol || resolution.priceSymbol
+        : resolution.priceSymbol;
+
+      setAdHocSymbolGroup(adHocGroup || null);
+      setFocusedSymbol(canonical);
       setFocusedSymbolDescription(meta?.description || null);
-      setFocusedSymbolPriceSymbol(resolution.priceSymbol);
-      const normalizedCanonical = normalizeSymbolGroupKey(resolution.canonical);
+      setFocusedSymbolPriceSymbol(priceSymbol);
+      const normalizedCanonical = normalizeSymbolGroupKey(canonical);
       const matchedTheme =
+        !adHocGroup &&
         normalizedCanonical &&
         CRYPTO_THEME_DEFINITIONS.find(
           (theme) => normalizeSymbolGroupKey(theme?.key) === normalizedCanonical
         );
-      let nextOrdersFilter = resolution.canonical;
-      if (matchedTheme) {
+      let nextOrdersFilter = adHocGroup ? adHocGroup.symbols.join(' OR ') : canonical;
+      if (!adHocGroup && matchedTheme) {
         const preferKeyword =
           Array.isArray(matchedTheme.keywords) &&
           matchedTheme.keywords.find((kw) => typeof kw === 'string' && kw.trim());
@@ -7864,7 +7980,7 @@ export default function App() {
         } else if (matchedTheme.label) {
           nextOrdersFilter = matchedTheme.label;
         }
-      } else if (normalizedCanonical) {
+      } else if (!adHocGroup && normalizedCanonical) {
         const dynamicGroup = dynamicSymbolGroups.get(normalizedCanonical);
         if (dynamicGroup?.label) {
           nextOrdersFilter = dynamicGroup.label;
@@ -7884,7 +8000,7 @@ export default function App() {
       const intentRaw = typeof meta?.intent === 'string' ? meta.intent.trim().toLowerCase() : '';
       if (intentRaw === 'buy' || intentRaw === 'sell') {
         setPendingSymbolAction({
-          symbol: resolution.priceSymbol || resolution.canonical,
+          symbol: priceSymbol || canonical,
           intent: intentRaw,
         });
       } else {
@@ -8280,7 +8396,19 @@ export default function App() {
     if (!focusedSymbol) {
       return null;
     }
-    const symbol = String(focusedSymbol).trim().toUpperCase();
+    const logoSymbol = (() => {
+      if (
+        adHocSymbolGroup &&
+        normalizeSymbolGroupKey(adHocSymbolGroup.key) === normalizedFocusedSymbolKey
+      ) {
+        return adHocSymbolGroup.defaultPriceSymbol || adHocSymbolGroup.symbols?.[0] || focusedSymbol;
+      }
+      if (focusedSymbolGroup?.defaultPriceSymbol) {
+        return focusedSymbolGroup.defaultPriceSymbol;
+      }
+      return focusedSymbol;
+    })();
+    const symbol = String(logoSymbol || '').trim().toUpperCase();
     if (!symbol) {
       return null;
     }
@@ -8298,13 +8426,25 @@ export default function App() {
       format: 'png',
     });
     return `${base}/${encodeURIComponent(symbol)}?${params.toString()}`;
-  }, [focusedSymbol]);
+  }, [adHocSymbolGroup, focusedSymbol, focusedSymbolGroup, normalizedFocusedSymbolKey]);
 
   const focusedSymbolLogoAlt = useMemo(() => {
     if (!focusedSymbol) {
       return null;
     }
-    const symbol = String(focusedSymbol).trim().toUpperCase();
+    const logoSymbol = (() => {
+      if (
+        adHocSymbolGroup &&
+        normalizeSymbolGroupKey(adHocSymbolGroup.key) === normalizedFocusedSymbolKey
+      ) {
+        return adHocSymbolGroup.defaultPriceSymbol || adHocSymbolGroup.symbols?.[0] || focusedSymbol;
+      }
+      if (focusedSymbolGroup?.defaultPriceSymbol) {
+        return focusedSymbolGroup.defaultPriceSymbol;
+      }
+      return focusedSymbol;
+    })();
+    const symbol = String(logoSymbol || '').trim().toUpperCase();
     if (!symbol) {
       return null;
     }
@@ -8315,7 +8455,13 @@ export default function App() {
       }
     }
     return `${symbol} logo`;
-  }, [focusedSymbol, focusedSymbolDescription]);
+  }, [
+    adHocSymbolGroup,
+    focusedSymbol,
+    focusedSymbolDescription,
+    focusedSymbolGroup,
+    normalizedFocusedSymbolKey,
+  ]);
 
   const handleFocusedSymbolSummaryClick = useCallback(
     (event) => {
@@ -8517,7 +8663,12 @@ export default function App() {
     if (!focusedSymbol) {
       return;
     }
-    const key = String(focusedSymbol).trim().toUpperCase();
+    const key = String(
+      (focusedSymbolPriceSymbol && focusedSymbolPriceSymbol.trim()) ||
+        (focusedSymbolMembers.length ? focusedSymbolMembers[0] : focusedSymbol)
+    )
+      .trim()
+      .toUpperCase();
     if (!key) {
       return;
     }
@@ -8551,7 +8702,13 @@ export default function App() {
     } catch (error) {
       console.error('Failed to copy explain movement prompt', error);
     }
-  }, [focusedSymbol, findFocusedSymbolPosition, focusedSymbolDescription]);
+  }, [
+    focusedSymbol,
+    focusedSymbolDescription,
+    focusedSymbolMembers,
+    focusedSymbolPriceSymbol,
+    findFocusedSymbolPosition,
+  ]);
 
   const orderedPositions = useMemo(() => {
     const list = positionsWithShare.slice();
@@ -12567,14 +12724,20 @@ export default function App() {
     if (!focusedSymbol) {
       return;
     }
+    const symbolForTrade =
+      (focusedSymbolPriceSymbol && String(focusedSymbolPriceSymbol).trim()) ||
+      (focusedSymbolMembers.length ? focusedSymbolMembers[0] : null) ||
+      focusedSymbol;
     const position = findFocusedSymbolPosition();
     await triggerBuySell({
-      symbol: focusedSymbol,
+      symbol: symbolForTrade,
       position,
       accountOptionsOverride: focusedSymbolAccountOptions,
     });
   }, [
     focusedSymbol,
+    focusedSymbolMembers,
+    focusedSymbolPriceSymbol,
     findFocusedSymbolPosition,
     triggerBuySell,
     focusedSymbolAccountOptions,
@@ -13789,16 +13952,17 @@ export default function App() {
         ? annualized.startDate.trim()
         : null;
     const annualizedIncomplete = annualized?.incomplete === true;
-    const totalPnlCad = Number.isFinite(entry.totalPnlCad)
-      ? entry.totalPnlCad
-      : Number.isFinite(focusedSymbolPnl?.totalPnl)
-        ? focusedSymbolPnl.totalPnl
+    const positionsTotalPnl = Number(focusedSymbolPnl?.totalPnl);
+    const totalPnlCad = Number.isFinite(positionsTotalPnl)
+      ? positionsTotalPnl
+      : Number.isFinite(entry.totalPnlCad)
+        ? entry.totalPnlCad
         : null;
     const equityFromPositions = Number(symbolFilteredPositions.total);
-    const totalEquityCad = Number.isFinite(entry.marketValueCad)
-      ? entry.marketValueCad
-      : Number.isFinite(equityFromPositions)
-        ? equityFromPositions
+    const totalEquityCad = Number.isFinite(equityFromPositions)
+      ? equityFromPositions
+      : Number.isFinite(entry.marketValueCad)
+        ? entry.marketValueCad
         : null;
     const netDepositsCad = Number.isFinite(entry.investedCad) ? entry.investedCad : null;
     return {

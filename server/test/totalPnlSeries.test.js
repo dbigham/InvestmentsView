@@ -124,6 +124,68 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
   assert.ok(!result.issues, 'Expected no issues for cash-only scenario');
 });
 
+test('computeTotalPnlSeries treats unexplained equity jumps as pending deposits', async () => {
+  const account = {
+    id: 'PENDING-DEPOSIT-ACCOUNT',
+  };
+
+  const now = new Date('2025-01-03T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2025-01-02T00:00:00Z'),
+    crawlStart: new Date('2025-01-02T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2025-01-02T00:00:00.000000-05:00',
+        transactionDate: '2025-01-02T00:00:00.000000-05:00',
+        settlementDate: '2025-01-02T00:00:00.000000-05:00',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+        symbol: '',
+        symbolId: 0,
+      },
+    ],
+    fingerprint: 'pending-deposit-fingerprint',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 1500,
+          dayPnl: 0,
+        },
+      },
+    },
+  };
+
+  const result = await computeTotalPnlSeries(
+    { id: 'login-1' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false }
+  );
+
+  assert.ok(result, 'Expected series result');
+  const lastPoint = result.points[result.points.length - 1];
+  assert.equal(lastPoint.date, '2025-01-03');
+  assert.ok(Math.abs(lastPoint.cumulativeNetDepositsCad - 1500) < 1e-6);
+  assert.ok(Math.abs(lastPoint.totalPnlCad - 0) < 1e-6);
+  assert.ok(Math.abs(lastPoint.equityCad - 1500) < 1e-6);
+
+  assert.ok(Math.abs(result.summary.netDepositsCad - 1500) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlCad - 0) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlAllTimeCad - 0) < 1e-6);
+});
+
 test('computeTotalPnlSeries can ignore manual net deposit adjustments', async () => {
   const account = {
     id: 'ADJUSTED-ACCOUNT',
