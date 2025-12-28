@@ -13783,6 +13783,58 @@ export default function App() {
     return map;
   }, [data?.accountTotalPnlBySymbolAll, data?.accountTotalPnlBySymbol, resolveSymbolTotalsContainer]);
 
+  const symbolAnnualizedByAccountMapForPositions = useMemo(() => {
+    const mapByAccount = new Map();
+    const source =
+      data?.accountTotalPnlBySymbolAll && Object.keys(data.accountTotalPnlBySymbolAll).length
+        ? data.accountTotalPnlBySymbolAll
+        : data?.accountTotalPnlBySymbol;
+    if (!source || typeof source !== 'object') {
+      return mapByAccount;
+    }
+    const normalizeKey = (value) => normalizeSymbolGroupKey(value || '');
+    const buildPayload = (annualized, annualizedNoFx) => {
+      if (!annualized) {
+        return null;
+      }
+      return {
+        rate: Number.isFinite(Number(annualized.rate)) ? Number(annualized.rate) : null,
+        rateNoFx: Number.isFinite(Number(annualizedNoFx?.rate)) ? Number(annualizedNoFx.rate) : null,
+        startDate:
+          typeof annualized.startDate === 'string' && annualized.startDate.trim()
+            ? annualized.startDate.trim()
+            : null,
+        incomplete: annualized.incomplete === true,
+      };
+    };
+    Object.entries(source).forEach(([accountKey, container]) => {
+      if (!container || !Array.isArray(container.entries)) {
+        return;
+      }
+      const accountMap = new Map();
+      container.entries.forEach((entry) => {
+        const payload = buildPayload(entry?.annualizedReturn || null, entry?.annualizedReturnNoFx || null);
+        if (!payload) {
+          return;
+        }
+        const entryKey = normalizeKey(entry?.symbol);
+        if (entryKey) {
+          accountMap.set(entryKey, payload);
+        }
+        if (Array.isArray(entry?.components)) {
+          entry.components.forEach((component) => {
+            const compKey = normalizeKey(component?.symbol);
+            if (compKey && !accountMap.has(compKey)) {
+              accountMap.set(compKey, payload);
+            }
+          });
+        }
+      });
+      mapByAccount.set(String(accountKey), accountMap);
+    });
+    return mapByAccount;
+  }, [data?.accountTotalPnlBySymbol, data?.accountTotalPnlBySymbolAll]);
+
   const symbolTotalPnlByAccountMapForPositions = useMemo(() => {
     const mapByAccount = new Map();
     const source =
@@ -14938,6 +14990,7 @@ export default function App() {
                 hideDetailsOption={Boolean(focusedSymbol)}
                 accountsById={accountsById}
                 symbolAnnualizedMap={symbolAnnualizedMapForPositions}
+                symbolAnnualizedByAccountMap={symbolAnnualizedByAccountMapForPositions}
                 symbolTotalPnlByAccountMap={symbolTotalPnlByAccountMapForPositions}
                 focusedSymbolTotalPnlOverride={focusedSymbolTotalPnlOverride}
                 focusedSymbolKey={focusedSymbolKeyForPositions}

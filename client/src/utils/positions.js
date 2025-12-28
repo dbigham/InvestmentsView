@@ -547,4 +547,3 @@ export function buildExplainMovementPrompt(position) {
 
   return lines.join('\n');
 }
-

@@ -5,6 +5,7 @@ import { buildQuoteUrl, openQuote } from '../utils/quotes';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
 import { normalizeSymbolKey as normalizeSymbolGroupKey } from '../../../shared/symbolGroups.js';
+import { resolveSymbolAnnualizedEntry } from '../utils/annualized.js';
 import {
   buildExplainMovementPrompt,
   derivePercentages,
@@ -268,6 +269,7 @@ function PositionsTable({
   hideDetailsOption = false,
   accountsById = null,
   symbolAnnualizedMap = null,
+  symbolAnnualizedByAccountMap = null,
   symbolTotalPnlByAccountMap = null,
   focusedSymbolTotalPnlOverride = null,
   focusedSymbolKey = null,
@@ -358,6 +360,12 @@ function PositionsTable({
         position?.accountId,
         symbolTotalPnlByAccountMap
       );
+      const annualizedEntry = resolveSymbolAnnualizedEntry(
+        normalizedTotalsKey,
+        position?.accountId,
+        symbolAnnualizedByAccountMap,
+        symbolAnnualizedMap
+      );
       const focusedOverride =
         focusedSymbolKey &&
         normalizedTotalsKey &&
@@ -389,8 +397,6 @@ function PositionsTable({
         Number.isFinite(totalPnlDisplayValue) && totalCost !== null && Math.abs(totalCost) > 1e-6
           ? (totalPnlDisplayValue / totalCost) * 100
           : null;
-      const annualizedEntry =
-        symbolAnnualizedMap instanceof Map ? symbolAnnualizedMap.get(normalizedTotalsKey) || null : null;
       const annualizedRate =
         annualizedEntry && Number.isFinite(annualizedEntry.rate) ? annualizedEntry.rate : null;
       let share = position.portfolioShare;
@@ -406,12 +412,14 @@ function PositionsTable({
         totalPnlDisplayValue,
         totalPnlPercent,
         annualizedRate,
+        annualizedEntry,
       };
     });
   }, [
     positions,
     aggregateMarketValue,
     symbolAnnualizedMap,
+    symbolAnnualizedByAccountMap,
     symbolTotalPnlByAccountMap,
     focusedSymbolKey,
     focusedSymbolTotalPnlOverride,
@@ -1005,10 +1013,7 @@ function PositionsTable({
               openPnlTooltipExtras.push(`${cadFormatted} CAD`);
             }
           }
-          const annualizedEntry =
-            symbolAnnualizedMap instanceof Map
-              ? symbolAnnualizedMap.get(normalizedTotalsKey) || null
-              : null;
+          const annualizedEntry = position.annualizedEntry || null;
           const annualizedTooltip = (() => {
             if (!annualizedEntry) {
               return null;
@@ -1387,6 +1392,7 @@ PositionsTable.propTypes = {
   hideDetailsOption: PropTypes.bool,
   accountsById: PropTypes.instanceOf(Map),
   symbolAnnualizedMap: PropTypes.instanceOf(Map),
+  symbolAnnualizedByAccountMap: PropTypes.instanceOf(Map),
   symbolTotalPnlByAccountMap: PropTypes.instanceOf(Map),
   focusedSymbolTotalPnlOverride: PropTypes.number,
   focusedSymbolKey: PropTypes.string,
@@ -1414,6 +1420,7 @@ PositionsTable.defaultProps = {
   hideDetailsOption: false,
   accountsById: null,
   symbolAnnualizedMap: null,
+  symbolAnnualizedByAccountMap: null,
   symbolTotalPnlByAccountMap: null,
   focusedSymbolTotalPnlOverride: null,
   focusedSymbolKey: null,
