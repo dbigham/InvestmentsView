@@ -1136,6 +1136,10 @@ textarea {
   min-width: 720px;
 }
 
+.projection-dialog {
+  min-width: 780px;
+}
+
 .pnl-dialog__header {
   display: flex;
   flex-direction: column;

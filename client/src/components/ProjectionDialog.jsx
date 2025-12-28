@@ -1082,6 +1082,8 @@ export default function ProjectionDialog({
       const endDateForYear = parseDateOnly(projectionSeries[lastIdx]?.date);
       const startValue = normalizeValueForDate(startDateForYear, startRaw);
       const endValue = normalizeValueForDate(endDateForYear, endRaw);
+      const ageYears = yearsBetween(ownerBirthDate, startDateForYear);
+      const age = Number.isFinite(ageYears) ? ageYears : null;
       let cppTotal = 0;
       let oasTotal = 0;
       let otherTotal = 0;
@@ -1101,10 +1103,10 @@ export default function ProjectionDialog({
       }
       const netFlow = otherTotal + cppTotal + oasTotal - expensesTotal;
       const change = endValue - startValue;
-      rows.push({ year, startValue, cpp: cppTotal, oas: oasTotal, other: otherTotal, expenses: expensesTotal, netFlow, change, endValue });
+      rows.push({ year, age, startValue, cpp: cppTotal, oas: oasTotal, other: otherTotal, expenses: expensesTotal, netFlow, change, endValue });
     }
     return rows;
-  }, [projectionSeries, timeframeYears, computeFlowBreakdown, normalizeValueForDate]);
+  }, [projectionSeries, timeframeYears, computeFlowBreakdown, normalizeValueForDate, ownerBirthDate]);
 
   const copyDialogAsText = useCallback(() => {
     try {
@@ -1120,12 +1122,13 @@ export default function ProjectionDialog({
       if (yearlyRows.length) {
         lines.push('');
         const headerColumns = showRetirementFlowColumns
-          ? ['Year', 'Start', 'CPP', 'OAS', 'Other', 'Expenses', 'Net flow', 'Change', 'End']
-          : ['Year', 'Start', 'Change', 'End'];
+          ? ['Year', 'Age', 'Start', 'CPP', 'OAS', 'Other', 'Expenses', 'Net flow', 'Change', 'End']
+          : ['Year', 'Age', 'Start', 'Change', 'End'];
         lines.push(headerColumns.join(' | '));
         yearlyRows.forEach((r) => {
           const commonColumns = [
             r.year,
+            Number.isFinite(r.age) ? formatNumber(r.age, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : 'n/a',
             formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
           ];
           const retirementColumns = showRetirementFlowColumns
@@ -1175,7 +1178,7 @@ export default function ProjectionDialog({
 
   return (
     <div className="qqq-dialog-overlay" role="presentation" onClick={handleOverlayClick}>
-      <div className="qqq-dialog pnl-dialog__container" role="dialog" aria-modal="true" aria-labelledby={headingId}>
+      <div className="qqq-dialog pnl-dialog__container projection-dialog__container" role="dialog" aria-modal="true" aria-labelledby={headingId}>
         <button
           type="button"
           className="qqq-dialog__close qqq-dialog__close--scroll-guard"
@@ -1185,7 +1188,7 @@ export default function ProjectionDialog({
           ×
         </button>
         <div className="qqq-dialog__content pnl-dialog__content">
-          <section className="pnl-dialog" aria-labelledby={headingId}>
+          <section className="pnl-dialog projection-dialog" aria-labelledby={headingId}>
             <div className="pnl-dialog__header">
               <h2 id={headingId}>Projections</h2>
               {accountLabel && <span className="pnl-dialog__account">{accountLabel}</span>}
@@ -1650,6 +1653,7 @@ export default function ProjectionDialog({
                     <thead>
                       <tr>
                         <th className="projection-tree__th-name">Year</th>
+                        <th className="projection-tree__th">Age</th>
                         <th className="projection-tree__th">Start</th>
                         {showRetirementFlowColumns && (
                           <>
@@ -1668,6 +1672,9 @@ export default function ProjectionDialog({
                       {yearlyRows.map((r) => (
                         <tr key={`yr-${r.year}`}>
                           <td className="projection-tree__cell-name">{r.year}</td>
+                          <td className="projection-tree__cell-value">
+                            {Number.isFinite(r.age) ? formatNumber(r.age, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : 'n/a'}
+                          </td>
                           <td className="projection-tree__cell-value">{formatMoney(r.startValue, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
                           {showRetirementFlowColumns && (
                             <>
