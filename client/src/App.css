@@ -5146,6 +5146,15 @@ button.time-pill:hover .time-pill__icon {
   background: transparent;
 }
 
+.projection-dialog__yearly .projection-dialog__year-row {
+  cursor: pointer;
+}
+
+.projection-dialog__yearly .projection-tree tbody tr.projection-dialog__year-row--selected td {
+  background-color: var(--color-accent-soft);
+  color: var(--color-text-primary);
+}
+
 .projection-tree__name-wrap { display: inline-flex; align-items: center; gap: 8px; }
 .projection-tree__checkbox { flex: 0 0 auto; }
 .projection-tree__name { font-weight: 500; }

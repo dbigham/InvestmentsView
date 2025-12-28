@@ -332,6 +332,7 @@ export default function ProjectionDialog({
 
   // Selection on the projection path: index into projectionSeries
   const [selectedPoint, setSelectedPoint] = useState(null); // { date, index }
+  const [selectedYear, setSelectedYear] = useState(null);
 
   // Local per-account overrides and inclusion toggles (for group view tree)
   const [ratesById, setRatesById] = useState(() => new Map()); // accountId -> percent number
@@ -576,6 +577,27 @@ export default function ProjectionDialog({
   }, [retirementSettings, includeRetirementFlows, todayDate, retirementAgeChoice, configuredInflationRate]);
 
   const showRetirementFlowColumns = Boolean(retirementModel?.enabled);
+
+  const retirementSelectionYear = useMemo(() => {
+    let targetDate = null;
+    if (Number.isFinite(retirementAgeChoice) && retirementAgeChoice > 0) {
+      const age = Math.round(retirementAgeChoice);
+      targetDate = new Date(Date.UTC(
+        ownerBirthDate.getUTCFullYear() + age,
+        ownerBirthDate.getUTCMonth(),
+        ownerBirthDate.getUTCDate()
+      ));
+    } else if (retirementModel?.startDate) {
+      targetDate = toDateOnly(retirementModel.startDate);
+    }
+    if (!targetDate) return null;
+    const year = targetDate.getUTCFullYear();
+    const jan1This = new Date(Date.UTC(year, 0, 1));
+    const jan1Next = new Date(Date.UTC(year + 1, 0, 1));
+    const diffThis = Math.abs(targetDate - jan1This);
+    const diffNext = Math.abs(jan1Next - targetDate);
+    return diffNext < diffThis ? year + 1 : year;
+  }, [ownerBirthDate, retirementAgeChoice, retirementModel?.startDate]);
 
   // Inflation rate to use for normalization (prefer retirement model's if available)
   const normalizationInflationRate = useMemo(() => {
@@ -1107,6 +1129,13 @@ export default function ProjectionDialog({
     }
     return rows;
   }, [projectionSeries, timeframeYears, computeFlowBreakdown, normalizeValueForDate, ownerBirthDate]);
+
+  useEffect(() => {
+    if (retirementSelectionYear === null) return;
+    if (yearlyRows.some((r) => r.year === retirementSelectionYear)) {
+      setSelectedYear(retirementSelectionYear);
+    }
+  }, [retirementSelectionYear, yearlyRows]);
 
   const copyDialogAsText = useCallback(() => {
     try {
@@ -1670,7 +1699,13 @@ export default function ProjectionDialog({
                     </thead>
                     <tbody>
                       {yearlyRows.map((r) => (
-                        <tr key={`yr-${r.year}`}>
+                        <tr
+                          key={`yr-${r.year}`}
+                          className={`projection-dialog__year-row${selectedYear === r.year ? ' projection-dialog__year-row--selected' : ''}`}
+                          onClick={() => {
+                            setSelectedYear((current) => (current === r.year ? null : r.year));
+                          }}
+                        >
                           <td className="projection-tree__cell-name">{r.year}</td>
                           <td className="projection-tree__cell-value">
                             {Number.isFinite(r.age) ? formatNumber(r.age, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : 'n/a'}
