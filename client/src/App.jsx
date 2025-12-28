@@ -20,6 +20,11 @@ import {
   setAccountPlanningContext,
   setAccountMetadata,
   getRangeTotalPnlBreakdown,
+  getLogins,
+  addLogin,
+  getAccountOverrides,
+  setAccountOverrides,
+  getAccounts,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -40,6 +45,9 @@ import PlanningContextDialog from './components/PlanningContextDialog';
 import NewsPromptDialog from './components/NewsPromptDialog';
 import AccountMetadataDialog from './components/AccountMetadataDialog';
 import AccountActionDialog from './components/AccountActionDialog';
+import QuestradeLoginDialog from './components/QuestradeLoginDialog';
+import QuestradeRefreshTokenDialog from './components/QuestradeRefreshTokenDialog';
+import AccountStructureDialog from './components/AccountStructureDialog';
 import { formatMoney, formatNumber, formatDate, formatPercent, formatSignedPercent } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
@@ -5691,6 +5699,37 @@ export default function App() {
   const [planningContextEditor, setPlanningContextEditor] = useState(null);
   const [accountMetadataEditor, setAccountMetadataEditor] = useState(null);
   const [accountActionPrompt, setAccountActionPrompt] = useState(null);
+  const [loginSetupState, setLoginSetupState] = useState({
+    status: 'idle',
+    logins: [],
+    error: null,
+    updatedAt: null,
+  });
+  const [loginSetupPrompted, setLoginSetupPrompted] = useState(false);
+  const [showLoginSetupDialog, setShowLoginSetupDialog] = useState(false);
+  const [showRefreshTokenHelpDialog, setShowRefreshTokenHelpDialog] = useState(false);
+  const [loginSetupNeedsRefresh, setLoginSetupNeedsRefresh] = useState(false);
+  const [showAccountStructureDialog, setShowAccountStructureDialog] = useState(false);
+  const accountStructureNeedsRefreshRef = useRef(false);
+  const [refreshNotice, setRefreshNotice] = useState({
+    open: false,
+    targetKey: null,
+    started: false,
+    message: '',
+  });
+  const [accountStructureState, setAccountStructureState] = useState({
+    status: 'idle',
+    entries: [],
+    error: null,
+  });
+  const [accountStructureContext, setAccountStructureContext] = useState({
+    status: 'idle',
+    accounts: [],
+    accountGroups: [],
+    groupRelations: {},
+    error: null,
+  });
+  const [accountStructureNeedsRefresh, setAccountStructureNeedsRefresh] = useState(false);
   const [pendingMetadataOverrides, setPendingMetadataOverrides] = useState(() => new Map());
   const [pnlBreakdownMode, setPnlBreakdownMode] = useState(null);
   const [pnlBreakdownInitialAccount, setPnlBreakdownInitialAccount] = useState(null);
@@ -6045,12 +6084,187 @@ export default function App() {
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
+  const refreshLoginSetup = useCallback(async () => {
+    setLoginSetupState((prev) => ({
+      status: 'loading',
+      logins: prev.logins || [],
+      error: null,
+      updatedAt: prev.updatedAt || null,
+    }));
+    try {
+      const payload = await getLogins();
+      const logins = Array.isArray(payload?.logins) ? payload.logins : [];
+      setLoginSetupState({
+        status: 'ready',
+        logins,
+        error: null,
+        updatedAt: payload?.updatedAt || null,
+      });
+      return { logins, updatedAt: payload?.updatedAt || null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load logins';
+      setLoginSetupState((prev) => ({
+        status: 'error',
+        logins: prev.logins || [],
+        error: message,
+        updatedAt: prev.updatedAt || null,
+      }));
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshLoginSetup();
+  }, [refreshLoginSetup]);
+
+  useEffect(() => {
+    if (loginSetupState.status !== 'ready') {
+      return;
+    }
+    if (!loginSetupPrompted && loginSetupState.logins.length === 0) {
+      setShowLoginSetupDialog(true);
+      setLoginSetupPrompted(true);
+    }
+  }, [loginSetupPrompted, loginSetupState]);
+
+  const handleOpenLoginSetupDialog = useCallback(() => {
+    setShowLoginSetupDialog(true);
+    setLoginSetupPrompted(true);
+  }, []);
+
+  const handleCloseLoginSetupDialog = useCallback(() => {
+    setShowLoginSetupDialog(false);
+    if (loginSetupNeedsRefresh) {
+      setRefreshKey((value) => value + 1);
+      setLoginSetupNeedsRefresh(false);
+    }
+  }, [loginSetupNeedsRefresh]);
+
+  const handleShowRefreshTokenHelpDialog = useCallback(() => {
+    setShowRefreshTokenHelpDialog(true);
+  }, []);
+
+  const handleCloseRefreshTokenHelpDialog = useCallback(() => {
+    setShowRefreshTokenHelpDialog(false);
+  }, []);
+
+  const loadAccountStructureData = useCallback(async () => {
+    setAccountStructureState((prev) => ({
+      status: 'loading',
+      entries: prev.entries || [],
+      error: null,
+    }));
+    setAccountStructureContext((prev) => ({
+      status: 'loading',
+      accounts: prev.accounts || [],
+      accountGroups: prev.accountGroups || [],
+      groupRelations: prev.groupRelations || {},
+      error: null,
+    }));
+    try {
+      const [overridePayload, accountPayload] = await Promise.all([
+        getAccountOverrides(),
+        getAccounts(),
+      ]);
+      const entries = Array.isArray(overridePayload?.entries) ? overridePayload.entries : [];
+      const accounts = Array.isArray(accountPayload?.accounts) ? accountPayload.accounts : [];
+      const accountGroups = Array.isArray(accountPayload?.accountGroups) ? accountPayload.accountGroups : [];
+      const groupRelations = accountPayload?.groupRelations && typeof accountPayload.groupRelations === 'object'
+        ? accountPayload.groupRelations
+        : {};
+      setAccountStructureState({ status: 'ready', entries, error: null });
+      setAccountStructureContext({ status: 'ready', accounts, accountGroups, groupRelations, error: null });
+      return { entries, accounts, accountGroups, groupRelations };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load account structure data';
+      setAccountStructureState((prev) => ({
+        status: 'error',
+        entries: prev.entries || [],
+        error: message,
+      }));
+      setAccountStructureContext((prev) => ({
+        status: 'error',
+        accounts: prev.accounts || [],
+        accountGroups: prev.accountGroups || [],
+        groupRelations: prev.groupRelations || {},
+        error: message,
+      }));
+      return null;
+    }
+  }, []);
+
+  const handleOpenAccountStructureDialog = useCallback(() => {
+    setShowAccountStructureDialog(true);
+    loadAccountStructureData();
+  }, [loadAccountStructureData]);
+
+  const handleSaveLogin = useCallback(
+    async ({ email, refreshToken }) => {
+      await addLogin({ email, refreshToken });
+      await refreshLoginSetup();
+      setLoginSetupNeedsRefresh(true);
+    },
+    [refreshLoginSetup]
+  );
+
+  const handleSaveAccountStructure = useCallback(
+    async (entries) => {
+      await setAccountOverrides(entries);
+      await loadAccountStructureData();
+      setAccountStructureNeedsRefresh(true);
+      accountStructureNeedsRefreshRef.current = true;
+    },
+    [loadAccountStructureData]
+  );
+
+  const triggerRefreshNotice = useCallback((message) => {
+    setRefreshKey((value) => {
+      const nextKey = value + 1;
+      setRefreshNotice({
+        open: true,
+        targetKey: nextKey,
+        started: false,
+        message: message || 'Refreshing data...',
+      });
+      return nextKey;
+    });
+  }, []);
+
+  const handleCloseAccountStructureDialog = useCallback(() => {
+    setShowAccountStructureDialog(false);
+    const shouldRefresh = loginSetupNeedsRefresh || accountStructureNeedsRefresh || accountStructureNeedsRefreshRef.current;
+    if (shouldRefresh) {
+      triggerRefreshNotice('Refreshing account data...');
+      setLoginSetupNeedsRefresh(false);
+      setAccountStructureNeedsRefresh(false);
+      accountStructureNeedsRefreshRef.current = false;
+    }
+  }, [loginSetupNeedsRefresh, accountStructureNeedsRefresh, triggerRefreshNotice]);
+
+  const handleStartAccountStructureFromLogin = useCallback(() => {
+    setShowLoginSetupDialog(false);
+    setShowAccountStructureDialog(true);
+    loadAccountStructureData();
+  }, [loadAccountStructureData]);
 
   useEffect(() => {
     setSymbolPriceSnapshots(new Map());
     setPriceRefreshState({ status: 'idle', error: null, refreshedAt: null });
   }, [data]);
   const priceRefreshInFlight = priceRefreshState.status === 'loading';
+
+  useEffect(() => {
+    if (!refreshNotice.open || refreshNotice.targetKey !== refreshKey) {
+      return;
+    }
+    if (!refreshNotice.started && loading) {
+      setRefreshNotice((prev) => (prev.open ? { ...prev, started: true } : prev));
+      return;
+    }
+    if (refreshNotice.started && !loading) {
+      setRefreshNotice({ open: false, targetKey: null, started: false, message: '' });
+    }
+  }, [refreshNotice.open, refreshNotice.started, refreshNotice.targetKey, refreshKey, loading]);
 
   useEffect(() => {
     if (!pendingMetadataOverrides.size) {
@@ -14382,6 +14596,14 @@ export default function App() {
 
   return (
     <div className="summary-page">
+      {refreshNotice.open ? (
+        <div className="refresh-notice-overlay" role="presentation">
+          <div className="refresh-notice" role="status" aria-live="polite">
+            <span className="refresh-notice__spinner" aria-hidden="true" />
+            <span className="refresh-notice__text">{refreshNotice.message || 'Refreshing data...'}</span>
+          </div>
+        </div>
+      ) : null}
       <main className={summaryMainClassName}>
         <header className="page-header">
           <GlobalSearch
@@ -14845,6 +15067,8 @@ export default function App() {
             onEditTargetProportions={
               !isAggregateSelection && selectedAccountInfo ? handleEditTargetProportions : null
             }
+            onManageLogins={handleOpenLoginSetupDialog}
+            onManageAccounts={handleOpenAccountStructureDialog}
             chatUrl={selectedAccountChatUrl}
             showQqqTemperature={showingAggregateAccounts}
             qqqSummary={qqqSummary}
@@ -15469,6 +15693,28 @@ export default function App() {
           targetType={accountMetadataEditor.targetType || 'account'}
           onClose={handleCloseAccountMetadata}
           onSave={handleSaveAccountMetadata}
+        />
+      )}
+      {showLoginSetupDialog && (
+        <QuestradeLoginDialog
+          logins={loginSetupState.logins}
+          onClose={handleCloseLoginSetupDialog}
+          onSave={handleSaveLogin}
+          onShowInstructions={handleShowRefreshTokenHelpDialog}
+          onStartAccountStructure={handleStartAccountStructureFromLogin}
+        />
+      )}
+      {showRefreshTokenHelpDialog && (
+        <QuestradeRefreshTokenDialog onClose={handleCloseRefreshTokenHelpDialog} />
+      )}
+      {showAccountStructureDialog && (
+        <AccountStructureDialog
+          accounts={accountStructureContext.accounts}
+          accountGroups={accountStructureContext.accountGroups}
+          groupRelations={accountStructureContext.groupRelations}
+          initialEntries={accountStructureState.entries}
+          onSave={handleSaveAccountStructure}
+          onClose={handleCloseAccountStructureDialog}
         />
       )}
       {symbolNotesEditor && (

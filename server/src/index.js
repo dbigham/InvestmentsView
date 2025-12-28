@@ -59,6 +59,8 @@ const {
   getAccountGroupRelations,
   getAccountGroupMetadata,
   updateAccountMetadata,
+  getAccountOverrideEntries,
+  updateAccountOverrideEntries,
 } = require('./accountNames');
 const { assignAccountGroups, slugifyAccountGroupKey } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
@@ -5031,15 +5033,33 @@ function persistTokenStore(store) {
 const tokenStoreState = loadTokenStore();
 const allLogins = tokenStoreState.logins || [];
 
-if (!allLogins.length) {
-  console.error('Missing Questrade refresh token(s). Seed token-store.json with at least one login.');
-  process.exit(1);
-}
-
 const loginsById = {};
 allLogins.forEach((login) => {
   loginsById[login.id] = login;
 });
+
+if (!allLogins.length) {
+  console.warn('Missing Questrade refresh token(s). Seed token-store.json with at least one login.');
+}
+
+function sanitizeLoginForClient(login) {
+  if (!login || typeof login !== 'object') {
+    return null;
+  }
+  return {
+    id: login.id || null,
+    label: login.label || null,
+    email: login.email || null,
+    updatedAt: login.updatedAt || null,
+  };
+}
+
+function normalizeEmailInput(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim();
+}
 
 const EARLIEST_FUNDING_CACHE_PATH = path.join(__dirname, '..', 'earliest-funding-cache.json');
 const EARLIEST_FUNDING_CACHE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
@@ -15532,7 +15552,180 @@ app.post('/api/accounts/:accountKey/metadata', function (req, res) {
   }
 });
 
+app.get('/api/account-overrides', function (req, res) {
+  try {
+    const result = getAccountOverrideEntries();
+    return res.json({ entries: result.entries, filePath: result.filePath });
+  } catch (error) {
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to load account overrides:', error);
+    return res.status(500).json({ message: 'Failed to load account overrides' });
+  }
+});
+
+app.post('/api/account-overrides', function (req, res) {
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const entries = Array.isArray(payload.entries) ? payload.entries : Array.isArray(req.body) ? req.body : null;
+
+  if (!entries) {
+    return res.status(400).json({ message: 'entries array is required' });
+  }
+
+  try {
+    const result = updateAccountOverrideEntries(entries);
+    return res.json({ updated: result.updated, entries: result.entries, filePath: result.filePath });
+  } catch (error) {
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    console.error('Failed to update account overrides:', error);
+    return res.status(500).json({ message: 'Failed to update account overrides' });
+  }
+});
+
+app.get('/api/accounts', async function (req, res) {
+  if (!allLogins.length) {
+    return res.status(409).json({
+      message: 'No Questrade logins configured yet. Use Actions > Manage logins to add one.',
+      code: 'NO_LOGINS',
+    });
+  }
+
+  try {
+    const accountNameOverrides = getAccountNameOverrides();
+    const groupRelations = getAccountGroupRelations();
+    const groupMetadata = getAccountGroupMetadata();
+
+    let allAccounts = [];
+    for (const login of allLogins) {
+      const fetchedAccounts = await fetchAccounts(login);
+      const normalized = fetchedAccounts.map((account, index) => {
+        const rawNumber = account.number || account.accountNumber || account.id || index;
+        const number = String(rawNumber);
+        const compositeId = login.id + ':' + number;
+        const ownerLabel = resolveLoginDisplay(login);
+        const normalizedAccount = Object.assign({}, account, {
+          id: compositeId,
+          number,
+          accountNumber: number,
+          loginId: login.id,
+          ownerLabel,
+          loginLabel: ownerLabel,
+        });
+        const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
+        return Object.assign({}, accountWithOverrides, {
+          id: compositeId,
+          number: accountWithOverrides.number || number,
+          accountNumber: accountWithOverrides.accountNumber || number,
+          displayName: resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login),
+          accountGroup: accountWithOverrides.accountGroup || null,
+        });
+      });
+      allAccounts = allAccounts.concat(normalized);
+    }
+
+    const { accountGroups } = assignAccountGroups(allAccounts, { groupRelations, groupMetadata });
+    const responseAccountGroups = accountGroups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      memberCount: Number.isFinite(group.memberCount) ? group.memberCount : group.accounts.length,
+      accountIds: group.accounts.map((account) => account.id),
+    }));
+
+    return res.json({
+      accounts: allAccounts,
+      accountGroups: responseAccountGroups,
+      groupRelations,
+    });
+  } catch (error) {
+    console.error('Failed to load accounts for setup dialog:', error);
+    return res.status(500).json({ message: 'Failed to load accounts for setup dialog' });
+  }
+});
+
+app.get('/api/logins', function (req, res) {
+  const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
+  res.json({
+    logins,
+    updatedAt: tokenStoreState.updatedAt || null,
+    needsSetup: logins.length === 0,
+  });
+});
+
+app.post('/api/logins', async function (req, res) {
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const email = normalizeEmailInput(payload.email);
+  const refreshToken = typeof payload.refreshToken === 'string' ? payload.refreshToken.trim() : '';
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required.' });
+  }
+  if (!refreshToken) {
+    return res.status(400).json({ message: 'Refresh token is required.' });
+  }
+
+  const loginId = email;
+  const verificationLogin = {
+    id: loginId,
+    label: email,
+    email,
+    refreshToken,
+  };
+  try {
+    await refreshAccessToken(verificationLogin);
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Failed to verify refresh token';
+    return res.status(400).json({ message: 'Failed to verify refresh token', details: message });
+  }
+
+  const nowIso = new Date().toISOString();
+  let targetLogin = loginsById[loginId] || null;
+  const verifiedRefreshToken = verificationLogin.refreshToken || refreshToken;
+
+  if (!targetLogin) {
+    targetLogin = {
+      id: loginId,
+      label: email,
+      email,
+      refreshToken: verifiedRefreshToken,
+      updatedAt: nowIso,
+    };
+    allLogins.push(targetLogin);
+  } else {
+    targetLogin.label = email;
+    targetLogin.email = email;
+    targetLogin.refreshToken = verifiedRefreshToken;
+    targetLogin.updatedAt = nowIso;
+  }
+
+  loginsById[loginId] = targetLogin;
+  tokenStoreState.logins = allLogins;
+  persistTokenStore(tokenStoreState);
+
+  const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
+  return res.status(201).json({
+    login: sanitizeLoginForClient(targetLogin),
+    logins,
+    updatedAt: tokenStoreState.updatedAt || null,
+  });
+});
+
 app.get('/api/summary', async function (req, res) {
+  if (!allLogins.length) {
+    return res.status(409).json({
+      message: 'No Questrade logins configured yet. Use Actions > Manage logins to add one.',
+      code: 'NO_LOGINS',
+    });
+  }
   const requestedAccountId = typeof req.query.accountId === 'string' ? req.query.accountId : null;
   const includeAllAccounts = !requestedAccountId || requestedAccountId === 'all';
   const isDefaultRequested = requestedAccountId === 'default';

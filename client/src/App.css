@@ -64,6 +64,45 @@ textarea {
   background: var(--color-bg-page);
 }
 
+.refresh-notice-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1400;
+}
+
+.refresh-notice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 33px;
+  padding: 20px 32px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  min-width: 324px;
+}
+
+.refresh-notice__spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 3px solid rgba(56, 155, 60, 0.25);
+  border-top-color: var(--color-accent);
+  animation: initial-loading-spin 0.9s linear infinite;
+}
+
+.refresh-notice__text {
+  font-size: 15px;
+  font-weight: 400;
+}
+
 .summary-page--initial-loading {
   display: flex;
   align-items: center;
@@ -6698,4 +6737,840 @@ button.time-pill:hover .time-pill__icon {
   border-color: var(--color-border);
   box-shadow: none;
   background: var(--color-surface-alt);
+}
+
+/* Login Setup Dialog */
+.login-setup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.login-setup-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  width: min(960px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.login-setup-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 8px;
+}
+
+.login-setup-dialog__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.login-setup-dialog__subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.login-setup-dialog__close {
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.login-setup-dialog__close:hover,
+.login-setup-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.login-setup-dialog__form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.login-setup-dialog__body {
+  padding: 0 24px 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 18px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.login-setup-dialog__panel {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-setup-dialog__panel--form {
+  background: var(--color-surface);
+}
+
+.login-setup-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-setup-dialog__field label {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.login-setup-dialog__input,
+.login-setup-dialog__textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-setup-dialog__input:focus,
+.login-setup-dialog__textarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+  outline: none;
+}
+
+.login-setup-dialog__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.login-setup-dialog__link {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: #1b7a3a;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.login-setup-dialog__link:hover,
+.login-setup-dialog__link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.login-setup-dialog__panel-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.login-setup-dialog__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-setup-dialog__list-item {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.login-setup-dialog__list-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.login-setup-dialog__list-label {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-size: 14px;
+}
+
+.login-setup-dialog__list-meta {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.login-setup-dialog__empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.login-setup-dialog__notice {
+  margin-top: auto;
+  padding: 12px 12px;
+  border-radius: var(--radius-card);
+  background: rgba(255, 235, 230, 0.85);
+  color: #7f1d1d;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.login-setup-dialog__status {
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  font-size: 13px;
+}
+
+.login-setup-dialog__status--error {
+  background: rgba(255, 235, 230, 0.9);
+  color: #7f1d1d;
+}
+
+.login-setup-dialog__status--success {
+  background: rgba(236, 253, 245, 0.9);
+  color: #065f46;
+}
+
+.login-setup-dialog__footer {
+  padding: 16px 24px 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.login-setup-dialog__button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.login-setup-dialog__button:hover:not(:disabled),
+.login-setup-dialog__button:focus-visible:not(:disabled) {
+  background: var(--color-surface-alt);
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.login-setup-dialog__button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.login-setup-dialog__button--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.login-setup-dialog__button--primary:hover:not(:disabled),
+.login-setup-dialog__button--primary:focus-visible:not(:disabled) {
+  filter: brightness(0.98);
+}
+
+.login-setup-dialog__followup {
+  margin-top: 6px;
+  padding: 12px;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-setup-dialog__followup-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.login-setup-dialog__followup-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 960px) {
+  .login-setup-dialog__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Refresh Token Help Dialog */
+.login-setup-help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1250;
+}
+
+.login-setup-help-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  width: min(640px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.login-setup-help-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px 24px 8px;
+}
+
+.login-setup-help-dialog__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.login-setup-help-dialog__close {
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.login-setup-help-dialog__close:hover,
+.login-setup-help-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.login-setup-help-dialog__body {
+  padding: 12px 24px 24px;
+  overflow-y: auto;
+}
+
+.login-setup-help-dialog__steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.login-setup-help-dialog__steps a {
+  display: inline-block;
+  margin-left: 6px;
+  color: #1b7a3a;
+  text-decoration: none;
+}
+
+.login-setup-help-dialog__screenshot-link {
+  border: none;
+  background: none;
+  color: #1b7a3a;
+  font-weight: 400;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 6px;
+}
+
+.login-setup-help-dialog__screenshot-link:hover,
+.login-setup-help-dialog__screenshot-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.login-setup-help-dialog__steps a:hover,
+.login-setup-help-dialog__steps a:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.login-setup-help-dialog__note {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.login-setup-help-dialog__footer {
+  padding: 0 24px 24px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.login-setup-help-dialog__button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-setup-help-dialog__button:hover,
+.login-setup-help-dialog__button:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+.login-setup-screenshot-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1300;
+}
+
+.login-setup-screenshot-dialog {
+  position: relative;
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+  padding: 0;
+  max-width: min(960px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.login-setup-screenshot-header {
+  background: #1b7a3a;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  width: 100%;
+}
+
+.login-setup-screenshot-title {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+.login-setup-screenshot-image {
+  max-width: 100%;
+  max-height: 80vh;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+}
+
+.login-setup-screenshot-body {
+  padding: 16px 18px 18px;
+}
+
+.login-setup-screenshot-close {
+  border: none;
+  background: transparent;
+  color: #ffffff;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.login-setup-screenshot-close:hover,
+.login-setup-screenshot-close:focus-visible {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+  outline: none;
+}
+
+/* Account Structure Dialog */
+.account-structure-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.account-structure-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  width: min(980px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.account-structure-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 8px;
+}
+
+.account-structure-dialog__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.account-structure-dialog__subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.account-structure-dialog__close {
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.account-structure-dialog__close:hover,
+.account-structure-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.account-structure-dialog__header-spacer {
+  width: 32px;
+  height: 32px;
+}
+
+.account-structure-dialog__body {
+  padding: 0 24px 24px;
+  overflow-y: auto;
+}
+
+.account-structure-dialog__status {
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.account-structure-dialog__status--error {
+  background: rgba(255, 235, 230, 0.9);
+  color: #7f1d1d;
+}
+
+.account-structure-dialog__status--success {
+  background: rgba(236, 253, 245, 0.9);
+  color: #065f46;
+}
+
+.account-structure-dialog__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.account-structure-dialog__add-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-structure-dialog__add-group .account-structure-dialog__button {
+  color: #000000;
+}
+
+.account-structure-dialog__help-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: 50%;
+  width: 51px;
+  height: 32px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.account-structure-dialog__help-button:hover,
+.account-structure-dialog__help-button:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.account-structure-dialog__table {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.account-structure-dialog__row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(200px, 1.5fr) minmax(180px, 1fr) 90px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.account-structure-dialog__row--header {
+  background: var(--color-surface-alt);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.account-structure-dialog__row:last-child {
+  border-bottom: none;
+}
+
+.account-structure-dialog__cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-structure-dialog__cell--label {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.account-structure-dialog__cell--actions {
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.account-structure-dialog__badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1b7a3a;
+  background: rgba(27, 122, 58, 0.12);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+}
+
+.account-structure-dialog__badge--group {
+  color: #0f5c8c;
+  background: rgba(15, 92, 140, 0.12);
+}
+
+.account-structure-dialog__meta {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.account-structure-dialog__meta--muted {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.account-structure-dialog__input,
+.account-structure-dialog__select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.account-structure-dialog__input:focus,
+.account-structure-dialog__select:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+  outline: none;
+}
+
+.account-structure-dialog__icon-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.account-structure-dialog__icon-button:hover,
+.account-structure-dialog__icon-button:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.account-structure-dialog__button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-pill);
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+  min-width: 130px;
+  white-space: nowrap;
+}
+
+.account-structure-dialog__button:hover:not(:disabled),
+.account-structure-dialog__button:focus-visible:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  outline: none;
+}
+
+.account-structure-dialog__button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.account-structure-dialog__button--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.account-structure-dialog__button--primary:hover:not(:disabled),
+.account-structure-dialog__button--primary:focus-visible:not(:disabled) {
+  color: #ffffff;
+  border-color: var(--color-accent);
+  filter: brightness(0.98);
+}
+
+.account-structure-dialog__footer {
+  padding: 16px 24px 24px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.account-structure-help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1250;
+}
+
+.account-structure-help-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  width: min(520px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.account-structure-help-dialog__header {
+  padding: 18px 20px 0;
+}
+
+.account-structure-help-dialog__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.account-structure-help-dialog__body {
+  padding: 12px 20px 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.account-structure-help-dialog__body p {
+  margin: 0 0 12px;
+}
+
+.account-structure-help-dialog__footer {
+  padding: 8px 20px 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 900px) {
+  .account-structure-dialog__row {
+    grid-template-columns: minmax(140px, 1fr) minmax(180px, 1fr) minmax(160px, 1fr) 80px;
+  }
 }

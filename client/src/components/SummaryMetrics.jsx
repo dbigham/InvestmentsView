@@ -444,6 +444,8 @@ function ActionMenu({
   onSetPlanningContext,
   onEditTargetProportions,
   onEditAccountDetails,
+  onManageLogins,
+  onManageAccounts,
   disabled,
   chatUrl,
 }) {
@@ -462,6 +464,8 @@ function ActionMenu({
   const hasPlanningContextAction = typeof onSetPlanningContext === 'function';
   const hasTargetProportionAction = typeof onEditTargetProportions === 'function';
   const hasEditAccountDetailsAction = typeof onEditAccountDetails === 'function';
+  const hasManageLoginsAction = typeof onManageLogins === 'function';
+  const hasManageAccountsAction = typeof onManageAccounts === 'function';
 
   useEffect(() => {
     if (!open) {
@@ -620,6 +624,22 @@ function ActionMenu({
     onEditAccountDetails();
   };
 
+  const handleManageLogins = () => {
+    if (!onManageLogins || disabled || busy) {
+      return;
+    }
+    setOpen(false);
+    onManageLogins();
+  };
+
+  const handleManageAccounts = () => {
+    if (!onManageAccounts || disabled || busy) {
+      return;
+    }
+    setOpen(false);
+    onManageAccounts();
+  };
+
   const effectiveDisabled = disabled || busy;
   const menuId = generatedId || 'equity-card-action-menu';
 
@@ -705,6 +725,32 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasManageLoginsAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleManageLogins}
+                disabled={busy}
+              >
+                Manage logins
+              </button>
+            </li>
+          )}
+          {hasManageAccountsAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleManageAccounts}
+                disabled={busy}
+              >
+                Manage accounts
+              </button>
+            </li>
+          )}
           {hasTargetProportionAction && (
             <li role="none">
               <button
@@ -786,6 +832,8 @@ ActionMenu.propTypes = {
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
   onEditAccountDetails: PropTypes.func,
+  onManageLogins: PropTypes.func,
+  onManageAccounts: PropTypes.func,
   disabled: PropTypes.bool,
   chatUrl: PropTypes.string,
 };
@@ -800,6 +848,8 @@ ActionMenu.defaultProps = {
   onSetPlanningContext: null,
   onEditTargetProportions: null,
   onEditAccountDetails: null,
+  onManageLogins: null,
+  onManageAccounts: null,
   disabled: false,
   chatUrl: null,
 };
@@ -833,6 +883,8 @@ export default function SummaryMetrics({
   onSetPlanningContext,
   onEditTargetProportions,
   onEditAccountDetails,
+  onManageLogins,
+  onManageAccounts,
   chatUrl,
   showQqqTemperature,
   qqqSummary,
@@ -3032,6 +3084,8 @@ export default function SummaryMetrics({
             onSetPlanningContext ||
             onEditTargetProportions ||
             onEditAccountDetails ||
+            onManageLogins ||
+            onManageAccounts ||
             chatUrl) && (
             <ActionMenu
               onCopySummary={onCopySummary}
@@ -3043,6 +3097,8 @@ export default function SummaryMetrics({
               onSetPlanningContext={onSetPlanningContext}
               onEditTargetProportions={onEditTargetProportions}
               onEditAccountDetails={onEditAccountDetails}
+              onManageLogins={onManageLogins}
+              onManageAccounts={onManageAccounts}
               chatUrl={chatUrl}
             />
           )}
@@ -3510,6 +3566,8 @@ SummaryMetrics.propTypes = {
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
   onEditAccountDetails: PropTypes.func,
+  onManageLogins: PropTypes.func,
+  onManageAccounts: PropTypes.func,
   chatUrl: PropTypes.string,
   showQqqTemperature: PropTypes.bool,
   qqqSummary: PropTypes.shape({
@@ -3675,6 +3733,8 @@ SummaryMetrics.defaultProps = {
   onSetPlanningContext: null,
   onEditTargetProportions: null,
   onEditAccountDetails: null,
+  onManageLogins: null,
+  onManageAccounts: null,
   chatUrl: null,
   showQqqTemperature: false,
   qqqSummary: null,

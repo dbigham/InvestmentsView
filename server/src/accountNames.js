@@ -2462,6 +2462,48 @@ function normalizeDisplayName(value) {
   return str || null;
 }
 
+function normalizeAccountOverrideEntry(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+  const id = entry.id !== undefined && entry.id !== null ? String(entry.id).trim() : '';
+  const number = entry.number !== undefined && entry.number !== null ? String(entry.number).trim() : '';
+  const name = normalizeDisplayName(entry.name ?? entry.displayName ?? entry.label);
+  const accountGroup = normalizeAccountGroupName(entry.accountGroup);
+
+  if (!id && !number && !name) {
+    return null;
+  }
+
+  const next = {};
+  if (id) {
+    next.id = id;
+  } else if (number) {
+    next.number = number;
+  }
+  if (name) {
+    next.name = name;
+  }
+  if (accountGroup) {
+    next.accountGroup = accountGroup;
+  }
+  return next;
+}
+
+function normalizeAccountOverrideEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const sanitized = [];
+  entries.forEach((entry) => {
+    const normalized = normalizeAccountOverrideEntry(entry);
+    if (normalized) {
+      sanitized.push(normalized);
+    }
+  });
+  return sanitized;
+}
+
 function normalizePortalId(value) {
   if (value === null || value === undefined) {
     return null;
@@ -3094,6 +3136,80 @@ function traverseAndSetSymbolNote(container, keySet, symbolKey, noteValue) {
   return { updated, matched, count };
 }
 
+function getAccountOverrideEntries() {
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath || !fs.existsSync(filePath)) {
+    return { entries: [], filePath };
+  }
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  if (!content.trim()) {
+    return { entries: [], filePath };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    const error = new Error('Failed to parse accounts file');
+    error.code = 'PARSE_ERROR';
+    error.cause = parseError;
+    throw error;
+  }
+  if (parsed && typeof parsed === 'object' && Array.isArray(parsed.overrides)) {
+    return { entries: parsed.overrides, filePath };
+  }
+  return { entries: [], filePath };
+}
+
+function updateAccountOverrideEntries(entries) {
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath) {
+    const error = new Error('Accounts file path is not configured');
+    error.code = 'NO_FILE';
+    throw error;
+  }
+  const sanitized = normalizeAccountOverrideEntries(entries);
+
+  let container = {};
+  if (fs.existsSync(filePath)) {
+    const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+    if (content.trim()) {
+      try {
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed)) {
+          container = { entries: parsed };
+        } else if (parsed && typeof parsed === 'object') {
+          container = parsed;
+        }
+      } catch (parseError) {
+        const error = new Error('Failed to parse accounts file');
+        error.code = 'PARSE_ERROR';
+        error.cause = parseError;
+        throw error;
+      }
+    }
+  }
+
+  container.overrides = sanitized;
+  container.updatedAt = new Date().toISOString();
+
+  const serialized = JSON.stringify(container, null, 2);
+  fs.writeFileSync(filePath, serialized + (serialized.endsWith('\n') ? '' : '\n'), 'utf-8');
+
+  cachedMarker = null;
+  cachedOverrides = {};
+  cachedPortalOverrides = {};
+  cachedChatOverrides = {};
+  cachedSettings = {};
+  cachedOrdering = [];
+  cachedDefaultAccount = null;
+  cachedGroupRelations = {};
+  cachedGroupMetadata = {};
+  hasLoggedError = false;
+  loadAccountOverrides();
+
+  return { updated: true, entries: sanitized, filePath };
+}
+
 function updateAccountLastRebalance(accountKey, options = {}) {
   const keySet = buildAccountKeySet(accountKey);
   if (!keySet) {
@@ -3403,6 +3519,8 @@ module.exports = {
   updateAccountSymbolNote,
   updateAccountPlanningContext,
   updateAccountMetadata,
+  getAccountOverrideEntries,
+  updateAccountOverrideEntries,
   extractSymbolSettingsFromOverride,
   getAccountGroupRelations,
   getAccountGroupMetadata,

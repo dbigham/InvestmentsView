@@ -129,6 +129,18 @@ function buildAccountMetadataUrl(accountKey) {
   return url.toString();
 }
 
+function buildAccountOverridesUrl() {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/account-overrides', base);
+  return url.toString();
+}
+
+function buildAccountsUrl() {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/accounts', base);
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -205,11 +217,78 @@ function buildPortfolioNewsUrl() {
   return url.toString();
 }
 
+function buildLoginsUrl() {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/logins', base);
+  return url.toString();
+}
+
 export async function getSummary(accountId, options = {}) {
   const response = await fetch(buildUrl(accountId, options));
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'Failed to load summary data');
+    let message = 'Failed to load summary data';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function getLogins() {
+  const response = await fetch(buildLoginsUrl());
+  if (!response.ok) {
+    let message = 'Failed to load logins';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function addLogin(payload = {}) {
+  const response = await fetch(buildLoginsUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let message = 'Failed to save login';
+    try {
+      const data = await response.json();
+      message = data?.message || data?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
   }
   return response.json();
 }
@@ -616,6 +695,76 @@ export async function setAccountMetadata(accountKey, metadata) {
     throw new Error(message);
   }
 
+  return response.json();
+}
+
+export async function getAccountOverrides() {
+  const response = await fetch(buildAccountOverridesUrl());
+  if (!response.ok) {
+    let message = 'Failed to load account overrides';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function getAccounts() {
+  const response = await fetch(buildAccountsUrl());
+  if (!response.ok) {
+    let message = 'Failed to load accounts';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function setAccountOverrides(entries) {
+  const response = await fetch(buildAccountOverridesUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entries }),
+  });
+  if (!response.ok) {
+    let message = 'Failed to update account overrides';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
   return response.json();
 }
 
