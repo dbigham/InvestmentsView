@@ -20,6 +20,7 @@ import {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_YEAR = 365.25;
+const CASH_FLOW_EPSILON = 1e-8;
 const DEFAULT_CHART_METRIC = 'total-pnl';
 const CHART_METRIC_OPTIONS = [
   { value: DEFAULT_CHART_METRIC, label: 'Total P&L', valueKey: 'totalPnl', deltaKey: 'totalPnlDelta' },
@@ -81,6 +82,249 @@ function computeElapsedYears(startDate, endDate) {
     return null;
   }
   return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
+}
+
+function isValidDate(value) {
+  return value instanceof Date && !Number.isNaN(value.getTime());
+}
+
+function normalizeCashFlowsForXirr(cashFlows) {
+  if (!Array.isArray(cashFlows)) {
+    return [];
+  }
+  return cashFlows
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const numericAmount = Number(entry.amount);
+      if (!Number.isFinite(numericAmount) || Math.abs(numericAmount) < CASH_FLOW_EPSILON) {
+        return null;
+      }
+      let date = null;
+      if (isValidDate(entry.date)) {
+        date = entry.date;
+      } else if (isValidDate(entry.timestamp)) {
+        date = entry.timestamp;
+      } else if (typeof entry.date === 'string' && entry.date.trim()) {
+        const parsed = new Date(entry.date);
+        if (isValidDate(parsed)) {
+          date = parsed;
+        }
+      } else if (typeof entry.timestamp === 'string' && entry.timestamp.trim()) {
+        const parsedTimestamp = new Date(entry.timestamp);
+        if (isValidDate(parsedTimestamp)) {
+          date = parsedTimestamp;
+        }
+      }
+      if (!isValidDate(date)) {
+        return null;
+      }
+      return { amount: numericAmount, date };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.date - b.date);
+}
+
+function yearFraction(start, end) {
+  return (end.getTime() - start.getTime()) / MS_PER_DAY / 365;
+}
+
+function xnpv(rate, cashFlows) {
+  if (!Array.isArray(cashFlows) || cashFlows.length === 0) {
+    return Number.NaN;
+  }
+  if (rate <= -0.999999) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const baseDate = cashFlows[0].date;
+  return cashFlows.reduce((sum, entry) => {
+    const t = yearFraction(baseDate, entry.date);
+    return sum + entry.amount / Math.pow(1 + rate, t);
+  }, 0);
+}
+
+function dxnpv(rate, cashFlows) {
+  if (!Array.isArray(cashFlows) || cashFlows.length === 0) {
+    return Number.NaN;
+  }
+  const baseDate = cashFlows[0].date;
+  return cashFlows.reduce((sum, entry) => {
+    const t = yearFraction(baseDate, entry.date);
+    return sum + (-t) * entry.amount / Math.pow(1 + rate, t + 1);
+  }, 0);
+}
+
+function xirr(cashFlows, guess = 0.1) {
+  let flows = [];
+  if (Array.isArray(cashFlows) && cashFlows.length > 0) {
+    const maybeNormalized = cashFlows.every(
+      (entry) =>
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.amount === 'number' &&
+        Number.isFinite(entry.amount) &&
+        isValidDate(entry.date)
+    );
+    if (maybeNormalized) {
+      flows = cashFlows.slice().sort((a, b) => a.date - b.date);
+    }
+  }
+  if (!flows.length) {
+    flows = normalizeCashFlowsForXirr(cashFlows);
+  }
+
+  if (flows.length < 2) {
+    return Number.NaN;
+  }
+
+  let hasPositive = false;
+  let hasNegative = false;
+  for (const entry of flows) {
+    if (entry.amount > CASH_FLOW_EPSILON) {
+      hasPositive = true;
+    } else if (entry.amount < -CASH_FLOW_EPSILON) {
+      hasNegative = true;
+    }
+  }
+  if (!hasPositive || !hasNegative) {
+    return Number.NaN;
+  }
+
+  const MIN_RATE = -0.999999;
+  const MAX_RATE = 1e6;
+
+  let low = -0.9999;
+  let high = 1.0;
+  let fLow = xnpv(low, flows);
+  let fHigh = xnpv(high, flows);
+
+  const isUsable = (value) =>
+    Number.isFinite(value) || value === Number.POSITIVE_INFINITY || value === Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < 100 && isUsable(fLow) && isUsable(fHigh) && fLow * fHigh > 0; i += 1) {
+    let expanded = false;
+
+    const canExpandLow = low > MIN_RATE + 1e-9;
+    const canExpandHigh = high < MAX_RATE;
+    const preferHigh =
+      canExpandHigh &&
+      (!canExpandLow || Math.abs(fHigh) <= Math.abs(fLow) || !Number.isFinite(fLow));
+
+    if (fLow * fHigh > 0 && canExpandHigh && preferHigh) {
+      const previousHigh = high;
+      if (high >= 0) {
+        high += 1 + Math.abs(high);
+      } else {
+        high *= 2;
+      }
+      if (high === previousHigh) {
+        high = previousHigh + 1;
+      }
+      high = Math.min(high, MAX_RATE);
+      fHigh = xnpv(high, flows);
+      expanded = true;
+    }
+
+    if (fLow * fHigh > 0 && canExpandLow && (!preferHigh || !expanded)) {
+      const nextLow = Math.max(MIN_RATE, low - (1 + Math.abs(low)));
+      if (nextLow !== low) {
+        low = nextLow;
+        fLow = xnpv(low, flows);
+        expanded = true;
+      }
+    }
+
+    if (!expanded) {
+      break;
+    }
+  }
+
+  if (!Number.isFinite(fLow) || !Number.isFinite(fHigh) || fLow * fHigh > 0) {
+    return Number.NaN;
+  }
+
+  let rate = Number.isFinite(guess) ? guess : 0.1;
+  for (let i = 0; i < 50; i += 1) {
+    const f = xnpv(rate, flows);
+    if (!Number.isFinite(f)) {
+      break;
+    }
+    if (Math.abs(f) < 1e-10) {
+      return rate;
+    }
+    const df = dxnpv(rate, flows);
+    if (!Number.isFinite(df) || Math.abs(df) < 1e-12) {
+      break;
+    }
+    const next = rate - f / df;
+    if (!Number.isFinite(next)) {
+      break;
+    }
+    if (next <= MIN_RATE) {
+      rate = MIN_RATE;
+      break;
+    }
+    if (Math.abs(next - rate) < 1e-12) {
+      const residual = xnpv(next, flows);
+      if (Number.isFinite(residual) && Math.abs(residual) < 1e-10) {
+        return next;
+      }
+      break;
+    }
+    rate = next;
+  }
+
+  let lowBound = low;
+  let highBound = high;
+  let fLowBound = fLow;
+  let fHighBound = fHigh;
+
+  if (rate > lowBound && rate < highBound) {
+    const residual = xnpv(rate, flows);
+    if (Number.isFinite(residual) && Math.abs(residual) < 1e-8) {
+      return rate;
+    }
+    if (Number.isFinite(residual)) {
+      if (residual > 0) {
+        fLowBound = residual;
+        lowBound = rate;
+      } else if (residual < 0) {
+        fHighBound = residual;
+        highBound = rate;
+      }
+    }
+  }
+
+  let mid = Number.NaN;
+  for (let i = 0; i < 200; i += 1) {
+    mid = (lowBound + highBound) / 2;
+    const fMid = xnpv(mid, flows);
+    if (!Number.isFinite(fMid)) {
+      break;
+    }
+    if (Math.abs(fMid) < 1e-10 || Math.abs(highBound - lowBound) < 1e-12) {
+      return mid;
+    }
+    if (fLowBound * fMid <= 0) {
+      highBound = mid;
+      fHighBound = fMid;
+    } else {
+      lowBound = mid;
+      fLowBound = fMid;
+    }
+  }
+
+  return mid;
+}
+
+function computeAnnualizedReturnFromCashFlows(cashFlows) {
+  const normalized = normalizeCashFlowsForXirr(cashFlows);
+  if (normalized.length < 2) {
+    return null;
+  }
+  const rate = xirr(normalized, 0.1);
+  return Number.isFinite(rate) ? rate : null;
 }
 
 function MetricRow({
@@ -617,6 +861,7 @@ export default function SummaryMetrics({
   onShowChildTotalPnl,
   onShowRangePnlBreakdown,
   totalPnlSelectionResetKey,
+  onTotalPnlRangeSelectionChange,
   onTotalPnlSelectionCleared,
 }) {
   // Local timeframe for the Total P&L chart (Since inception by default)
@@ -743,17 +988,15 @@ export default function SummaryMetrics({
     ? `(${formatNumber(deploymentSummary.reservePercent, percentDisplayOptions)}%)`
     : null;
 
-  const totalPnlValue = Number.isFinite(fundingSummary?.totalPnlCad)
+  const baseTotalPnlValue = Number.isFinite(fundingSummary?.totalPnlCad)
     ? fundingSummary.totalPnlCad
     : Number.isFinite(pnl?.totalPnl)
       ? pnl.totalPnl
       : null;
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
-  const totalTone = classifyPnL(totalPnlValue);
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
-  const formattedTotal = formatSignedMoney(totalPnlValue);
   const qqqStatus = qqqSummary?.status || 'loading';
   const canRefreshQqqTemperature = typeof onRefreshQqqTemperature === 'function';
 
@@ -784,10 +1027,9 @@ export default function SummaryMetrics({
   } else if (qqqStatus !== 'loading') {
     qqqLabel = 'QQQ temperature unavailable';
   }
-  const netDepositsValue = Number.isFinite(fundingSummary?.netDepositsCad)
+  const baseNetDepositsValue = Number.isFinite(fundingSummary?.netDepositsCad)
     ? fundingSummary.netDepositsCad
     : null;
-  const formattedNetDeposits = netDepositsValue !== null ? formatMoney(netDepositsValue) : null;
   const autoFixInfo = fundingSummary?.autoFixPendingWithdrawls;
   const autoFixApplied = autoFixInfo?.applied === true;
   const autoFixAdjustmentCad = Number.isFinite(autoFixInfo?.adjustmentCad)
@@ -801,19 +1043,9 @@ export default function SummaryMetrics({
       ? `Adjusted net deposits by ${autoFixAmountLabel} to offset a suspected missing withdrawal; today's Total P&L is treated as zero.`
       : 'Applied an automated fix for a suspected missing withdrawal to keep Total P&L accurate.');
 
-  const annualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
+  const baseAnnualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
     ? fundingSummary.annualizedReturnRate
     : null;
-  const annualizedPercentDisplay =
-    annualizedReturnRate === null
-      ? null
-      : formatSignedPercent(annualizedReturnRate * 100, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        });
-  const formattedCagr = annualizedPercentDisplay ?? '—';
-  const cagrTone =
-    annualizedReturnRate > 0 ? 'positive' : annualizedReturnRate < 0 ? 'negative' : 'neutral';
   const canShowReturnBreakdown =
     typeof onShowAnnualizedReturn === 'function' &&
     Array.isArray(fundingSummary?.returnBreakdown);
@@ -824,37 +1056,15 @@ export default function SummaryMetrics({
       ? fundingSummary.totalEquityCad
       : null;
 
-  const resolvedPeriodStartDate =
+  const basePeriodStartDate =
     parseDateString(fundingSummary?.periodStartDate, { assumeDateOnly: true }) ||
     parseDateString(fundingSummary?.annualizedReturnStartDate, { assumeDateOnly: true });
-  const resolvedPeriodEndDate =
+  const basePeriodEndDate =
     parseDateString(fundingSummary?.periodEndDate, { assumeDateOnly: true }) ||
     parseDateString(fundingSummary?.annualizedReturnAsOf) ||
     parseDateString(asOf);
-  let deAnnualizedReturnRate = null;
-  if (Number.isFinite(annualizedReturnRate)) {
-    const elapsedYears = computeElapsedYears(resolvedPeriodStartDate, resolvedPeriodEndDate);
-    if (Number.isFinite(elapsedYears) && elapsedYears > 0) {
-      const growthBase = 1 + annualizedReturnRate;
-      if (growthBase > 0) {
-        const growthFactor = Math.pow(growthBase, elapsedYears);
-        if (Number.isFinite(growthFactor)) {
-          deAnnualizedReturnRate = growthFactor - 1;
-        }
-      } else if (annualizedReturnRate <= -1) {
-        deAnnualizedReturnRate = -1;
-      }
-    }
-  }
-  const deAnnualizedPercentDisplay =
-    deAnnualizedReturnRate === null
-      ? null
-      : formatSignedPercent(deAnnualizedReturnRate * 100, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        });
 
-  const formatPnlPercent = (change) => {
+  const formatPnlPercent = (change, baseValue = safeTotalEquity) => {
     if (!Number.isFinite(change)) {
       if (change === 0) {
         return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -866,16 +1076,16 @@ export default function SummaryMetrics({
       return formatSignedPercent(0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    if (safeTotalEquity === null) {
+    if (baseValue === null) {
       return null;
     }
 
-    const baseValue = safeTotalEquity - change;
-    if (!Number.isFinite(baseValue) || baseValue === 0) {
+    const computedBase = baseValue - change;
+    if (!Number.isFinite(computedBase) || computedBase === 0) {
       return null;
     }
 
-    const percentValue = (change / baseValue) * 100;
+    const percentValue = (change / computedBase) * 100;
     if (!Number.isFinite(percentValue)) {
       return null;
     }
@@ -885,7 +1095,6 @@ export default function SummaryMetrics({
 
   const dayPercent = formatPnlPercent(pnl?.dayPnl);
   const openPercent = formatPnlPercent(pnl?.openPnl);
-  const totalPercent = formatPnlPercent(totalPnlValue);
 
   const benchmarkStatus = benchmarkComparison?.status || 'idle';
   const benchmarkData = benchmarkComparison?.data || null;
@@ -932,16 +1141,6 @@ export default function SummaryMetrics({
     const isSingular = Math.abs(roundedMonths - 1) < 1e-9;
     return `${formattedMonths} month${isSingular ? '' : 's'}`;
   };
-
-  let totalExtraPercent = null;
-  let totalExtraPercentTooltip = null;
-  if (deAnnualizedPercentDisplay !== null) {
-    totalExtraPercent = `(${deAnnualizedPercentDisplay})`;
-    totalExtraPercentTooltip = 'Estimated cumulative total return. (De-annualized XIRR)';
-  } else if (totalPercent) {
-    totalExtraPercent = `(${totalPercent})`;
-    totalExtraPercentTooltip = 'Fallback calculation: Total P&L divided by cost basis.';
-  }
 
   let detailLines = [];
   if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
@@ -1063,7 +1262,7 @@ export default function SummaryMetrics({
       displayStartDate: totalPnlSeries.displayStartDate,
       displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
     });
-    const targetTotal = Number.isFinite(totalPnlValue) ? totalPnlValue : null;
+    const targetTotal = Number.isFinite(baseTotalPnlValue) ? baseTotalPnlValue : null;
     if (!baseSeries.length || targetTotal === null) {
       return baseSeries;
     }
@@ -1110,7 +1309,7 @@ export default function SummaryMetrics({
 
     adjusted[lastIndex] = nextLast;
     return adjusted;
-  }, [totalPnlSeries, chartTimeframe, totalPnlValue]);
+  }, [totalPnlSeries, chartTimeframe, baseTotalPnlValue]);
 
   const priceChartSeries = useMemo(() => {
     if (!symbolMode || !Array.isArray(symbolPriceSeries?.points)) {
@@ -1560,12 +1759,148 @@ export default function SummaryMetrics({
     };
   }, [selectionRange, resolvePointAtX]);
 
-  const selectionTone = Number.isFinite(selectionSummary?.deltaValue)
-    ? classifyPnL(selectionSummary.deltaValue)
+  const selectionRangeSummary = useMemo(() => {
+    if (!selectionSummary || !isTotalPnlMetric || symbolMode) {
+      return null;
+    }
+    const normalizeKey = (value) => {
+      if (typeof value !== 'string') {
+        return null;
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+        return trimmed.slice(0, 10);
+      }
+      const parsed = parseDateString(trimmed, { assumeDateOnly: true });
+      if (!parsed) {
+        return null;
+      }
+      return parsed.toISOString().slice(0, 10);
+    };
+    const startKey = normalizeKey(selectionSummary.startPoint?.date);
+    const endKey = normalizeKey(selectionSummary.endPoint?.date);
+    if (!startKey || !endKey) {
+      return null;
+    }
+    if (!filteredTotalPnlSeries.length) {
+      return null;
+    }
+    const entryByDate = new Map();
+    const rangeEntries = [];
+    filteredTotalPnlSeries.forEach((entry) => {
+      const key = normalizeKey(entry?.date);
+      if (!key) {
+        return;
+      }
+      entryByDate.set(key, entry);
+      if (key >= startKey && key <= endKey) {
+        rangeEntries.push({ key, entry });
+      }
+    });
+    const startEntry = entryByDate.get(startKey) || null;
+    const endEntry = entryByDate.get(endKey) || null;
+    if (!startEntry || !endEntry) {
+      return null;
+    }
+    const resolveNumber = (value) => (Number.isFinite(value) ? value : null);
+    const startTotal =
+      resolveNumber(startEntry.totalPnl) ??
+      resolveNumber(startEntry.totalPnlCad);
+    const endTotal =
+      resolveNumber(endEntry.totalPnl) ??
+      resolveNumber(endEntry.totalPnlCad);
+    const startDeposits =
+      resolveNumber(startEntry.cumulativeNetDepositsCad) ??
+      resolveNumber(startEntry.netDeposits);
+    const endDeposits =
+      resolveNumber(endEntry.cumulativeNetDepositsCad) ??
+      resolveNumber(endEntry.netDeposits);
+    const startEquity =
+      resolveNumber(startEntry.equityCad) ??
+      resolveNumber(startEntry.equity);
+    const endEquity =
+      resolveNumber(endEntry.equityCad) ??
+      resolveNumber(endEntry.equity);
+    const totalPnlCad =
+      Number.isFinite(startTotal) && Number.isFinite(endTotal)
+        ? endTotal - startTotal
+        : Number.isFinite(selectionSummary.deltaValue)
+          ? selectionSummary.deltaValue
+          : null;
+    const netDepositsCad =
+      Number.isFinite(startDeposits) && Number.isFinite(endDeposits)
+        ? endDeposits - startDeposits
+        : null;
+    let annualizedReturnRate = null;
+    const startDate = parseDateOnly(startKey);
+    const endDate = parseDateOnly(endKey);
+    if (startDate && endDate && rangeEntries.length > 0) {
+      rangeEntries.sort((a, b) => a.key.localeCompare(b.key));
+      const cashFlows = [];
+      if (Number.isFinite(startEquity)) {
+        cashFlows.push({ amount: -startEquity, date: startDate });
+      }
+      for (let i = 1; i < rangeEntries.length; i += 1) {
+        const current = rangeEntries[i]?.entry;
+        const previous = rangeEntries[i - 1]?.entry;
+        if (!current || !previous) {
+          continue;
+        }
+        const currentDeposits =
+          resolveNumber(current.cumulativeNetDepositsCad) ??
+          resolveNumber(current.netDeposits);
+        const previousDeposits =
+          resolveNumber(previous.cumulativeNetDepositsCad) ??
+          resolveNumber(previous.netDeposits);
+        if (!Number.isFinite(currentDeposits) || !Number.isFinite(previousDeposits)) {
+          continue;
+        }
+        const delta = currentDeposits - previousDeposits;
+        if (Math.abs(delta) > CASH_FLOW_EPSILON) {
+          const flowDate = parseDateOnly(rangeEntries[i].key);
+          if (flowDate) {
+            cashFlows.push({ amount: -delta, date: flowDate });
+          }
+        }
+      }
+      if (Number.isFinite(endEquity)) {
+        cashFlows.push({ amount: endEquity, date: endDate });
+      }
+      annualizedReturnRate = computeAnnualizedReturnFromCashFlows(cashFlows);
+    }
+    return {
+      startDate: startKey,
+      endDate: endKey,
+      totalPnlCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+      netDepositsCad: Number.isFinite(netDepositsCad) ? netDepositsCad : null,
+      startTotalCad: Number.isFinite(startTotal) ? startTotal : null,
+      endTotalCad: Number.isFinite(endTotal) ? endTotal : null,
+      startEquityCad: Number.isFinite(startEquity) ? startEquity : null,
+      endEquityCad: Number.isFinite(endEquity) ? endEquity : null,
+      annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : null,
+    };
+  }, [selectionSummary, isTotalPnlMetric, symbolMode, filteredTotalPnlSeries]);
+
+  const selectionDeltaValue =
+    selectionRangeSummary && isTotalPnlMetric
+      ? selectionRangeSummary.totalPnlCad
+      : selectionSummary?.deltaValue;
+  const selectionTone = Number.isFinite(selectionDeltaValue) ? classifyPnL(selectionDeltaValue) : null;
+  const formattedSelectionChange = Number.isFinite(selectionDeltaValue)
+    ? formatSignedMoney(selectionDeltaValue)
     : null;
-  const formattedSelectionChange = Number.isFinite(selectionSummary?.deltaValue)
-    ? formatSignedMoney(selectionSummary.deltaValue)
-    : null;
+
+  const selectionSummaryClassNames = ['pnl-dialog__selection-summary'];
+  if (selectionSummary?.isActive) {
+    selectionSummaryClassNames.push('pnl-dialog__selection-summary--active');
+  }
+  if (selectionTone) {
+    selectionSummaryClassNames.push(`pnl-dialog__selection-summary--${selectionTone}`);
+  }
+
   const selectionLabelStyle = useMemo(() => {
     if (!selectionSummary) {
       return null;
@@ -1579,8 +1914,18 @@ export default function SummaryMetrics({
   }, [selectionSummary]);
   const selectionStartDateLabel = selectionSummary ? formatDate(selectionSummary.startPoint.date) : null;
   const selectionEndDateLabel = selectionSummary ? formatDate(selectionSummary.endPoint.date) : null;
-  const selectionStartValueLabel = selectionSummary ? formatMoney(selectionSummary.startValue) : null;
-  const selectionEndValueLabel = selectionSummary ? formatMoney(selectionSummary.endValue) : null;
+  const selectionStartValueLabel =
+    selectionRangeSummary && isTotalPnlMetric && Number.isFinite(selectionRangeSummary.startTotalCad)
+      ? formatMoney(selectionRangeSummary.startTotalCad)
+      : selectionSummary
+        ? formatMoney(selectionSummary.startValue)
+        : null;
+  const selectionEndValueLabel =
+    selectionRangeSummary && isTotalPnlMetric && Number.isFinite(selectionRangeSummary.endTotalCad)
+      ? formatMoney(selectionRangeSummary.endTotalCad)
+      : selectionSummary
+        ? formatMoney(selectionSummary.endValue)
+        : null;
   const selectionDateRangeLabel = selectionSummary
     ? selectionStartDateLabel && selectionEndDateLabel
       ? `${selectionStartDateLabel} – ${selectionEndDateLabel}`
@@ -1604,12 +1949,116 @@ export default function SummaryMetrics({
     const unit = Math.abs(value) === 1 ? (useMonths ? 'month' : 'year') : useMonths ? 'months' : 'years';
     return `(${formatted} ${unit})`;
   }, [selectionSummary]);
-  const selectionSummaryClassNames = ['pnl-dialog__selection-summary'];
-  if (selectionSummary?.isActive) {
-    selectionSummaryClassNames.push('pnl-dialog__selection-summary--active');
+  useEffect(() => {
+    if (typeof onTotalPnlRangeSelectionChange !== 'function') {
+      return;
+    }
+    if (selectionSummary?.isActive) {
+      return;
+    }
+    if (!selectionRangeSummary) {
+      onTotalPnlRangeSelectionChange(null);
+      return;
+    }
+    onTotalPnlRangeSelectionChange({
+      startDate: selectionRangeSummary.startDate,
+      endDate: selectionRangeSummary.endDate,
+    });
+  }, [onTotalPnlRangeSelectionChange, selectionRangeSummary, selectionSummary?.isActive]);
+
+  const selectionRangeLabel =
+    selectionRangeSummary && selectionStartDateLabel && selectionEndDateLabel
+      ? `${selectionStartDateLabel} to ${selectionEndDateLabel}`
+      : selectionRangeSummary
+        ? selectionStartDateLabel || selectionEndDateLabel
+        : null;
+  const selectionRangeLabelNode = selectionRangeLabel ? (
+    <div
+      className="total-pnl-range"
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <span className="total-pnl-range__text total-pnl-range__text--selection">{selectionRangeLabel}</span>
+    </div>
+  ) : null;
+
+  const hasSelectionRange = Boolean(selectionRangeSummary);
+  const displayTotalPnlValue = hasSelectionRange
+    ? selectionRangeSummary?.totalPnlCad ?? null
+    : baseTotalPnlValue;
+  const displayNetDepositsValue = hasSelectionRange
+    ? selectionRangeSummary?.netDepositsCad ?? null
+    : baseNetDepositsValue;
+  const displayAnnualizedReturnRate = hasSelectionRange
+    ? selectionRangeSummary?.annualizedReturnRate ?? null
+    : baseAnnualizedReturnRate;
+  const displayPeriodStartDate =
+    hasSelectionRange && selectionRangeSummary?.startDate
+      ? parseDateString(selectionRangeSummary.startDate, { assumeDateOnly: true })
+      : basePeriodStartDate;
+  const displayPeriodEndDate =
+    hasSelectionRange && selectionRangeSummary?.endDate
+      ? parseDateString(selectionRangeSummary.endDate, { assumeDateOnly: true })
+      : basePeriodEndDate;
+
+  const annualizedPercentDisplay =
+    displayAnnualizedReturnRate === null
+      ? null
+      : formatSignedPercent(displayAnnualizedReturnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+  const formattedCagr = annualizedPercentDisplay ?? '—';
+  const cagrTone =
+    displayAnnualizedReturnRate > 0
+      ? 'positive'
+      : displayAnnualizedReturnRate < 0
+        ? 'negative'
+        : 'neutral';
+
+  let deAnnualizedReturnRate = null;
+  if (Number.isFinite(displayAnnualizedReturnRate)) {
+    const elapsedYears = computeElapsedYears(displayPeriodStartDate, displayPeriodEndDate);
+    if (Number.isFinite(elapsedYears) && elapsedYears > 0) {
+      const growthBase = 1 + displayAnnualizedReturnRate;
+      if (growthBase > 0) {
+        const growthFactor = Math.pow(growthBase, elapsedYears);
+        if (Number.isFinite(growthFactor)) {
+          deAnnualizedReturnRate = growthFactor - 1;
+        }
+      } else if (displayAnnualizedReturnRate <= -1) {
+        deAnnualizedReturnRate = -1;
+      }
+    }
   }
-  if (selectionTone) {
-    selectionSummaryClassNames.push(`pnl-dialog__selection-summary--${selectionTone}`);
+  const deAnnualizedPercentDisplay =
+    deAnnualizedReturnRate === null
+      ? null
+      : formatSignedPercent(deAnnualizedReturnRate * 100, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+
+  const formattedTotal = formatSignedMoney(displayTotalPnlValue);
+  const totalTone = classifyPnL(displayTotalPnlValue);
+  const formattedNetDeposits =
+    displayNetDepositsValue !== null ? formatMoney(displayNetDepositsValue) : null;
+  const totalPercentBaseValue =
+    selectionRangeSummary && Number.isFinite(selectionRangeSummary.startEquityCad)
+      ? selectionRangeSummary.startEquityCad
+      : safeTotalEquity;
+  const totalPercent = formatPnlPercent(displayTotalPnlValue, totalPercentBaseValue);
+
+  let totalExtraPercent = null;
+  let totalExtraPercentTooltip = null;
+  if (deAnnualizedPercentDisplay !== null) {
+    totalExtraPercent = `(${deAnnualizedPercentDisplay})`;
+    totalExtraPercentTooltip = 'Estimated cumulative total return. (De-annualized XIRR)';
+  } else if (totalPercent) {
+    totalExtraPercent = `(${totalPercent})`;
+    totalExtraPercentTooltip = 'Fallback calculation: Total P&L divided by cost basis.';
   }
 
   const hoverLabel = useMemo(() => {
@@ -1759,7 +2208,7 @@ export default function SummaryMetrics({
       startValueLabel: selectionStartValueLabel,
       endValueLabel: selectionEndValueLabel,
       changeLabel: formattedSelectionChange,
-      deltaValue: selectionSummary.deltaValue ?? null,
+      deltaValue: Number.isFinite(selectionDeltaValue) ? selectionDeltaValue : null,
     });
   }, [
     selectionSupportsBreakdown,
@@ -1770,6 +2219,7 @@ export default function SummaryMetrics({
     selectionStartValueLabel,
     selectionEndValueLabel,
     formattedSelectionChange,
+    selectionDeltaValue,
   ]);
 
   const handleChartClick = useCallback(
@@ -2871,7 +3321,7 @@ export default function SummaryMetrics({
             onContextMenuRequest={handleTotalContextMenuRequest}
             contextMenuOpen={totalMenuState.open}
           />
-          {!symbolMode && totalPnlRangeNode}
+          {!symbolMode && (selectionRangeLabelNode || totalPnlRangeNode)}
           {!symbolMode && totalDetailBlock}
           <MetricRow
             label="Annualized return"
@@ -3139,6 +3589,7 @@ SummaryMetrics.propTypes = {
   onShowChildPnlBreakdown: PropTypes.func,
   onShowChildTotalPnl: PropTypes.func,
   totalPnlSelectionResetKey: PropTypes.number,
+  onTotalPnlRangeSelectionChange: PropTypes.func,
   onTotalPnlSelectionCleared: PropTypes.func,
 };
 
@@ -3196,5 +3647,6 @@ SummaryMetrics.defaultProps = {
   onShowChildPnlBreakdown: null,
   onShowChildTotalPnl: null,
   totalPnlSelectionResetKey: 0,
+  onTotalPnlRangeSelectionChange: null,
   onTotalPnlSelectionCleared: null,
 };

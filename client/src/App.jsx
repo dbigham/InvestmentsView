@@ -6041,6 +6041,7 @@ export default function App() {
 
   // (moved) Resolve missing symbol description later, once data is available
   const [totalPnlRange, setTotalPnlRange] = useState('all');
+  const [totalPnlSelectionRange, setTotalPnlSelectionRange] = useState(null);
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
@@ -10248,7 +10249,7 @@ export default function App() {
   );
 
   const benchmarkPeriod = useMemo(() => {
-    if (!fundingSummaryForDisplay) {
+    if (!fundingSummaryForDisplay && !totalPnlSelectionRange) {
       return null;
     }
 
@@ -10270,21 +10271,33 @@ export default function App() {
       return parsed.toISOString().slice(0, 10);
     };
 
-    const normalizedStart = normalizeDate(fundingSummaryForDisplay.periodStartDate);
+    if (totalPnlSelectionRange?.startDate) {
+      const normalizedStart = normalizeDate(totalPnlSelectionRange.startDate);
+      if (!normalizedStart) {
+        return null;
+      }
+      const normalizedEnd = normalizeDate(totalPnlSelectionRange.endDate);
+      return {
+        startDate: normalizedStart,
+        endDate: normalizedEnd || null,
+      };
+    }
+
+    const normalizedStart = normalizeDate(fundingSummaryForDisplay?.periodStartDate);
     if (!normalizedStart) {
       return null;
     }
 
     const normalizedEnd =
-      normalizeDate(fundingSummaryForDisplay.periodEndDate) ||
-      normalizeDate(fundingSummaryForDisplay.annualizedReturnAsOf) ||
+      normalizeDate(fundingSummaryForDisplay?.periodEndDate) ||
+      normalizeDate(fundingSummaryForDisplay?.annualizedReturnAsOf) ||
       normalizeDate(asOf);
 
     return {
       startDate: normalizedStart,
       endDate: normalizedEnd || null,
     };
-  }, [fundingSummaryForDisplay, asOf]);
+  }, [fundingSummaryForDisplay, asOf, totalPnlSelectionRange]);
 
   const benchmarkPeriodStart = benchmarkPeriod?.startDate || null;
   const benchmarkPeriodEnd = benchmarkPeriod?.endDate || null;
@@ -11698,6 +11711,17 @@ export default function App() {
     [handleShowPnlBreakdown]
   );
 
+  const handleTotalPnlRangeSelectionChange = useCallback((rangeInfo) => {
+    if (!rangeInfo || typeof rangeInfo.startDate !== 'string' || typeof rangeInfo.endDate !== 'string') {
+      setTotalPnlSelectionRange(null);
+      return;
+    }
+    setTotalPnlSelectionRange({
+      startDate: rangeInfo.startDate,
+      endDate: rangeInfo.endDate,
+    });
+  }, []);
+
   const handleClearPnlBreakdownRange = useCallback(() => {
     setPnlBreakdownRange(null);
     setRangeBreakdownState({ status: 'idle', key: null, data: null, error: null });
@@ -11713,6 +11737,7 @@ export default function App() {
 
   const handleTotalPnlSelectionCleared = useCallback(() => {
     setPnlBreakdownRange(null);
+    setTotalPnlSelectionRange(null);
   }, []);
 
   const handleShowChildTotalPnl = useCallback(
@@ -14862,6 +14887,7 @@ export default function App() {
             onShowChildTotalPnl={handleShowChildTotalPnl}
             onShowRangePnlBreakdown={handleShowRangePnlBreakdown}
             totalPnlSelectionResetKey={totalPnlSelectionResetKey}
+            onTotalPnlRangeSelectionChange={handleTotalPnlRangeSelectionChange}
             onTotalPnlSelectionCleared={handleTotalPnlSelectionCleared}
           />
         )}

@@ -3605,6 +3605,11 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.total-pnl-range__text--selection {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
 .equity-card__metric-value {
   font-size: 15px;
   font-weight: 500;
