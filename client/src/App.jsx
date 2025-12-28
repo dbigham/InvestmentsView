@@ -744,6 +744,31 @@ function getAccountLabel(account) {
   return '';
 }
 
+const HIDDEN_ACCOUNT_PATTERN = /(?:not\s*used|unused)/i;
+
+function containsHiddenKeyword(value) {
+  if (value == null) {
+    return false;
+  }
+  const stringValue = typeof value === 'string' ? value : String(value);
+  return HIDDEN_ACCOUNT_PATTERN.test(stringValue);
+}
+
+function shouldHideAccountSummaryEntry(account) {
+  if (!account || typeof account !== 'object') {
+    return false;
+  }
+  const fieldsToCheck = [
+    account.displayName,
+    account.ownerLabel,
+    account.clientAccountType,
+    account.type,
+    account.number,
+    account.name,
+  ];
+  return fieldsToCheck.some(containsHiddenKeyword);
+}
+
 function isAccountGroupSelection(value) {
   if (typeof value !== 'string') {
     return false;
@@ -9541,6 +9566,22 @@ export default function App() {
       return { items: [], parentTotal: null, parents: [] };
     }
 
+    const hasGroupDefinitions = (function resolveHasGroups() {
+      if (accountGroupsByNormalizedName.size > 0) {
+        return true;
+      }
+      if (accountGroupParentsMap.size > 0 || accountGroupChildrenMap.size > 0) {
+        return true;
+      }
+      for (let index = 0; index < accounts.length; index += 1) {
+        const groupKey = normalizeAccountGroupKey(accounts[index]?.accountGroup);
+        if (groupKey) {
+          return true;
+        }
+      }
+      return false;
+    })();
+
     // When a group is selected, we show its children. For individual accounts,
     // we don't infer children (to avoid showing siblings), but we still want
     // to show that account's parent group(s).
@@ -9643,6 +9684,189 @@ export default function App() {
       return result;
     };
 
+    if (showingAllAccounts && hasGroupDefinitions) {
+      const items = [];
+      const seenAccountIds = new Set();
+      const allGroupKeys = new Set();
+
+      accountGroupsByNormalizedName.forEach((_, key) => {
+        if (key) {
+          allGroupKeys.add(key);
+        }
+      });
+      accountGroupNamesByKey.forEach((_, key) => {
+        if (key) {
+          allGroupKeys.add(key);
+        }
+      });
+      accountGroupChildrenMap.forEach((_, key) => {
+        if (key) {
+          allGroupKeys.add(key);
+        }
+      });
+      accountGroupParentsMap.forEach((_, key) => {
+        if (key) {
+          allGroupKeys.add(key);
+        }
+      });
+      accountsByGroupName.forEach((_, key) => {
+        if (key) {
+          allGroupKeys.add(key);
+        }
+      });
+
+      const topLevelGroupKeys = Array.from(allGroupKeys).filter((key) => {
+        const parents = accountGroupParentsMap.get(key);
+        return !parents || parents.size === 0;
+      });
+
+      const seenGroupIds = new Set();
+      topLevelGroupKeys.forEach((groupKey) => {
+        const group = accountGroupsByNormalizedName.get(groupKey) || null;
+        const groupId =
+          group && group.id !== undefined && group.id !== null ? String(group.id).trim() : null;
+        if (groupId && seenGroupIds.has(groupId)) {
+          return;
+        }
+        if (groupId) {
+          seenGroupIds.add(groupId);
+        }
+        const displayName = accountGroupNamesByKey.get(groupKey) || groupId || groupKey;
+        const accountIds = collectGroupAccountIds(groupKey);
+        if (!accountIds.size) {
+          return;
+        }
+        let totalEquitySum = 0;
+        let hasTotalEquity = false;
+        let dayPnlSum = 0;
+        let hasDayPnl = false;
+        accountIds.forEach((accountId) => {
+          const account = accountsById.get(accountId);
+          if (!account) {
+            return;
+          }
+          const metrics = resolveAccountMetrics(accountId, account);
+          if (metrics.totalEquityCad !== null) {
+            totalEquitySum += metrics.totalEquityCad;
+            hasTotalEquity = true;
+          }
+          if (metrics.dayPnlCad !== null) {
+            dayPnlSum += metrics.dayPnlCad;
+            hasDayPnl = true;
+          }
+        });
+        if (!hasTotalEquity && !hasDayPnl) {
+          return;
+        }
+        const href = groupId ? buildAccountViewUrl(groupId) || null : null;
+        const cagrStart =
+          groupId && typeof accountFunding[groupId]?.cagrStartDate === 'string'
+            ? accountFunding[groupId].cagrStartDate.trim()
+            : '';
+        let groupProjectedRate = null;
+        if (groupId || groupKey) {
+          let equitySum = 0;
+          let weighted = 0;
+          accountIds.forEach((accountId) => {
+            const acc = accountsById.get(accountId);
+            if (!acc) {
+              return;
+            }
+            const fund = accountFunding[accountId] || null;
+            const eq = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : null;
+            const rate = Number.isFinite(acc.projectionGrowthPercent) ? acc.projectionGrowthPercent : null;
+            if (Number.isFinite(eq) && eq > 0 && Number.isFinite(rate)) {
+              equitySum += eq;
+              weighted += eq * rate;
+            }
+          });
+          if (equitySum > 0) {
+            groupProjectedRate = weighted / equitySum;
+          }
+        }
+
+        items.push({
+          id: groupId || groupKey,
+          label: displayName,
+          totalEquityCad: hasTotalEquity ? totalEquitySum : null,
+          dayPnlCad: hasDayPnl ? dayPnlSum : null,
+          href,
+          kind: 'group',
+          cagrStartDate: cagrStart || null,
+          supportsCagrToggle: Boolean(groupId && cagrStart),
+          projectionGrowthPercent: Number.isFinite(groupProjectedRate) ? groupProjectedRate : null,
+        });
+      });
+
+      accounts.forEach((account) => {
+        if (!account || account.id === undefined || account.id === null) {
+          return;
+        }
+        if (shouldHideAccountSummaryEntry(account)) {
+          return;
+        }
+        const accountId = String(account.id).trim();
+        if (!accountId || seenAccountIds.has(accountId)) {
+          return;
+        }
+        const groupKey = normalizeAccountGroupKey(account.accountGroup);
+        if (groupKey) {
+          return;
+        }
+        seenAccountIds.add(accountId);
+        const metrics = resolveAccountMetrics(accountId, account);
+        const href = buildAccountViewUrl(accountId) || null;
+        const cagrStart =
+          typeof accountFunding[accountId]?.cagrStartDate === 'string'
+            ? accountFunding[accountId].cagrStartDate.trim()
+            : '';
+        items.push({
+          id: accountId,
+          label: getAccountLabel(account) || accountId,
+          totalEquityCad: metrics.totalEquityCad,
+          dayPnlCad: metrics.dayPnlCad,
+          href,
+          kind: 'account',
+          cagrStartDate: cagrStart || null,
+          supportsCagrToggle: Boolean(cagrStart),
+          projectionGrowthPercent:
+            Number.isFinite(accountsById.get(accountId)?.projectionGrowthPercent)
+              ? accountsById.get(accountId).projectionGrowthPercent
+              : null,
+        });
+      });
+
+      if (!items.length) {
+        return { items: [], parentTotal: null, parents: [] };
+      }
+
+      items.sort((a, b) => {
+        const aValue = Number.isFinite(a.totalEquityCad) ? a.totalEquityCad : -Infinity;
+        const bValue = Number.isFinite(b.totalEquityCad) ? b.totalEquityCad : -Infinity;
+        if (aValue !== bValue) {
+          return bValue - aValue;
+        }
+        return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+      });
+
+      let parentTotal = null;
+      if (isFiniteNumber(selectedAccountFunding?.totalEquityCad)) {
+        parentTotal = selectedAccountFunding.totalEquityCad;
+      } else {
+        const sum = items.reduce((accumulator, item) => {
+          if (Number.isFinite(item.totalEquityCad)) {
+            return accumulator + item.totalEquityCad;
+          }
+          return accumulator;
+        }, 0);
+        if (Number.isFinite(sum) && sum > 0) {
+          parentTotal = sum;
+        }
+      }
+
+      return { items, parentTotal, parents: [] };
+    }
+
     const buildParentGroupItems = () => {
       // If a group is selected, show its parent groups (one level up).
       if (selectedGroupKey) {
@@ -9709,6 +9933,9 @@ export default function App() {
       }
       members.forEach((account) => {
         if (!account || account.id === undefined || account.id === null) {
+          return;
+        }
+        if (shouldHideAccountSummaryEntry(account)) {
           return;
         }
         const accountId = String(account.id).trim();
