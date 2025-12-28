@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   computeTotalPnlSeries,
+  computeTotalPnlSeriesForSymbol,
   buildDailyPriceSeries,
 } = require('../src/index.js');
 
@@ -264,4 +265,102 @@ test('computeTotalPnlSeries can ignore manual net deposit adjustments', async ()
     Math.abs(firstIgnoredPoint.cumulativeNetDepositsCad - 10) < 1e-6,
     'Expected baseline deposits to reflect actual funding when adjustments are ignored'
   );
+});
+
+test('computeTotalPnlSeriesForSymbol nets same-day trades before clamping', async () => {
+  const account = {
+    id: 'SYMBOL-NETTED-ACCOUNT',
+  };
+
+  const now = new Date('2025-01-03T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2025-01-01T00:00:00Z'),
+    crawlStart: new Date('2025-01-01T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2025-01-01T00:00:00.000000-05:00',
+        transactionDate: '2025-01-01T00:00:00.000000-05:00',
+        settlementDate: '2025-01-01T00:00:00.000000-05:00',
+        type: 'Trades',
+        action: 'Sell',
+        currency: 'CAD',
+        netAmount: 100,
+        grossAmount: 100,
+        quantity: -1,
+        symbol: 'ABC.TO',
+        symbolId: 0,
+      },
+      {
+        tradeDate: '2025-01-01T00:00:00.000000-05:00',
+        transactionDate: '2025-01-01T00:00:00.000000-05:00',
+        settlementDate: '2025-01-01T00:00:00.000000-05:00',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -100,
+        grossAmount: -100,
+        quantity: 1,
+        symbol: 'ABC.TO',
+        symbolId: 0,
+      },
+      {
+        tradeDate: '2025-01-02T00:00:00.000000-05:00',
+        transactionDate: '2025-01-02T00:00:00.000000-05:00',
+        settlementDate: '2025-01-02T00:00:00.000000-05:00',
+        type: 'Transfers',
+        action: 'TFO',
+        currency: 'CAD',
+        netAmount: 0,
+        quantity: 10,
+        symbol: 'ABC.TO',
+        symbolId: 0,
+        description: 'TRANSFER BOOK VALUE 1000',
+      },
+    ],
+    fingerprint: 'symbol-netted-fingerprint',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 0,
+        },
+      },
+    },
+  };
+
+  const dateKeys = ['2025-01-01', '2025-01-02', '2025-01-03'];
+  const priceSeries = buildDailyPriceSeries(
+    [
+      { date: new Date('2025-01-01T00:00:00Z'), price: 100 },
+      { date: new Date('2025-01-03T00:00:00Z'), price: 110 },
+    ],
+    dateKeys
+  );
+
+  const result = await computeTotalPnlSeriesForSymbol(
+    { id: 'login-1' },
+    account,
+    balances,
+    {
+      startDate: '2025-01-01',
+      endDate: '2025-01-03',
+      symbol: 'ABC.TO',
+      applyAccountCagrStartDate: false,
+      activityContext,
+      priceSeriesBySymbol: new Map([['ABC.TO', priceSeries]]),
+    }
+  );
+
+  assert.ok(result, 'Expected symbol series result');
+  const lastPoint = result.points[result.points.length - 1];
+  assert.equal(lastPoint.date, '2025-01-03');
+  assert.ok(Math.abs(lastPoint.equityCad - 1100) < 1e-6);
 });

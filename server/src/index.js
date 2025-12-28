@@ -12659,9 +12659,15 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   const priceSeriesMap = new Map();
   const priceSeriesStartKey = dateKeys[0];
   const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
+  const overrideSeries = options && options.priceSeriesBySymbol instanceof Map ? options.priceSeriesBySymbol : null;
   const symbolsForPricing = symbolMembers.length ? symbolMembers : [targetSymbol];
   for (const symbol of symbolsForPricing) {
     try {
+      if (overrideSeries && overrideSeries.has(symbol)) {
+        const override = overrideSeries.get(symbol);
+        priceSeriesMap.set(symbol, override instanceof Map ? new Map(override) : new Map(override || []));
+        continue;
+      }
       const meta = symbolMeta.get(symbol) || {};
       const rawId = typeof meta.symbolId === 'number' ? meta.symbolId : Number(meta.symbolId);
       const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
@@ -12773,6 +12779,50 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     adjustNumericMap(dailyInvestedCad, dateKey, investedDelta, CASH_FLOW_EPSILON);
   }
 
+  const dailyNetQtyBySymbol = new Map();
+  const addDailyQty = (dateKey, symbol, delta) => {
+    if (!dateKey || !symbol || !Number.isFinite(delta) || Math.abs(delta) < LEDGER_QUANTITY_EPSILON) {
+      return;
+    }
+    if (!dailyNetQtyBySymbol.has(dateKey)) {
+      dailyNetQtyBySymbol.set(dateKey, new Map());
+    }
+    const bySymbol = dailyNetQtyBySymbol.get(dateKey);
+    const current = bySymbol.has(symbol) ? bySymbol.get(symbol) : 0;
+    const next = current + delta;
+    if (Math.abs(next) < LEDGER_QUANTITY_EPSILON) {
+      bySymbol.delete(symbol);
+    } else {
+      bySymbol.set(symbol, next);
+    }
+  };
+
+  for (const entry of processedActivities) {
+    const qty = Number(entry?.activity?.quantity);
+    if (!entry || !entry.symbol || !Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+      continue;
+    }
+    const activity = entry.activity;
+    if (isOrderLikeActivity(activity) || isSplitLikeActivity(activity)) {
+      addDailyQty(entry.dateKey, entry.symbol, qty);
+    }
+  }
+  nonTradeEntriesByDate.forEach((entries, dateKey) => {
+    if (!Array.isArray(entries) || !entries.length) {
+      return;
+    }
+    entries.forEach((entry) => {
+      if (!entry || !entry.symbol) {
+        return;
+      }
+      const qty = Number(entry.qty);
+      if (!Number.isFinite(qty) || Math.abs(qty) < LEDGER_QUANTITY_EPSILON) {
+        return;
+      }
+      addDailyQty(dateKey, entry.symbol, qty);
+    });
+  });
+
   // Iterate days computing symbol equity and P&L
   const holdings = new Map();
   // Track symbol-linked cash so equity includes dividends, coupon payments, and trade cash effects.
@@ -12781,12 +12831,10 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   const points = [];
   let cumulativeInvested = 0;
   for (const dateKey of dateKeys) {
-    // apply all activity up to this day for this symbol
-    for (const entry of processedActivities) {
-      if (entry.dateKey !== dateKey) continue;
-      const qty = Number(entry.activity.quantity);
-      if (Number.isFinite(qty) && Math.abs(qty) >= LEDGER_QUANTITY_EPSILON) {
-        const symbol = entry.symbol;
+    // apply net quantity deltas for this day to avoid ordering artifacts
+    const dailyQtyMap = dailyNetQtyBySymbol.get(dateKey);
+    if (dailyQtyMap && dailyQtyMap.size) {
+      for (const [symbol, qty] of dailyQtyMap.entries()) {
         const current = holdings.has(symbol) ? holdings.get(symbol) : 0;
         const next = current + qty;
         const base = baseOf(symbol) || symbol;
@@ -12799,7 +12847,12 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
           holdings.set(symbol, next);
         }
       }
-      // Apply cash effects for income (dividends/interest) only – exclude trade cash to
+    }
+
+    // apply cash effects for this day
+    for (const entry of processedActivities) {
+      if (entry.dateKey !== dateKey) continue;
+      // Apply cash effects for income (dividends/interest) only -- exclude trade cash to
       // avoid cancelling out invested principal in symbol-scope equity.
       const activityDesc = [entry.activity.type || '', entry.activity.action || '', entry.activity.description || ''].join(' ');
       const isIncome = INCOME_ACTIVITY_REGEX.test(activityDesc);
