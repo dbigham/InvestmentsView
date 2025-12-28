@@ -13746,8 +13746,8 @@ export default function App() {
   const symbolAnnualizedMapForPositions = useMemo(() => {
     const map = new Map();
     const container =
-      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll) ||
-      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol);
+      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol) ||
+      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll);
     const normalizeKey = (value) => normalizeSymbolGroupKey(value || '');
     if (!container || !Array.isArray(container.entries)) {
       return map;
@@ -13782,6 +13782,49 @@ export default function App() {
     });
     return map;
   }, [data?.accountTotalPnlBySymbolAll, data?.accountTotalPnlBySymbol, resolveSymbolTotalsContainer]);
+
+  const symbolTotalPnlByAccountMapForPositions = useMemo(() => {
+    const mapByAccount = new Map();
+    const source =
+      data?.accountTotalPnlBySymbolAll && Object.keys(data.accountTotalPnlBySymbolAll).length
+        ? data.accountTotalPnlBySymbolAll
+        : data?.accountTotalPnlBySymbol;
+    if (!source || typeof source !== 'object') {
+      return mapByAccount;
+    }
+    const addEntry = (target, symbol, value) => {
+      const key = normalizeSymbolGroupKey(symbol || '');
+      if (!key) {
+        return;
+      }
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        return;
+      }
+      const existing = target.get(key);
+      target.set(key, Number.isFinite(existing) ? existing + numeric : numeric);
+    };
+    Object.entries(source).forEach(([accountKey, container]) => {
+      if (!container || !Array.isArray(container.entries)) {
+        return;
+      }
+      const accountMap = new Map();
+      container.entries.forEach((entry) => {
+        const entryKey = normalizeSymbolGroupKey(entry?.symbol || '');
+        addEntry(accountMap, entry?.symbol, entry?.totalPnlCad);
+        if (Array.isArray(entry?.components)) {
+          entry.components.forEach((component) => {
+            const componentKey = normalizeSymbolGroupKey(component?.symbol || '');
+            if (componentKey && componentKey !== entryKey) {
+              addEntry(accountMap, component?.symbol, component?.totalPnlCad);
+            }
+          });
+        }
+      });
+      mapByAccount.set(String(accountKey), accountMap);
+    });
+    return mapByAccount;
+  }, [data?.accountTotalPnlBySymbol, data?.accountTotalPnlBySymbolAll]);
 
   // Resolve symbol Total P&L series for header chart (when focusing a symbol)
   const selectedSymbolTotalPnlSeries = useMemo(() => {
@@ -13932,6 +13975,19 @@ export default function App() {
     selectedAccountInfo?.id,
     focusedSymbolDividendsCad,
   ]);
+
+  const focusedSymbolTotalPnlOverride = useMemo(() => {
+    if (!focusedSymbol || isAggregateSelection) {
+      return null;
+    }
+    const value = Number(focusedSymbolPnl?.totalPnl);
+    return Number.isFinite(value) ? value : null;
+  }, [focusedSymbol, focusedSymbolPnl?.totalPnl, isAggregateSelection]);
+
+  const focusedSymbolKeyForPositions = useMemo(
+    () => (focusedSymbol ? normalizeSymbolGroupKey(focusedSymbol) : null),
+    [focusedSymbol]
+  );
 
   const focusedSymbolFundingSummary = useMemo(() => {
     if (!focusedSymbol) {
@@ -14882,6 +14938,9 @@ export default function App() {
                 hideDetailsOption={Boolean(focusedSymbol)}
                 accountsById={accountsById}
                 symbolAnnualizedMap={symbolAnnualizedMapForPositions}
+                symbolTotalPnlByAccountMap={symbolTotalPnlByAccountMapForPositions}
+                focusedSymbolTotalPnlOverride={focusedSymbolTotalPnlOverride}
+                focusedSymbolKey={focusedSymbolKeyForPositions}
               />
             </div>
 

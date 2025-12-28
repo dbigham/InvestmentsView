@@ -4,12 +4,14 @@ import { classifyPnL, formatMoney, formatNumber, formatSignedMoney, formatSigned
 import { buildQuoteUrl, openQuote } from '../utils/quotes';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
+import { normalizeSymbolKey as normalizeSymbolGroupKey } from '../../../shared/symbolGroups.js';
 import {
   buildExplainMovementPrompt,
   derivePercentages,
   formatQuantity,
   formatShare,
   resolveAccountForPosition,
+  resolveTotalCost,
 } from '../utils/positions';
 // Logo column uses Logo.dev ticker endpoint when a publishable key is present
 
@@ -135,6 +137,23 @@ function normalizeSymbolKey(value) {
   return trimmed || '';
 }
 
+function resolveSymbolTotalPnlValue(symbolKey, accountId, symbolTotalPnlByAccountMap) {
+  if (!symbolKey || !(symbolTotalPnlByAccountMap instanceof Map)) {
+    return null;
+  }
+  const accountKey =
+    accountId !== null && accountId !== undefined && accountId !== '' ? String(accountId) : '';
+  if (accountKey && symbolTotalPnlByAccountMap.has(accountKey)) {
+    const accountMap = symbolTotalPnlByAccountMap.get(accountKey);
+    return accountMap?.get(symbolKey) ?? null;
+  }
+  if (symbolTotalPnlByAccountMap.has('all')) {
+    const aggregateMap = symbolTotalPnlByAccountMap.get('all');
+    return aggregateMap?.get(symbolKey) ?? null;
+  }
+  return null;
+}
+
 function compareRows(header, direction, accessorOverride) {
   const multiplier = direction === 'asc' ? 1 : -1;
   const accessor = typeof accessorOverride === 'function' ? accessorOverride : header.accessor;
@@ -216,8 +235,14 @@ PnlBadge.defaultProps = {
   extraTooltipLines: undefined,
 };
 
-function isPnlColumn(columnKey) {
-  return columnKey === 'dayPnl' || columnKey === 'openPnl';
+function isPnlColumn(columnKey, pnlColumnMode = 'open') {
+  if (columnKey === 'dayPnl') {
+    return true;
+  }
+  if (columnKey !== 'openPnl') {
+    return false;
+  }
+  return pnlColumnMode === 'open';
 }
 
 function PositionsTable({
@@ -243,6 +268,9 @@ function PositionsTable({
   hideDetailsOption = false,
   accountsById = null,
   symbolAnnualizedMap = null,
+  symbolTotalPnlByAccountMap = null,
+  focusedSymbolTotalPnlOverride = null,
+  focusedSymbolKey = null,
 }) {
   // No local mapping required when using Logo.dev ticker endpoint
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
@@ -250,14 +278,17 @@ function PositionsTable({
     ? externalPnlMode
     : 'currency';
 
+  const [pnlColumnMode, setPnlColumnMode] = useState('open');
   const [sortState, setSortState] = useState(() => ({
     column: sortColumn,
     direction: resolvedDirection,
-    valueMode: isPnlColumn(sortColumn) ? initialExternalMode : null,
+    valueMode: isPnlColumn(sortColumn, pnlColumnMode) ? initialExternalMode : null,
   }));
   const [internalPnlMode, setInternalPnlMode] = useState('currency');
   const menuRef = useRef(null);
   const [contextMenuState, setContextMenuState] = useState({ open: false, x: 0, y: 0, position: null });
+  const pnlMenuRef = useRef(null);
+  const [pnlMenuState, setPnlMenuState] = useState({ open: false, x: 0, y: 0 });
 
   const closeContextMenu = useCallback(() => {
     setContextMenuState((state) => {
@@ -265,6 +296,15 @@ function PositionsTable({
         return state;
       }
       return { open: false, x: 0, y: 0, position: null };
+    });
+  }, []);
+
+  const closePnlMenu = useCallback(() => {
+    setPnlMenuState((state) => {
+      if (!state.open) {
+        return state;
+      }
+      return { open: false, x: 0, y: 0 };
     });
   }, []);
 
@@ -280,10 +320,23 @@ function PositionsTable({
       return {
         column: sortColumn,
         direction: resolvedDirection,
-        valueMode: isPnlColumn(sortColumn) ? pnlMode : null,
+        valueMode: isPnlColumn(sortColumn, pnlColumnMode) ? pnlMode : null,
       };
     });
-  }, [sortColumn, resolvedDirection, pnlMode]);
+  }, [sortColumn, resolvedDirection, pnlMode, pnlColumnMode]);
+
+  useEffect(() => {
+    setSortState((current) => {
+      if (current.column !== 'openPnl') {
+        return current;
+      }
+      const nextValueMode = isPnlColumn('openPnl', pnlColumnMode) ? pnlMode : null;
+      if (current.valueMode === nextValueMode) {
+        return current;
+      }
+      return { ...current, valueMode: nextValueMode };
+    });
+  }, [pnlColumnMode, pnlMode]);
 
   const aggregateMarketValue = useMemo(() => {
     if (typeof totalMarketValue === 'number' && totalMarketValue > 0) {
@@ -297,7 +350,49 @@ function PositionsTable({
       return [];
     }
     return positions.map((position) => {
+      const normalizedTotalsKey = normalizeSymbolGroupKey(position?.symbol || '');
       const { dayPnlPercent, openPnlPercent } = derivePercentages(position);
+      const normalizedSymbol = normalizeSymbolKey(position.symbol);
+      const mappedTotalPnl = resolveSymbolTotalPnlValue(
+        normalizedTotalsKey,
+        position?.accountId,
+        symbolTotalPnlByAccountMap
+      );
+      const focusedOverride =
+        focusedSymbolKey &&
+        normalizedTotalsKey &&
+        focusedSymbolKey === normalizedTotalsKey &&
+        Number.isFinite(focusedSymbolTotalPnlOverride)
+          ? focusedSymbolTotalPnlOverride
+          : null;
+      const totalPnlResolved = Number.isFinite(focusedOverride)
+        ? focusedOverride
+        : Number.isFinite(mappedTotalPnl)
+          ? mappedTotalPnl
+          : Number.isFinite(position?.totalPnl)
+            ? position.totalPnl
+            : null;
+      const totalCost = resolveTotalCost(position);
+      const dayPnlForTotal = Number.isFinite(position?.normalizedDayPnl)
+        ? position.normalizedDayPnl
+        : Number.isFinite(position?.dayPnl)
+          ? position.dayPnl
+          : 0;
+      const includeDayInTotal = !Number.isFinite(focusedOverride);
+      const totalPnlDisplayValue =
+        Number.isFinite(totalPnlResolved) && Number.isFinite(dayPnlForTotal)
+          ? totalPnlResolved + (includeDayInTotal ? dayPnlForTotal : 0)
+          : Number.isFinite(totalPnlResolved)
+            ? totalPnlResolved
+            : null;
+      const totalPnlPercent =
+        Number.isFinite(totalPnlDisplayValue) && totalCost !== null && Math.abs(totalCost) > 1e-6
+          ? (totalPnlDisplayValue / totalCost) * 100
+          : null;
+      const annualizedEntry =
+        symbolAnnualizedMap instanceof Map ? symbolAnnualizedMap.get(normalizedTotalsKey) || null : null;
+      const annualizedRate =
+        annualizedEntry && Number.isFinite(annualizedEntry.rate) ? annualizedEntry.rate : null;
       let share = position.portfolioShare;
       if (typeof share !== 'number') {
         share = aggregateMarketValue > 0 ? ((position.currentMarketValue || 0) / aggregateMarketValue) * 100 : null;
@@ -307,9 +402,20 @@ function PositionsTable({
         portfolioShare: share,
         dayPnlPercent,
         openPnlPercent,
+        totalPnlResolved,
+        totalPnlDisplayValue,
+        totalPnlPercent,
+        annualizedRate,
       };
     });
-  }, [positions, aggregateMarketValue]);
+  }, [
+    positions,
+    aggregateMarketValue,
+    symbolAnnualizedMap,
+    symbolTotalPnlByAccountMap,
+    focusedSymbolKey,
+    focusedSymbolTotalPnlOverride,
+  ]);
 
   const showTargetColumn = useMemo(() => {
     if (hideTargetColumn) return false;
@@ -339,16 +445,25 @@ function PositionsTable({
     let accessorOverride = null;
     const effectiveMode = sortState.valueMode === 'percent' ? 'percent' : 'currency';
 
-    if (effectiveMode === 'percent') {
-      if (header.key === 'dayPnl') {
+    if (header.key === 'dayPnl') {
+      if (effectiveMode === 'percent') {
         accessorOverride = (row) => row.dayPnlPercent ?? 0;
-      } else if (header.key === 'openPnl') {
+      }
+    } else if (header.key === 'openPnl') {
+      if (pnlColumnMode === 'annualized') {
+        accessorOverride = (row) => row.annualizedRate ?? 0;
+      } else if (pnlColumnMode === 'total') {
+        accessorOverride =
+          effectiveMode === 'percent'
+            ? (row) => row.totalPnlPercent ?? 0
+            : (row) => row.totalPnlDisplayValue ?? row.totalPnlResolved ?? 0;
+      } else if (effectiveMode === 'percent') {
         accessorOverride = (row) => row.openPnlPercent ?? 0;
       }
     }
     const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
-  }, [activeHeaders, decoratedPositions, sortState]);
+  }, [activeHeaders, decoratedPositions, sortState, pnlColumnMode]);
 
   const handleSort = useCallback((columnKey) => {
     const header = activeHeaders.find((column) => column.key === columnKey);
@@ -361,7 +476,7 @@ function PositionsTable({
         let nextDirection = current.direction === 'asc' ? 'desc' : 'asc';
         let nextValueMode = current.valueMode;
 
-        if (isPnlColumn(columnKey)) {
+        if (isPnlColumn(columnKey, pnlColumnMode)) {
           if (current.valueMode !== pnlMode) {
             nextDirection = current.direction;
             nextValueMode = pnlMode;
@@ -376,7 +491,7 @@ function PositionsTable({
         nextState = {
           column: columnKey,
           direction: defaultDirection,
-          valueMode: isPnlColumn(columnKey) ? pnlMode : null,
+          valueMode: isPnlColumn(columnKey, pnlColumnMode) ? pnlMode : null,
         };
       }
       if (typeof onSortChange === 'function') {
@@ -384,7 +499,7 @@ function PositionsTable({
       }
       return nextState;
     });
-  }, [activeHeaders, onSortChange, pnlMode]);
+  }, [activeHeaders, onSortChange, pnlMode, pnlColumnMode]);
 
   useEffect(() => {
     if (showTargetColumn || sortState.column !== 'targetProportion') {
@@ -407,6 +522,28 @@ function PositionsTable({
     }
   }, [externalPnlMode, onPnlModeChange, pnlMode]);
 
+  const handlePnlHeaderContextMenu = useCallback(
+    (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeContextMenu();
+      setPnlMenuState({
+        open: true,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    [closeContextMenu]
+  );
+
+  const handlePnlColumnSelect = useCallback(
+    (nextMode) => {
+      setPnlColumnMode(nextMode);
+      closePnlMenu();
+    },
+    [closePnlMenu]
+  );
+
   const handleRowContextMenu = useCallback(
     (event, position) => {
       if (!position) {
@@ -418,6 +555,7 @@ function PositionsTable({
       }
       event.preventDefault();
       event.stopPropagation();
+      closePnlMenu();
       setContextMenuState({
         open: true,
         x: event.clientX,
@@ -425,7 +563,7 @@ function PositionsTable({
         position,
       });
     },
-    []
+    [closePnlMenu]
   );
 
   const handleExplainMovement = useCallback(async () => {
@@ -629,6 +767,85 @@ function PositionsTable({
     }
   }, [contextMenuState.open]);
 
+  useEffect(() => {
+    if (!pnlMenuState.open) {
+      return undefined;
+    }
+
+    const handlePointer = (event) => {
+      if (!pnlMenuRef.current) {
+        closePnlMenu();
+        return;
+      }
+      if (pnlMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closePnlMenu();
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closePnlMenu();
+      }
+    };
+
+    const handleViewportChange = () => {
+      closePnlMenu();
+    };
+
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [closePnlMenu, pnlMenuState.open]);
+
+  useEffect(() => {
+    if (!pnlMenuState.open || !pnlMenuRef.current) {
+      return;
+    }
+
+    const { innerWidth, innerHeight } = window;
+    const rect = pnlMenuRef.current.getBoundingClientRect();
+    const padding = 12;
+    let nextX = pnlMenuState.x;
+    let nextY = pnlMenuState.y;
+
+    if (nextX + rect.width > innerWidth - padding) {
+      nextX = Math.max(padding, innerWidth - rect.width - padding);
+    }
+    if (nextY + rect.height > innerHeight - padding) {
+      nextY = Math.max(padding, innerHeight - rect.height - padding);
+    }
+
+    if (nextX !== pnlMenuState.x || nextY !== pnlMenuState.y) {
+      setPnlMenuState((state) => {
+        if (!state.open) {
+          return state;
+        }
+        return { ...state, x: nextX, y: nextY };
+      });
+    }
+  }, [pnlMenuState.open, pnlMenuState.x, pnlMenuState.y]);
+
+  useEffect(() => {
+    if (!pnlMenuState.open || !pnlMenuRef.current) {
+      return;
+    }
+    const firstButton = pnlMenuRef.current.querySelector('button');
+    if (firstButton && typeof firstButton.focus === 'function') {
+      firstButton.focus({ preventScroll: true });
+    }
+  }, [pnlMenuState.open]);
+
   if (!positions.length) {
     if (embedded) {
       return <div className="empty-state">No positions to display.</div>;
@@ -659,12 +876,26 @@ function PositionsTable({
     return classes.join(' ');
   })();
 
+  const pnlColumnLabel =
+    pnlColumnMode === 'open'
+      ? 'Open P&L'
+      : pnlColumnMode === 'total'
+        ? 'Total P&L'
+        : 'Total P&L Annualized';
+  const pnlColumnOptions = [
+    { value: 'open', label: 'Open P&L' },
+    { value: 'total', label: 'Total P&L' },
+    { value: 'annualized', label: 'Total P&L Annualized (XIRR)' },
+  ];
+
   const renderTable = () => (
     <div className={tableClassName} role="table">
       <div className="positions-table__row positions-table__row--head" role="row">
         {activeHeaders.map((column) => {
           const isSorted = column.key === sortState.column;
           const sortDirectionValue = isSorted ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none';
+          const isPnlHeader = column.key === 'openPnl';
+          const headerLabel = isPnlHeader ? pnlColumnLabel : column.label;
           return (
               <div
                 key={column.key}
@@ -672,8 +903,15 @@ function PositionsTable({
                 aria-sort={sortDirectionValue}
                 className={`positions-table__head ${column.className}${isSorted ? ' sorted' : ''}`}
               >
-                <button type="button" className="positions-table__head-button" onClick={() => handleSort(column.key)}>
-                  <span>{column.label}</span>
+                <button
+                  type="button"
+                  className="positions-table__head-button"
+                  onClick={() => handleSort(column.key)}
+                  onContextMenu={isPnlHeader ? handlePnlHeaderContextMenu : undefined}
+                  aria-haspopup={isPnlHeader ? 'menu' : undefined}
+                  aria-expanded={isPnlHeader && pnlMenuState.open ? true : undefined}
+                >
+                  <span>{headerLabel}</span>
                   {isSorted && (
                     <span className={`positions-table__sort-indicator ${sortState.direction}`} aria-hidden="true" />
                   )}
@@ -723,6 +961,7 @@ function PositionsTable({
           }`;
           const rowKey = position.rowId || fallbackKey;
           const normalizedSymbol = normalizeSymbolKey(position.symbol);
+          const normalizedTotalsKey = normalizeSymbolGroupKey(position?.symbol || '');
           const symbolLabel =
             typeof position.symbol === 'string' && position.symbol.trim()
               ? position.symbol.trim()
@@ -768,7 +1007,7 @@ function PositionsTable({
           }
           const annualizedEntry =
             symbolAnnualizedMap instanceof Map
-              ? symbolAnnualizedMap.get(normalizedSymbol) || null
+              ? symbolAnnualizedMap.get(normalizedTotalsKey) || null
               : null;
           const annualizedTooltip = (() => {
             if (!annualizedEntry) {
@@ -794,6 +1033,21 @@ function PositionsTable({
           if (annualizedTooltip) {
             openPnlTooltipExtras.push(annualizedTooltip);
           }
+          const totalPnlValue = Number.isFinite(position.totalPnlDisplayValue)
+            ? position.totalPnlDisplayValue
+            : Number.isFinite(position.totalPnlResolved)
+              ? position.totalPnlResolved
+              : null;
+          const totalPnlDisplay = sanitizeDisplayValue(formatSignedMoney(totalPnlValue));
+          const totalPnlTone = classifyPnL(Number.isFinite(totalPnlValue) ? totalPnlValue : 0);
+          const annualizedRate = annualizedEntry && Number.isFinite(annualizedEntry.rate) ? annualizedEntry.rate : null;
+          const annualizedDisplay = sanitizeDisplayValue(
+            formatSignedPercent(
+              Number.isFinite(annualizedRate) ? annualizedRate * 100 : null,
+              { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+            )
+          );
+          const annualizedTone = classifyPnL(Number.isFinite(annualizedRate) ? annualizedRate : 0);
 
           return (
             <div
@@ -871,13 +1125,26 @@ function PositionsTable({
                 />
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                <PnlBadge
-                  value={position.openPnl}
-                  percent={position.openPnlPercent}
-                  mode={pnlMode}
-                  onToggle={handleTogglePnlMode}
-                  extraTooltipLines={openPnlTooltipExtras}
-                />
+                {pnlColumnMode === 'open' ? (
+                  <PnlBadge
+                    value={position.openPnl}
+                    percent={position.openPnlPercent}
+                    mode={pnlMode}
+                    onToggle={handleTogglePnlMode}
+                    extraTooltipLines={openPnlTooltipExtras}
+                  />
+                ) : pnlColumnMode === 'total' ? (
+                  <div className={`positions-table__pnl positions-table__pnl--static ${totalPnlTone}`}>
+                    {totalPnlDisplay}
+                  </div>
+                ) : (
+                  <div
+                    className={`positions-table__pnl positions-table__pnl--static ${annualizedTone}`}
+                    title={annualizedTooltip || undefined}
+                  >
+                    {annualizedDisplay}
+                  </div>
+                )}
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
                 {formatQuantity(position.openQuantity)}
@@ -991,10 +1258,42 @@ function PositionsTable({
     </div>
   ) : null;
 
+  const pnlMenuElement = pnlMenuState.open ? (
+    <div
+      className="positions-table__context-menu"
+      ref={pnlMenuRef}
+      style={{ top: `${pnlMenuState.y}px`, left: `${pnlMenuState.x}px` }}
+    >
+      <ul className="positions-table__context-menu-list" role="menu">
+        {pnlColumnOptions.map((option) => {
+          const isSelected = option.value === pnlColumnMode;
+          return (
+            <li key={option.value} role="none">
+              <button
+                type="button"
+                className="positions-table__context-menu-item positions-table__context-menu-item--choice"
+                role="menuitemradio"
+                aria-checked={isSelected}
+                onClick={() => handlePnlColumnSelect(option.value)}
+              >
+                <span
+                  className={`positions-table__context-menu-check${isSelected ? ' positions-table__context-menu-check--active' : ''}`}
+                  aria-hidden="true"
+                />
+                <span>{option.label}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ) : null;
+
   if (embedded) {
     return (
       <>
         {renderTable()}
+        {pnlMenuElement}
         {contextMenuElement}
       </>
     );
@@ -1025,6 +1324,7 @@ function PositionsTable({
 
         {renderTable()}
       </section>
+      {pnlMenuElement}
       {contextMenuElement}
     </>
   );
@@ -1087,6 +1387,9 @@ PositionsTable.propTypes = {
   hideDetailsOption: PropTypes.bool,
   accountsById: PropTypes.instanceOf(Map),
   symbolAnnualizedMap: PropTypes.instanceOf(Map),
+  symbolTotalPnlByAccountMap: PropTypes.instanceOf(Map),
+  focusedSymbolTotalPnlOverride: PropTypes.number,
+  focusedSymbolKey: PropTypes.string,
 };
 
 PositionsTable.defaultProps = {
@@ -1111,6 +1414,9 @@ PositionsTable.defaultProps = {
   hideDetailsOption: false,
   accountsById: null,
   symbolAnnualizedMap: null,
+  symbolTotalPnlByAccountMap: null,
+  focusedSymbolTotalPnlOverride: null,
+  focusedSymbolKey: null,
 };
 
 export default PositionsTable;
