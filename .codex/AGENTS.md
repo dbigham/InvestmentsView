@@ -1,5 +1,13 @@
 # Instructions for Agents
 
+## General Principles
+
+- DRY: Don't Repeat Yourself: Where possible, try to factor our repeated code and data.
+  - When analyzing bugs, or implementing features, if you come across significant chunks of code/functionality that are duplicated or similar enough that they should probably be unified / generalized, please bring things things to my attention.
+- Avoid using short forms for variable names and function names. For example, favor "accountTotal" over "accountTot", generally avoid single-character variable names, etc. Treat variable names and function names as self-documenting, so that if someone were to read the name without context, they'd have a good shot at understanding what it is.
+- Try to implement functionality in a way that it can unit tested and run/debugged via the CLI. (If functionality _requires_ the UI to be used, then it's harder to unit test, and harder for an LLM agent to debug later.)
+- Avoid fixing bugs with solutions that are technically incorrect, or which skip understanding the root problem in favor of an ugly workaround.
+
 ## Fixing Bugs
 
 Any time you are asked to fix a bug, please always first try to reproduce the issue via CLI.
