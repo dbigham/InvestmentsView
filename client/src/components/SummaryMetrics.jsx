@@ -1098,6 +1098,14 @@ export default function SummaryMetrics({
 
   const benchmarkStatus = benchmarkComparison?.status || 'idle';
   const benchmarkData = benchmarkComparison?.data || null;
+  const benchmarkSnapshotRef = useRef(null);
+  useEffect(() => {
+    if (benchmarkStatus === 'ready' && benchmarkData) {
+      benchmarkSnapshotRef.current = benchmarkData;
+    }
+  }, [benchmarkStatus, benchmarkData]);
+  const effectiveBenchmarkData =
+    benchmarkStatus === 'error' ? null : (benchmarkData || benchmarkSnapshotRef.current);
 
   const describePeriodLength = (startIso, endIso) => {
     if (!startIso) {
@@ -1143,12 +1151,10 @@ export default function SummaryMetrics({
   };
 
   let detailLines = [];
-  if (benchmarkStatus === 'loading' || benchmarkStatus === 'refreshing') {
-    detailLines = ['Benchmarks: Loading…'];
-  } else if (benchmarkStatus === 'error') {
+  if (benchmarkStatus === 'error') {
     detailLines = ['Benchmarks: Unavailable'];
-  } else if (benchmarkData) {
-    const { sp500, qqq, interestRate, startDate, endDate } = benchmarkData;
+  } else if (effectiveBenchmarkData) {
+    const { sp500, qqq, interestRate, startDate, endDate } = effectiveBenchmarkData;
     const qqqLabel = qqq?.name || 'QQQ';
     const spLabel = sp500?.name || 'S&P 500';
     const qqqValue = Number.isFinite(qqq?.returnRate)
@@ -1949,21 +1955,65 @@ export default function SummaryMetrics({
     const unit = Math.abs(value) === 1 ? (useMonths ? 'month' : 'year') : useMonths ? 'months' : 'years';
     return `(${formatted} ${unit})`;
   }, [selectionSummary]);
+  const selectionRangeNotifyRef = useRef({
+    timer: null,
+    lastStart: null,
+    lastEnd: null,
+    lastSentAt: 0,
+  });
+
   useEffect(() => {
     if (typeof onTotalPnlRangeSelectionChange !== 'function') {
-      return;
+      return undefined;
     }
-    if (selectionSummary?.isActive) {
-      return;
+    const notifyState = selectionRangeNotifyRef.current;
+    if (notifyState.timer) {
+      clearTimeout(notifyState.timer);
+      notifyState.timer = null;
     }
+
     if (!selectionRangeSummary) {
+      notifyState.lastStart = null;
+      notifyState.lastEnd = null;
+      notifyState.lastSentAt = 0;
       onTotalPnlRangeSelectionChange(null);
-      return;
+      return undefined;
     }
-    onTotalPnlRangeSelectionChange({
+
+    const next = {
       startDate: selectionRangeSummary.startDate,
       endDate: selectionRangeSummary.endDate,
-    });
+    };
+    const unchanged = next.startDate === notifyState.lastStart && next.endDate === notifyState.lastEnd;
+    const now = Date.now();
+    const minInterval = selectionSummary?.isActive ? 200 : 0;
+    const elapsed = now - (notifyState.lastSentAt || 0);
+
+    if (!unchanged && (minInterval === 0 || elapsed >= minInterval)) {
+      notifyState.lastStart = next.startDate;
+      notifyState.lastEnd = next.endDate;
+      notifyState.lastSentAt = now;
+      onTotalPnlRangeSelectionChange(next);
+      return undefined;
+    }
+
+    if (selectionSummary?.isActive && !unchanged) {
+      const wait = Math.max(0, minInterval - elapsed);
+      notifyState.timer = setTimeout(() => {
+        notifyState.timer = null;
+        notifyState.lastStart = next.startDate;
+        notifyState.lastEnd = next.endDate;
+        notifyState.lastSentAt = Date.now();
+        onTotalPnlRangeSelectionChange(next);
+      }, wait);
+    }
+
+    return () => {
+      if (notifyState.timer) {
+        clearTimeout(notifyState.timer);
+        notifyState.timer = null;
+      }
+    };
   }, [onTotalPnlRangeSelectionChange, selectionRangeSummary, selectionSummary?.isActive]);
 
   const selectionRangeLabel =
@@ -3296,20 +3346,24 @@ export default function SummaryMetrics({
 
       <div className="equity-card__metrics">
         <dl className="equity-card__metric-column">
-          <MetricRow
-            label="Today's P&L"
-            value={formattedToday}
-            extra={dayPercent ? `(${dayPercent})` : null}
-            tone={todayTone}
-            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
-          />
-          <MetricRow
-            label="Open P&L"
-            value={formattedOpen}
-            extra={openPercent ? `(${openPercent})` : null}
-            tone={openTone}
-            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null)}
-          />
+          {!hasSelectionRange && (
+            <MetricRow
+              label="Today's P&L"
+              value={formattedToday}
+              extra={dayPercent ? `(${dayPercent})` : null}
+              tone={todayTone}
+              onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
+            />
+          )}
+          {!hasSelectionRange && (
+            <MetricRow
+              label="Open P&L"
+              value={formattedOpen}
+              extra={openPercent ? `(${openPercent})` : null}
+              tone={openTone}
+              onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null)}
+            />
+          )}
           <MetricRow
             label="Total P&L"
             value={formattedTotal}
@@ -3332,36 +3386,38 @@ export default function SummaryMetrics({
           />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
-        <dl className="equity-card__metric-column">
-          <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
-          <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
-          {!symbolMode && (
-            <MetricRow
-              label="Cash"
-              value={formatMoney(cash)}
-              tone="neutral"
-              onActivate={onShowCashBreakdown || null}
-            />
-          )}
-          {showDeploymentBreakdown && (
-            <MetricRow
-              label="Deployed"
-              value={formatMoney(deployedValue)}
-              extra={deployedPercentLabel}
-              tone="neutral"
-              onActivate={onAdjustDeployment}
-            />
-          )}
-          {showDeploymentBreakdown && (
-            <MetricRow
-              label="Reserve"
-              value={formatMoney(reserveValue)}
-              extra={reservePercentLabel}
-              tone="neutral"
-              onActivate={onAdjustDeployment}
-            />
-          )}
-        </dl>
+        {!hasSelectionRange && (
+          <dl className="equity-card__metric-column">
+            <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
+            <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
+            {!symbolMode && (
+              <MetricRow
+                label="Cash"
+                value={formatMoney(cash)}
+                tone="neutral"
+                onActivate={onShowCashBreakdown || null}
+              />
+            )}
+            {showDeploymentBreakdown && (
+              <MetricRow
+                label="Deployed"
+                value={formatMoney(deployedValue)}
+                extra={deployedPercentLabel}
+                tone="neutral"
+                onActivate={onAdjustDeployment}
+              />
+            )}
+            {showDeploymentBreakdown && (
+              <MetricRow
+                label="Reserve"
+                value={formatMoney(reserveValue)}
+                extra={reservePercentLabel}
+                tone="neutral"
+                onActivate={onAdjustDeployment}
+              />
+            )}
+          </dl>
+        )}
       </div>
 
       {parentGroupList}
