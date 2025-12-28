@@ -3520,7 +3520,7 @@ const PRICE_SERIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'prices');
 const PRICE_SERIES_DEFAULT_START = '1990-01-01';
 // Limit how far we carry forward the last known price when filling a daily series.
 // Allows weekends/holidays, but prevents using a stale close across many missing days.
-const PRICE_CARRY_FORWARD_MAX_DAYS = 3;
+const PRICE_CARRY_FORWARD_MAX_DAYS = 7;
 // Cache of Questrade symbol details keyed by `${loginId}|${symbolId}` to avoid
 // repeated /v1/symbols lookups when data was already fetched during summary.
 const symbolDetailsCache = new Map();
