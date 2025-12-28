@@ -11346,16 +11346,22 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   if (typeof options.startDate === 'string' && options.startDate.trim()) {
     candidateStarts.push(options.startDate.trim());
   }
-  if (typeof netDepositsSummary.periodStartDate === 'string' && netDepositsSummary.periodStartDate.trim()) {
-    candidateStarts.push(netDepositsSummary.periodStartDate.trim());
+  const netDepositsPeriodStart =
+    typeof netDepositsSummary.periodStartDate === 'string' && netDepositsSummary.periodStartDate.trim()
+      ? netDepositsSummary.periodStartDate.trim()
+      : null;
+  if (netDepositsPeriodStart) {
+    candidateStarts.push(netDepositsPeriodStart);
   }
   const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
-  if (crawlStartIso) {
-    candidateStarts.push(crawlStartIso);
-  }
   const nowIso = formatDateOnly(activityContext.now) || null;
-  if (nowIso) {
-    candidateStarts.push(nowIso);
+  if (!candidateStarts.length) {
+    if (crawlStartIso) {
+      candidateStarts.push(crawlStartIso);
+    }
+    if (nowIso) {
+      candidateStarts.push(nowIso);
+    }
   }
   // Pick the earliest valid date among candidates
   let startDateIso = null;
@@ -11369,7 +11375,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     }
   }
   if (!startDateIso) {
-    startDateIso = netDepositsSummary.periodStartDate || crawlStartIso || nowIso;
+    startDateIso = netDepositsPeriodStart || crawlStartIso || nowIso;
   }
   const cagrStartDate =
     options && options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
@@ -12417,18 +12423,24 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   const startDateIso = (function resolveStart() {
     const candidates = [];
     if (typeof options.startDate === 'string' && options.startDate.trim()) candidates.push(options.startDate.trim());
-    if (typeof netDepositsSummary.periodStartDate === 'string' && netDepositsSummary.periodStartDate.trim()) {
-      candidates.push(netDepositsSummary.periodStartDate.trim());
+    const netDepositsPeriodStart =
+      typeof netDepositsSummary.periodStartDate === 'string' && netDepositsSummary.periodStartDate.trim()
+        ? netDepositsSummary.periodStartDate.trim()
+        : null;
+    if (netDepositsPeriodStart) {
+      candidates.push(netDepositsPeriodStart);
     }
     const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
-    if (crawlStartIso) candidates.push(crawlStartIso);
     const nowIso = formatDateOnly(activityContext.now) || null;
-    if (nowIso) candidates.push(nowIso);
+    if (!candidates.length) {
+      if (crawlStartIso) candidates.push(crawlStartIso);
+      if (nowIso) candidates.push(nowIso);
+    }
     const valid = candidates
       .map((d) => ({ d, t: Date.parse(d + 'T00:00:00Z') }))
       .filter((x) => Number.isFinite(x.t))
       .sort((a, b) => a.t - b.t);
-    return valid.length ? valid[0].d : netDepositsSummary.periodStartDate || crawlStartIso || nowIso;
+    return valid.length ? valid[0].d : netDepositsPeriodStart || crawlStartIso || nowIso;
   })();
   const displayStartIso = options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
     ? account.cagrStartDate.trim()

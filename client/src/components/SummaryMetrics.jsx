@@ -60,6 +60,30 @@ function parseDateString(value, { assumeDateOnly = false } = {}) {
   return parsed;
 }
 
+function normalizeSeriesDateKey(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+    return trimmed.slice(0, 10);
+  }
+  const parsed = parseDateString(trimmed, { assumeDateOnly: true });
+  if (!parsed) {
+    return null;
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
 function computeElapsedYears(startDate, endDate) {
   const normalize = (value) => {
     if (value instanceof Date) {
@@ -325,6 +349,189 @@ function computeAnnualizedReturnFromCashFlows(cashFlows) {
   }
   const rate = xirr(normalized, 0.1);
   return Number.isFinite(rate) ? rate : null;
+}
+
+function buildTotalPnlRangeSummary({
+  series,
+  startKey,
+  endKey,
+  fallbackDeltaValue = null,
+  useSnapshotTotals = false,
+}) {
+  if (!startKey || !endKey || !Array.isArray(series) || !series.length) {
+    return null;
+  }
+  if (startKey > endKey) {
+    return null;
+  }
+  const entries = series
+    .map((entry) => {
+      const key = normalizeSeriesDateKey(entry?.date);
+      if (!key) {
+        return null;
+      }
+      return { key, entry };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.key.localeCompare(b.key));
+  if (!entries.length) {
+    return null;
+  }
+
+  const entryByDate = new Map(entries.map((item) => [item.key, item.entry]));
+  let resolvedStartKey = startKey;
+  let resolvedEndKey = endKey;
+  let startEntry = entryByDate.get(resolvedStartKey) || null;
+  let endEntry = entryByDate.get(resolvedEndKey) || null;
+
+  if (!startEntry) {
+    const nextStart = entries.find((item) => item.key >= resolvedStartKey);
+    if (nextStart) {
+      resolvedStartKey = nextStart.key;
+      startEntry = nextStart.entry;
+    }
+  }
+  if (!endEntry) {
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i].key <= resolvedEndKey) {
+        resolvedEndKey = entries[i].key;
+        endEntry = entries[i].entry;
+        break;
+      }
+    }
+  }
+  if (!startEntry || !endEntry || resolvedStartKey > resolvedEndKey) {
+    return null;
+  }
+
+  const rangeEntries = entries.filter((item) => item.key >= resolvedStartKey && item.key <= resolvedEndKey);
+  if (!rangeEntries.length) {
+    return null;
+  }
+
+  const resolveNumber = (value) => (Number.isFinite(value) ? value : null);
+  const startTotal = resolveNumber(startEntry.totalPnl) ?? resolveNumber(startEntry.totalPnlCad);
+  const endTotal = resolveNumber(endEntry.totalPnl) ?? resolveNumber(endEntry.totalPnlCad);
+  const startDeposits =
+    resolveNumber(startEntry.cumulativeNetDepositsCad) ??
+    resolveNumber(startEntry.netDeposits);
+  const endDeposits =
+    resolveNumber(endEntry.cumulativeNetDepositsCad) ??
+    resolveNumber(endEntry.netDeposits);
+  const startEquity =
+    resolveNumber(startEntry.equityCad) ??
+    resolveNumber(startEntry.equity);
+  const endEquity =
+    resolveNumber(endEntry.equityCad) ??
+    resolveNumber(endEntry.equity);
+
+  const totalPnlCad = useSnapshotTotals
+    ? endTotal
+    : Number.isFinite(startTotal) && Number.isFinite(endTotal)
+      ? endTotal - startTotal
+      : Number.isFinite(fallbackDeltaValue)
+        ? fallbackDeltaValue
+        : null;
+  const netDepositsCad = useSnapshotTotals
+    ? endDeposits
+    : Number.isFinite(startDeposits) && Number.isFinite(endDeposits)
+      ? endDeposits - startDeposits
+      : null;
+
+  let annualizedReturnRate = null;
+  const startDate = parseDateOnly(resolvedStartKey);
+  const endDate = parseDateOnly(resolvedEndKey);
+  if (startDate && endDate && rangeEntries.length > 0) {
+    const cashFlows = [];
+    if (Number.isFinite(startEquity)) {
+      cashFlows.push({ amount: -startEquity, date: startDate });
+    }
+    for (let i = 1; i < rangeEntries.length; i += 1) {
+      const current = rangeEntries[i]?.entry;
+      const previous = rangeEntries[i - 1]?.entry;
+      if (!current || !previous) {
+        continue;
+      }
+      const currentDeposits =
+        resolveNumber(current.cumulativeNetDepositsCad) ??
+        resolveNumber(current.netDeposits);
+      const previousDeposits =
+        resolveNumber(previous.cumulativeNetDepositsCad) ??
+        resolveNumber(previous.netDeposits);
+      if (!Number.isFinite(currentDeposits) || !Number.isFinite(previousDeposits)) {
+        continue;
+      }
+      const delta = currentDeposits - previousDeposits;
+      if (Math.abs(delta) > CASH_FLOW_EPSILON) {
+        const flowDate = parseDateOnly(rangeEntries[i].key);
+        if (flowDate) {
+          cashFlows.push({ amount: -delta, date: flowDate });
+        }
+      }
+    }
+    if (Number.isFinite(endEquity)) {
+      cashFlows.push({ amount: endEquity, date: endDate });
+    }
+    annualizedReturnRate = computeAnnualizedReturnFromCashFlows(cashFlows);
+  }
+
+  return {
+    startDate: resolvedStartKey,
+    endDate: resolvedEndKey,
+    totalPnlCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
+    netDepositsCad: Number.isFinite(netDepositsCad) ? netDepositsCad : null,
+    startTotalCad: Number.isFinite(startTotal) ? startTotal : null,
+    endTotalCad: Number.isFinite(endTotal) ? endTotal : null,
+    startEquityCad: Number.isFinite(startEquity) ? startEquity : null,
+    endEquityCad: Number.isFinite(endEquity) ? endEquity : null,
+    annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : null,
+  };
+}
+
+function alignTotalPnlSeriesToSummary(series, targetTotal, displayStartDate) {
+  if (!Array.isArray(series) || !series.length || !Number.isFinite(targetTotal)) {
+    return series;
+  }
+  const lastIndex = series.length - 1;
+  const last = series[lastIndex];
+  if (!last) {
+    return series;
+  }
+  const adjusted = series.slice();
+  const nextLast = { ...last };
+
+  if (displayStartDate) {
+    const first = adjusted[0];
+    const baseline =
+      first && Number.isFinite(first.totalPnl)
+        ? (Number.isFinite(first.totalPnlDelta)
+            ? first.totalPnl - first.totalPnlDelta
+            : first.totalPnl)
+        : null;
+    nextLast.totalPnlDelta = targetTotal;
+    if (Number.isFinite(baseline)) {
+      const absoluteTotal = baseline + targetTotal;
+      nextLast.totalPnl = Math.abs(absoluteTotal) < 1e-6 ? 0 : absoluteTotal;
+    }
+  } else {
+    const baseTotal = Number.isFinite(last.totalPnl) ? last.totalPnl : null;
+    if (baseTotal === null) {
+      return series;
+    }
+    const delta = targetTotal - baseTotal;
+    if (Math.abs(delta) < 1e-6) {
+      return series;
+    }
+    nextLast.totalPnl = targetTotal;
+    if (Number.isFinite(nextLast.totalPnlDelta)) {
+      nextLast.totalPnlDelta += delta;
+    } else {
+      nextLast.totalPnlDelta = delta;
+    }
+  }
+
+  adjusted[lastIndex] = nextLast;
+  return adjusted;
 }
 
 function MetricRow({
@@ -1321,53 +1528,20 @@ export default function SummaryMetrics({
       displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
     });
     const targetTotal = Number.isFinite(baseTotalPnlValue) ? baseTotalPnlValue : null;
-    if (!baseSeries.length || targetTotal === null) {
-      return baseSeries;
-    }
-    const lastIndex = baseSeries.length - 1;
-    const last = baseSeries[lastIndex];
-    const adjusted = baseSeries.slice();
-    const nextLast = { ...last };
-
-    // When a displayStartDate is present, the chart uses deltas from that
-    // baseline. In this mode, interpret totalPnlValue as a since-start P&L
-    // and align the last point's delta to that value while keeping the
-    // absolute series shape consistent.
-    if (totalPnlSeries.displayStartDate) {
-      const first = adjusted[0];
-      const baseline =
-        first && Number.isFinite(first.totalPnl)
-          ? (Number.isFinite(first.totalPnlDelta)
-              ? first.totalPnl - first.totalPnlDelta
-              : first.totalPnl)
-          : null;
-      nextLast.totalPnlDelta = targetTotal;
-      if (Number.isFinite(baseline)) {
-        const absoluteTotal = baseline + targetTotal;
-        nextLast.totalPnl = Math.abs(absoluteTotal) < 1e-6 ? 0 : absoluteTotal;
-      }
-    } else {
-      // Without a display start date, the chart uses absolute Total P&L.
-      // Treat totalPnlValue as an absolute and adjust the last point only.
-      const baseTotal = Number.isFinite(last?.totalPnl) ? last.totalPnl : null;
-      if (baseTotal === null) {
-        return baseSeries;
-      }
-      const delta = targetTotal - baseTotal;
-      if (Math.abs(delta) < 1e-6) {
-        return baseSeries;
-      }
-      nextLast.totalPnl = targetTotal;
-      if (Number.isFinite(nextLast.totalPnlDelta)) {
-        nextLast.totalPnlDelta += delta;
-      } else {
-        nextLast.totalPnlDelta = delta;
-      }
-    }
-
-    adjusted[lastIndex] = nextLast;
-    return adjusted;
+    return alignTotalPnlSeriesToSummary(baseSeries, targetTotal, totalPnlSeries.displayStartDate);
   }, [totalPnlSeries, chartTimeframe, baseTotalPnlValue]);
+
+  const fullTotalPnlSeries = useMemo(() => {
+    if (!totalPnlSeries) {
+      return [];
+    }
+    const baseSeries = buildTotalPnlDisplaySeries(totalPnlSeries.points, 'ALL', {
+      displayStartDate: totalPnlSeries.displayStartDate,
+      displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
+    });
+    const targetTotal = Number.isFinite(baseTotalPnlValue) ? baseTotalPnlValue : null;
+    return alignTotalPnlSeriesToSummary(baseSeries, targetTotal, totalPnlSeries.displayStartDate);
+  }, [totalPnlSeries, baseTotalPnlValue]);
 
   const priceChartSeries = useMemo(() => {
     if (!symbolMode || !Array.isArray(symbolPriceSeries?.points)) {
@@ -1821,126 +1995,50 @@ export default function SummaryMetrics({
     if (!selectionSummary || !isTotalPnlMetric || symbolMode) {
       return null;
     }
-    const normalizeKey = (value) => {
-      if (typeof value !== 'string') {
-        return null;
-      }
-      const trimmed = value.trim();
-      if (!trimmed) {
-        return null;
-      }
-      if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
-        return trimmed.slice(0, 10);
-      }
-      const parsed = parseDateString(trimmed, { assumeDateOnly: true });
-      if (!parsed) {
-        return null;
-      }
-      return parsed.toISOString().slice(0, 10);
-    };
-    const startKey = normalizeKey(selectionSummary.startPoint?.date);
-    const endKey = normalizeKey(selectionSummary.endPoint?.date);
-    if (!startKey || !endKey) {
-      return null;
-    }
-    if (!filteredTotalPnlSeries.length) {
-      return null;
-    }
-    const entryByDate = new Map();
-    const rangeEntries = [];
-    filteredTotalPnlSeries.forEach((entry) => {
-      const key = normalizeKey(entry?.date);
-      if (!key) {
-        return;
-      }
-      entryByDate.set(key, entry);
-      if (key >= startKey && key <= endKey) {
-        rangeEntries.push({ key, entry });
-      }
+    const startKey = normalizeSeriesDateKey(selectionSummary.startPoint?.date);
+    const endKey = normalizeSeriesDateKey(selectionSummary.endPoint?.date);
+    const fallbackDeltaValue = Number.isFinite(selectionSummary.deltaValue)
+      ? selectionSummary.deltaValue
+      : null;
+    return buildTotalPnlRangeSummary({
+      series: filteredTotalPnlSeries,
+      startKey,
+      endKey,
+      fallbackDeltaValue,
+      useSnapshotTotals: false,
     });
-    const startEntry = entryByDate.get(startKey) || null;
-    const endEntry = entryByDate.get(endKey) || null;
-    if (!startEntry || !endEntry) {
+  }, [selectionSummary, isTotalPnlMetric, symbolMode, filteredTotalPnlSeries]);
+
+  const hoverRangeSummary = useMemo(() => {
+    if (!hoverPoint || !isTotalPnlMetric || symbolMode || selectionRangeSummary) {
       return null;
     }
-    const resolveNumber = (value) => (Number.isFinite(value) ? value : null);
-    const startTotal =
-      resolveNumber(startEntry.totalPnl) ??
-      resolveNumber(startEntry.totalPnlCad);
-    const endTotal =
-      resolveNumber(endEntry.totalPnl) ??
-      resolveNumber(endEntry.totalPnlCad);
-    const startDeposits =
-      resolveNumber(startEntry.cumulativeNetDepositsCad) ??
-      resolveNumber(startEntry.netDeposits);
-    const endDeposits =
-      resolveNumber(endEntry.cumulativeNetDepositsCad) ??
-      resolveNumber(endEntry.netDeposits);
-    const startEquity =
-      resolveNumber(startEntry.equityCad) ??
-      resolveNumber(startEntry.equity);
-    const endEquity =
-      resolveNumber(endEntry.equityCad) ??
-      resolveNumber(endEntry.equity);
-    const totalPnlCad =
-      Number.isFinite(startTotal) && Number.isFinite(endTotal)
-        ? endTotal - startTotal
-        : Number.isFinite(selectionSummary.deltaValue)
-          ? selectionSummary.deltaValue
-          : null;
-    const netDepositsCad =
-      Number.isFinite(startDeposits) && Number.isFinite(endDeposits)
-        ? endDeposits - startDeposits
-        : null;
-    let annualizedReturnRate = null;
-    const startDate = parseDateOnly(startKey);
-    const endDate = parseDateOnly(endKey);
-    if (startDate && endDate && rangeEntries.length > 0) {
-      rangeEntries.sort((a, b) => a.key.localeCompare(b.key));
-      const cashFlows = [];
-      if (Number.isFinite(startEquity)) {
-        cashFlows.push({ amount: -startEquity, date: startDate });
-      }
-      for (let i = 1; i < rangeEntries.length; i += 1) {
-        const current = rangeEntries[i]?.entry;
-        const previous = rangeEntries[i - 1]?.entry;
-        if (!current || !previous) {
-          continue;
-        }
-        const currentDeposits =
-          resolveNumber(current.cumulativeNetDepositsCad) ??
-          resolveNumber(current.netDeposits);
-        const previousDeposits =
-          resolveNumber(previous.cumulativeNetDepositsCad) ??
-          resolveNumber(previous.netDeposits);
-        if (!Number.isFinite(currentDeposits) || !Number.isFinite(previousDeposits)) {
-          continue;
-        }
-        const delta = currentDeposits - previousDeposits;
-        if (Math.abs(delta) > CASH_FLOW_EPSILON) {
-          const flowDate = parseDateOnly(rangeEntries[i].key);
-          if (flowDate) {
-            cashFlows.push({ amount: -delta, date: flowDate });
-          }
-        }
-      }
-      if (Number.isFinite(endEquity)) {
-        cashFlows.push({ amount: endEquity, date: endDate });
-      }
-      annualizedReturnRate = computeAnnualizedReturnFromCashFlows(cashFlows);
+    const endKey = normalizeSeriesDateKey(hoverPoint.date);
+    if (!endKey || !fullTotalPnlSeries.length) {
+      return null;
     }
-    return {
-      startDate: startKey,
-      endDate: endKey,
-      totalPnlCad: Number.isFinite(totalPnlCad) ? totalPnlCad : null,
-      netDepositsCad: Number.isFinite(netDepositsCad) ? netDepositsCad : null,
-      startTotalCad: Number.isFinite(startTotal) ? startTotal : null,
-      endTotalCad: Number.isFinite(endTotal) ? endTotal : null,
-      startEquityCad: Number.isFinite(startEquity) ? startEquity : null,
-      endEquityCad: Number.isFinite(endEquity) ? endEquity : null,
-      annualizedReturnRate: Number.isFinite(annualizedReturnRate) ? annualizedReturnRate : null,
-    };
-  }, [selectionSummary, isTotalPnlMetric, symbolMode, filteredTotalPnlSeries]);
+    const seriesStartKey = normalizeSeriesDateKey(fullTotalPnlSeries[0]?.date);
+    let startKey = normalizeSeriesDateKey(basePeriodStartDate) || seriesStartKey;
+    if (!startKey) {
+      return null;
+    }
+    if (startKey > endKey && seriesStartKey && seriesStartKey <= endKey) {
+      startKey = seriesStartKey;
+    }
+    return buildTotalPnlRangeSummary({
+      series: fullTotalPnlSeries,
+      startKey,
+      endKey,
+      useSnapshotTotals: true,
+    });
+  }, [
+    hoverPoint,
+    isTotalPnlMetric,
+    symbolMode,
+    selectionRangeSummary,
+    basePeriodStartDate,
+    fullTotalPnlSeries,
+  ]);
 
   const selectionDeltaValue =
     selectionRangeSummary && isTotalPnlMetric
@@ -2024,7 +2122,9 @@ export default function SummaryMetrics({
       notifyState.timer = null;
     }
 
-    if (!selectionRangeSummary) {
+    const rangeSummaryForBenchmark = selectionRangeSummary || hoverRangeSummary;
+
+    if (!rangeSummaryForBenchmark) {
       notifyState.lastStart = null;
       notifyState.lastEnd = null;
       notifyState.lastSentAt = 0;
@@ -2033,8 +2133,8 @@ export default function SummaryMetrics({
     }
 
     const next = {
-      startDate: selectionRangeSummary.startDate,
-      endDate: selectionRangeSummary.endDate,
+      startDate: rangeSummaryForBenchmark.startDate,
+      endDate: rangeSummaryForBenchmark.endDate,
     };
     const unchanged = next.startDate === notifyState.lastStart && next.endDate === notifyState.lastEnd;
     const now = Date.now();
@@ -2066,7 +2166,12 @@ export default function SummaryMetrics({
         notifyState.timer = null;
       }
     };
-  }, [onTotalPnlRangeSelectionChange, selectionRangeSummary, selectionSummary?.isActive]);
+  }, [
+    onTotalPnlRangeSelectionChange,
+    selectionRangeSummary,
+    hoverRangeSummary,
+    selectionSummary?.isActive,
+  ]);
 
   const selectionRangeLabel =
     selectionRangeSummary && selectionStartDateLabel && selectionEndDateLabel
@@ -2086,23 +2191,45 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  const hoverStartDateLabel = hoverRangeSummary ? formatDate(hoverRangeSummary.startDate) : null;
+  const hoverEndDateLabel = hoverRangeSummary ? formatDate(hoverRangeSummary.endDate) : null;
+  const hoverRangeLabel =
+    hoverRangeSummary && hoverStartDateLabel && hoverEndDateLabel
+      ? `${hoverStartDateLabel} to ${hoverEndDateLabel}`
+      : hoverRangeSummary
+        ? hoverStartDateLabel || hoverEndDateLabel
+        : null;
+  const hoverRangeLabelNode = hoverRangeLabel ? (
+    <div
+      className="total-pnl-range"
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <span className="total-pnl-range__text total-pnl-range__text--selection">{hoverRangeLabel}</span>
+    </div>
+  ) : null;
+
   const hasSelectionRange = Boolean(selectionRangeSummary);
-  const displayTotalPnlValue = hasSelectionRange
-    ? selectionRangeSummary?.totalPnlCad ?? null
+  const activeRangeSummary = selectionRangeSummary || hoverRangeSummary;
+  const hasActiveRangeSummary = Boolean(activeRangeSummary);
+  const displayTotalPnlValue = hasActiveRangeSummary
+    ? activeRangeSummary?.totalPnlCad ?? null
     : baseTotalPnlValue;
-  const displayNetDepositsValue = hasSelectionRange
-    ? selectionRangeSummary?.netDepositsCad ?? null
+  const displayNetDepositsValue = hasActiveRangeSummary
+    ? activeRangeSummary?.netDepositsCad ?? null
     : baseNetDepositsValue;
-  const displayAnnualizedReturnRate = hasSelectionRange
-    ? selectionRangeSummary?.annualizedReturnRate ?? null
+  const displayAnnualizedReturnRate = hasActiveRangeSummary
+    ? activeRangeSummary?.annualizedReturnRate ?? null
     : baseAnnualizedReturnRate;
   const displayPeriodStartDate =
-    hasSelectionRange && selectionRangeSummary?.startDate
-      ? parseDateString(selectionRangeSummary.startDate, { assumeDateOnly: true })
+    hasActiveRangeSummary && activeRangeSummary?.startDate
+      ? parseDateString(activeRangeSummary.startDate, { assumeDateOnly: true })
       : basePeriodStartDate;
   const displayPeriodEndDate =
-    hasSelectionRange && selectionRangeSummary?.endDate
-      ? parseDateString(selectionRangeSummary.endDate, { assumeDateOnly: true })
+    hasActiveRangeSummary && activeRangeSummary?.endDate
+      ? parseDateString(activeRangeSummary.endDate, { assumeDateOnly: true })
       : basePeriodEndDate;
 
   const annualizedPercentDisplay =
@@ -2150,7 +2277,9 @@ export default function SummaryMetrics({
   const totalPercentBaseValue =
     selectionRangeSummary && Number.isFinite(selectionRangeSummary.startEquityCad)
       ? selectionRangeSummary.startEquityCad
-      : safeTotalEquity;
+      : hoverRangeSummary && Number.isFinite(hoverRangeSummary.endEquityCad)
+        ? hoverRangeSummary.endEquityCad
+        : safeTotalEquity;
   const totalPercent = formatPnlPercent(displayTotalPnlValue, totalPercentBaseValue);
 
   let totalExtraPercent = null;
@@ -2166,6 +2295,13 @@ export default function SummaryMetrics({
   const hoverLabel = useMemo(() => {
     if (!hoverPoint) {
       return null;
+    }
+    if (isTotalPnlMetric && hoverRangeSummary && Number.isFinite(hoverRangeSummary.totalPnlCad)) {
+      return {
+        amount: formatSignedMoney(hoverRangeSummary.totalPnlCad),
+        date: hoverRangeSummary.endDate ? formatDate(hoverRangeSummary.endDate) : null,
+        tone: classifyPnL(hoverRangeSummary.totalPnlCad),
+      };
     }
     const label = buildHoverLabel(hoverPoint, { useDisplayStartDelta: applyDisplayStartDelta });
     if (!label) {
@@ -2185,7 +2321,13 @@ export default function SummaryMetrics({
       }
     }
     return resolved;
-  }, [hoverPoint, applyDisplayStartDelta, chartMetricValueFormatter, isTotalPnlMetric]);
+  }, [
+    hoverPoint,
+    applyDisplayStartDelta,
+    chartMetricValueFormatter,
+    isTotalPnlMetric,
+    hoverRangeSummary,
+  ]);
 
   const markerHoverLabel = useMemo(() => {
     if (!totalPnlChartMarker) {
@@ -3402,7 +3544,7 @@ export default function SummaryMetrics({
 
       <div className="equity-card__metrics">
         <dl className="equity-card__metric-column">
-          {!hasSelectionRange && (
+          {!hasActiveRangeSummary && (
             <MetricRow
               label="Today's P&L"
               value={formattedToday}
@@ -3411,7 +3553,7 @@ export default function SummaryMetrics({
               onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
             />
           )}
-          {!hasSelectionRange && (
+          {!hasActiveRangeSummary && (
             <MetricRow
               label="Open P&L"
               value={formattedOpen}
@@ -3431,7 +3573,7 @@ export default function SummaryMetrics({
             onContextMenuRequest={handleTotalContextMenuRequest}
             contextMenuOpen={totalMenuState.open}
           />
-          {!symbolMode && (selectionRangeLabelNode || totalPnlRangeNode)}
+          {!symbolMode && (selectionRangeLabelNode || hoverRangeLabelNode || totalPnlRangeNode)}
           {!symbolMode && totalDetailBlock}
           <MetricRow
             label="Annualized return"
@@ -3442,7 +3584,7 @@ export default function SummaryMetrics({
           />
           {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
         </dl>
-        {!hasSelectionRange && (
+        {!hasActiveRangeSummary && (
           <dl className="equity-card__metric-column">
             <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
             <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
