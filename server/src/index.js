@@ -7513,6 +7513,93 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
   return result;
 }
 
+function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey) {
+  if (!fundingSummary || typeof fundingSummary !== 'object' || !account) {
+    return;
+  }
+  const rawCagrStart =
+    typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
+      ? account.cagrStartDate.trim()
+      : null;
+  if (!rawCagrStart) {
+    return;
+  }
+  const startDate = parseDateOnlyString(rawCagrStart);
+  if (!startDate) {
+    return;
+  }
+  const displayStartTotals =
+    fundingSummary.displayStartTotals && typeof fundingSummary.displayStartTotals === 'object'
+      ? fundingSummary.displayStartTotals
+      : null;
+  const startEquity =
+    displayStartTotals && Number.isFinite(displayStartTotals.equityCad)
+      ? displayStartTotals.equityCad
+      : null;
+  if (!Number.isFinite(startEquity)) {
+    return;
+  }
+  const rawFlows = Array.isArray(fundingSummary.cashFlowsCad) ? fundingSummary.cashFlowsCad : [];
+  if (!rawFlows.length) {
+    return;
+  }
+
+  const adjustedFlows = [{ amount: -startEquity, date: startDate }];
+  for (const entry of rawFlows) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const amount = Number(entry.amount);
+    if (!Number.isFinite(amount)) {
+      continue;
+    }
+    const entryDate = parseCashFlowEntryDate(entry);
+    if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+      continue;
+    }
+    if (entryDate <= startDate) {
+      continue;
+    }
+    adjustedFlows.push({ amount, date: entryDate });
+  }
+
+  const existingAnnualized =
+    fundingSummary.annualizedReturn && typeof fundingSummary.annualizedReturn === 'object'
+      ? fundingSummary.annualizedReturn
+      : null;
+  const asOf =
+    existingAnnualized && typeof existingAnnualized.asOf === 'string'
+      ? existingAnnualized.asOf
+      : null;
+  const asOfDate = asOf ? new Date(asOf) : null;
+
+  const rate = computeAccountAnnualizedReturn(adjustedFlows, accountKey);
+  const returnBreakdown = computeReturnBreakdownFromCashFlows(adjustedFlows, asOfDate, rate);
+  const startIso = startDate.toISOString().slice(0, 10);
+  const incompleteFlag = existingAnnualized && existingAnnualized.incomplete === true;
+
+  if (Number.isFinite(rate)) {
+    fundingSummary.annualizedReturn = {
+      rate,
+      method: 'xirr',
+      cashFlowCount: adjustedFlows.length,
+      asOf: asOf || undefined,
+      startDate: startIso,
+      incomplete: incompleteFlag || undefined,
+    };
+  } else if (adjustedFlows.length > 0 || incompleteFlag) {
+    fundingSummary.annualizedReturn = {
+      method: 'xirr',
+      cashFlowCount: adjustedFlows.length,
+      asOf: asOf || undefined,
+      startDate: startIso,
+      incomplete: true,
+    };
+  }
+
+  fundingSummary.returnBreakdown = returnBreakdown.length ? returnBreakdown : undefined;
+}
+
 function parseDateOnlyString(value) {
   if (typeof value !== 'string') {
     return null;
@@ -16507,6 +16594,7 @@ app.get('/api/summary', async function (req, res) {
             if (summary.displayStartTotals) {
               fundingSummary.displayStartTotals = summary.displayStartTotals;
             }
+            rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
           }
         }
         if (totalPnlSeries) {
@@ -16830,6 +16918,7 @@ app.get('/api/summary', async function (req, res) {
             if (summary.displayStartTotals) {
               fundingSummary.displayStartTotals = summary.displayStartTotals;
             }
+            rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
           }
         );
       }
