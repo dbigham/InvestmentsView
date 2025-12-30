@@ -7513,10 +7513,40 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
   return result;
 }
 
-function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey) {
-  if (!fundingSummary || typeof fundingSummary !== 'object' || !account) {
-    return;
+  function filterCashFlowsAfterDisplayStart(rawFlows, startDate) {
+    if (!Array.isArray(rawFlows)) {
+      return [];
+    }
+    if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+      return [];
+    }
+    const startKey = startDate.toISOString().slice(0, 10);
+    const filtered = [];
+    for (const entry of rawFlows) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      const amount = Number(entry.amount);
+      if (!Number.isFinite(amount)) {
+        continue;
+      }
+      const entryDate = parseCashFlowEntryDate(entry);
+      if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+        continue;
+      }
+      const entryKey = entryDate.toISOString().slice(0, 10);
+      if (entryKey <= startKey) {
+        continue;
+      }
+      filtered.push({ amount, date: entryDate });
+    }
+    return filtered;
   }
+
+  function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey) {
+    if (!fundingSummary || typeof fundingSummary !== 'object' || !account) {
+      return;
+    }
   const rawCagrStart =
     typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
       ? account.cagrStartDate.trim()
@@ -7539,29 +7569,15 @@ function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accoun
   if (!Number.isFinite(startEquity)) {
     return;
   }
-  const rawFlows = Array.isArray(fundingSummary.cashFlowsCad) ? fundingSummary.cashFlowsCad : [];
-  if (!rawFlows.length) {
-    return;
-  }
+    const rawFlows = Array.isArray(fundingSummary.cashFlowsCad) ? fundingSummary.cashFlowsCad : [];
+    if (!rawFlows.length) {
+      return;
+    }
 
-  const adjustedFlows = [{ amount: -startEquity, date: startDate }];
-  for (const entry of rawFlows) {
-    if (!entry || typeof entry !== 'object') {
-      continue;
-    }
-    const amount = Number(entry.amount);
-    if (!Number.isFinite(amount)) {
-      continue;
-    }
-    const entryDate = parseCashFlowEntryDate(entry);
-    if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
-      continue;
-    }
-    if (entryDate <= startDate) {
-      continue;
-    }
-    adjustedFlows.push({ amount, date: entryDate });
-  }
+    const adjustedFlows = [
+      { amount: -startEquity, date: startDate },
+      ...filterCashFlowsAfterDisplayStart(rawFlows, startDate),
+    ];
 
   const existingAnnualized =
     fundingSummary.annualizedReturn && typeof fundingSummary.annualizedReturn === 'object'
@@ -18501,4 +18517,7 @@ module.exports = {
   getAllLogins,
   getLoginById,
   applyAccountSettingsOverrides,
+  __test__: {
+    filterCashFlowsAfterDisplayStart,
+  },
 };
