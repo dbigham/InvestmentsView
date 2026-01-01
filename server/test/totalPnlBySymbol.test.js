@@ -233,6 +233,117 @@ test('PSA trade with "INTEREST" in description is treated as trade (not income)'
   assert.ok(Math.abs(psa.totalPnlCad - 3.85) < 0.75, 'PSA ~small positive P&L');
 });
 
+// Reinvested dividends should increase share count (like a buy) so the start
+// holdings remain zero and P&L equals the dividend when price is flat.
+test('dividend reinvestment treated as trade-like quantity', async () => {
+  const account = { id: 'test:12', number: 'test:12', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-01-31';
+  const activities = [
+    { type: 'Dividends', symbol: 'ABC.TO', quantity: 0, netAmount: 100, currency: 'CAD', tradeDate: '2025-01-10' },
+    {
+      type: 'Dividend reinvestment',
+      action: 'REI',
+      symbol: 'ABC.TO',
+      quantity: 2,
+      netAmount: -100,
+      currency: 'CAD',
+      description: 'REINV@C$50',
+      tradeDate: '2025-01-10',
+    },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC.TO', new Map([[d(start), 50], [d('2025-01-10'), 50], [d(end), 50]])],
+  ]);
+  const endHoldings = new Map([['ABC.TO', 2]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    priceSeriesBySymbol: priceSeries,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC.TO') || result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(Math.abs(abc.totalPnlCad - 100) < 1e-6, 'P&L reflects dividend-reinvested holdings');
+});
+
+// When a USD symbol reports CAD cash flows, the no-FX annualized return should
+// reflect the USD-native performance (using end-rate conversion).
+test('USD symbol CAD cash flows produce distinct no-FX annualized return', async () => {
+  const account = { id: 'test:13', number: 'test:13', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-02-01';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'ABC', quantity: 1, netAmount: -130, currency: 'CAD', tradeDate: start },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC', new Map([[d(start), 100], [d(end), 110]])],
+  ]);
+  const usdRates = new Map([[d(start), 1.3], [d(end), 1.1]]);
+  const endHoldings = new Map([['ABC', 1]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    displayEndKey: d(end),
+    priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(Number.isFinite(abc.annualizedReturn?.rate), 'annualized return present');
+  assert.ok(Number.isFinite(abc.annualizedReturnNoFx?.rate), 'no-FX annualized present');
+  assert.ok(abc.annualizedReturn.rate < 0, 'FX-weighted return negative');
+  assert.ok(abc.annualizedReturnNoFx.rate > 0, 'no-FX return positive');
+});
+
+// RESP accounts are CAD-only; no-FX should match FX-inclusive results.
+test('RESP accounts still compute USD-native no-FX when USD cash is inferred', async () => {
+  const account = { id: 'test:14', number: 'test:14', name: 'RESP', cagrStartDate: '2025-01-01' };
+  const login = { id: 'login' };
+  const start = '2025-01-01';
+  const end = '2025-02-01';
+  const activities = [
+    {
+      type: 'Trades',
+      action: 'Buy',
+      symbol: 'ABC',
+      quantity: 1,
+      netAmount: -130,
+      grossAmount: -100,
+      currency: 'CAD',
+      tradeDate: start,
+    },
+  ];
+  const ctx = makeContext(account.id, start, end, activities);
+  const priceSeries = new Map([
+    ['ABC', new Map([[d(start), 100], [d(end), 110]])],
+  ]);
+  const usdRates = new Map([[d(start), 1.3], [d(end), 1.1]]);
+  const endHoldings = new Map([['ABC', 1]]);
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: true,
+    displayStartKey: d(start),
+    displayEndKey: d(end),
+    priceSeriesBySymbol: priceSeries,
+    usdRatesByDate: usdRates,
+    endHoldingsBySymbol: endHoldings,
+  });
+  const abc = result.entries.find((e) => e.symbol === 'ABC');
+  assert.ok(abc, 'ABC entry present');
+  assert.ok(Number.isFinite(abc.annualizedReturn?.rate), 'annualized return present');
+  assert.ok(Number.isFinite(abc.annualizedReturnNoFx?.rate), 'no-FX annualized present');
+  assert.ok(abc.annualizedReturn.rate < 0, 'FX-weighted return negative');
+  assert.ok(abc.annualizedReturnNoFx.rate > 0, 'no-FX return positive');
+});
+
 test('displayEndKey clamps series end', async () => {
   const account = { id: 'test:5', number: 'test:5' };
   const login = { id: 'login' };

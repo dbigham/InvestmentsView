@@ -6432,6 +6432,30 @@ async function fetchOrdersHistory(login, accountId, options = {}) {
 const TRADE_ACTIVITY_EXCLUDE_REGEX = /(dividend|distribution|interest|fee|commission|transfer|journal|tax|withholding)/i;
 const SPLIT_ACTIVITY_REGEX = /(split|consolidat)/i; // match stock splits and consolidations
 const TRADE_ACTIVITY_KEYWORD_REGEX = /(buy|sell|short|cover|exercise|assign|assignment|option|trade)/i;
+const DIVIDEND_REINVESTMENT_REGEX = /\b(reinvest|reinv@|drip)\b/i;
+const DIVIDEND_REINVESTMENT_ACTIONS = new Set(['REI', 'REINV', 'DRIP']);
+
+function isDividendReinvestmentActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+
+  const action =
+    typeof activity.action === 'string' ? activity.action.trim().toUpperCase() : '';
+  if (action && DIVIDEND_REINVESTMENT_ACTIONS.has(action)) {
+    return true;
+  }
+
+  const fields = ['type', 'subType', 'description'];
+  for (const field of fields) {
+    const value = activity[field];
+    if (typeof value === 'string' && DIVIDEND_REINVESTMENT_REGEX.test(value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function isOrderLikeActivity(activity) {
   if (!activity || typeof activity !== 'object') {
@@ -6446,6 +6470,10 @@ function isOrderLikeActivity(activity) {
   const type = typeof activity.type === 'string' ? activity.type : '';
   const action = typeof activity.action === 'string' ? activity.action : '';
   const description = typeof activity.description === 'string' ? activity.description : '';
+
+  if (isDividendReinvestmentActivity(activity)) {
+    return true;
+  }
 
   // Only apply the exclude regex to the structured fields (type/action).
   // Some trade descriptions contain the word "INTEREST" (e.g., PSA fund name),
@@ -8059,6 +8087,10 @@ function isDividendActivity(activity) {
     return false;
   }
 
+  if (isDividendReinvestmentActivity(activity)) {
+    return false;
+  }
+
   const fields = ['type', 'subType', 'action', 'description'];
   for (const field of fields) {
     const value = activity[field];
@@ -8156,6 +8188,25 @@ function extractAmountFromDescription(description) {
     return null;
   }
   return { amount: numeric, raw: candidate, source: filtered.length ? 'filteredNumeric' : 'numeric' };
+}
+
+const USD_AMOUNT_REGEX = /\b(?:U\$|US\$|USD)\s*([\\d,.]+(?:\\.\\d+)?)/gi;
+
+function extractUsdAmountFromDescription(description) {
+  if (typeof description !== 'string' || !description) {
+    return null;
+  }
+  const matches = Array.from(description.matchAll(USD_AMOUNT_REGEX));
+  if (!matches.length) {
+    return null;
+  }
+  const last = matches[matches.length - 1];
+  const raw = last && last[1] ? last[1] : null;
+  if (!raw) {
+    return null;
+  }
+  const numeric = parseNumericString(raw);
+  return numeric === null ? null : numeric;
 }
 
 function resolveActivityAmount(activity) {
@@ -9228,7 +9279,26 @@ async function resolveAccountActivityContext(login, account, providedContext) {
   return buildAccountActivityContext(login, account);
 }
 
-function resolveActivityAmountDetails(activity) {
+function isRespAccount(account) {
+  if (!account || typeof account !== 'object') {
+    return false;
+  }
+  const parts = [
+    account.name,
+    account.displayName,
+    account.type,
+    account.accountType,
+    account.accountTypeName,
+  ]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => value.trim());
+  if (!parts.length) {
+    return false;
+  }
+  return parts.some((value) => /RESP/i.test(value));
+}
+
+function resolveActivityAmountDetails(activity, options = {}) {
   const amountInfo = resolveActivityAmount(activity);
   if (!amountInfo) {
     return null;
@@ -9243,9 +9313,11 @@ function resolveActivityAmountDetails(activity) {
   const grossAmount = Number(activity.grossAmount);
   const usesDescriptionAmount = amountInfo.source === 'description' && amountInfo.description;
   const descriptionText = typeof activity.description === 'string' ? activity.description : '';
-  const usdHintInDescription = hasUsdHintInDescription(descriptionText);
-  const cadHintInDescription = hasCadHintInDescription(descriptionText);
-  const cadHintIsContextual = /\b(?:FROM|TO)\s+CAD\b/i.test(descriptionText || '');
+  const ignoreDescriptionFxHints = isRespAccount(options && options.account);
+  const usdHintInDescription = ignoreDescriptionFxHints ? false : hasUsdHintInDescription(descriptionText);
+  const cadHintInDescription = ignoreDescriptionFxHints ? false : hasCadHintInDescription(descriptionText);
+  const cadHintIsContextual =
+    ignoreDescriptionFxHints ? false : /\b(?:FROM|TO)\s+CAD\b/i.test(descriptionText || '');
   if (usesDescriptionAmount) {
     const descriptionSource = amountInfo.description.source;
     if (
@@ -9559,8 +9631,8 @@ async function resolveBookValueTransferMarketOverride(activity, details, account
   };
 }
 
-async function resolveFundingActivityAmountDetails(activity, accountKey, activityContext) {
-  const baseDetails = resolveActivityAmountDetails(activity);
+async function resolveFundingActivityAmountDetails(activity, accountKey, activityContext, account) {
+  const baseDetails = resolveActivityAmountDetails(activity, { account });
   if (!baseDetails) {
     return null;
   }
@@ -9661,7 +9733,7 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   const fundingActivityDetails = [];
 
   for (const activity of fundingActivities) {
-    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
+    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext, account);
     if (!details) {
       debugTotalPnl(accountKey, 'Skipped activity due to missing amount', activity);
       continue;
@@ -10358,7 +10430,7 @@ async function computeDividendBreakdown(login, account, options = {}) {
   let lineItemCounter = 0;
 
   for (const activity of filteredDividendActivities) {
-    const details = resolveActivityAmountDetails(activity);
+    const details = resolveActivityAmountDetails(activity, { account });
     if (!details) {
       continue;
     }
@@ -11192,7 +11264,7 @@ async function computeDailyNetDeposits(activityContext, account, accountKey, opt
   const perDay = new Map();
   let conversionIncomplete = false;
   for (const activity of fundingActivities) {
-    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext);
+    const details = await resolveFundingActivityAmountDetails(activity, accountKey, activityContext, account);
     if (!details) {
       continue;
     }
@@ -11529,6 +11601,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     const activityDesc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
     const isIncome = INCOME_ACTIVITY_REGEX.test(activityDesc);
     const preferredFromActivity = (isTrade || isIncome) ? activityCurrency : null;
+    const inferredCurrency = resolvedSymbol ? inferSymbolCurrency(resolvedSymbol) : null;
+    const resolvedCurrency =
+      preferredFromActivity && (!inferredCurrency || preferredFromActivity === inferredCurrency)
+        ? preferredFromActivity
+        : inferredCurrency || preferredFromActivity;
 
     if (Number.isFinite(symbolId) && symbolId > 0) {
       symbolIds.add(symbolId);
@@ -11541,7 +11618,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!symbolMeta.has(resolvedSymbol)) {
       symbolMeta.set(resolvedSymbol, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
-        currency: preferredFromActivity || inferSymbolCurrency(resolvedSymbol) || null,
+        currency: resolvedCurrency || null,
         activityCurrency,
       });
     } else {
@@ -11550,10 +11627,12 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
           meta.symbolId = symbolId;
         }
-        if (preferredFromActivity && meta.currency !== preferredFromActivity) {
-          meta.currency = preferredFromActivity;
+        if (preferredFromActivity && (!inferredCurrency || preferredFromActivity === inferredCurrency)) {
+          if (meta.currency !== preferredFromActivity) {
+            meta.currency = preferredFromActivity;
+          }
         } else if (!meta.currency) {
-          meta.currency = inferSymbolCurrency(resolvedSymbol) || null;
+          meta.currency = inferredCurrency || preferredFromActivity || null;
         }
         if (!meta.activityCurrency && activityCurrency) {
           meta.activityCurrency = activityCurrency;
@@ -13423,7 +13502,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   const qtyDeltaSinceStart = new Map(); // all quantity deltas on/after start (trade + non-trade)
   const qtyDeltaBeforeStart = new Map(); // all quantity deltas before start
   const usdRateCache = new Map();
-  const recordCashFlow = (symbol, amount, currency, dateKey) => {
+  const recordCashFlow = (symbol, amount, currency, dateKey, options = {}) => {
     if (!symbol || !dateKey) return;
     const normalizedSymbol = normalizeSymbol(symbol) || symbol;
     const numericAmount = Number(amount);
@@ -13431,6 +13510,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     const normalizedDate = typeof dateKey === 'string' ? dateKey.trim() : '';
     if (!normalizedDate) return;
     const curr = normalizeCurrency(currency) || 'CAD';
+    const usdAmountRaw = Number(options && options.usdAmount);
     if (!cashFlowRecordsBySymbol.has(normalizedSymbol)) {
       cashFlowRecordsBySymbol.set(normalizedSymbol, []);
     }
@@ -13438,6 +13518,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       amount: numericAmount,
       currency: curr,
       dateKey: normalizedDate,
+      usdAmount: Number.isFinite(usdAmountRaw) ? usdAmountRaw : null,
     });
   };
 
@@ -13537,30 +13618,64 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       Number.isFinite(netAmount) &&
       Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
     ) {
+      const meta = symbolMeta.get(symbol) || {};
+      const isUsdSymbol = meta.currency === 'USD';
+      const overrideMap = options && options.usdRatesByDate instanceof Map ? options.usdRatesByDate : null;
+
       let amountCad = null;
+      let usdRate = null;
       if (currency === 'CAD') {
         amountCad = netAmount;
       } else if (currency === 'USD') {
-        const overrideMap = options && options.usdRatesByDate instanceof Map ? options.usdRatesByDate : null;
-        let usdRate = null;
         if (overrideMap && overrideMap.has(dateKey)) {
           usdRate = overrideMap.get(dateKey);
         } else {
           usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
         }
         amountCad = Number.isFinite(usdRate) && usdRate > 0 ? netAmount * usdRate : null;
-        // Track USD-native amount and its CAD-converted counterpart for no-FX variant.
-        const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
-        cashUsdBySymbol.set(symbol, curUsd + (Number.isFinite(netAmount) ? netAmount : 0));
-        if (Number.isFinite(amountCad)) {
-          const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
-          cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + amountCad);
+      }
+
+      let usdAmountForNoFx = null;
+      if (isUsdSymbol) {
+        if (currency === 'USD') {
+          usdAmountForNoFx = netAmount;
+        } else if (currency === 'CAD') {
+          const grossAmount = Number(activity.grossAmount);
+          if (Number.isFinite(grossAmount) && Math.abs(grossAmount) >= CASH_FLOW_EPSILON / 10) {
+            usdAmountForNoFx = grossAmount;
+          } else {
+            const descUsd = extractUsdAmountFromDescription(activity.description);
+            if (Number.isFinite(descUsd)) {
+              const sign = netAmount >= 0 ? 1 : -1;
+              usdAmountForNoFx = Math.abs(descUsd) * sign;
+            } else {
+              if (!(Number.isFinite(usdRate) && usdRate > 0)) {
+                if (overrideMap && overrideMap.has(dateKey)) {
+                  usdRate = overrideMap.get(dateKey);
+                } else {
+                  usdRate = await resolveUsdRateForDate(dateKey, accountKey, usdRateCache);
+                }
+              }
+              if (Number.isFinite(usdRate) && usdRate > 0) {
+                usdAmountForNoFx = netAmount / usdRate;
+              }
+            }
+          }
         }
       }
+
       if (Number.isFinite(amountCad)) {
-        recordCashFlow(symbol, netAmount, currency, dateKey);
+        recordCashFlow(symbol, netAmount, currency, dateKey, { usdAmount: usdAmountForNoFx });
         const current = cashCadBySymbol.has(symbol) ? cashCadBySymbol.get(symbol) : 0;
         cashCadBySymbol.set(symbol, current + amountCad);
+        if (currency === 'USD') {
+          const curUsd = cashUsdBySymbol.has(symbol) ? cashUsdBySymbol.get(symbol) : 0;
+          cashUsdBySymbol.set(symbol, curUsd + netAmount);
+          if (Number.isFinite(amountCad)) {
+            const curCadFromUsd = cashCadFromUsdBySymbol.has(symbol) ? cashCadFromUsdBySymbol.get(symbol) : 0;
+            cashCadFromUsdBySymbol.set(symbol, curCadFromUsd + amountCad);
+          }
+        }
         if (amountCad < 0) {
           const invested = investedOutflowCadBySymbol.has(symbol) ? investedOutflowCadBySymbol.get(symbol) : 0;
           investedOutflowCadBySymbol.set(symbol, invested + Math.abs(amountCad));
@@ -13764,7 +13879,12 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           }
         } else {
           historicalAmount = record.amount;
-          noFxAmount = record.amount;
+          const usdAmount = Number(record.usdAmount);
+          if (Number.isFinite(usdAmount) && Number.isFinite(endUsdRate) && endUsdRate > 0) {
+            noFxAmount = usdAmount * endUsdRate;
+          } else {
+            noFxAmount = record.amount;
+          }
         }
         if (Number.isFinite(historicalAmount)) {
           flows.push({ amount: historicalAmount, date });
