@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { formatDate, formatMoney, formatNumber, formatPercent } from '../utils/formatters';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -191,7 +191,9 @@ function buildChartMetrics(series, referenceTemperatures = DEFAULT_REFERENCE_TEM
     const normalized = (entry.temperature - minDomain) / domainRange;
     const clamped = Math.max(0, Math.min(1, normalized));
     const y = PADDING.top + innerHeight * (1 - clamped);
-    return { ...entry, x, y };
+    const previous = index > 0 ? sanitized[index - 1] : null;
+    const trend = previous ? entry.temperature - previous.temperature : 0;
+    return { ...entry, x, y, trend };
   });
 
   const yFor = (value) => {
@@ -223,6 +225,8 @@ export default function QqqTemperatureSection({
   const [timeframe, setTimeframe] = useState('5Y');
   const [markingRebalanced, setMarkingRebalanced] = useState(false);
   const [completedTrades, setCompletedTrades] = useState(() => new Set());
+  const [hoverIndex, setHoverIndex] = useState(null);
+  const chartRef = useRef(null);
   const filteredSeries = useMemo(() => filterSeries(data?.series, timeframe), [data?.series, timeframe]);
   const latestTemperature = Number(data?.latest?.temperature);
   const referenceTemperatures = useMemo(() => {
@@ -370,19 +374,82 @@ export default function QqqTemperatureSection({
     return { ...lastPoint, trend };
   }, [chartMetrics, hasChart]);
 
-  const labelPosition = useMemo(() => {
-    if (!marker) {
+  const hoverPoint = useMemo(() => {
+    if (!chartMetrics || hoverIndex === null) {
       return null;
     }
-    const leftPercent = Math.min(94, Math.max(0, (marker.x / CHART_WIDTH) * 100));
-    const verticalOffset = marker.trend > 0 ? -24 : marker.trend < 0 ? 24 : 0;
+    const candidate = chartMetrics.points[hoverIndex];
+    if (!candidate || !Number.isFinite(candidate.temperature)) {
+      return null;
+    }
+    return candidate;
+  }, [chartMetrics, hoverIndex]);
+
+  const activePoint = hoverPoint || marker;
+
+  const labelPosition = useMemo(() => {
+    if (!activePoint) {
+      return null;
+    }
+    const leftPercent = Math.min(94, Math.max(0, (activePoint.x / CHART_WIDTH) * 100));
+    const trend = Number(activePoint.trend) || 0;
+    const verticalOffset = hoverPoint ? -24 : trend > 0 ? -24 : trend < 0 ? 24 : 0;
     const adjustedY = Math.min(
       CHART_HEIGHT - PADDING.bottom,
-      Math.max(PADDING.top, marker.y + verticalOffset),
+      Math.max(PADDING.top, activePoint.y + verticalOffset),
     );
     const topPercent = Math.min(92, Math.max(8, (adjustedY / CHART_HEIGHT) * 100));
     return { left: `${leftPercent}%`, top: `${topPercent}%` };
-  }, [marker]);
+  }, [activePoint, hoverPoint]);
+
+  const hoverTemperatureLabel = useMemo(() => {
+    if (!activePoint || !Number.isFinite(activePoint.temperature)) {
+      return null;
+    }
+    return `T = ${formatNumber(activePoint.temperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, [activePoint]);
+
+  const hoverDateLabel = useMemo(() => {
+    if (!hoverPoint?.date) {
+      return null;
+    }
+    return formatDate(hoverPoint.date);
+  }, [hoverPoint]);
+
+  const labelTemperature = hoverTemperatureLabel || latestLabel;
+  const showHoverLabel = Boolean(hoverPoint && hoverTemperatureLabel && hoverDateLabel);
+
+  const handleMouseMove = useCallback(
+    (event) => {
+      if (!chartMetrics || !chartRef.current) {
+        return;
+      }
+      const rect = chartRef.current.getBoundingClientRect();
+      if (!rect.width) {
+        return;
+      }
+      const scaleX = CHART_WIDTH / rect.width;
+      const relativeX = (event.clientX - rect.left) * scaleX;
+      let nearestIndex = null;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      chartMetrics.points.forEach((point, index) => {
+        if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y) || !Number.isFinite(point?.temperature)) {
+          return;
+        }
+        const distance = Math.abs(point.x - relativeX);
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestIndex = index;
+        }
+      });
+      setHoverIndex(nearestIndex);
+    },
+    [chartMetrics],
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    setHoverIndex(null);
+  }, []);
 
   const toggleTrade = useCallback((rowKey) => {
     setCompletedTrades((prev) => {
@@ -756,7 +823,15 @@ export default function QqqTemperatureSection({
 
       {!loading && !error && hasChart && (
         <div className="qqq-section__chart-container">
-          <svg className="qqq-section__chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-hidden="true">
+          <svg
+            ref={chartRef}
+            className="qqq-section__chart"
+            viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+            role="img"
+            aria-hidden="true"
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
+          >
             <rect
               className="qqq-section__chart-surface"
               x="0"
@@ -811,11 +886,14 @@ export default function QqqTemperatureSection({
               </g>
             )}
             {pathD && <path className="qqq-section__series-path" d={pathD} />}
-            {marker && <circle className="qqq-section__marker" cx={marker.x} cy={marker.y} r="5" />}
+            {activePoint && Number.isFinite(activePoint.x) && Number.isFinite(activePoint.y) && (
+              <circle className="qqq-section__marker" cx={activePoint.x} cy={activePoint.y} r="5" />
+            )}
           </svg>
-          {marker && latestLabel && labelPosition && (
+          {labelTemperature && labelPosition && (
             <div className="qqq-section__chart-label" style={labelPosition}>
-              {latestLabel}
+              <span>{labelTemperature}</span>
+              {showHoverLabel && <span className="pnl-dialog__label-date">{hoverDateLabel}</span>}
             </div>
           )}
           <div className="qqq-section__chart-footer">
