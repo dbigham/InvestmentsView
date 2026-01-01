@@ -2296,7 +2296,12 @@ export default function SummaryMetrics({
     if (!hoverPoint) {
       return null;
     }
-    if (isTotalPnlMetric && hoverRangeSummary && Number.isFinite(hoverRangeSummary.totalPnlCad)) {
+    if (
+      !applyDisplayStartDelta &&
+      isTotalPnlMetric &&
+      hoverRangeSummary &&
+      Number.isFinite(hoverRangeSummary.totalPnlCad)
+    ) {
       return {
         amount: formatSignedMoney(hoverRangeSummary.totalPnlCad),
         date: hoverRangeSummary.endDate ? formatDate(hoverRangeSummary.endDate) : null,
