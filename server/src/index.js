@@ -711,6 +711,49 @@ async function computeAggregateTotalPnlSeriesForContexts(
     return null;
   }
 
+  // Align the final aggregate point with the latest summary totals so the chart
+  // reflects current balances even if some accounts lack a fresh daily point.
+  const lastPointIndex = combinedPoints.length - 1;
+  const lastPoint = combinedPoints[lastPointIndex];
+  if (lastPoint && typeof lastPoint === 'object') {
+    const summaryEquity = Number.isFinite(summaryTotals.totalEquityCad) ? summaryTotals.totalEquityCad : null;
+    const summaryDeposits = Number.isFinite(summaryTotals.netDepositsCad) ? summaryTotals.netDepositsCad : null;
+    const summaryPnl = Number.isFinite(summaryTotals.totalPnlCad) ? summaryTotals.totalPnlCad : null;
+    if (summaryEquity !== null) {
+      lastPoint.equityCad = summaryEquity;
+    }
+    if (summaryDeposits !== null) {
+      lastPoint.cumulativeNetDepositsCad = summaryDeposits;
+    }
+    if (summaryPnl !== null) {
+      lastPoint.totalPnlCad = summaryPnl;
+    } else if (summaryEquity !== null && summaryDeposits !== null) {
+      const derivedPnl = summaryEquity - summaryDeposits;
+      lastPoint.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+    }
+    if (Number.isFinite(summaryTotals.reserveValueCad)) {
+      lastPoint.reserveValueCad = summaryTotals.reserveValueCad;
+    }
+    if (Number.isFinite(summaryTotals.deployedValueCad)) {
+      lastPoint.deployedValueCad = summaryTotals.deployedValueCad;
+    }
+    if (
+      Number.isFinite(lastPoint.deployedValueCad) &&
+      Number.isFinite(lastPoint.equityCad) &&
+      Math.abs(lastPoint.equityCad) > 0.00001
+    ) {
+      lastPoint.deployedPercent = (lastPoint.deployedValueCad / lastPoint.equityCad) * 100;
+    }
+    if (
+      Number.isFinite(lastPoint.reserveValueCad) &&
+      Number.isFinite(lastPoint.equityCad) &&
+      Math.abs(lastPoint.equityCad) > 0.00001
+    ) {
+      lastPoint.reservePercent = (lastPoint.reserveValueCad / lastPoint.equityCad) * 100;
+    }
+    combinedPoints[lastPointIndex] = lastPoint;
+  }
+
   // Fallback trim: if the aggregated series still contains only zeros before the
   // first meaningful symbol values, drop those leading points so charts start
   // when the symbol is actually present.
