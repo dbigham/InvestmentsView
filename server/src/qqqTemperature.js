@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
 
 let yahooFinance = null;
 let yahooFinanceLoadError = null;
@@ -219,6 +220,27 @@ function describeYahooError(error) {
 
 async function downloadTickerSlice(ticker, fetchStart, today) {
   const finance = ensureYahooFinance();
+  const startKey = formatDate(fetchStart);
+  const endKey = formatDate(today);
+  if (startKey && endKey) {
+    try {
+      const cachedSeries = getCachedYahooPriceSeries(ticker, startKey, endKey);
+      if (cachedSeries.hit) {
+        return cachedSeries.value
+          .map((entry) => {
+            const date = formatDate(entry.date);
+            if (!date) {
+              return null;
+            }
+            return { date, close: entry.price };
+          })
+          .filter(Boolean)
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      }
+    } catch (_) {
+      // ignore cache errors
+    }
+  }
   const options = {
     interval: '1d',
     events: 'history',
@@ -237,7 +259,20 @@ async function downloadTickerSlice(ticker, fetchStart, today) {
     const result = await finance.chart(ticker, options);
     const container = Array.isArray(result) ? result[0] : result;
     const quotes = container && Array.isArray(container.quotes) ? container.quotes : [];
-    return sanitizeChartQuotes(quotes);
+    const sanitized = sanitizeChartQuotes(quotes);
+    if (sanitized.length && startKey && endKey) {
+      try {
+        cacheYahooPriceSeries(
+          ticker,
+          startKey,
+          endKey,
+          sanitized.map((entry) => ({ date: entry.date, price: entry.close }))
+        );
+      } catch (_) {
+        // ignore cache write errors
+      }
+    }
+    return sanitized;
   } catch (error) {
     const message = describeYahooError(error);
     logErrorOnce(`Failed to download historical data for ${ticker}`, message ? new Error(message) : error);

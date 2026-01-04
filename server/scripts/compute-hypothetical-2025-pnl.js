@@ -5,6 +5,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const yahooFinance = require('yahoo-finance2').default;
+const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('../src/yahooPriceCache');
 
 const {
   getAllLogins,
@@ -190,6 +191,29 @@ async function ensurePriceSeries(symbol, startKey, endKey) {
   if (!yahooSymbol) {
     return null;
   }
+  try {
+    const cachedSeries = getCachedYahooPriceSeries(yahooSymbol, startKey, endKey);
+    if (cachedSeries.hit && Array.isArray(cachedSeries.value) && cachedSeries.value.length) {
+      const points = cachedSeries.value
+        .map((entry) => ({ date: getDateKey(entry.date), price: entry.price }))
+        .filter((entry) => entry.date && Number.isFinite(entry.price) && entry.price > 0);
+      if (points.length) {
+        const payload = {
+          symbol,
+          currency: inferCurrencyFromSymbol(symbol),
+          points,
+        };
+        try {
+          fs.writeFileSync(path.join(PRICE_CACHE_DIR, `${symbol}.json`), JSON.stringify(payload));
+        } catch (_) {
+          // ignore cache write errors
+        }
+        return payload;
+      }
+    }
+  } catch (_) {
+    // ignore cache read errors
+  }
   const startDate = new Date(`${startKey}T00:00:00Z`);
   const endDate = new Date(`${endKey}T00:00:00Z`);
   const endExclusive = new Date(endDate.getTime() + 24 * 60 * 60 * 1000);
@@ -206,6 +230,11 @@ async function ensurePriceSeries(symbol, startKey, endKey) {
   const normalized = normalizeYahooHistoricalEntries(history);
   if (!normalized.length) {
     return null;
+  }
+  try {
+    cacheYahooPriceSeries(yahooSymbol, startKey, endKey, normalized);
+  } catch (_) {
+    // ignore cache write errors
   }
   const points = normalized.map((entry) => ({
     date: getDateKey(entry.date),

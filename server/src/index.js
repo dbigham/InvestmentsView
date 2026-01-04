@@ -12,6 +12,7 @@ const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent
 const util = require('util');
 const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
+const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
 dotenv.config();
 
 const serverEnvPath = path.join(__dirname, '..', '.env');
@@ -4559,6 +4560,35 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
     }
   }
 
+  const yahooSymbol = resolveYahooSymbol(symbol) || symbol;
+  if (yahooSymbol) {
+    try {
+      const cachedSeries = getCachedYahooPriceSeries(yahooSymbol, startDate, endDate);
+      if (cachedSeries.hit) {
+        const cachedFirst = cachedSeries.value[0];
+        const cachedLast = cachedSeries.value[cachedSeries.value.length - 1];
+        if (cachedFirst && cachedLast && Number.isFinite(cachedFirst.price) && Number.isFinite(cachedLast.price)) {
+          const cachedGrowth = (cachedLast.price - cachedFirst.price) / cachedFirst.price;
+          const cachedPayload = {
+            symbol,
+            startDate: formatDateOnly(cachedFirst.date),
+            endDate: formatDateOnly(cachedLast.date),
+            startPrice: cachedFirst.price,
+            endPrice: cachedLast.price,
+            returnRate: Number.isFinite(cachedGrowth) ? cachedGrowth : null,
+            source: 'yahoo-finance2',
+          };
+          if (cacheKey) {
+            setCachedBenchmarkReturn(cacheKey, cachedPayload);
+          }
+          return cachedPayload;
+        }
+      }
+    } catch (_) {
+      // ignore cache errors
+    }
+  }
+
   const start = new Date(`${startDate}T00:00:00Z`);
   const end = new Date(`${endDate}T00:00:00Z`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -4569,7 +4599,7 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
 
   let history = null;
   try {
-    history = await fetchYahooHistorical(symbol, {
+    history = await fetchYahooHistorical(yahooSymbol || symbol, {
       period1: start,
       period2: exclusiveEnd,
       interval: '1d',
@@ -4616,6 +4646,14 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
     return null;
   }
 
+  if (yahooSymbol) {
+    try {
+      cacheYahooPriceSeries(yahooSymbol, startDate, endDate, normalized);
+    } catch (_) {
+      // ignore cache write errors
+    }
+  }
+
   const first = normalized[0];
   const last = normalized[normalized.length - 1];
 
@@ -4657,6 +4695,25 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
     }
   }
 
+  const yahooSymbol = resolveYahooSymbol(symbol) || symbol;
+  if (yahooSymbol) {
+    try {
+      const cachedSeries = getCachedYahooPriceSeries(yahooSymbol, startDate, endDate);
+      if (cachedSeries.hit) {
+        const values = cachedSeries.value;
+        const sum = values.reduce((total, entry) => total + entry.price, 0);
+        const averagePercent = Number.isFinite(sum) ? sum / values.length : Number.NaN;
+        const averageRate = Number.isFinite(averagePercent) ? averagePercent / 100 : null;
+        if (cacheKey) {
+          setCachedInterestRate(cacheKey, averageRate);
+        }
+        return averageRate;
+      }
+    } catch (_) {
+      // ignore cache errors
+    }
+  }
+
   const start = new Date(`${startDate}T00:00:00Z`);
   const end = new Date(`${endDate}T00:00:00Z`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
@@ -4667,7 +4724,7 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
 
   let history = null;
   try {
-    history = await fetchYahooHistorical(symbol, {
+    history = await fetchYahooHistorical(yahooSymbol || symbol, {
       period1: start,
       period2: exclusiveEnd,
       interval: '1d',
@@ -4712,6 +4769,17 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
       setCachedInterestRate(cacheKey, null);
     }
     return null;
+  }
+
+  if (yahooSymbol) {
+    try {
+      cacheYahooPriceSeries(yahooSymbol, startDate, endDate, normalized.map((entry) => ({
+        date: entry.date,
+        price: entry.rate,
+      })));
+    } catch (_) {
+      // ignore cache write errors
+    }
   }
 
   const sum = normalized.reduce((total, entry) => total + entry.rate, 0);
@@ -11035,6 +11103,12 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
         priceHistoryCache.delete(cacheKey);
       }
     } catch (_) { /* ignore cache errors */ }
+    try {
+      const cachedSeries = getCachedYahooPriceSeries(candidate, startDateKey, endDateKey);
+      if (cachedSeries.hit && Array.isArray(cachedSeries.value) && cachedSeries.value.length > 0) {
+        return cachedSeries.value;
+      }
+    } catch (_) { /* ignore cache errors */ }
     let history = null;
     try {
       history = await fetchYahooHistorical(candidate, {
@@ -11052,6 +11126,9 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
         if (cacheKey) {
           setCachedPriceHistory(cacheKey, normalized);
         }
+      } catch (_) { /* ignore cache errors */ }
+      try {
+        cacheYahooPriceSeries(candidate, startDateKey, endDateKey, normalized);
       } catch (_) { /* ignore cache errors */ }
       break;
     }
