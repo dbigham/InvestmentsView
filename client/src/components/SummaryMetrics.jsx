@@ -2140,6 +2140,27 @@ export default function SummaryMetrics({
     const now = Date.now();
     const minInterval = selectionSummary?.isActive ? 200 : 0;
     const elapsed = now - (notifyState.lastSentAt || 0);
+    const isHoverUpdate = Boolean(hoverRangeSummary) && !selectionRangeSummary && !selectionSummary?.isActive;
+
+    if (isHoverUpdate) {
+      const hoverDelayMs = 150;
+      if (unchanged) {
+        return undefined;
+      }
+      notifyState.timer = setTimeout(() => {
+        notifyState.timer = null;
+        notifyState.lastStart = next.startDate;
+        notifyState.lastEnd = next.endDate;
+        notifyState.lastSentAt = Date.now();
+        onTotalPnlRangeSelectionChange(next);
+      }, hoverDelayMs);
+      return () => {
+        if (notifyState.timer) {
+          clearTimeout(notifyState.timer);
+          notifyState.timer = null;
+        }
+      };
+    }
 
     if (!unchanged && (minInterval === 0 || elapsed >= minInterval)) {
       notifyState.lastStart = next.startDate;
