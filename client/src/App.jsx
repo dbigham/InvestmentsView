@@ -81,6 +81,7 @@ const DEFAULT_POSITIONS_SORT = { column: 'portfolioShare', direction: 'desc' };
 const EMPTY_OBJECT = Object.freeze({});
 const MODEL_CHART_DEFAULT_START_DATE = '1980-01-01';
 const MAX_NEWS_SYMBOLS = 24;
+const DEMO_MODE_STORAGE_KEY = 'investmentsViewDemoMode';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -260,6 +261,17 @@ function normalizePositiveInteger(value) {
     }
   }
   return null;
+}
+
+function persistDemoModePreference(enabled) {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(DEMO_MODE_STORAGE_KEY, JSON.stringify(Boolean(enabled)));
+  } catch {
+    // ignore persistence failures
+  }
 }
 
 const PEG_SOURCE_LABELS = {
@@ -5707,6 +5719,7 @@ export default function App() {
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
+  const [demoModeEnabled, setDemoModeEnabled] = usePersistentState(DEMO_MODE_STORAGE_KEY, false);
   const [ordersFilter, setOrdersFilter] = useState('');
   const [dividendTimeframe, setDividendTimeframe] = useState(DEFAULT_DIVIDEND_TIMEFRAME);
   const [_accountPlanningContexts, _setAccountPlanningContexts] = usePersistentState(
@@ -6109,6 +6122,16 @@ export default function App() {
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
   const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
+  const demoModeFromServer = Boolean(data?.demoMode);
+  const demoModeSource =
+    typeof data?.demoModeSource === 'string' ? data.demoModeSource.trim() : null;
+  const demoModeActive = demoModeEnabled || (demoModeFromServer && demoModeSource === 'env');
+
+  useEffect(() => {
+    if (demoModeSource === 'env' && demoModeFromServer && !demoModeEnabled) {
+      setDemoModeEnabled(true);
+    }
+  }, [demoModeFromServer, demoModeSource, demoModeEnabled, setDemoModeEnabled]);
   const refreshLoginSetup = useCallback(async () => {
     setLoginSetupState((prev) => ({
       status: 'loading',
@@ -6143,6 +6166,9 @@ export default function App() {
   }, [refreshLoginSetup]);
 
   useEffect(() => {
+    if (demoModeActive) {
+      return;
+    }
     if (loginSetupState.status !== 'ready') {
       return;
     }
@@ -6150,7 +6176,14 @@ export default function App() {
       setShowLoginSetupDialog(true);
       setLoginSetupPrompted(true);
     }
-  }, [loginSetupPrompted, loginSetupState]);
+  }, [demoModeActive, loginSetupPrompted, loginSetupState]);
+
+  useEffect(() => {
+    if (!demoModeActive || !showLoginSetupDialog) {
+      return;
+    }
+    setShowLoginSetupDialog(false);
+  }, [demoModeActive, showLoginSetupDialog]);
 
   const handleOpenLoginSetupDialog = useCallback(() => {
     setShowLoginSetupDialog(true);
@@ -6164,6 +6197,23 @@ export default function App() {
       setLoginSetupNeedsRefresh(false);
     }
   }, [loginSetupNeedsRefresh]);
+
+  const handleStartDemoMode = useCallback(() => {
+    setDemoModeEnabled(true);
+    persistDemoModePreference(true);
+    setShowLoginSetupDialog(false);
+    setLoginSetupPrompted(true);
+    setRefreshKey((value) => value + 1);
+  }, [setDemoModeEnabled]);
+
+  const handleExitDemoMode = useCallback(() => {
+    setDemoModeEnabled(false);
+    persistDemoModePreference(false);
+    setLoginSetupPrompted(false);
+    setShowLoginSetupDialog(false);
+    refreshLoginSetup();
+    setRefreshKey((value) => value + 1);
+  }, [refreshLoginSetup, setDemoModeEnabled]);
 
   const handleShowRefreshTokenHelpDialog = useCallback(() => {
     setShowRefreshTokenHelpDialog(true);
@@ -12083,6 +12133,17 @@ export default function App() {
   const hasData = Boolean(data);
   const isRefreshing = (loading && hasData) || priceRefreshInFlight;
   const showContent = hasData;
+  const isMissingLoginsError =
+    !demoModeActive &&
+    Boolean(error && typeof error.message === 'string' && /no questrade logins configured yet/i.test(error.message));
+
+  useEffect(() => {
+    if (!isMissingLoginsError) {
+      return;
+    }
+    setShowLoginSetupDialog(true);
+    setLoginSetupPrompted(true);
+  }, [isMissingLoginsError]);
 
   const handleShowPnlBreakdown = useCallback(
     (mode, accountKey = null, options = {}) => {
@@ -14831,6 +14892,21 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {demoModeActive ? (
+        <div className="demo-mode-banner" role="status" aria-live="polite">
+          <span className="demo-mode-banner__badge">DEMO MODE</span>
+          <span className="demo-mode-banner__text">
+            You are viewing offline demo data. Changes are not saved.
+          </span>
+          <button
+            type="button"
+            className="demo-mode-banner__exit"
+            onClick={handleExitDemoMode}
+          >
+            Exit demo
+          </button>
+        </div>
+      ) : null}
       <main className={summaryMainClassName}>
         <header className="page-header">
           <GlobalSearch
@@ -15201,7 +15277,7 @@ export default function App() {
           </section>
         )}
 
-        {error && (
+        {error && !isMissingLoginsError && (
           <div className="status-message error">
             <strong>Unable to load data.</strong>
             <p>{error.message}</p>
@@ -15929,6 +16005,7 @@ export default function App() {
           onSave={handleSaveLogin}
           onShowInstructions={handleShowRefreshTokenHelpDialog}
           onStartAccountStructure={handleStartAccountStructureFromLogin}
+          onStartDemoMode={handleStartDemoMode}
         />
       )}
       {showRefreshTokenHelpDialog && (

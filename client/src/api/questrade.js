@@ -1,4 +1,35 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
+const DEMO_STORAGE_KEY = 'investmentsViewDemoMode';
+
+function isDemoModeEnabled() {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return false;
+  }
+  try {
+    const stored = window.localStorage.getItem(DEMO_STORAGE_KEY);
+    if (stored === null) {
+      return false;
+    }
+    return JSON.parse(stored) === true;
+  } catch {
+    return false;
+  }
+}
+
+function buildDemoHeaders(headers) {
+  const resolved = new Headers(headers || {});
+  if (isDemoModeEnabled()) {
+    resolved.set('x-investmentsview-demo', '1');
+  }
+  return resolved;
+}
+
+function fetchWithDemo(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: buildDemoHeaders(options.headers),
+  });
+}
 
 function buildUrl(accountId, options = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
@@ -224,7 +255,7 @@ function buildLoginsUrl() {
 }
 
 export async function getSummary(accountId, options = {}) {
-  const response = await fetch(buildUrl(accountId, options));
+  const response = await fetchWithDemo(buildUrl(accountId, options));
   if (!response.ok) {
     let message = 'Failed to load summary data';
     try {
@@ -246,7 +277,7 @@ export async function getSummary(accountId, options = {}) {
 }
 
 export async function getLogins() {
-  const response = await fetch(buildLoginsUrl());
+  const response = await fetchWithDemo(buildLoginsUrl());
   if (!response.ok) {
     let message = 'Failed to load logins';
     try {
@@ -268,7 +299,7 @@ export async function getLogins() {
 }
 
 export async function addLogin(payload = {}) {
-  const response = await fetch(buildLoginsUrl(), {
+  const response = await fetchWithDemo(buildLoginsUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -294,7 +325,7 @@ export async function addLogin(payload = {}) {
 }
 
 export async function getQqqTemperature(options = {}) {
-  const response = await fetch(buildQqqTemperatureUrl(options));
+  const response = await fetchWithDemo(buildQqqTemperatureUrl(options));
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || 'Failed to load QQQ temperature data');
@@ -308,7 +339,7 @@ export async function getInvestmentModelTemperature(params) {
     throw new Error('Model is required');
   }
 
-  const response = await fetch(buildInvestmentModelTemperatureUrl({ ...params, model }));
+  const response = await fetchWithDemo(buildInvestmentModelTemperatureUrl({ ...params, model }));
   if (!response.ok) {
     let message = 'Failed to load investment model chart';
     try {
@@ -337,7 +368,7 @@ export async function getRangeTotalPnlBreakdown(params) {
   }
   const trimmedScope =
     params.scope === undefined || params.scope === null ? 'all' : String(params.scope).trim() || 'all';
-  const response = await fetch(
+  const response = await fetchWithDemo(
     buildRangePnlBreakdownUrl({
       scope: trimmedScope,
       startDate: params.startDate,
@@ -371,7 +402,7 @@ export async function getQuote(symbol) {
     throw new Error('Symbol is required');
   }
 
-  const response = await fetch(buildQuoteUrl(normalizedSymbol));
+  const response = await fetchWithDemo(buildQuoteUrl(normalizedSymbol));
   if (!response.ok) {
     let message = 'Failed to load quote data';
     try {
@@ -401,7 +432,7 @@ export async function getBenchmarkReturns(params) {
   }
 
   const endDate = params && typeof params.endDate === 'string' ? params.endDate.trim() : '';
-  const response = await fetch(buildBenchmarkReturnsUrl({ startDate, endDate }));
+  const response = await fetchWithDemo(buildBenchmarkReturnsUrl({ startDate, endDate }));
   if (!response.ok) {
     let message = 'Failed to load benchmark returns';
     try {
@@ -442,7 +473,7 @@ export async function getPortfolioNews(payload, options = {}) {
   }
   requestBody.symbols = symbols;
 
-  const response = await fetch(buildPortfolioNewsUrl(), {
+  const response = await fetchWithDemo(buildPortfolioNewsUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody),
@@ -479,7 +510,7 @@ export async function markAccountRebalanced(accountKey, options = {}) {
   const model = options && typeof options.model === 'string' ? options.model.trim() : '';
   const payload = model ? { model } : {};
 
-  const response = await fetch(buildMarkRebalancedUrl(trimmedKey), {
+  const response = await fetchWithDemo(buildMarkRebalancedUrl(trimmedKey), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -515,7 +546,7 @@ export async function setAccountTargetProportions(accountKey, proportions) {
 
   const payload = { proportions: proportions ?? null };
 
-  const response = await fetch(buildTargetProportionsUrl(trimmedKey), {
+  const response = await fetchWithDemo(buildTargetProportionsUrl(trimmedKey), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -558,7 +589,7 @@ export async function setAccountSymbolNotes(accountKey, symbol, notes) {
     notes: typeof notes === 'string' ? notes : '',
   };
 
-  const response = await fetch(buildSymbolNotesUrl(trimmedKey), {
+  const response = await fetchWithDemo(buildSymbolNotesUrl(trimmedKey), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -595,7 +626,7 @@ export async function setAccountPlanningContext(accountKey, planningContext) {
     planningContext: typeof planningContext === 'string' ? planningContext : '',
   };
 
-  const response = await fetch(buildPlanningContextUrl(trimmedKey), {
+  const response = await fetchWithDemo(buildPlanningContextUrl(trimmedKey), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -671,7 +702,7 @@ export async function setAccountMetadata(accountKey, metadata) {
     });
   }
 
-  const response = await fetch(buildAccountMetadataUrl(trimmedKey), {
+  const response = await fetchWithDemo(buildAccountMetadataUrl(trimmedKey), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -699,7 +730,7 @@ export async function setAccountMetadata(accountKey, metadata) {
 }
 
 export async function getAccountOverrides() {
-  const response = await fetch(buildAccountOverridesUrl());
+  const response = await fetchWithDemo(buildAccountOverridesUrl());
   if (!response.ok) {
     let message = 'Failed to load account overrides';
     try {
@@ -721,7 +752,7 @@ export async function getAccountOverrides() {
 }
 
 export async function getAccounts() {
-  const response = await fetch(buildAccountsUrl());
+  const response = await fetchWithDemo(buildAccountsUrl());
   if (!response.ok) {
     let message = 'Failed to load accounts';
     try {
@@ -743,7 +774,7 @@ export async function getAccounts() {
 }
 
 export async function setAccountOverrides(entries) {
-  const response = await fetch(buildAccountOverridesUrl(), {
+  const response = await fetchWithDemo(buildAccountOverridesUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ entries }),
@@ -774,7 +805,7 @@ export async function getTotalPnlSeries(accountKey, params = {}) {
     throw new Error('accountKey is required');
   }
 
-  const response = await fetch(buildTotalPnlSeriesUrl(trimmedKey, params));
+  const response = await fetchWithDemo(buildTotalPnlSeriesUrl(trimmedKey, params));
   if (!response.ok) {
     let message = 'Failed to load Total P&L series';
     try {
@@ -802,7 +833,7 @@ export async function getSymbolPriceHistory(symbol, params = {}) {
   if (!trimmedSymbol) {
     throw new Error('symbol is required');
   }
-  const response = await fetch(buildSymbolPriceHistoryUrl(trimmedSymbol, params));
+  const response = await fetchWithDemo(buildSymbolPriceHistoryUrl(trimmedSymbol, params));
   if (!response.ok) {
     let message = 'Failed to load price history';
     try {

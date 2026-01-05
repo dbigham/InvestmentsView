@@ -1,0 +1,130 @@
+{
+  "asOf": "2025-12-31",
+  "entries": [
+    {
+      "symbol": "QQQ",
+      "currency": "USD",
+      "totalPnlCad": 5200,
+      "totalPnlWithFxCad": 5400,
+      "totalPnlNoFxCad": 5000,
+      "marketValueCad": 15800,
+      "investedCad": 10600,
+      "openQuantity": 40
+    },
+    {
+      "symbol": "VTI",
+      "currency": "USD",
+      "totalPnlCad": 2600,
+      "totalPnlWithFxCad": 2700,
+      "totalPnlNoFxCad": 2500,
+      "marketValueCad": 13900,
+      "investedCad": 11300,
+      "openQuantity": 57
+    },
+    {
+      "symbol": "NVDA",
+      "currency": "USD",
+      "totalPnlCad": 3100,
+      "totalPnlWithFxCad": 3200,
+      "totalPnlNoFxCad": 3000,
+      "marketValueCad": 13500,
+      "investedCad": 10400,
+      "openQuantity": 18
+    },
+    {
+      "symbol": "TSLA",
+      "currency": "USD",
+      "totalPnlCad": 1400,
+      "totalPnlWithFxCad": 1500,
+      "totalPnlNoFxCad": 1300,
+      "marketValueCad": 10200,
+      "investedCad": 8800,
+      "openQuantity": 30
+    },
+    {
+      "symbol": "AAPL",
+      "currency": "USD",
+      "totalPnlCad": 1300,
+      "totalPnlWithFxCad": 1350,
+      "totalPnlNoFxCad": 1250,
+      "marketValueCad": 8700,
+      "investedCad": 7400,
+      "openQuantity": 25
+    },
+    {
+      "symbol": "BAM.TO",
+      "currency": "CAD",
+      "totalPnlCad": 2600,
+      "marketValueCad": 13100,
+      "investedCad": 10500,
+      "openQuantity": 190
+    },
+    {
+      "symbol": "VCN.TO",
+      "currency": "CAD",
+      "totalPnlCad": 1600,
+      "marketValueCad": 15580,
+      "investedCad": 13980,
+      "openQuantity": 410
+    },
+    {
+      "symbol": "XBAL.TO",
+      "currency": "CAD",
+      "totalPnlCad": 600,
+      "marketValueCad": 5200,
+      "investedCad": 4600,
+      "openQuantity": 180
+    },
+    {
+      "symbol": "CASH.TO",
+      "currency": "CAD",
+      "totalPnlCad": 50,
+      "marketValueCad": 35800,
+      "investedCad": 35750,
+      "openQuantity": 650
+    }
+  ],
+  "entriesNoFx": [
+    {
+      "symbol": "QQQ",
+      "currency": "USD",
+      "totalPnlCad": 5000,
+      "marketValueCad": 15800,
+      "investedCad": 10600,
+      "openQuantity": 40
+    },
+    {
+      "symbol": "VTI",
+      "currency": "USD",
+      "totalPnlCad": 2500,
+      "marketValueCad": 13900,
+      "investedCad": 11300,
+      "openQuantity": 57
+    },
+    {
+      "symbol": "NVDA",
+      "currency": "USD",
+      "totalPnlCad": 3000,
+      "marketValueCad": 13500,
+      "investedCad": 10400,
+      "openQuantity": 18
+    },
+    {
+      "symbol": "TSLA",
+      "currency": "USD",
+      "totalPnlCad": 1300,
+      "marketValueCad": 10200,
+      "investedCad": 8800,
+      "openQuantity": 30
+    },
+    {
+      "symbol": "AAPL",
+      "currency": "USD",
+      "totalPnlCad": 1250,
+      "marketValueCad": 8700,
+      "investedCad": 7400,
+      "openQuantity": 25
+    }
+  ],
+  "fxEffectCad": 1100
+}

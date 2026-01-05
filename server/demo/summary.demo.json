@@ -1,0 +1,4352 @@
+{
+  "demoMode": true,
+  "accounts": [
+    {
+      "id": "demo-login-1:10000001",
+      "number": "10000001",
+      "name": "Main RRSP",
+      "displayName": "Main RRSP",
+      "ownerLabel": "Meredith",
+      "type": "RRSP",
+      "clientAccountType": "RRSP",
+      "currency": "CAD",
+      "isPrimary": true,
+      "loginId": "demo-login-1",
+      "portalAccountId": "demo-portal-rrsp-main",
+      "cagrStartDate": "2021-01-01",
+      "accountGroup": "RRSP",
+      "showQQQDetails": false,
+      "investmentModels": [
+        {
+          "model": "A1",
+          "symbol": "QQQ",
+          "leveragedSymbol": "TQQQ",
+          "reserveSymbol": "SGOV",
+          "lastRebalance": "2025-10-15"
+        }
+      ],
+      "projectionGrowthPercent": 8.7
+    },
+    {
+      "id": "demo-login-1:10000002",
+      "number": "10000002",
+      "name": "Aggressive RRSP Core",
+      "displayName": "Aggressive RRSP Core",
+      "ownerLabel": "Daniel",
+      "type": "RRSP",
+      "clientAccountType": "RRSP",
+      "currency": "CAD",
+      "loginId": "demo-login-1",
+      "portalAccountId": "demo-portal-rrsp-core",
+      "cagrStartDate": "2022-01-01",
+      "accountGroup": "Aggressive RRSP",
+      "investmentModels": [
+        {
+          "model": "A1",
+          "symbol": "VTI",
+          "leveragedSymbol": "UPRO",
+          "reserveSymbol": "SGOV",
+          "lastRebalance": "2025-09-12"
+        }
+      ],
+      "projectionGrowthPercent": 10.2
+    },
+    {
+      "id": "demo-login-1:10000003",
+      "number": "10000003",
+      "name": "ChatGPT Suggestions May 2025",
+      "displayName": "ChatGPT Suggestions May 2025",
+      "ownerLabel": "Daniel",
+      "type": "RRSP",
+      "clientAccountType": "RRSP",
+      "currency": "CAD",
+      "loginId": "demo-login-1",
+      "portalAccountId": "demo-portal-rrsp-ideas",
+      "cagrStartDate": "2024-03-01",
+      "accountGroup": "Aggressive RRSP",
+      "projectionGrowthPercent": 11.4
+    },
+    {
+      "id": "demo-login-2:20000001",
+      "number": "20000001",
+      "name": "RESP",
+      "displayName": "RESP",
+      "ownerLabel": "Daniel",
+      "type": "RESP",
+      "clientAccountType": "RESP",
+      "currency": "CAD",
+      "loginId": "demo-login-2",
+      "portalAccountId": "demo-portal-resp",
+      "cagrStartDate": "2020-01-01",
+      "accountGroup": "Kids",
+      "projectionGrowthPercent": 6.2
+    },
+    {
+      "id": "demo-login-2:20000002",
+      "number": "20000002",
+      "name": "Eli",
+      "displayName": "Eli",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "currency": "CAD",
+      "loginId": "demo-login-2",
+      "portalAccountId": "demo-portal-eli",
+      "cagrStartDate": "2021-06-01",
+      "accountGroup": "Kids",
+      "projectionGrowthPercent": 7.4
+    },
+    {
+      "id": "demo-login-2:20000003",
+      "number": "20000003",
+      "name": "Hazel",
+      "displayName": "Hazel",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "currency": "CAD",
+      "loginId": "demo-login-2",
+      "portalAccountId": "demo-portal-hazel",
+      "cagrStartDate": "2022-04-01",
+      "accountGroup": "Kids",
+      "projectionGrowthPercent": 7.1
+    },
+    {
+      "id": "demo-login-2:20000004",
+      "number": "20000004",
+      "name": "Olive",
+      "displayName": "Olive",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "currency": "CAD",
+      "loginId": "demo-login-2",
+      "portalAccountId": "demo-portal-olive",
+      "cagrStartDate": "2022-09-01",
+      "accountGroup": "Kids",
+      "projectionGrowthPercent": 6.9
+    },
+    {
+      "id": "demo-login-2:20000005",
+      "number": "20000005",
+      "name": "Emma",
+      "displayName": "Emma",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "currency": "CAD",
+      "loginId": "demo-login-2",
+      "portalAccountId": "demo-portal-emma",
+      "cagrStartDate": "2023-01-01",
+      "accountGroup": "Kids",
+      "projectionGrowthPercent": 7.8
+    }
+  ],
+  "accountGroups": [
+    {
+      "id": "group:rrsp",
+      "name": "RRSP",
+      "memberCount": 3,
+      "accountIds": [
+        "demo-login-1:10000001",
+        "demo-login-1:10000002",
+        "demo-login-1:10000003"
+      ],
+      "accountNumbers": [
+        "10000001",
+        "10000002",
+        "10000003"
+      ],
+      "ownerLabels": [
+        "Meredith",
+        "Daniel"
+      ]
+    },
+    {
+      "id": "group:aggressive-rrsp",
+      "name": "Aggressive RRSP",
+      "memberCount": 2,
+      "accountIds": [
+        "demo-login-1:10000002",
+        "demo-login-1:10000003"
+      ],
+      "accountNumbers": [
+        "10000002",
+        "10000003"
+      ],
+      "ownerLabels": [
+        "Daniel"
+      ]
+    },
+    {
+      "id": "group:kids",
+      "name": "Kids",
+      "memberCount": 5,
+      "accountIds": [
+        "demo-login-2:20000001",
+        "demo-login-2:20000002",
+        "demo-login-2:20000003",
+        "demo-login-2:20000004",
+        "demo-login-2:20000005"
+      ],
+      "accountNumbers": [
+        "20000001",
+        "20000002",
+        "20000003",
+        "20000004",
+        "20000005"
+      ],
+      "ownerLabels": [
+        "Daniel"
+      ]
+    }
+  ],
+  "groupRelations": {
+    "Aggressive RRSP": [
+      "RRSP"
+    ]
+  },
+  "accountNamesFilePath": "demo",
+  "filteredAccountIds": [
+    "demo-login-1:10000001",
+    "demo-login-1:10000002",
+    "demo-login-1:10000003",
+    "demo-login-2:20000001",
+    "demo-login-2:20000002",
+    "demo-login-2:20000003",
+    "demo-login-2:20000004",
+    "demo-login-2:20000005"
+  ],
+  "defaultAccountId": "demo-login-1:10000001",
+  "defaultAccountNumber": "10000001",
+  "resolvedAccountId": "all",
+  "resolvedAccountNumber": null,
+  "requestedAccountId": "all",
+  "positions": [
+    {
+      "accountId": "demo-login-1:10000001",
+      "accountNumber": "10000001",
+      "accountName": "Main RRSP",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "QQQ",
+      "description": "Invesco QQQ Trust",
+      "currency": "USD",
+      "openQuantity": 28,
+      "averageEntryPrice": 305,
+      "currentPrice": 422.15,
+      "currentMarketValue": 11820.2,
+      "dayPnl": 84,
+      "openPnl": 3280.2,
+      "totalCost": 8540
+    },
+    {
+      "accountId": "demo-login-1:10000001",
+      "accountNumber": "10000001",
+      "accountName": "Main RRSP",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "VCN.TO",
+      "description": "Vanguard FTSE Canada All Cap",
+      "currency": "CAD",
+      "openQuantity": 200,
+      "averageEntryPrice": 33,
+      "currentPrice": 38,
+      "currentMarketValue": 7600,
+      "dayPnl": 40,
+      "openPnl": 1000,
+      "totalCost": 6600
+    },
+    {
+      "accountId": "demo-login-1:10000001",
+      "accountNumber": "10000001",
+      "accountName": "Main RRSP",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "CASH.TO",
+      "description": "Purpose High Interest Savings",
+      "currency": "CAD",
+      "openQuantity": 250,
+      "averageEntryPrice": 50,
+      "currentPrice": 50.1,
+      "currentMarketValue": 12525,
+      "dayPnl": 2,
+      "openPnl": 25,
+      "totalCost": 12500
+    },
+    {
+      "accountId": "demo-login-1:10000002",
+      "accountNumber": "10000002",
+      "accountName": "Aggressive RRSP Core",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "VTI",
+      "description": "Vanguard Total Stock Market ETF",
+      "currency": "USD",
+      "openQuantity": 35,
+      "averageEntryPrice": 210,
+      "currentPrice": 245.2,
+      "currentMarketValue": 8582,
+      "dayPnl": 20,
+      "openPnl": 1232,
+      "totalCost": 7350
+    },
+    {
+      "accountId": "demo-login-1:10000002",
+      "accountNumber": "10000002",
+      "accountName": "Aggressive RRSP Core",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "NVDA",
+      "description": "NVIDIA Corporation",
+      "currency": "USD",
+      "openQuantity": 18,
+      "averageEntryPrice": 370,
+      "currentPrice": 560.4,
+      "currentMarketValue": 10087.2,
+      "dayPnl": 75,
+      "openPnl": 3427.2,
+      "totalCost": 6660
+    },
+    {
+      "accountId": "demo-login-1:10000002",
+      "accountNumber": "10000002",
+      "accountName": "Aggressive RRSP Core",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "BAM.TO",
+      "description": "Brookfield Asset Management",
+      "currency": "CAD",
+      "openQuantity": 120,
+      "averageEntryPrice": 45,
+      "currentPrice": 58.2,
+      "currentMarketValue": 6984,
+      "dayPnl": -12,
+      "openPnl": 1584,
+      "totalCost": 5400
+    },
+    {
+      "accountId": "demo-login-1:10000003",
+      "accountNumber": "10000003",
+      "accountName": "ChatGPT Suggestions May 2025",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "TSLA",
+      "description": "Tesla, Inc.",
+      "currency": "USD",
+      "openQuantity": 20,
+      "averageEntryPrice": 205,
+      "currentPrice": 255.7,
+      "currentMarketValue": 5114,
+      "dayPnl": -18,
+      "openPnl": 1014,
+      "totalCost": 4100
+    },
+    {
+      "accountId": "demo-login-1:10000003",
+      "accountNumber": "10000003",
+      "accountName": "ChatGPT Suggestions May 2025",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "AAPL",
+      "description": "Apple Inc.",
+      "currency": "USD",
+      "openQuantity": 25,
+      "averageEntryPrice": 155,
+      "currentPrice": 195.3,
+      "currentMarketValue": 4882.5,
+      "dayPnl": 15,
+      "openPnl": 1007.5,
+      "totalCost": 3875
+    },
+    {
+      "accountId": "demo-login-1:10000003",
+      "accountNumber": "10000003",
+      "accountName": "ChatGPT Suggestions May 2025",
+      "accountType": "RRSP",
+      "loginId": "demo-login-1",
+      "symbol": "CASH.TO",
+      "description": "Purpose High Interest Savings",
+      "currency": "CAD",
+      "openQuantity": 200,
+      "averageEntryPrice": 50,
+      "currentPrice": 50.1,
+      "currentMarketValue": 10020,
+      "dayPnl": 1,
+      "openPnl": 20,
+      "totalCost": 10000
+    },
+    {
+      "accountId": "demo-login-2:20000001",
+      "accountNumber": "20000001",
+      "accountName": "RESP",
+      "accountType": "RESP",
+      "loginId": "demo-login-2",
+      "symbol": "XBAL.TO",
+      "description": "iShares Core Balanced ETF Portfolio",
+      "currency": "CAD",
+      "openQuantity": 180,
+      "averageEntryPrice": 26,
+      "currentPrice": 29.1,
+      "currentMarketValue": 5238,
+      "dayPnl": 18,
+      "openPnl": 558,
+      "totalCost": 4680
+    },
+    {
+      "accountId": "demo-login-2:20000001",
+      "accountNumber": "20000001",
+      "accountName": "RESP",
+      "accountType": "RESP",
+      "loginId": "demo-login-2",
+      "symbol": "VCN.TO",
+      "description": "Vanguard FTSE Canada All Cap",
+      "currency": "CAD",
+      "openQuantity": 120,
+      "averageEntryPrice": 34,
+      "currentPrice": 38,
+      "currentMarketValue": 4560,
+      "dayPnl": 12,
+      "openPnl": 480,
+      "totalCost": 4080
+    },
+    {
+      "accountId": "demo-login-2:20000002",
+      "accountNumber": "20000002",
+      "accountName": "Eli",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "VTI",
+      "description": "Vanguard Total Stock Market ETF",
+      "currency": "USD",
+      "openQuantity": 10,
+      "averageEntryPrice": 215,
+      "currentPrice": 245.2,
+      "currentMarketValue": 2452,
+      "dayPnl": 6,
+      "openPnl": 302,
+      "totalCost": 2150
+    },
+    {
+      "accountId": "demo-login-2:20000002",
+      "accountNumber": "20000002",
+      "accountName": "Eli",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "CASH.TO",
+      "description": "Purpose High Interest Savings",
+      "currency": "CAD",
+      "openQuantity": 80,
+      "averageEntryPrice": 50,
+      "currentPrice": 50.1,
+      "currentMarketValue": 4008,
+      "dayPnl": 0.5,
+      "openPnl": 8,
+      "totalCost": 4000
+    },
+    {
+      "accountId": "demo-login-2:20000003",
+      "accountNumber": "20000003",
+      "accountName": "Hazel",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "QQQ",
+      "description": "Invesco QQQ Trust",
+      "currency": "USD",
+      "openQuantity": 12,
+      "averageEntryPrice": 330,
+      "currentPrice": 422.15,
+      "currentMarketValue": 5065.8,
+      "dayPnl": 24,
+      "openPnl": 1105.8,
+      "totalCost": 3960
+    },
+    {
+      "accountId": "demo-login-2:20000003",
+      "accountNumber": "20000003",
+      "accountName": "Hazel",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "VCN.TO",
+      "description": "Vanguard FTSE Canada All Cap",
+      "currency": "CAD",
+      "openQuantity": 90,
+      "averageEntryPrice": 35,
+      "currentPrice": 38,
+      "currentMarketValue": 3420,
+      "dayPnl": 9,
+      "openPnl": 270,
+      "totalCost": 3150
+    },
+    {
+      "accountId": "demo-login-2:20000004",
+      "accountNumber": "20000004",
+      "accountName": "Olive",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "BAM.TO",
+      "description": "Brookfield Asset Management",
+      "currency": "CAD",
+      "openQuantity": 70,
+      "averageEntryPrice": 46,
+      "currentPrice": 58.2,
+      "currentMarketValue": 4074,
+      "dayPnl": -7,
+      "openPnl": 854,
+      "totalCost": 3220
+    },
+    {
+      "accountId": "demo-login-2:20000004",
+      "accountNumber": "20000004",
+      "accountName": "Olive",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "CASH.TO",
+      "description": "Purpose High Interest Savings",
+      "currency": "CAD",
+      "openQuantity": 120,
+      "averageEntryPrice": 50,
+      "currentPrice": 50.1,
+      "currentMarketValue": 6012,
+      "dayPnl": 1,
+      "openPnl": 12,
+      "totalCost": 6000
+    },
+    {
+      "accountId": "demo-login-2:20000005",
+      "accountNumber": "20000005",
+      "accountName": "Emma",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "VTI",
+      "description": "Vanguard Total Stock Market ETF",
+      "currency": "USD",
+      "openQuantity": 12,
+      "averageEntryPrice": 220,
+      "currentPrice": 245.2,
+      "currentMarketValue": 2942.4,
+      "dayPnl": 10,
+      "openPnl": 302.4,
+      "totalCost": 2640
+    },
+    {
+      "accountId": "demo-login-2:20000005",
+      "accountNumber": "20000005",
+      "accountName": "Emma",
+      "accountType": "TFSA",
+      "loginId": "demo-login-2",
+      "symbol": "TSLA",
+      "description": "Tesla, Inc.",
+      "currency": "USD",
+      "openQuantity": 10,
+      "averageEntryPrice": 190,
+      "currentPrice": 255.7,
+      "currentMarketValue": 2557,
+      "dayPnl": -12,
+      "openPnl": 657,
+      "totalCost": 1900
+    }
+  ],
+  "orders": [],
+  "pnl": {
+    "dayPnl": 337.86,
+    "openPnl": 21330.65,
+    "totalPnl": 21330.65
+  },
+  "balances": {
+    "combined": {
+      "CAD": {
+        "currency": "CAD",
+        "totalEquity": 80941,
+        "marketValue": 64441,
+        "cash": 16500,
+        "buyingPower": 16500,
+        "dayPnl": 64.5,
+        "openPnl": 4811,
+        "totalPnl": 4811
+      },
+      "USD": {
+        "currency": "USD",
+        "totalEquity": 55453.1,
+        "marketValue": 53503.1,
+        "cash": 1950,
+        "buyingPower": 1950,
+        "dayPnl": 204,
+        "openPnl": 12328.1,
+        "totalPnl": 12328.1,
+        "exchangeRate": 1.34
+      }
+    }
+  },
+  "accountBalances": {
+    "demo-login-1:10000001": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 24925,
+          "marketValue": 20125,
+          "cash": 4800,
+          "buyingPower": 4800,
+          "dayPnl": 42,
+          "openPnl": 1025,
+          "totalPnl": 1025
+        },
+        "USD": {
+          "currency": "USD",
+          "totalEquity": 12420.2,
+          "marketValue": 11820.2,
+          "cash": 600,
+          "buyingPower": 600,
+          "dayPnl": 84,
+          "openPnl": 3280.2,
+          "totalPnl": 3280.2,
+          "exchangeRate": 1.34
+        }
+      }
+    },
+    "demo-login-1:10000002": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 10184,
+          "marketValue": 6984,
+          "cash": 3200,
+          "buyingPower": 3200,
+          "dayPnl": -12,
+          "openPnl": 1584,
+          "totalPnl": 1584
+        },
+        "USD": {
+          "currency": "USD",
+          "totalEquity": 19119.2,
+          "marketValue": 18669.2,
+          "cash": 450,
+          "buyingPower": 450,
+          "dayPnl": 95,
+          "openPnl": 4659.2,
+          "totalPnl": 4659.2,
+          "exchangeRate": 1.34
+        }
+      }
+    },
+    "demo-login-1:10000003": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 12820,
+          "marketValue": 10020,
+          "cash": 2800,
+          "buyingPower": 2800,
+          "dayPnl": 1,
+          "openPnl": 20,
+          "totalPnl": 20
+        },
+        "USD": {
+          "currency": "USD",
+          "totalEquity": 10346.5,
+          "marketValue": 9996.5,
+          "cash": 350,
+          "buyingPower": 350,
+          "dayPnl": -3,
+          "openPnl": 2021.5,
+          "totalPnl": 2021.5,
+          "exchangeRate": 1.34
+        }
+      }
+    },
+    "demo-login-2:20000001": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 11398,
+          "marketValue": 9798,
+          "cash": 1600,
+          "buyingPower": 1600,
+          "dayPnl": 30,
+          "openPnl": 1038,
+          "totalPnl": 1038
+        }
+      }
+    },
+    "demo-login-2:20000002": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 4908,
+          "marketValue": 4008,
+          "cash": 900,
+          "buyingPower": 900,
+          "dayPnl": 0.5,
+          "openPnl": 8,
+          "totalPnl": 8
+        },
+        "USD": {
+          "currency": "USD",
+          "totalEquity": 2602,
+          "marketValue": 2452,
+          "cash": 150,
+          "buyingPower": 150,
+          "dayPnl": 6,
+          "openPnl": 302,
+          "totalPnl": 302,
+          "exchangeRate": 1.34
+        }
+      }
+    },
+    "demo-login-2:20000003": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 4520,
+          "marketValue": 3420,
+          "cash": 1100,
+          "buyingPower": 1100,
+          "dayPnl": 9,
+          "openPnl": 270,
+          "totalPnl": 270
+        },
+        "USD": {
+          "currency": "USD",
+          "totalEquity": 5265.8,
+          "marketValue": 5065.8,
+          "cash": 200,
+          "buyingPower": 200,
+          "dayPnl": 24,
+          "openPnl": 1105.8,
+          "totalPnl": 1105.8,
+          "exchangeRate": 1.34
+        }
+      }
+    },
+    "demo-login-2:20000004": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 11486,
+          "marketValue": 10086,
+          "cash": 1400,
+          "buyingPower": 1400,
+          "dayPnl": -6,
+          "openPnl": 866,
+          "totalPnl": 866
+        }
+      }
+    },
+    "demo-login-2:20000005": {
+      "combined": {
+        "CAD": {
+          "currency": "CAD",
+          "totalEquity": 700,
+          "marketValue": 0,
+          "cash": 700,
+          "buyingPower": 700,
+          "dayPnl": 0,
+          "openPnl": 0,
+          "totalPnl": 0
+        },
+        "USD": {
+          "currency": "USD",
+          "totalEquity": 5699.4,
+          "marketValue": 5499.4,
+          "cash": 200,
+          "buyingPower": 200,
+          "dayPnl": -2,
+          "openPnl": 959.4,
+          "totalPnl": 959.4,
+          "exchangeRate": 1.34
+        }
+      }
+    }
+  },
+  "investmentModelEvaluations": {
+    "demo-login-1:10000002": {
+      "status": "ok",
+      "data": {
+        "decision": {
+          "action": "buy",
+          "reason": "Allocation below target",
+          "description": "VTI allocation is below target; consider adding shares.",
+          "details": {
+            "target_p": 0.6,
+            "rebalance_cadence": 22,
+            "days_since_last_rebalance": 42
+          }
+        },
+        "current_allocation": 0.5,
+        "model": {
+          "target_allocation": 0.6,
+          "base_allocation": 0.52,
+          "rebalance_cadence": 22,
+          "days_since_last_rebalance": 42
+        },
+        "trades": [
+          {
+            "action": "BUY",
+            "symbol": "VTI",
+            "dollars": 1900,
+            "shares": 7.7,
+            "price": 245.2
+          }
+        ],
+        "recent_rebalance": {
+          "date": "2025-09-12",
+          "reason": "routine",
+          "reason_label": "Routine rebalance",
+          "reason_description": "Monthly rebalance check"
+        }
+      }
+    }
+  },
+  "accountFunding": {
+    "demo-login-1:10000001": {
+      "netDepositsCad": 36147.6,
+      "netDeposits": {
+        "combinedCad": 36147.6,
+        "allTimeCad": 37593.5
+      },
+      "totalPnlCad": 5420.47,
+      "totalPnl": {
+        "combinedCad": 5420.47,
+        "allTimeCad": 5528.88
+      },
+      "totalEquityCad": 41568.07,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2021-01-01",
+      "annualizedReturnRate": 0.09,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.09,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.08,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 37593.5,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 5420.47,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -19881.18
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -12651.66
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -3614.76
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 25303.32,
+        "equityCad": 27200.48,
+        "totalPnlCad": 1897.16
+      }
+    },
+    "demo-login-1:10000002": {
+      "netDepositsCad": 27976.4,
+      "netDeposits": {
+        "combinedCad": 27976.4,
+        "allTimeCad": 29095.46
+      },
+      "totalPnlCad": 7827.33,
+      "totalPnl": {
+        "combinedCad": 7827.33,
+        "allTimeCad": 7983.88
+      },
+      "totalEquityCad": 35803.73,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2022-01-01",
+      "annualizedReturnRate": 0.1,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.1,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.09,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 29095.46,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 7827.33,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -15387.02
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -9791.74
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -2797.64
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 19583.48,
+        "equityCad": 22323.05,
+        "totalPnlCad": 2739.57
+      }
+    },
+    "demo-login-1:10000003": {
+      "netDepositsCad": 23955.5,
+      "netDeposits": {
+        "combinedCad": 23955.5,
+        "allTimeCad": 24913.72
+      },
+      "totalPnlCad": 2728.81,
+      "totalPnl": {
+        "combinedCad": 2728.81,
+        "allTimeCad": 2783.39
+      },
+      "totalEquityCad": 26684.31,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2024-03-01",
+      "annualizedReturnRate": 0.11,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.11,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.1,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 24913.72,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 2728.81,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -13175.53
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -8384.42
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -2395.55
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 16768.85,
+        "equityCad": 17723.93,
+        "totalPnlCad": 955.08
+      }
+    },
+    "demo-login-2:20000001": {
+      "netDepositsCad": 10360,
+      "netDeposits": {
+        "combinedCad": 10360,
+        "allTimeCad": 10774.4
+      },
+      "totalPnlCad": 1038,
+      "totalPnl": {
+        "combinedCad": 1038,
+        "allTimeCad": 1058.76
+      },
+      "totalEquityCad": 11398,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2020-01-01",
+      "annualizedReturnRate": 0.06,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.05,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 10774.4,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 1038,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -5698
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -3626
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -1036
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 7252,
+        "equityCad": 7615.3,
+        "totalPnlCad": 363.3
+      }
+    },
+    "demo-login-2:20000002": {
+      "netDepositsCad": 7982,
+      "netDeposits": {
+        "combinedCad": 7982,
+        "allTimeCad": 8301.28
+      },
+      "totalPnlCad": 412.68,
+      "totalPnl": {
+        "combinedCad": 412.68,
+        "allTimeCad": 420.93
+      },
+      "totalEquityCad": 8394.68,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2021-06-01",
+      "annualizedReturnRate": 0.07,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.07,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 8301.28,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 412.68,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -4390.1
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -2793.7
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -798.2
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 5587.4,
+        "equityCad": 5731.84,
+        "totalPnlCad": 144.44
+      }
+    },
+    "demo-login-2:20000003": {
+      "netDepositsCad": 9824.4,
+      "netDeposits": {
+        "combinedCad": 9824.4,
+        "allTimeCad": 10217.38
+      },
+      "totalPnlCad": 1751.77,
+      "totalPnl": {
+        "combinedCad": 1751.77,
+        "allTimeCad": 1786.81
+      },
+      "totalEquityCad": 11576.17,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2022-04-01",
+      "annualizedReturnRate": 0.07,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.07,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 10217.38,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 1751.77,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -5403.42
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -3438.54
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -982.44
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 6877.08,
+        "equityCad": 7490.2,
+        "totalPnlCad": 613.12
+      }
+    },
+    "demo-login-2:20000004": {
+      "netDepositsCad": 10620,
+      "netDeposits": {
+        "combinedCad": 10620,
+        "allTimeCad": 11044.8
+      },
+      "totalPnlCad": 866,
+      "totalPnl": {
+        "combinedCad": 866,
+        "allTimeCad": 883.32
+      },
+      "totalEquityCad": 11486,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2022-09-01",
+      "annualizedReturnRate": 0.07,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.07,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 11044.8,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 866,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -5841
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -3717
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -1062
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 7434,
+        "equityCad": 7737.1,
+        "totalPnlCad": 303.1
+      }
+    },
+    "demo-login-2:20000005": {
+      "netDepositsCad": 7051.6,
+      "netDeposits": {
+        "combinedCad": 7051.6,
+        "allTimeCad": 7333.66
+      },
+      "totalPnlCad": 1285.6,
+      "totalPnl": {
+        "combinedCad": 1285.6,
+        "allTimeCad": 1311.31
+      },
+      "totalEquityCad": 8337.2,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2023-01-01",
+      "annualizedReturnRate": 0.08,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.08,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.07,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 7333.66,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 1285.6,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -3878.38
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -2468.06
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -705.16
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 4936.12,
+        "equityCad": 5386.08,
+        "totalPnlCad": 449.96
+      }
+    },
+    "group:rrsp": {
+      "netDepositsCad": 88079.5,
+      "netDeposits": {
+        "combinedCad": 88079.5,
+        "allTimeCad": 91602.68
+      },
+      "totalPnlCad": 15976.61,
+      "totalPnl": {
+        "combinedCad": 15976.61,
+        "allTimeCad": 16296.14
+      },
+      "totalEquityCad": 104056.11,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2024-01-31",
+      "annualizedReturnRate": 0.075,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.075,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 91602.68,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 15976.61,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -48443.73
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -30827.82
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -8807.95
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 61655.65,
+        "equityCad": 67247.46,
+        "totalPnlCad": 5591.81
+      }
+    },
+    "group:aggressive-rrsp": {
+      "netDepositsCad": 51931.9,
+      "netDeposits": {
+        "combinedCad": 51931.9,
+        "allTimeCad": 54009.18
+      },
+      "totalPnlCad": 10556.14,
+      "totalPnl": {
+        "combinedCad": 10556.14,
+        "allTimeCad": 10767.26
+      },
+      "totalEquityCad": 62488.04,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2024-01-31",
+      "annualizedReturnRate": 0.075,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.075,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 54009.18,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 10556.14,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -28562.54
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -18176.16
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -5193.19
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 36352.33,
+        "equityCad": 40046.98,
+        "totalPnlCad": 3694.65
+      }
+    },
+    "group:kids": {
+      "netDepositsCad": 45838,
+      "netDeposits": {
+        "combinedCad": 45838,
+        "allTimeCad": 47671.52
+      },
+      "totalPnlCad": 5354.05,
+      "totalPnl": {
+        "combinedCad": 5354.05,
+        "allTimeCad": 5461.13
+      },
+      "totalEquityCad": 51192.05,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2024-01-31",
+      "annualizedReturnRate": 0.075,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.075,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.06,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 47671.52,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 5354.05,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -25210.9
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -16043.3
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -4583.8
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 32086.6,
+        "equityCad": 33960.52,
+        "totalPnlCad": 1873.92
+      }
+    },
+    "all": {
+      "netDepositsCad": 133917.5,
+      "netDeposits": {
+        "combinedCad": 133917.5,
+        "allTimeCad": 139274.2
+      },
+      "totalPnlCad": 21330.66,
+      "totalPnl": {
+        "combinedCad": 21330.66,
+        "allTimeCad": 21757.27
+      },
+      "totalEquityCad": 155248.16,
+      "periodStartDate": "2024-01-31",
+      "periodEndDate": "2025-12-31",
+      "cagrStartDate": "2024-01-31",
+      "annualizedReturnRate": 0.082,
+      "annualizedReturnAsOf": "2025-12-31",
+      "annualizedReturnStartDate": "2024-01-31",
+      "annualizedReturnIncomplete": false,
+      "annualizedReturn": {
+        "rate": 0.082,
+        "asOf": "2025-12-31",
+        "startDate": "2024-01-31",
+        "incomplete": false
+      },
+      "annualizedReturnAllTime": {
+        "rate": 0.07,
+        "asOf": "2025-12-31",
+        "startDate": "2021-01-01",
+        "incomplete": false
+      },
+      "returnBreakdown": [
+        {
+          "label": "Deposits",
+          "amountCad": 139274.2,
+          "type": "deposit"
+        },
+        {
+          "label": "Growth",
+          "amountCad": 21330.66,
+          "type": "gain"
+        }
+      ],
+      "cashFlowsCad": [
+        {
+          "date": "2024-02-29T00:00:00Z",
+          "amount": -73654.62
+        },
+        {
+          "date": "2025-01-31T00:00:00Z",
+          "amount": -46871.12
+        },
+        {
+          "date": "2025-09-30T00:00:00Z",
+          "amount": -13391.75
+        }
+      ],
+      "displayStartTotals": {
+        "cumulativeNetDepositsCad": 93742.25,
+        "equityCad": 101207.98,
+        "totalPnlCad": 7465.73
+      }
+    }
+  },
+  "accountDividends": {
+    "demo-login-1:10000001": {
+      "entries": [
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "description": "Invesco QQQ Trust",
+          "currencyTotals": {
+            "USD": 180
+          },
+          "cadAmount": 240,
+          "activityCount": 4,
+          "firstDate": "2024-03-28",
+          "lastDate": "2025-12-27",
+          "lastTimestamp": "2025-12-27T00:00:00Z",
+          "lastAmount": 52,
+          "lastCurrency": "USD"
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "description": "Vanguard FTSE Canada All Cap",
+          "currencyTotals": {
+            "CAD": 140
+          },
+          "cadAmount": 140,
+          "activityCount": 3,
+          "firstDate": "2024-06-20",
+          "lastDate": "2025-11-18",
+          "lastTimestamp": "2025-11-18T00:00:00Z",
+          "lastAmount": 48,
+          "lastCurrency": "CAD"
+        }
+      ],
+      "totalsByCurrency": {
+        "USD": 180,
+        "CAD": 140
+      },
+      "totalCad": 380,
+      "totalCount": 7,
+      "startDate": "2024-03-28",
+      "endDate": "2025-12-27"
+    },
+    "demo-login-1:10000002": {
+      "entries": [
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "description": "Vanguard Total Stock Market ETF",
+          "currencyTotals": {
+            "USD": 120
+          },
+          "cadAmount": 161,
+          "activityCount": 3,
+          "firstDate": "2024-02-15",
+          "lastDate": "2025-10-15",
+          "lastTimestamp": "2025-10-15T00:00:00Z",
+          "lastAmount": 42,
+          "lastCurrency": "USD"
+        },
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "description": "Brookfield Asset Management",
+          "currencyTotals": {
+            "CAD": 96
+          },
+          "cadAmount": 96,
+          "activityCount": 2,
+          "firstDate": "2024-08-10",
+          "lastDate": "2025-08-12",
+          "lastTimestamp": "2025-08-12T00:00:00Z",
+          "lastAmount": 48,
+          "lastCurrency": "CAD"
+        }
+      ],
+      "totalsByCurrency": {
+        "USD": 120,
+        "CAD": 96
+      },
+      "totalCad": 257,
+      "totalCount": 5,
+      "startDate": "2024-02-15",
+      "endDate": "2025-10-15"
+    },
+    "demo-login-1:10000003": {
+      "entries": [
+        {
+          "symbol": "AAPL",
+          "displaySymbol": "AAPL",
+          "description": "Apple Inc.",
+          "currencyTotals": {
+            "USD": 85
+          },
+          "cadAmount": 114,
+          "activityCount": 2,
+          "firstDate": "2025-02-12",
+          "lastDate": "2025-11-12",
+          "lastTimestamp": "2025-11-12T00:00:00Z",
+          "lastAmount": 46,
+          "lastCurrency": "USD"
+        }
+      ],
+      "totalsByCurrency": {
+        "USD": 85
+      },
+      "totalCad": 114,
+      "totalCount": 2,
+      "startDate": "2025-02-12",
+      "endDate": "2025-11-12"
+    },
+    "demo-login-2:20000001": {
+      "entries": [
+        {
+          "symbol": "XBAL.TO",
+          "displaySymbol": "XBAL.TO",
+          "description": "iShares Core Balanced ETF Portfolio",
+          "currencyTotals": {
+            "CAD": 72
+          },
+          "cadAmount": 72,
+          "activityCount": 2,
+          "firstDate": "2024-05-10",
+          "lastDate": "2025-10-10",
+          "lastTimestamp": "2025-10-10T00:00:00Z",
+          "lastAmount": 36,
+          "lastCurrency": "CAD"
+        }
+      ],
+      "totalsByCurrency": {
+        "CAD": 72
+      },
+      "totalCad": 72,
+      "totalCount": 2,
+      "startDate": "2024-05-10",
+      "endDate": "2025-10-10"
+    },
+    "demo-login-2:20000002": {
+      "entries": [
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "description": "Vanguard Total Stock Market ETF",
+          "currencyTotals": {
+            "USD": 28
+          },
+          "cadAmount": 38,
+          "activityCount": 1,
+          "firstDate": "2025-06-15",
+          "lastDate": "2025-06-15",
+          "lastTimestamp": "2025-06-15T00:00:00Z",
+          "lastAmount": 28,
+          "lastCurrency": "USD"
+        }
+      ],
+      "totalsByCurrency": {
+        "USD": 28
+      },
+      "totalCad": 38,
+      "totalCount": 1,
+      "startDate": "2025-06-15",
+      "endDate": "2025-06-15"
+    },
+    "demo-login-2:20000003": {
+      "entries": [
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "description": "Invesco QQQ Trust",
+          "currencyTotals": {
+            "USD": 34
+          },
+          "cadAmount": 46,
+          "activityCount": 1,
+          "firstDate": "2025-03-20",
+          "lastDate": "2025-03-20",
+          "lastTimestamp": "2025-03-20T00:00:00Z",
+          "lastAmount": 34,
+          "lastCurrency": "USD"
+        }
+      ],
+      "totalsByCurrency": {
+        "USD": 34
+      },
+      "totalCad": 46,
+      "totalCount": 1,
+      "startDate": "2025-03-20",
+      "endDate": "2025-03-20"
+    },
+    "demo-login-2:20000004": {
+      "entries": [
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "description": "Brookfield Asset Management",
+          "currencyTotals": {
+            "CAD": 40
+          },
+          "cadAmount": 40,
+          "activityCount": 1,
+          "firstDate": "2025-04-18",
+          "lastDate": "2025-04-18",
+          "lastTimestamp": "2025-04-18T00:00:00Z",
+          "lastAmount": 40,
+          "lastCurrency": "CAD"
+        }
+      ],
+      "totalsByCurrency": {
+        "CAD": 40
+      },
+      "totalCad": 40,
+      "totalCount": 1,
+      "startDate": "2025-04-18",
+      "endDate": "2025-04-18"
+    },
+    "demo-login-2:20000005": {
+      "entries": [
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "description": "Tesla, Inc.",
+          "currencyTotals": {
+            "USD": 22
+          },
+          "cadAmount": 29,
+          "activityCount": 1,
+          "firstDate": "2025-08-01",
+          "lastDate": "2025-08-01",
+          "lastTimestamp": "2025-08-01T00:00:00Z",
+          "lastAmount": 22,
+          "lastCurrency": "USD"
+        }
+      ],
+      "totalsByCurrency": {
+        "USD": 22
+      },
+      "totalCad": 29,
+      "totalCount": 1,
+      "startDate": "2025-08-01",
+      "endDate": "2025-08-01"
+    }
+  },
+  "accountTotalPnlBySymbol": {
+    "demo-login-1:10000001": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "currency": "USD",
+          "totalPnlCad": 4395.47,
+          "marketValueCad": 15839.07,
+          "investedCad": 11443.6,
+          "openQuantity": 28,
+          "totalPnlWithFxCad": 4395.47,
+          "totalPnlNoFxCad": 4175.7
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "currency": "CAD",
+          "totalPnlCad": 1000,
+          "marketValueCad": 7600,
+          "investedCad": 6600,
+          "openQuantity": 200
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 25,
+          "marketValueCad": 12525,
+          "investedCad": 12500,
+          "openQuantity": 250
+        }
+      ]
+    },
+    "demo-login-1:10000002": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 1650.88,
+          "marketValueCad": 11499.88,
+          "investedCad": 9849,
+          "openQuantity": 35,
+          "totalPnlWithFxCad": 1650.88,
+          "totalPnlNoFxCad": 1568.34
+        },
+        {
+          "symbol": "NVDA",
+          "displaySymbol": "NVDA",
+          "currency": "USD",
+          "totalPnlCad": 4592.45,
+          "marketValueCad": 13516.85,
+          "investedCad": 8924.4,
+          "openQuantity": 18,
+          "totalPnlWithFxCad": 4592.45,
+          "totalPnlNoFxCad": 4362.83
+        },
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "currency": "CAD",
+          "totalPnlCad": 1584,
+          "marketValueCad": 6984,
+          "investedCad": 5400,
+          "openQuantity": 120
+        }
+      ]
+    },
+    "demo-login-1:10000003": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "currency": "USD",
+          "totalPnlCad": 1358.76,
+          "marketValueCad": 6852.76,
+          "investedCad": 5494,
+          "openQuantity": 20,
+          "totalPnlWithFxCad": 1358.76,
+          "totalPnlNoFxCad": 1290.82
+        },
+        {
+          "symbol": "AAPL",
+          "displaySymbol": "AAPL",
+          "currency": "USD",
+          "totalPnlCad": 1350.05,
+          "marketValueCad": 6542.55,
+          "investedCad": 5192.5,
+          "openQuantity": 25,
+          "totalPnlWithFxCad": 1350.05,
+          "totalPnlNoFxCad": 1282.55
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 20,
+          "marketValueCad": 10020,
+          "investedCad": 10000,
+          "openQuantity": 200
+        }
+      ]
+    },
+    "demo-login-2:20000001": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "XBAL.TO",
+          "displaySymbol": "XBAL.TO",
+          "currency": "CAD",
+          "totalPnlCad": 558,
+          "marketValueCad": 5238,
+          "investedCad": 4680,
+          "openQuantity": 180
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "currency": "CAD",
+          "totalPnlCad": 480,
+          "marketValueCad": 4560,
+          "investedCad": 4080,
+          "openQuantity": 120
+        }
+      ]
+    },
+    "demo-login-2:20000002": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 404.68,
+          "marketValueCad": 3285.68,
+          "investedCad": 2881,
+          "openQuantity": 10,
+          "totalPnlWithFxCad": 404.68,
+          "totalPnlNoFxCad": 384.45
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 8,
+          "marketValueCad": 4008,
+          "investedCad": 4000,
+          "openQuantity": 80
+        }
+      ]
+    },
+    "demo-login-2:20000003": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "currency": "USD",
+          "totalPnlCad": 1481.77,
+          "marketValueCad": 6788.17,
+          "investedCad": 5306.4,
+          "openQuantity": 12,
+          "totalPnlWithFxCad": 1481.77,
+          "totalPnlNoFxCad": 1407.68
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "currency": "CAD",
+          "totalPnlCad": 270,
+          "marketValueCad": 3420,
+          "investedCad": 3150,
+          "openQuantity": 90
+        }
+      ]
+    },
+    "demo-login-2:20000004": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "currency": "CAD",
+          "totalPnlCad": 854,
+          "marketValueCad": 4074,
+          "investedCad": 3220,
+          "openQuantity": 70
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 12,
+          "marketValueCad": 6012,
+          "investedCad": 6000,
+          "openQuantity": 120
+        }
+      ]
+    },
+    "demo-login-2:20000005": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 405.22,
+          "marketValueCad": 3942.82,
+          "investedCad": 3537.6,
+          "openQuantity": 12,
+          "totalPnlWithFxCad": 405.22,
+          "totalPnlNoFxCad": 384.96
+        },
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "currency": "USD",
+          "totalPnlCad": 880.38,
+          "marketValueCad": 3426.38,
+          "investedCad": 2546,
+          "openQuantity": 10,
+          "totalPnlWithFxCad": 880.38,
+          "totalPnlNoFxCad": 836.36
+        }
+      ]
+    },
+    "group:rrsp": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "AAPL",
+          "displaySymbol": "AAPL",
+          "currency": "USD",
+          "totalPnlCad": 1350.05,
+          "totalPnlWithFxCad": 1350.05,
+          "totalPnlNoFxCad": 1282.55,
+          "marketValueCad": 6542.55,
+          "investedCad": 5192.5,
+          "openQuantity": 25
+        },
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "currency": "CAD",
+          "totalPnlCad": 1584,
+          "marketValueCad": 6984,
+          "investedCad": 5400,
+          "openQuantity": 120
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 45,
+          "marketValueCad": 22545,
+          "investedCad": 22500,
+          "openQuantity": 450
+        },
+        {
+          "symbol": "NVDA",
+          "displaySymbol": "NVDA",
+          "currency": "USD",
+          "totalPnlCad": 4592.45,
+          "totalPnlWithFxCad": 4592.45,
+          "totalPnlNoFxCad": 4362.83,
+          "marketValueCad": 13516.85,
+          "investedCad": 8924.4,
+          "openQuantity": 18
+        },
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "currency": "USD",
+          "totalPnlCad": 4395.47,
+          "totalPnlWithFxCad": 4395.47,
+          "totalPnlNoFxCad": 4175.7,
+          "marketValueCad": 15839.07,
+          "investedCad": 11443.6,
+          "openQuantity": 28
+        },
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "currency": "USD",
+          "totalPnlCad": 1358.76,
+          "totalPnlWithFxCad": 1358.76,
+          "totalPnlNoFxCad": 1290.82,
+          "marketValueCad": 6852.76,
+          "investedCad": 5494,
+          "openQuantity": 20
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "currency": "CAD",
+          "totalPnlCad": 1000,
+          "marketValueCad": 7600,
+          "investedCad": 6600,
+          "openQuantity": 200
+        },
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 1650.88,
+          "totalPnlWithFxCad": 1650.88,
+          "totalPnlNoFxCad": 1568.34,
+          "marketValueCad": 11499.88,
+          "investedCad": 9849,
+          "openQuantity": 35
+        }
+      ]
+    },
+    "group:aggressive-rrsp": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "AAPL",
+          "displaySymbol": "AAPL",
+          "currency": "USD",
+          "totalPnlCad": 1350.05,
+          "totalPnlWithFxCad": 1350.05,
+          "totalPnlNoFxCad": 1282.55,
+          "marketValueCad": 6542.55,
+          "investedCad": 5192.5,
+          "openQuantity": 25
+        },
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "currency": "CAD",
+          "totalPnlCad": 1584,
+          "marketValueCad": 6984,
+          "investedCad": 5400,
+          "openQuantity": 120
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 20,
+          "marketValueCad": 10020,
+          "investedCad": 10000,
+          "openQuantity": 200
+        },
+        {
+          "symbol": "NVDA",
+          "displaySymbol": "NVDA",
+          "currency": "USD",
+          "totalPnlCad": 4592.45,
+          "totalPnlWithFxCad": 4592.45,
+          "totalPnlNoFxCad": 4362.83,
+          "marketValueCad": 13516.85,
+          "investedCad": 8924.4,
+          "openQuantity": 18
+        },
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "currency": "USD",
+          "totalPnlCad": 1358.76,
+          "totalPnlWithFxCad": 1358.76,
+          "totalPnlNoFxCad": 1290.82,
+          "marketValueCad": 6852.76,
+          "investedCad": 5494,
+          "openQuantity": 20
+        },
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 1650.88,
+          "totalPnlWithFxCad": 1650.88,
+          "totalPnlNoFxCad": 1568.34,
+          "marketValueCad": 11499.88,
+          "investedCad": 9849,
+          "openQuantity": 35
+        }
+      ]
+    },
+    "group:kids": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "currency": "CAD",
+          "totalPnlCad": 854,
+          "marketValueCad": 4074,
+          "investedCad": 3220,
+          "openQuantity": 70
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 20,
+          "marketValueCad": 10020,
+          "investedCad": 10000,
+          "openQuantity": 200
+        },
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "currency": "USD",
+          "totalPnlCad": 1481.77,
+          "totalPnlWithFxCad": 1481.77,
+          "totalPnlNoFxCad": 1407.68,
+          "marketValueCad": 6788.17,
+          "investedCad": 5306.4,
+          "openQuantity": 12
+        },
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "currency": "USD",
+          "totalPnlCad": 880.38,
+          "totalPnlWithFxCad": 880.38,
+          "totalPnlNoFxCad": 836.36,
+          "marketValueCad": 3426.38,
+          "investedCad": 2546,
+          "openQuantity": 10
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "currency": "CAD",
+          "totalPnlCad": 750,
+          "marketValueCad": 7980,
+          "investedCad": 7230,
+          "openQuantity": 210
+        },
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 809.9,
+          "totalPnlWithFxCad": 809.9,
+          "totalPnlNoFxCad": 769.41,
+          "marketValueCad": 7228.5,
+          "investedCad": 6418.6,
+          "openQuantity": 22
+        },
+        {
+          "symbol": "XBAL.TO",
+          "displaySymbol": "XBAL.TO",
+          "currency": "CAD",
+          "totalPnlCad": 558,
+          "marketValueCad": 5238,
+          "investedCad": 4680,
+          "openQuantity": 180
+        }
+      ]
+    },
+    "all": {
+      "asOf": "2025-12-31",
+      "entries": [
+        {
+          "symbol": "AAPL",
+          "displaySymbol": "AAPL",
+          "currency": "USD",
+          "totalPnlCad": 1350.05,
+          "totalPnlWithFxCad": 1350.05,
+          "totalPnlNoFxCad": 1282.55,
+          "marketValueCad": 6542.55,
+          "investedCad": 5192.5,
+          "openQuantity": 25
+        },
+        {
+          "symbol": "BAM.TO",
+          "displaySymbol": "BAM.TO",
+          "currency": "CAD",
+          "totalPnlCad": 2438,
+          "marketValueCad": 11058,
+          "investedCad": 8620,
+          "openQuantity": 190
+        },
+        {
+          "symbol": "CASH.TO",
+          "displaySymbol": "CASH.TO",
+          "currency": "CAD",
+          "totalPnlCad": 65,
+          "marketValueCad": 32565,
+          "investedCad": 32500,
+          "openQuantity": 650
+        },
+        {
+          "symbol": "NVDA",
+          "displaySymbol": "NVDA",
+          "currency": "USD",
+          "totalPnlCad": 4592.45,
+          "totalPnlWithFxCad": 4592.45,
+          "totalPnlNoFxCad": 4362.83,
+          "marketValueCad": 13516.85,
+          "investedCad": 8924.4,
+          "openQuantity": 18
+        },
+        {
+          "symbol": "QQQ",
+          "displaySymbol": "QQQ",
+          "currency": "USD",
+          "totalPnlCad": 5877.24,
+          "totalPnlWithFxCad": 5877.24,
+          "totalPnlNoFxCad": 5583.38,
+          "marketValueCad": 22627.24,
+          "investedCad": 16750,
+          "openQuantity": 40
+        },
+        {
+          "symbol": "TSLA",
+          "displaySymbol": "TSLA",
+          "currency": "USD",
+          "totalPnlCad": 2239.14,
+          "totalPnlWithFxCad": 2239.14,
+          "totalPnlNoFxCad": 2127.18,
+          "marketValueCad": 10279.14,
+          "investedCad": 8040,
+          "openQuantity": 30
+        },
+        {
+          "symbol": "VCN.TO",
+          "displaySymbol": "VCN.TO",
+          "currency": "CAD",
+          "totalPnlCad": 1750,
+          "marketValueCad": 15580,
+          "investedCad": 13830,
+          "openQuantity": 410
+        },
+        {
+          "symbol": "VTI",
+          "displaySymbol": "VTI",
+          "currency": "USD",
+          "totalPnlCad": 2460.78,
+          "totalPnlWithFxCad": 2460.78,
+          "totalPnlNoFxCad": 2337.75,
+          "marketValueCad": 18728.38,
+          "investedCad": 16267.6,
+          "openQuantity": 57
+        },
+        {
+          "symbol": "XBAL.TO",
+          "displaySymbol": "XBAL.TO",
+          "currency": "CAD",
+          "totalPnlCad": 558,
+          "marketValueCad": 5238,
+          "investedCad": 4680,
+          "openQuantity": 180
+        }
+      ]
+    }
+  },
+  "accountTotalPnlSeries": {
+    "demo-login-1:10000001": {
+      "all": {
+        "accountId": "demo-login-1:10000001",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 27200.48,
+            "cumulativeNetDepositsCad": 25303.32,
+            "totalPnlCad": 1897.16
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 27884.21,
+            "cumulativeNetDepositsCad": 25774.81,
+            "totalPnlCad": 2109.39
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 28566.83,
+            "cumulativeNetDepositsCad": 26246.3,
+            "totalPnlCad": 2320.53
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 29247.28,
+            "cumulativeNetDepositsCad": 26717.79,
+            "totalPnlCad": 2529.48
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 29924.5,
+            "cumulativeNetDepositsCad": 27189.28,
+            "totalPnlCad": 2735.22
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 30597.53,
+            "cumulativeNetDepositsCad": 27660.77,
+            "totalPnlCad": 2936.76
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 31265.47,
+            "cumulativeNetDepositsCad": 28132.26,
+            "totalPnlCad": 3133.2
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 31927.5,
+            "cumulativeNetDepositsCad": 28603.75,
+            "totalPnlCad": 3323.74
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 32582.93,
+            "cumulativeNetDepositsCad": 29075.24,
+            "totalPnlCad": 3507.68
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 33231.18,
+            "cumulativeNetDepositsCad": 29546.73,
+            "totalPnlCad": 3684.45
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 33871.83,
+            "cumulativeNetDepositsCad": 30018.22,
+            "totalPnlCad": 3853.6
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 34504.57,
+            "cumulativeNetDepositsCad": 30489.71,
+            "totalPnlCad": 4014.85
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 35129.24,
+            "cumulativeNetDepositsCad": 30961.21,
+            "totalPnlCad": 4168.04
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 35745.86,
+            "cumulativeNetDepositsCad": 31432.7,
+            "totalPnlCad": 4313.17
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 36354.57,
+            "cumulativeNetDepositsCad": 31904.19,
+            "totalPnlCad": 4450.39
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 36955.67,
+            "cumulativeNetDepositsCad": 32375.68,
+            "totalPnlCad": 4579.99
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 37549.6,
+            "cumulativeNetDepositsCad": 32847.17,
+            "totalPnlCad": 4702.43
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 38136.92,
+            "cumulativeNetDepositsCad": 33318.66,
+            "totalPnlCad": 4818.27
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 38718.35,
+            "cumulativeNetDepositsCad": 33790.15,
+            "totalPnlCad": 4928.2
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 39294.67,
+            "cumulativeNetDepositsCad": 34261.64,
+            "totalPnlCad": 5033.03
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 39866.8,
+            "cumulativeNetDepositsCad": 34733.13,
+            "totalPnlCad": 5133.67
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 40435.71,
+            "cumulativeNetDepositsCad": 35204.62,
+            "totalPnlCad": 5231.09
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 41002.44,
+            "cumulativeNetDepositsCad": 35676.11,
+            "totalPnlCad": 5326.33
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 41568.07,
+            "cumulativeNetDepositsCad": 36147.6,
+            "totalPnlCad": 5420.47
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 36147.6,
+          "totalEquityCad": 41568.07,
+          "totalPnlCad": 5420.47,
+          "totalPnlAllTimeCad": 5420.47,
+          "totalPnlSinceDisplayStartCad": 3523.31,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 25303.32,
+            "equityCad": 27200.48,
+            "totalPnlCad": 1897.16
+          }
+        }
+      }
+    },
+    "demo-login-1:10000002": {
+      "all": {
+        "accountId": "demo-login-1:10000002",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 22323.05,
+            "cumulativeNetDepositsCad": 19583.48,
+            "totalPnlCad": 2739.57
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 22994.43,
+            "cumulativeNetDepositsCad": 19948.39,
+            "totalPnlCad": 3046.04
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 23664.23,
+            "cumulativeNetDepositsCad": 20313.3,
+            "totalPnlCad": 3350.93
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 24330.87,
+            "cumulativeNetDepositsCad": 20678.21,
+            "totalPnlCad": 3652.67
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 24992.87,
+            "cumulativeNetDepositsCad": 21043.12,
+            "totalPnlCad": 3949.76
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 25648.81,
+            "cumulativeNetDepositsCad": 21408.03,
+            "totalPnlCad": 4240.79
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 26297.39,
+            "cumulativeNetDepositsCad": 21772.94,
+            "totalPnlCad": 4524.45
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 26937.44,
+            "cumulativeNetDepositsCad": 22137.85,
+            "totalPnlCad": 4799.6
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 27567.97,
+            "cumulativeNetDepositsCad": 22502.76,
+            "totalPnlCad": 5065.21
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 28188.13,
+            "cumulativeNetDepositsCad": 22867.67,
+            "totalPnlCad": 5320.47
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 28797.31,
+            "cumulativeNetDepositsCad": 23232.58,
+            "totalPnlCad": 5564.73
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 29395.06,
+            "cumulativeNetDepositsCad": 23597.49,
+            "totalPnlCad": 5797.58
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 29981.18,
+            "cumulativeNetDepositsCad": 23962.39,
+            "totalPnlCad": 6018.78
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 30555.66,
+            "cumulativeNetDepositsCad": 24327.3,
+            "totalPnlCad": 6228.35
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 31118.72,
+            "cumulativeNetDepositsCad": 24692.21,
+            "totalPnlCad": 6426.5
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 31670.78,
+            "cumulativeNetDepositsCad": 25057.12,
+            "totalPnlCad": 6613.66
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 32212.49,
+            "cumulativeNetDepositsCad": 25422.03,
+            "totalPnlCad": 6790.46
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 32744.67,
+            "cumulativeNetDepositsCad": 25786.94,
+            "totalPnlCad": 6957.73
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 33268.33,
+            "cumulativeNetDepositsCad": 26151.85,
+            "totalPnlCad": 7116.48
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 33784.62,
+            "cumulativeNetDepositsCad": 26516.76,
+            "totalPnlCad": 7267.86
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 34294.86,
+            "cumulativeNetDepositsCad": 26881.67,
+            "totalPnlCad": 7413.18
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 34800.44,
+            "cumulativeNetDepositsCad": 27246.58,
+            "totalPnlCad": 7553.86
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 35302.88,
+            "cumulativeNetDepositsCad": 27611.49,
+            "totalPnlCad": 7691.39
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 35803.73,
+            "cumulativeNetDepositsCad": 27976.4,
+            "totalPnlCad": 7827.33
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 27976.4,
+          "totalEquityCad": 35803.73,
+          "totalPnlCad": 7827.33,
+          "totalPnlAllTimeCad": 7827.33,
+          "totalPnlSinceDisplayStartCad": 5087.76,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 19583.48,
+            "equityCad": 22323.05,
+            "totalPnlCad": 2739.57
+          }
+        }
+      }
+    },
+    "demo-login-1:10000003": {
+      "all": {
+        "accountId": "demo-login-1:10000003",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 17723.93,
+            "cumulativeNetDepositsCad": 16768.85,
+            "totalPnlCad": 955.08
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 18143.24,
+            "cumulativeNetDepositsCad": 17081.31,
+            "totalPnlCad": 1061.92
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 18561.99,
+            "cumulativeNetDepositsCad": 17393.78,
+            "totalPnlCad": 1168.21
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 18979.65,
+            "cumulativeNetDepositsCad": 17706.24,
+            "totalPnlCad": 1273.41
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 19395.68,
+            "cumulativeNetDepositsCad": 18018.7,
+            "totalPnlCad": 1376.98
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 19809.61,
+            "cumulativeNetDepositsCad": 18331.17,
+            "totalPnlCad": 1478.44
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 20220.96,
+            "cumulativeNetDepositsCad": 18643.63,
+            "totalPnlCad": 1577.33
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 20629.35,
+            "cumulativeNetDepositsCad": 18956.09,
+            "totalPnlCad": 1673.26
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 21034.41,
+            "cumulativeNetDepositsCad": 19268.55,
+            "totalPnlCad": 1765.85
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 21435.86,
+            "cumulativeNetDepositsCad": 19581.02,
+            "totalPnlCad": 1854.84
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 21833.48,
+            "cumulativeNetDepositsCad": 19893.48,
+            "totalPnlCad": 1940
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 22227.12,
+            "cumulativeNetDepositsCad": 20205.94,
+            "totalPnlCad": 2021.18
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 22616.7,
+            "cumulativeNetDepositsCad": 20518.41,
+            "totalPnlCad": 2098.3
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 23002.23,
+            "cumulativeNetDepositsCad": 20830.87,
+            "totalPnlCad": 2171.36
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 23383.77,
+            "cumulativeNetDepositsCad": 21143.33,
+            "totalPnlCad": 2240.44
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 23761.48,
+            "cumulativeNetDepositsCad": 21455.8,
+            "totalPnlCad": 2305.69
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 24135.58,
+            "cumulativeNetDepositsCad": 21768.26,
+            "totalPnlCad": 2367.32
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 24506.36,
+            "cumulativeNetDepositsCad": 22080.72,
+            "totalPnlCad": 2425.64
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 24874.17,
+            "cumulativeNetDepositsCad": 22393.18,
+            "totalPnlCad": 2480.98
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 25239.41,
+            "cumulativeNetDepositsCad": 22705.65,
+            "totalPnlCad": 2533.76
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 25602.54,
+            "cumulativeNetDepositsCad": 23018.11,
+            "totalPnlCad": 2584.42
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 25964.04,
+            "cumulativeNetDepositsCad": 23330.57,
+            "totalPnlCad": 2633.47
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 26324.45,
+            "cumulativeNetDepositsCad": 23643.04,
+            "totalPnlCad": 2681.42
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 26684.31,
+            "cumulativeNetDepositsCad": 23955.5,
+            "totalPnlCad": 2728.81
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 23955.5,
+          "totalEquityCad": 26684.31,
+          "totalPnlCad": 2728.81,
+          "totalPnlAllTimeCad": 2728.81,
+          "totalPnlSinceDisplayStartCad": 1773.73,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 16768.85,
+            "equityCad": 17723.93,
+            "totalPnlCad": 955.08
+          }
+        }
+      }
+    },
+    "demo-login-2:20000001": {
+      "all": {
+        "accountId": "demo-login-2:20000001",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 7615.3,
+            "cumulativeNetDepositsCad": 7252,
+            "totalPnlCad": 363.3
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 7791.07,
+            "cumulativeNetDepositsCad": 7387.13,
+            "totalPnlCad": 403.94
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 7966.63,
+            "cumulativeNetDepositsCad": 7522.26,
+            "totalPnlCad": 444.37
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 8141.78,
+            "cumulativeNetDepositsCad": 7657.39,
+            "totalPnlCad": 484.39
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 8316.31,
+            "cumulativeNetDepositsCad": 7792.52,
+            "totalPnlCad": 523.79
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 8490.03,
+            "cumulativeNetDepositsCad": 7927.65,
+            "totalPnlCad": 562.38
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 8662.78,
+            "cumulativeNetDepositsCad": 8062.78,
+            "totalPnlCad": 600
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 8834.4,
+            "cumulativeNetDepositsCad": 8197.91,
+            "totalPnlCad": 636.48
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 9004.75,
+            "cumulativeNetDepositsCad": 8333.04,
+            "totalPnlCad": 671.71
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 9173.73,
+            "cumulativeNetDepositsCad": 8468.17,
+            "totalPnlCad": 705.56
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 9341.26,
+            "cumulativeNetDepositsCad": 8603.3,
+            "totalPnlCad": 737.95
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 9507.26,
+            "cumulativeNetDepositsCad": 8738.43,
+            "totalPnlCad": 768.83
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 9671.73,
+            "cumulativeNetDepositsCad": 8873.57,
+            "totalPnlCad": 798.16
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 9834.65,
+            "cumulativeNetDepositsCad": 9008.7,
+            "totalPnlCad": 825.96
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 9996.06,
+            "cumulativeNetDepositsCad": 9143.83,
+            "totalPnlCad": 852.23
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 10156.01,
+            "cumulativeNetDepositsCad": 9278.96,
+            "totalPnlCad": 877.05
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 10314.58,
+            "cumulativeNetDepositsCad": 9414.09,
+            "totalPnlCad": 900.5
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 10471.9,
+            "cumulativeNetDepositsCad": 9549.22,
+            "totalPnlCad": 922.68
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 10628.08,
+            "cumulativeNetDepositsCad": 9684.35,
+            "totalPnlCad": 943.73
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 10783.29,
+            "cumulativeNetDepositsCad": 9819.48,
+            "totalPnlCad": 963.81
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 10937.69,
+            "cumulativeNetDepositsCad": 9954.61,
+            "totalPnlCad": 983.08
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 11091.47,
+            "cumulativeNetDepositsCad": 10089.74,
+            "totalPnlCad": 1001.73
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 11244.84,
+            "cumulativeNetDepositsCad": 10224.87,
+            "totalPnlCad": 1019.97
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 11398,
+            "cumulativeNetDepositsCad": 10360,
+            "totalPnlCad": 1038
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 10360,
+          "totalEquityCad": 11398,
+          "totalPnlCad": 1038,
+          "totalPnlAllTimeCad": 1038,
+          "totalPnlSinceDisplayStartCad": 674.7,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 7252,
+            "equityCad": 7615.3,
+            "totalPnlCad": 363.3
+          }
+        }
+      }
+    },
+    "demo-login-2:20000002": {
+      "all": {
+        "accountId": "demo-login-2:20000002",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 5731.84,
+            "cumulativeNetDepositsCad": 5587.4,
+            "totalPnlCad": 144.44
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 5852.11,
+            "cumulativeNetDepositsCad": 5691.51,
+            "totalPnlCad": 160.6
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 5972.3,
+            "cumulativeNetDepositsCad": 5795.63,
+            "totalPnlCad": 176.67
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 6092.32,
+            "cumulativeNetDepositsCad": 5899.74,
+            "totalPnlCad": 192.58
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 6212.09,
+            "cumulativeNetDepositsCad": 6003.85,
+            "totalPnlCad": 208.24
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 6331.55,
+            "cumulativeNetDepositsCad": 6107.97,
+            "totalPnlCad": 223.59
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 6450.62,
+            "cumulativeNetDepositsCad": 6212.08,
+            "totalPnlCad": 238.54
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 6569.24,
+            "cumulativeNetDepositsCad": 6316.19,
+            "totalPnlCad": 253.05
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 6687.35,
+            "cumulativeNetDepositsCad": 6420.3,
+            "totalPnlCad": 267.05
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 6804.92,
+            "cumulativeNetDepositsCad": 6524.42,
+            "totalPnlCad": 280.51
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 6921.92,
+            "cumulativeNetDepositsCad": 6628.53,
+            "totalPnlCad": 293.39
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 7038.31,
+            "cumulativeNetDepositsCad": 6732.64,
+            "totalPnlCad": 305.66
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 7154.08,
+            "cumulativeNetDepositsCad": 6836.76,
+            "totalPnlCad": 317.32
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 7269.24,
+            "cumulativeNetDepositsCad": 6940.87,
+            "totalPnlCad": 328.37
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 7383.8,
+            "cumulativeNetDepositsCad": 7044.98,
+            "totalPnlCad": 338.82
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 7497.78,
+            "cumulativeNetDepositsCad": 7149.1,
+            "totalPnlCad": 348.69
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 7611.22,
+            "cumulativeNetDepositsCad": 7253.21,
+            "totalPnlCad": 358.01
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 7724.15,
+            "cumulativeNetDepositsCad": 7357.32,
+            "totalPnlCad": 366.83
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 7836.63,
+            "cumulativeNetDepositsCad": 7461.43,
+            "totalPnlCad": 375.2
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 7948.73,
+            "cumulativeNetDepositsCad": 7565.55,
+            "totalPnlCad": 383.18
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 8060.5,
+            "cumulativeNetDepositsCad": 7669.66,
+            "totalPnlCad": 390.84
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 8172.03,
+            "cumulativeNetDepositsCad": 7773.77,
+            "totalPnlCad": 398.26
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 8283.4,
+            "cumulativeNetDepositsCad": 7877.89,
+            "totalPnlCad": 405.51
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 8394.68,
+            "cumulativeNetDepositsCad": 7982,
+            "totalPnlCad": 412.68
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 7982,
+          "totalEquityCad": 8394.68,
+          "totalPnlCad": 412.68,
+          "totalPnlAllTimeCad": 412.68,
+          "totalPnlSinceDisplayStartCad": 268.24,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 5587.4,
+            "equityCad": 5731.84,
+            "totalPnlCad": 144.44
+          }
+        }
+      }
+    },
+    "demo-login-2:20000003": {
+      "all": {
+        "accountId": "demo-login-2:20000003",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 7490.2,
+            "cumulativeNetDepositsCad": 6877.08,
+            "totalPnlCad": 613.12
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 7686.93,
+            "cumulativeNetDepositsCad": 7005.22,
+            "totalPnlCad": 681.71
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 7883.31,
+            "cumulativeNetDepositsCad": 7133.37,
+            "totalPnlCad": 749.94
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 8078.98,
+            "cumulativeNetDepositsCad": 7261.51,
+            "totalPnlCad": 817.47
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 8273.62,
+            "cumulativeNetDepositsCad": 7389.66,
+            "totalPnlCad": 883.96
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 8466.9,
+            "cumulativeNetDepositsCad": 7517.8,
+            "totalPnlCad": 949.09
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 8658.52,
+            "cumulativeNetDepositsCad": 7645.95,
+            "totalPnlCad": 1012.58
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 8848.25,
+            "cumulativeNetDepositsCad": 7774.09,
+            "totalPnlCad": 1074.16
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 9035.84,
+            "cumulativeNetDepositsCad": 7902.23,
+            "totalPnlCad": 1133.6
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 9221.11,
+            "cumulativeNetDepositsCad": 8030.38,
+            "totalPnlCad": 1190.73
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 9403.92,
+            "cumulativeNetDepositsCad": 8158.52,
+            "totalPnlCad": 1245.39
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 9584.17,
+            "cumulativeNetDepositsCad": 8286.67,
+            "totalPnlCad": 1297.51
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 9761.82,
+            "cumulativeNetDepositsCad": 8414.81,
+            "totalPnlCad": 1347.01
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 9936.87,
+            "cumulativeNetDepositsCad": 8542.96,
+            "totalPnlCad": 1393.91
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 10109.36,
+            "cumulativeNetDepositsCad": 8671.1,
+            "totalPnlCad": 1438.26
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 10279.39,
+            "cumulativeNetDepositsCad": 8799.25,
+            "totalPnlCad": 1480.15
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 10447.1,
+            "cumulativeNetDepositsCad": 8927.39,
+            "totalPnlCad": 1519.71
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 10612.68,
+            "cumulativeNetDepositsCad": 9055.53,
+            "totalPnlCad": 1557.15
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 10776.36,
+            "cumulativeNetDepositsCad": 9183.68,
+            "totalPnlCad": 1592.68
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 10938.38,
+            "cumulativeNetDepositsCad": 9311.82,
+            "totalPnlCad": 1626.56
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 11099.05,
+            "cumulativeNetDepositsCad": 9439.97,
+            "totalPnlCad": 1659.08
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 11258.68,
+            "cumulativeNetDepositsCad": 9568.11,
+            "totalPnlCad": 1690.57
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 11417.6,
+            "cumulativeNetDepositsCad": 9696.26,
+            "totalPnlCad": 1721.35
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 11576.17,
+            "cumulativeNetDepositsCad": 9824.4,
+            "totalPnlCad": 1751.77
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 9824.4,
+          "totalEquityCad": 11576.17,
+          "totalPnlCad": 1751.77,
+          "totalPnlAllTimeCad": 1751.77,
+          "totalPnlSinceDisplayStartCad": 1138.65,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 6877.08,
+            "equityCad": 7490.2,
+            "totalPnlCad": 613.12
+          }
+        }
+      }
+    },
+    "demo-login-2:20000004": {
+      "all": {
+        "accountId": "demo-login-2:20000004",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 7737.1,
+            "cumulativeNetDepositsCad": 7434,
+            "totalPnlCad": 303.1
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 7909.53,
+            "cumulativeNetDepositsCad": 7572.52,
+            "totalPnlCad": 337.01
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 8081.78,
+            "cumulativeNetDepositsCad": 7711.04,
+            "totalPnlCad": 370.74
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 8253.69,
+            "cumulativeNetDepositsCad": 7849.57,
+            "totalPnlCad": 404.12
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 8425.08,
+            "cumulativeNetDepositsCad": 7988.09,
+            "totalPnlCad": 436.99
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 8595.8,
+            "cumulativeNetDepositsCad": 8126.61,
+            "totalPnlCad": 469.19
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 8765.71,
+            "cumulativeNetDepositsCad": 8265.13,
+            "totalPnlCad": 500.58
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 8934.67,
+            "cumulativeNetDepositsCad": 8403.65,
+            "totalPnlCad": 531.02
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 9102.58,
+            "cumulativeNetDepositsCad": 8542.17,
+            "totalPnlCad": 560.4
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 9269.34,
+            "cumulativeNetDepositsCad": 8680.7,
+            "totalPnlCad": 588.65
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 9434.89,
+            "cumulativeNetDepositsCad": 8819.22,
+            "totalPnlCad": 615.67
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 9599.17,
+            "cumulativeNetDepositsCad": 8957.74,
+            "totalPnlCad": 641.43
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 9762.17,
+            "cumulativeNetDepositsCad": 9096.26,
+            "totalPnlCad": 665.91
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 9923.87,
+            "cumulativeNetDepositsCad": 9234.78,
+            "totalPnlCad": 689.09
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 10084.32,
+            "cumulativeNetDepositsCad": 9373.3,
+            "totalPnlCad": 711.01
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 10243.55,
+            "cumulativeNetDepositsCad": 9511.83,
+            "totalPnlCad": 731.72
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 10401.63,
+            "cumulativeNetDepositsCad": 9650.35,
+            "totalPnlCad": 751.28
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 10558.66,
+            "cumulativeNetDepositsCad": 9788.87,
+            "totalPnlCad": 769.79
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 10714.74,
+            "cumulativeNetDepositsCad": 9927.39,
+            "totalPnlCad": 787.35
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 10870.01,
+            "cumulativeNetDepositsCad": 10065.91,
+            "totalPnlCad": 804.1
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 11024.61,
+            "cumulativeNetDepositsCad": 10204.43,
+            "totalPnlCad": 820.18
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 11178.7,
+            "cumulativeNetDepositsCad": 10342.96,
+            "totalPnlCad": 835.74
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 11332.44,
+            "cumulativeNetDepositsCad": 10481.48,
+            "totalPnlCad": 850.96
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 11486,
+            "cumulativeNetDepositsCad": 10620,
+            "totalPnlCad": 866
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 10620,
+          "totalEquityCad": 11486,
+          "totalPnlCad": 866,
+          "totalPnlAllTimeCad": 866,
+          "totalPnlSinceDisplayStartCad": 562.9,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 7434,
+            "equityCad": 7737.1,
+            "totalPnlCad": 303.1
+          }
+        }
+      }
+    },
+    "demo-login-2:20000005": {
+      "all": {
+        "accountId": "demo-login-2:20000005",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 5386.08,
+            "cumulativeNetDepositsCad": 4936.12,
+            "totalPnlCad": 449.96
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 5528.39,
+            "cumulativeNetDepositsCad": 5028.1,
+            "totalPnlCad": 500.3
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 5670.45,
+            "cumulativeNetDepositsCad": 5120.07,
+            "totalPnlCad": 550.37
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 5811.98,
+            "cumulativeNetDepositsCad": 5212.05,
+            "totalPnlCad": 599.93
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 5952.76,
+            "cumulativeNetDepositsCad": 5304.03,
+            "totalPnlCad": 648.73
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 6092.54,
+            "cumulativeNetDepositsCad": 5396.01,
+            "totalPnlCad": 696.53
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 6231.1,
+            "cumulativeNetDepositsCad": 5487.98,
+            "totalPnlCad": 743.12
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 6368.27,
+            "cumulativeNetDepositsCad": 5579.96,
+            "totalPnlCad": 788.31
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 6503.88,
+            "cumulativeNetDepositsCad": 5671.94,
+            "totalPnlCad": 831.94
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 6637.78,
+            "cumulativeNetDepositsCad": 5763.92,
+            "totalPnlCad": 873.86
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 6769.87,
+            "cumulativeNetDepositsCad": 5855.89,
+            "totalPnlCad": 913.98
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 6900.1,
+            "cumulativeNetDepositsCad": 5947.87,
+            "totalPnlCad": 952.22
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 7028.41,
+            "cumulativeNetDepositsCad": 6039.85,
+            "totalPnlCad": 988.56
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 7154.8,
+            "cumulativeNetDepositsCad": 6131.83,
+            "totalPnlCad": 1022.98
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 7279.33,
+            "cumulativeNetDepositsCad": 6223.8,
+            "totalPnlCad": 1055.52
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 7402.04,
+            "cumulativeNetDepositsCad": 6315.78,
+            "totalPnlCad": 1086.26
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 7523.06,
+            "cumulativeNetDepositsCad": 6407.76,
+            "totalPnlCad": 1115.3
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 7642.51,
+            "cumulativeNetDepositsCad": 6499.74,
+            "totalPnlCad": 1142.77
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 7760.56,
+            "cumulativeNetDepositsCad": 6591.71,
+            "totalPnlCad": 1168.85
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 7877.4,
+            "cumulativeNetDepositsCad": 6683.69,
+            "totalPnlCad": 1193.71
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 7993.25,
+            "cumulativeNetDepositsCad": 6775.67,
+            "totalPnlCad": 1217.58
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 8108.33,
+            "cumulativeNetDepositsCad": 6867.65,
+            "totalPnlCad": 1240.68
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 8222.9,
+            "cumulativeNetDepositsCad": 6959.62,
+            "totalPnlCad": 1263.27
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 8337.2,
+            "cumulativeNetDepositsCad": 7051.6,
+            "totalPnlCad": 1285.6
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 7051.6,
+          "totalEquityCad": 8337.2,
+          "totalPnlCad": 1285.6,
+          "totalPnlAllTimeCad": 1285.6,
+          "totalPnlSinceDisplayStartCad": 835.64,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 4936.12,
+            "equityCad": 5386.08,
+            "totalPnlCad": 449.96
+          }
+        }
+      }
+    },
+    "group:rrsp": {
+      "all": {
+        "accountId": "group:rrsp",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 67247.46,
+            "cumulativeNetDepositsCad": 61655.65,
+            "totalPnlCad": 5591.81
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 69021.88,
+            "cumulativeNetDepositsCad": 62804.51,
+            "totalPnlCad": 6217.35
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 70793.05,
+            "cumulativeNetDepositsCad": 63953.38,
+            "totalPnlCad": 6839.67
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 72557.8,
+            "cumulativeNetDepositsCad": 65102.24,
+            "totalPnlCad": 7455.56
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 74313.05,
+            "cumulativeNetDepositsCad": 66251.1,
+            "totalPnlCad": 8061.96
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 76055.95,
+            "cumulativeNetDepositsCad": 67399.97,
+            "totalPnlCad": 8655.99
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 77783.82,
+            "cumulativeNetDepositsCad": 68548.83,
+            "totalPnlCad": 9234.98
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 79494.29,
+            "cumulativeNetDepositsCad": 69697.69,
+            "totalPnlCad": 9796.6
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 81185.31,
+            "cumulativeNetDepositsCad": 70846.55,
+            "totalPnlCad": 10338.74
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 82855.17,
+            "cumulativeNetDepositsCad": 71995.42,
+            "totalPnlCad": 10859.76
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 84502.62,
+            "cumulativeNetDepositsCad": 73144.28,
+            "totalPnlCad": 11358.33
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 86126.75,
+            "cumulativeNetDepositsCad": 74293.14,
+            "totalPnlCad": 11833.61
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 87727.12,
+            "cumulativeNetDepositsCad": 75442.01,
+            "totalPnlCad": 12285.12
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 89303.75,
+            "cumulativeNetDepositsCad": 76590.87,
+            "totalPnlCad": 12712.88
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 90857.06,
+            "cumulativeNetDepositsCad": 77739.73,
+            "totalPnlCad": 13117.33
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 92387.93,
+            "cumulativeNetDepositsCad": 78888.6,
+            "totalPnlCad": 13499.34
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 93897.67,
+            "cumulativeNetDepositsCad": 80037.46,
+            "totalPnlCad": 13860.21
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 95387.95,
+            "cumulativeNetDepositsCad": 81186.32,
+            "totalPnlCad": 14201.64
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 96860.85,
+            "cumulativeNetDepositsCad": 82335.18,
+            "totalPnlCad": 14525.66
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 98318.7,
+            "cumulativeNetDepositsCad": 83484.05,
+            "totalPnlCad": 14834.65
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 99764.2,
+            "cumulativeNetDepositsCad": 84632.91,
+            "totalPnlCad": 15131.27
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 101200.19,
+            "cumulativeNetDepositsCad": 85781.77,
+            "totalPnlCad": 15418.42
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 102629.77,
+            "cumulativeNetDepositsCad": 86930.64,
+            "totalPnlCad": 15699.14
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 104056.11,
+            "cumulativeNetDepositsCad": 88079.5,
+            "totalPnlCad": 15976.61
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 88079.5,
+          "totalEquityCad": 104056.11,
+          "totalPnlCad": 15976.61,
+          "totalPnlAllTimeCad": 15976.61,
+          "totalPnlSinceDisplayStartCad": 10384.8,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 61655.65,
+            "equityCad": 67247.46,
+            "totalPnlCad": 5591.81
+          }
+        }
+      }
+    },
+    "group:aggressive-rrsp": {
+      "all": {
+        "accountId": "group:aggressive-rrsp",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 40046.98,
+            "cumulativeNetDepositsCad": 36352.33,
+            "totalPnlCad": 3694.65
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 41137.67,
+            "cumulativeNetDepositsCad": 37029.7,
+            "totalPnlCad": 4107.96
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 42226.22,
+            "cumulativeNetDepositsCad": 37707.08,
+            "totalPnlCad": 4519.14
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 43310.52,
+            "cumulativeNetDepositsCad": 38384.45,
+            "totalPnlCad": 4926.08
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 44388.55,
+            "cumulativeNetDepositsCad": 39061.82,
+            "totalPnlCad": 5326.74
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 45458.42,
+            "cumulativeNetDepositsCad": 39739.2,
+            "totalPnlCad": 5719.23
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 46518.35,
+            "cumulativeNetDepositsCad": 40416.57,
+            "totalPnlCad": 6101.78
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 47566.79,
+            "cumulativeNetDepositsCad": 41093.94,
+            "totalPnlCad": 6472.86
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 48602.38,
+            "cumulativeNetDepositsCad": 41771.31,
+            "totalPnlCad": 6831.06
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 49623.99,
+            "cumulativeNetDepositsCad": 42448.69,
+            "totalPnlCad": 7175.31
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 50630.79,
+            "cumulativeNetDepositsCad": 43126.06,
+            "totalPnlCad": 7504.73
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 51622.18,
+            "cumulativeNetDepositsCad": 43803.43,
+            "totalPnlCad": 7818.76
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 52597.88,
+            "cumulativeNetDepositsCad": 44480.8,
+            "totalPnlCad": 8117.08
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 53557.89,
+            "cumulativeNetDepositsCad": 45158.17,
+            "totalPnlCad": 8399.71
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 54502.49,
+            "cumulativeNetDepositsCad": 45835.54,
+            "totalPnlCad": 8666.94
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 55432.26,
+            "cumulativeNetDepositsCad": 46512.92,
+            "totalPnlCad": 8919.35
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 56348.07,
+            "cumulativeNetDepositsCad": 47190.29,
+            "totalPnlCad": 9157.78
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 57251.03,
+            "cumulativeNetDepositsCad": 47867.66,
+            "totalPnlCad": 9383.37
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 58142.5,
+            "cumulativeNetDepositsCad": 48545.03,
+            "totalPnlCad": 9597.46
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 59024.03,
+            "cumulativeNetDepositsCad": 49222.41,
+            "totalPnlCad": 9801.62
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 59897.4,
+            "cumulativeNetDepositsCad": 49899.78,
+            "totalPnlCad": 9997.6
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 60764.48,
+            "cumulativeNetDepositsCad": 50577.15,
+            "totalPnlCad": 10187.33
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 61627.33,
+            "cumulativeNetDepositsCad": 51254.53,
+            "totalPnlCad": 10372.81
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 62488.04,
+            "cumulativeNetDepositsCad": 51931.9,
+            "totalPnlCad": 10556.14
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 51931.9,
+          "totalEquityCad": 62488.04,
+          "totalPnlCad": 10556.14,
+          "totalPnlAllTimeCad": 10556.14,
+          "totalPnlSinceDisplayStartCad": 6861.49,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 36352.33,
+            "equityCad": 40046.98,
+            "totalPnlCad": 3694.65
+          }
+        }
+      }
+    },
+    "group:kids": {
+      "all": {
+        "accountId": "group:kids",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 33960.52,
+            "cumulativeNetDepositsCad": 32086.6,
+            "totalPnlCad": 1873.92
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 34768.03,
+            "cumulativeNetDepositsCad": 32684.48,
+            "totalPnlCad": 2083.56
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 35574.47,
+            "cumulativeNetDepositsCad": 33282.37,
+            "totalPnlCad": 2292.09
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 36378.75,
+            "cumulativeNetDepositsCad": 33880.26,
+            "totalPnlCad": 2498.49
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 37179.86,
+            "cumulativeNetDepositsCad": 34478.15,
+            "totalPnlCad": 2701.71
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 37976.82,
+            "cumulativeNetDepositsCad": 35076.04,
+            "totalPnlCad": 2900.78
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 38768.73,
+            "cumulativeNetDepositsCad": 35673.92,
+            "totalPnlCad": 3094.82
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 39554.83,
+            "cumulativeNetDepositsCad": 36271.8,
+            "totalPnlCad": 3283.02
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 40334.4,
+            "cumulativeNetDepositsCad": 36869.68,
+            "totalPnlCad": 3464.7
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 41106.88,
+            "cumulativeNetDepositsCad": 37467.59,
+            "totalPnlCad": 3639.31
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 41871.86,
+            "cumulativeNetDepositsCad": 38065.46,
+            "totalPnlCad": 3806.38
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 42629.01,
+            "cumulativeNetDepositsCad": 38663.35,
+            "totalPnlCad": 3965.65
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 43378.21,
+            "cumulativeNetDepositsCad": 39261.25,
+            "totalPnlCad": 4116.96
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 44119.43,
+            "cumulativeNetDepositsCad": 39859.14,
+            "totalPnlCad": 4260.31
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 44852.87,
+            "cumulativeNetDepositsCad": 40457.01,
+            "totalPnlCad": 4395.84
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 45578.77,
+            "cumulativeNetDepositsCad": 41054.92,
+            "totalPnlCad": 4523.87
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 46297.59,
+            "cumulativeNetDepositsCad": 41652.8,
+            "totalPnlCad": 4644.8
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 47009.9,
+            "cumulativeNetDepositsCad": 42250.68,
+            "totalPnlCad": 4759.22
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 47716.37,
+            "cumulativeNetDepositsCad": 42848.56,
+            "totalPnlCad": 4867.81
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 48417.81,
+            "cumulativeNetDepositsCad": 43446.45,
+            "totalPnlCad": 4971.36
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 49115.1,
+            "cumulativeNetDepositsCad": 44044.34,
+            "totalPnlCad": 5070.76
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 49809.21,
+            "cumulativeNetDepositsCad": 44642.23,
+            "totalPnlCad": 5166.98
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 50501.18,
+            "cumulativeNetDepositsCad": 45240.12,
+            "totalPnlCad": 5261.06
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 51192.05,
+            "cumulativeNetDepositsCad": 45838,
+            "totalPnlCad": 5354.05
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 45838,
+          "totalEquityCad": 51192.05,
+          "totalPnlCad": 5354.05,
+          "totalPnlAllTimeCad": 5354.05,
+          "totalPnlSinceDisplayStartCad": 3480.13,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 32086.6,
+            "equityCad": 33960.52,
+            "totalPnlCad": 1873.92
+          }
+        }
+      }
+    },
+    "all": {
+      "all": {
+        "accountId": "all",
+        "periodStartDate": "2024-01-31",
+        "periodEndDate": "2025-12-31",
+        "displayStartDate": "2024-01-31",
+        "points": [
+          {
+            "date": "2024-01-31",
+            "equityCad": 101207.98,
+            "cumulativeNetDepositsCad": 93742.25,
+            "totalPnlCad": 7465.73
+          },
+          {
+            "date": "2024-02-29",
+            "equityCad": 103789.91,
+            "cumulativeNetDepositsCad": 95488.99,
+            "totalPnlCad": 8300.91
+          },
+          {
+            "date": "2024-03-31",
+            "equityCad": 106367.52,
+            "cumulativeNetDepositsCad": 97235.75,
+            "totalPnlCad": 9131.76
+          },
+          {
+            "date": "2024-04-30",
+            "equityCad": 108936.55,
+            "cumulativeNetDepositsCad": 98982.5,
+            "totalPnlCad": 9954.05
+          },
+          {
+            "date": "2024-05-31",
+            "equityCad": 111492.91,
+            "cumulativeNetDepositsCad": 100729.25,
+            "totalPnlCad": 10763.67
+          },
+          {
+            "date": "2024-06-30",
+            "equityCad": 114032.77,
+            "cumulativeNetDepositsCad": 102476.01,
+            "totalPnlCad": 11556.77
+          },
+          {
+            "date": "2024-07-31",
+            "equityCad": 116552.55,
+            "cumulativeNetDepositsCad": 104222.75,
+            "totalPnlCad": 12329.8
+          },
+          {
+            "date": "2024-08-31",
+            "equityCad": 119049.12,
+            "cumulativeNetDepositsCad": 105969.49,
+            "totalPnlCad": 13079.62
+          },
+          {
+            "date": "2024-09-30",
+            "equityCad": 121519.71,
+            "cumulativeNetDepositsCad": 107716.23,
+            "totalPnlCad": 13803.44
+          },
+          {
+            "date": "2024-10-31",
+            "equityCad": 123962.05,
+            "cumulativeNetDepositsCad": 109463.01,
+            "totalPnlCad": 14499.07
+          },
+          {
+            "date": "2024-11-30",
+            "equityCad": 126374.48,
+            "cumulativeNetDepositsCad": 111209.74,
+            "totalPnlCad": 15164.71
+          },
+          {
+            "date": "2024-12-31",
+            "equityCad": 128755.76,
+            "cumulativeNetDepositsCad": 112956.49,
+            "totalPnlCad": 15799.26
+          },
+          {
+            "date": "2025-01-31",
+            "equityCad": 131105.33,
+            "cumulativeNetDepositsCad": 114703.26,
+            "totalPnlCad": 16402.08
+          },
+          {
+            "date": "2025-02-28",
+            "equityCad": 133423.18,
+            "cumulativeNetDepositsCad": 116450.01,
+            "totalPnlCad": 16973.19
+          },
+          {
+            "date": "2025-03-31",
+            "equityCad": 135709.93,
+            "cumulativeNetDepositsCad": 118196.74,
+            "totalPnlCad": 17513.17
+          },
+          {
+            "date": "2025-04-30",
+            "equityCad": 137966.7,
+            "cumulativeNetDepositsCad": 119943.52,
+            "totalPnlCad": 18023.21
+          },
+          {
+            "date": "2025-05-31",
+            "equityCad": 140195.26,
+            "cumulativeNetDepositsCad": 121690.26,
+            "totalPnlCad": 18505.01
+          },
+          {
+            "date": "2025-06-30",
+            "equityCad": 142397.85,
+            "cumulativeNetDepositsCad": 123437,
+            "totalPnlCad": 18960.86
+          },
+          {
+            "date": "2025-07-31",
+            "equityCad": 144577.22,
+            "cumulativeNetDepositsCad": 125183.74,
+            "totalPnlCad": 19393.47
+          },
+          {
+            "date": "2025-08-31",
+            "equityCad": 146736.51,
+            "cumulativeNetDepositsCad": 126930.5,
+            "totalPnlCad": 19806.01
+          },
+          {
+            "date": "2025-09-30",
+            "equityCad": 148879.3,
+            "cumulativeNetDepositsCad": 128677.25,
+            "totalPnlCad": 20202.03
+          },
+          {
+            "date": "2025-10-31",
+            "equityCad": 151009.4,
+            "cumulativeNetDepositsCad": 130424,
+            "totalPnlCad": 20585.4
+          },
+          {
+            "date": "2025-11-30",
+            "equityCad": 153130.95,
+            "cumulativeNetDepositsCad": 132170.76,
+            "totalPnlCad": 20960.2
+          },
+          {
+            "date": "2025-12-31",
+            "equityCad": 155248.16,
+            "cumulativeNetDepositsCad": 133917.5,
+            "totalPnlCad": 21330.66
+          }
+        ],
+        "summary": {
+          "netDepositsCad": 133917.5,
+          "totalEquityCad": 155248.16,
+          "totalPnlCad": 21330.66,
+          "totalPnlAllTimeCad": 21330.66,
+          "totalPnlSinceDisplayStartCad": 13864.93,
+          "displayStartTotals": {
+            "cumulativeNetDepositsCad": 93742.25,
+            "equityCad": 101207.98,
+            "totalPnlCad": 7465.73
+          }
+        }
+      }
+    }
+  },
+  "accountNorbertJournals": {},
+  "asOf": "2025-12-31",
+  "usdToCadRate": 1.34
+}

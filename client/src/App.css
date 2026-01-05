@@ -64,6 +64,52 @@ textarea {
   background: var(--color-bg-page);
 }
 
+.demo-mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-card);
+  border: 1px solid #f1cf9d;
+  background: linear-gradient(120deg, #fff4e1, #fde9cc);
+  color: #7a3b10;
+  box-shadow: 0 8px 18px rgba(122, 59, 16, 0.08);
+}
+
+.demo-mode-banner__badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-warning);
+  color: #fff;
+}
+
+.demo-mode-banner__text {
+  flex: 1;
+  font-weight: 600;
+}
+
+.demo-mode-banner__exit {
+  margin-left: auto;
+  border: 1px solid #f1cf9d;
+  background: #fff;
+  color: #7a3b10;
+  border-radius: var(--radius-pill);
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.demo-mode-banner__exit:hover,
+.demo-mode-banner__exit:focus-visible {
+  border-color: #e5b97b;
+  background: #fff7eb;
+}
+
 .refresh-notice-overlay {
   position: fixed;
   inset: 0;
@@ -7000,6 +7046,18 @@ button.time-pill:hover .time-pill__icon {
   filter: brightness(0.98);
 }
 
+.login-setup-dialog__button--ghost {
+  background: transparent;
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.login-setup-dialog__button--ghost:hover:not(:disabled),
+.login-setup-dialog__button--ghost:focus-visible:not(:disabled) {
+  background: #fff1da;
+  border-color: #d0904c;
+}
+
 .login-setup-dialog__followup {
   margin-top: 6px;
   padding: 12px;
@@ -7020,6 +7078,24 @@ button.time-pill:hover .time-pill__icon {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.login-setup-dialog__demo {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid #f1cf9d;
+  background: #fff7eb;
+}
+
+.login-setup-dialog__demo-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.login-setup-dialog__demo-text {
+  margin: 0 0 10px;
+  color: var(--color-text-secondary);
 }
 
 @media (max-width: 960px) {

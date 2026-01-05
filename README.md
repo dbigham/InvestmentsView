@@ -89,6 +89,15 @@ From there browse to `http://localhost:5173`, drop in your refresh tokens, and t
 
 Need the full playbook (environment variables, metadata files, optional helpers, production builds, etc.)? See the [setup & running guide](docs/setup-and-running.md) for step-by-step instructions.
 
+## Demo Mode
+
+Demo Mode runs entirely offline using static fixtures. It never calls Questrade and does not require tokens.
+
+- UI: On the Connect Questrade dialog, click "Try Demo Mode." A "DEMO MODE" banner appears with an Exit demo button.
+- Env var: set `INVESTMENTSVIEW_DEMO=1` when starting the server to force demo responses for all `/api` calls.
+
+Demo fixtures live in `server/demo/*.demo.json` if you want to tweak the sample data.
+
 ## More screenshots
 
 Prefer to browse a few more UI surfaces before diving in? Here are quick links to the remaining screenshots:

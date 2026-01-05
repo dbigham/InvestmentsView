@@ -1,0 +1,101 @@
+{
+  "QQQ": {
+    "symbol": "QQQ",
+    "name": "Invesco QQQ Trust",
+    "currency": "USD",
+    "price": 422.15,
+    "changePercent": 0.012,
+    "marketCap": 210000000000,
+    "peRatio": 28.8,
+    "pegRatio": 1.4,
+    "dividendYieldPercent": 0.62
+  },
+  "VTI": {
+    "symbol": "VTI",
+    "name": "Vanguard Total Stock Market ETF",
+    "currency": "USD",
+    "price": 245.2,
+    "changePercent": 0.006,
+    "marketCap": 300000000000,
+    "peRatio": 22.5,
+    "pegRatio": 1.6,
+    "dividendYieldPercent": 1.5
+  },
+  "NVDA": {
+    "symbol": "NVDA",
+    "name": "NVIDIA Corporation",
+    "currency": "USD",
+    "price": 560.4,
+    "changePercent": 0.021,
+    "marketCap": 1500000000000,
+    "peRatio": 44.2,
+    "pegRatio": 1.8,
+    "dividendYieldPercent": 0.03
+  },
+  "TSLA": {
+    "symbol": "TSLA",
+    "name": "Tesla, Inc.",
+    "currency": "USD",
+    "price": 255.7,
+    "changePercent": -0.008,
+    "marketCap": 800000000000,
+    "peRatio": 52.3,
+    "pegRatio": 2.1,
+    "dividendYieldPercent": null
+  },
+  "AAPL": {
+    "symbol": "AAPL",
+    "name": "Apple Inc.",
+    "currency": "USD",
+    "price": 195.3,
+    "changePercent": -0.004,
+    "marketCap": 3000000000000,
+    "peRatio": 29.7,
+    "pegRatio": 1.9,
+    "dividendYieldPercent": 0.55
+  },
+  "BAM.TO": {
+    "symbol": "BAM.TO",
+    "name": "Brookfield Asset Management",
+    "currency": "CAD",
+    "price": 58.2,
+    "changePercent": 0.006,
+    "marketCap": 85000000000,
+    "peRatio": 16.2,
+    "pegRatio": 1.4,
+    "dividendYieldPercent": 1.2
+  },
+  "VCN.TO": {
+    "symbol": "VCN.TO",
+    "name": "Vanguard FTSE Canada All Cap",
+    "currency": "CAD",
+    "price": 38.0,
+    "changePercent": 0.003,
+    "marketCap": 5000000000,
+    "peRatio": 18.1,
+    "pegRatio": 1.3,
+    "dividendYieldPercent": 2.1
+  },
+  "XBAL.TO": {
+    "symbol": "XBAL.TO",
+    "name": "iShares Core Balanced ETF Portfolio",
+    "currency": "CAD",
+    "price": 29.1,
+    "changePercent": 0.001,
+    "marketCap": 1200000000,
+    "peRatio": null,
+    "pegRatio": null,
+    "dividendYieldPercent": 2.3
+  },
+  "CASH.TO": {
+    "symbol": "CASH.TO",
+    "name": "Purpose High Interest Savings",
+    "currency": "CAD",
+    "price": 50.1,
+    "changePercent": 0.0004,
+    "marketCap": 3500000000,
+    "peRatio": null,
+    "pegRatio": null,
+    "dividendYieldPercent": 4.6
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "updated": "2025-12-31",
+  "rangeStart": "2010-01-01",
+  "rangeEnd": "2025-12-31",
+  "growthCurve": {
+    "A": 1.05,
+    "r": 0.0002,
+    "startDate": "2010-01-01",
+    "manualOverride": false
+  },
+  "referenceTemperatures": [0.5, 1, 1.5],
+  "series": [
+    { "date": "2023-01-31", "temperature": 0.92 },
+    { "date": "2023-06-30", "temperature": 1.03 },
+    { "date": "2023-12-29", "temperature": 1.15 },
+    { "date": "2024-03-28", "temperature": 1.22 },
+    { "date": "2024-06-28", "temperature": 1.18 },
+    { "date": "2024-12-31", "temperature": 1.31 },
+    { "date": "2025-06-30", "temperature": 1.24 },
+    { "date": "2025-12-31", "temperature": 1.28 }
+  ],
+  "latest": {
+    "date": "2025-12-31",
+    "temperature": 1.28
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "articles": [
+    {
+      "title": "Semiconductor rally keeps growth portfolio momentum intact",
+      "url": "https://example.com/news/demo-semiconductor-rally",
+      "summary": "Chipmakers led a late-year push higher as demand expectations held firm into 2026.",
+      "source": "DemoWire",
+      "publishedAt": "2025-12-29T13:00:00Z"
+    },
+    {
+      "title": "Balanced ETFs attract steady inflows ahead of year-end",
+      "url": "https://example.com/news/demo-balanced-flows",
+      "summary": "Investors leaned on diversified allocations amid mixed macro signals and softer volatility.",
+      "source": "DemoDesk",
+      "publishedAt": "2025-12-15T15:30:00Z"
+    }
+  ],
+  "disclaimer": "Demo mode: articles are static and not investment advice.",
+  "generatedAt": "2025-12-31T20:00:00Z",
+  "symbols": ["QQQ", "VTI", "NVDA", "TSLA", "AAPL", "BAM.TO", "VCN.TO", "XBAL.TO", "CASH.TO"],
+  "prompt": "Summarize market news for demo holdings.",
+  "rawOutput": "Demo output placeholder.",
+  "usage": { "totalTokens": 0 },
+  "pricing": { "inputCostUsd": 0, "outputCostUsd": 0 },
+  "cost": { "totalUsd": 0 }
+}

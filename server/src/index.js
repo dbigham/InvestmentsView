@@ -67,6 +67,7 @@ const { assignAccountGroups, slugifyAccountGroupKey } = require('./grouping');
 const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
+const { demoMiddleware } = require('./demoMode');
 const deploymentDisplay = require('../../shared/deploymentDisplay.cjs');
 const {
   SYMBOL_GROUPS,
@@ -3666,6 +3667,7 @@ function resolveLoginDisplay(login) {
 const app = express();
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json());
+app.use('/api', demoMiddleware);
 
 const MIN_REQUEST_INTERVAL_MS = 50;
 const requestQueue = [];

@@ -1,0 +1,148 @@
+{
+  "accounts": [
+    {
+      "id": "demo-login-1:10000001",
+      "number": "10000001",
+      "name": "Main RRSP",
+      "displayName": "Main RRSP",
+      "ownerLabel": "Meredith",
+      "type": "RRSP",
+      "clientAccountType": "RRSP",
+      "accountGroup": "RRSP"
+    },
+    {
+      "id": "demo-login-1:10000002",
+      "number": "10000002",
+      "name": "Aggressive RRSP Core",
+      "displayName": "Aggressive RRSP Core",
+      "ownerLabel": "Daniel",
+      "type": "RRSP",
+      "clientAccountType": "RRSP",
+      "accountGroup": "Aggressive RRSP"
+    },
+    {
+      "id": "demo-login-1:10000003",
+      "number": "10000003",
+      "name": "ChatGPT Suggestions May 2025",
+      "displayName": "ChatGPT Suggestions May 2025",
+      "ownerLabel": "Daniel",
+      "type": "RRSP",
+      "clientAccountType": "RRSP",
+      "accountGroup": "Aggressive RRSP"
+    },
+    {
+      "id": "demo-login-2:20000001",
+      "number": "20000001",
+      "name": "RESP",
+      "displayName": "RESP",
+      "ownerLabel": "Daniel",
+      "type": "RESP",
+      "clientAccountType": "RESP",
+      "accountGroup": "Kids"
+    },
+    {
+      "id": "demo-login-2:20000002",
+      "number": "20000002",
+      "name": "Eli",
+      "displayName": "Eli",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "accountGroup": "Kids"
+    },
+    {
+      "id": "demo-login-2:20000003",
+      "number": "20000003",
+      "name": "Hazel",
+      "displayName": "Hazel",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "accountGroup": "Kids"
+    },
+    {
+      "id": "demo-login-2:20000004",
+      "number": "20000004",
+      "name": "Olive",
+      "displayName": "Olive",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "accountGroup": "Kids"
+    },
+    {
+      "id": "demo-login-2:20000005",
+      "number": "20000005",
+      "name": "Emma",
+      "displayName": "Emma",
+      "ownerLabel": "Daniel",
+      "type": "TFSA",
+      "clientAccountType": "TFSA",
+      "accountGroup": "Kids"
+    }
+  ],
+  "accountGroups": [
+    {
+      "id": "group:rrsp",
+      "name": "RRSP",
+      "memberCount": 3,
+      "accountIds": [
+        "demo-login-1:10000001",
+        "demo-login-1:10000002",
+        "demo-login-1:10000003"
+      ],
+      "accountNumbers": [
+        "10000001",
+        "10000002",
+        "10000003"
+      ],
+      "ownerLabels": [
+        "Meredith",
+        "Daniel"
+      ]
+    },
+    {
+      "id": "group:aggressive-rrsp",
+      "name": "Aggressive RRSP",
+      "memberCount": 2,
+      "accountIds": [
+        "demo-login-1:10000002",
+        "demo-login-1:10000003"
+      ],
+      "accountNumbers": [
+        "10000002",
+        "10000003"
+      ],
+      "ownerLabels": [
+        "Daniel"
+      ]
+    },
+    {
+      "id": "group:kids",
+      "name": "Kids",
+      "memberCount": 5,
+      "accountIds": [
+        "demo-login-2:20000001",
+        "demo-login-2:20000002",
+        "demo-login-2:20000003",
+        "demo-login-2:20000004",
+        "demo-login-2:20000005"
+      ],
+      "accountNumbers": [
+        "20000001",
+        "20000002",
+        "20000003",
+        "20000004",
+        "20000005"
+      ],
+      "ownerLabels": [
+        "Daniel"
+      ]
+    }
+  ],
+  "groupRelations": {
+    "Aggressive RRSP": [
+      "RRSP"
+    ]
+  }
+}

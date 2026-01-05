@@ -14,6 +14,7 @@ export default function QuestradeLoginDialog({
   onSave,
   onShowInstructions,
   onStartAccountStructure,
+  onStartDemoMode,
 }) {
   const titleId = useId();
   const subtitleId = useId();
@@ -180,6 +181,21 @@ export default function QuestradeLoginDialog({
               <button type="button" className="login-setup-dialog__link" onClick={onShowInstructions}>
                 How do I get a refresh token?
               </button>
+              {typeof onStartDemoMode === 'function' ? (
+                <div className="login-setup-dialog__demo">
+                  <div className="login-setup-dialog__demo-title">Just exploring?</div>
+                  <p className="login-setup-dialog__demo-text">
+                    Launch a fully offline demo with sample data. No tokens required.
+                  </p>
+                  <button
+                    type="button"
+                    className="login-setup-dialog__button login-setup-dialog__button--ghost"
+                    onClick={onStartDemoMode}
+                  >
+                    Try Demo Mode
+                  </button>
+                </div>
+              ) : null}
             </section>
             <aside className="login-setup-dialog__panel login-setup-dialog__panel--list">
               <h3 className="login-setup-dialog__panel-title">Saved logins</h3>
@@ -226,9 +242,11 @@ QuestradeLoginDialog.propTypes = {
   onSave: PropTypes.func.isRequired,
   onShowInstructions: PropTypes.func.isRequired,
   onStartAccountStructure: PropTypes.func,
+  onStartDemoMode: PropTypes.func,
 };
 
 QuestradeLoginDialog.defaultProps = {
   logins: [],
   onStartAccountStructure: null,
+  onStartDemoMode: null,
 };
