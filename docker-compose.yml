@@ -1,0 +1,15 @@
+services:
+  investments-view:
+    build: .
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - CLIENT_ORIGIN=http://localhost:4000
+      - CLIENT_BUILD_DIR=/app/client/dist
+      - DATA_DIR=/app/data
+    volumes:
+      - investmentsview-data:/app/data
+
+volumes:
+  investmentsview-data:

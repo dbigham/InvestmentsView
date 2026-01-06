@@ -13,6 +13,7 @@ const util = require('util');
 const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
+const { resolveCachePath, resolveDataPath } = require('./dataPaths');
 dotenv.config();
 
 const serverEnvPath = path.join(__dirname, '..', '.env');
@@ -120,7 +121,20 @@ const RETURN_BREAKDOWN_PERIODS = [
 const DEFAULT_TEMPERATURE_CHART_START_DATE = '1980-01-01';
 
 const PORT = process.env.PORT || 4000;
-const ALLOWED_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const ALLOWED_ORIGIN =
+  process.env.INVESTMENTSVIEW_CLIENT_ORIGIN || process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const CLIENT_BUILD_DIR = (() => {
+  const raw = process.env.CLIENT_BUILD_DIR;
+  if (!raw) {
+    return null;
+  }
+  const resolved = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+  const indexPath = path.join(resolved, 'index.html');
+  if (!fs.existsSync(indexPath)) {
+    return null;
+  }
+  return resolved;
+})();
 const DEBUG_QUESTRADE_API = parseBooleanEnv(process.env.DEBUG_QUESTRADE_API, false);
 const DEBUG_API_REQUESTS = parseBooleanEnv(process.env.DEBUG_API_REQUESTS, false);
 const DEBUG_QUESTRADE_REFRESH = parseBooleanEnv(process.env.DEBUG_QUESTRADE_REFRESH, false);
@@ -145,7 +159,7 @@ const AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD = 500;
 const AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD = 250;
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
-const tokenFilePath = path.join(__dirname, '..', 'token-store.json');
+const tokenFilePath = resolveDataPath('token-store.json');
 const QUESTRADE_API_MAX_ATTEMPTS = 4;
 const QUESTRADE_API_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
@@ -253,6 +267,17 @@ let activeRefreshKey = null;
 
 function nowMs() {
   return Date.now();
+}
+
+function ensureDirForFile(filePath) {
+  if (!filePath) {
+    return;
+  }
+  const dir = path.dirname(filePath);
+  if (!dir) {
+    return;
+  }
+  fs.mkdirSync(dir, { recursive: true });
 }
 
 function debugSummaryCache(message, ...args) {
@@ -2763,7 +2788,7 @@ function ensureYahooFinanceClient() {
 const QUOTE_CACHE_TTL_SECONDS = 60;
 const quoteCache = new NodeCache({ stdTTL: QUOTE_CACHE_TTL_SECONDS, checkperiod: 120 });
 
-const DIVIDEND_YIELD_CACHE_DIR = path.join(__dirname, '..', '.cache', 'dividend-yields');
+const DIVIDEND_YIELD_CACHE_DIR = resolveCachePath('dividend-yields');
 // Bump when changing how yields are computed so stale cache is ignored
 const DIVIDEND_YIELD_CACHE_SCHEMA_VERSION = 3;
 const DIVIDEND_YIELD_SUSPICIOUS_THRESHOLD = 8;
@@ -3563,7 +3588,7 @@ const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
 const priceHistoryCache = new Map();
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
-const PRICE_SERIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'prices');
+const PRICE_SERIES_CACHE_DIR = resolveCachePath('prices');
 const PRICE_SERIES_DEFAULT_START = '1990-01-01';
 // Limit how far we carry forward the last known price when filling a daily series.
 // Allows weekends/holidays, but prevents using a stale close across many missing days.
@@ -3668,6 +3693,12 @@ const app = express();
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json());
 app.use('/api', demoMiddleware);
+if (CLIENT_BUILD_DIR) {
+  app.use(express.static(CLIENT_BUILD_DIR));
+  app.get(/^(?!\/api|\/health).*/, function (req, res) {
+    return res.sendFile(path.join(CLIENT_BUILD_DIR, 'index.html'));
+  });
+}
 
 const MIN_REQUEST_INTERVAL_MS = 50;
 const requestQueue = [];
@@ -4431,7 +4462,8 @@ async function fetchPortfolioNewsFromOpenAi(params) {
         try {
           const fs = require('fs');
           const path = require('path');
-          const outPath = path.join(__dirname, '..', '.openai-news-response.json');
+          const outPath = resolveDataPath('.openai-news-response.json');
+          ensureDirForFile(outPath);
           fs.writeFileSync(outPath, JSON.stringify(response, null, 2), 'utf-8');
           console.error('[OpenAI][news][debug] Fallback failed; wrote raw response to', outPath);
         } catch {}
@@ -5137,6 +5169,7 @@ function persistTokenStore(store) {
       updatedAt: new Date().toISOString(),
     };
     store.updatedAt = payload.updatedAt;
+    ensureDirForFile(tokenFilePath);
     fs.writeFileSync(tokenFilePath, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (error) {
     console.warn('Failed to persist token store:', error.message);
@@ -5174,7 +5207,7 @@ function normalizeEmailInput(value) {
   return value.trim();
 }
 
-const EARLIEST_FUNDING_CACHE_PATH = path.join(__dirname, '..', 'earliest-funding-cache.json');
+const EARLIEST_FUNDING_CACHE_PATH = resolveDataPath('earliest-funding-cache.json');
 const EARLIEST_FUNDING_CACHE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 const earliestFundingPromises = new Map();
 
@@ -5203,6 +5236,7 @@ function persistEarliestFundingCache(state) {
       updatedAt: new Date().toISOString(),
       entries: state.entries,
     };
+    ensureDirForFile(EARLIEST_FUNDING_CACHE_PATH);
     fs.writeFileSync(EARLIEST_FUNDING_CACHE_PATH, JSON.stringify(payload, null, 2));
   } catch (error) {
     console.warn('Failed to persist earliest funding cache:', error.message);
@@ -7378,8 +7412,8 @@ const DEBUG_XIRR = process.env.DEBUG_XIRR === 'true';
 const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
-const ACTIVITIES_CACHE_DIR = path.join(__dirname, '..', '.cache', 'activities');
-const FX_CACHE_DIR = path.join(__dirname, '..', '.cache', 'fx');
+const ACTIVITIES_CACHE_DIR = resolveCachePath('activities');
+const FX_CACHE_DIR = resolveCachePath('fx');
 const USD_CAD_CACHE_FILE_PATH = path.join(FX_CACHE_DIR, 'usd-cad-rates.json');
 
 const usdCadRateCache = new Map();

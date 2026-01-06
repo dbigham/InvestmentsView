@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveDataPath } = require('./dataPaths');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
 
 let yahooFinance = null;
@@ -37,7 +38,7 @@ if (!yahooFinance && yahooFinanceLoadError) {
   console.warn('[QQQ temperature]', MISSING_DEPENDENCY_MESSAGE);
 }
 
-const CACHE_DIR = path.join(__dirname, '..', 'data', 'qqq-cache');
+const CACHE_DIR = resolveDataPath('data', 'qqq-cache');
 const SUMMARY_TTL_MS = 1000 * 60 * 60 * 4; // refresh every 4 hours
 const LOOKBACK_DAYS = 10;
 const DAYS_PER_YEAR = 365.25;

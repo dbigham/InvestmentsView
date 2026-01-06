@@ -1,39 +1,46 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveDataDir } = require('./dataPaths');
 
 const DEFAULT_FILE_CANDIDATES = ['accounts.json', 'account-names.json'];
 
+function getLookupDirs() {
+  const dataDir = resolveDataDir();
+  const cwd = process.cwd();
+  const serverRoot = path.join(__dirname, '..');
+  const ordered = [];
+  [dataDir, cwd, serverRoot].forEach((dir) => {
+    if (dir && !ordered.includes(dir)) {
+      ordered.push(dir);
+    }
+  });
+  return ordered.length ? ordered : [cwd];
+}
+
 function resolveConfiguredFilePath() {
   const configured = process.env.ACCOUNTS_FILE || process.env.ACCOUNT_NAMES_FILE;
+  const lookupDirs = getLookupDirs();
   if (configured) {
     if (path.isAbsolute(configured)) {
       return configured;
     }
-    // If a relative path is provided, prefer CWD but fall back to server root
-    const fromCwd = path.join(process.cwd(), configured);
-    if (fs.existsSync(fromCwd)) {
-      return fromCwd;
+    for (const base of lookupDirs) {
+      const candidate = path.join(base, configured);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
     }
-    const fromServerRoot = path.join(__dirname, '..', configured);
-    if (fs.existsSync(fromServerRoot)) {
-      return fromServerRoot;
-    }
-    return fromCwd;
+    return path.join(lookupDirs[0], configured);
   }
   for (const name of DEFAULT_FILE_CANDIDATES) {
-    // 1) Try current working directory
-    const fromCwd = path.join(process.cwd(), name);
-    if (fs.existsSync(fromCwd)) {
-      return fromCwd;
-    }
-    // 2) Try server root (one level above this file)
-    const fromServerRoot = path.join(__dirname, '..', name);
-    if (fs.existsSync(fromServerRoot)) {
-      return fromServerRoot;
+    for (const base of lookupDirs) {
+      const candidate = path.join(base, name);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
-  // Default to CWD path for predictable error messages elsewhere
-  return path.join(process.cwd(), DEFAULT_FILE_CANDIDATES[0]);
+  return path.join(lookupDirs[0], DEFAULT_FILE_CANDIDATES[0]);
 }
 
 let resolvedFilePath = resolveConfiguredFilePath();

@@ -1,4 +1,15 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
+function resolveApiBaseUrl() {
+  const envBase = import.meta.env.VITE_API_BASE_URL;
+  if (typeof envBase === 'string' && envBase.trim()) {
+    return envBase.trim();
+  }
+  if (import.meta.env.PROD && typeof window !== 'undefined' && window.location && window.location.origin) {
+    return window.location.origin;
+  }
+  return 'http://localhost:4000';
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 const DEMO_STORAGE_KEY = 'investmentsViewDemoMode';
 
 function isDemoModeEnabled() {

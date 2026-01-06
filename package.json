@@ -1,0 +1,8 @@
+{
+  "name": "investments-view",
+  "private": true,
+  "scripts": {
+    "desktop:dev": "node desktop/scripts/dev.js",
+    "desktop:build": "node desktop/scripts/build.js"
+  }
+}

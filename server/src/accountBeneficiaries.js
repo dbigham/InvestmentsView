@@ -1,17 +1,37 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveDataDir } = require('./dataPaths');
 
 const DEFAULT_FILE_NAME = 'account-beneficiaries.json';
 
 const beneficiariesFilePath = (() => {
   const configured = process.env.ACCOUNT_BENEFICIARIES_FILE;
+  const dataDir = resolveDataDir();
   if (!configured) {
-    return path.join(process.cwd(), DEFAULT_FILE_NAME);
+    const candidates = [
+      path.join(process.cwd(), DEFAULT_FILE_NAME),
+      path.join(dataDir, DEFAULT_FILE_NAME),
+      path.join(__dirname, '..', DEFAULT_FILE_NAME),
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return path.join(dataDir, DEFAULT_FILE_NAME);
   }
   if (path.isAbsolute(configured)) {
     return configured;
   }
-  return path.join(process.cwd(), configured);
+  const fromCwd = path.join(process.cwd(), configured);
+  if (fs.existsSync(fromCwd)) {
+    return fromCwd;
+  }
+  const fromDataDir = path.join(dataDir, configured);
+  if (fs.existsSync(fromDataDir)) {
+    return fromDataDir;
+  }
+  return fromDataDir;
 })();
 
 let cachedBeneficiaries = { overrides: Object.create(null), defaultBeneficiary: null };

@@ -1,0 +1,61 @@
+{
+  "name": "investments-view-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.0.2",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.investmentsview.app",
+    "productName": "Investments View",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../server",
+        "to": "server",
+        "filter": [
+          "**/*",
+          "!**/.env",
+          "!**/server.env",
+          "!**/token-store.json",
+          "!**/accounts.json",
+          "!**/account-names.json",
+          "!**/account-beneficiaries.json",
+          "!**/earliest-funding-cache.json",
+          "!**/.cache/**",
+          "!**/data/**",
+          "!**/*.log",
+          "!**/*.log.bak"
+        ]
+      },
+      {
+        "from": "../client/dist",
+        "to": "client"
+      },
+      {
+        "from": "../shared",
+        "to": "shared"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveCachePath } = require('./dataPaths');
 
-const CACHE_DIR = path.join(__dirname, '..', '.cache', 'yahoo-price-cache');
+const CACHE_DIR = resolveCachePath('yahoo-price-cache');
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const symbolCache = new Map();
 

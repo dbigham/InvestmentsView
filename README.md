@@ -71,6 +71,10 @@ When the main view is loaded, you'll be warned when it's time to rebalance accor
 - `server/` - Lightweight Express proxy that refreshes OAuth tokens per login, caches the newest refresh token, enriches account metadata, and exposes everything through `/api/summary`.
 - `shared/` - Date math, deployment helpers, and formatting utilities reused by both sides.
 
+## Installation
+
+Looking for the desktop installer (Windows) or Docker instructions? See the [installation guide](docs/installation.md).
+
 ## Run it yourself
 
 You only need Node.js 20.19+, Git, and at least one Questrade API refresh token. Python 3.9+ is optional unless you want investment-model overlays.
