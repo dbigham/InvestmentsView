@@ -14971,6 +14971,12 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap,
       }
     }
 
+    const resolvedCurrency =
+      normalizeCurrency(position?.currency) ||
+      normalizeCurrency(symbolInfo?.currency) ||
+      inferSymbolCurrency(symbolKey) ||
+      null;
+
     const previousCloseCandidate =
       previousCloseMap && symbolKey && previousCloseMap.has(symbolKey)
         ? previousCloseMap.get(symbolKey)
@@ -15016,7 +15022,7 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap,
       symbol: position.symbol,
       symbolId: position.symbolId,
       description: symbolInfo ? symbolInfo.description : null,
-      currency: position.currency || (symbolInfo ? symbolInfo.currency : null),
+      currency: resolvedCurrency,
       openQuantity: position.openQuantity,
       currentPrice: position.currentPrice,
       currentMarketValue: position.currentMarketValue,
