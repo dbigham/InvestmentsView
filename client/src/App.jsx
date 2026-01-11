@@ -15528,6 +15528,8 @@ export default function App() {
                 onSortChange={setPositionsSort}
                 pnlMode={positionsPnlMode}
                 onPnlModeChange={setPositionsPnlMode}
+                currencyRates={currencyRates}
+                baseCurrency={baseCurrency}
                 embedded
                 investmentModelSymbolMap={investmentModelSymbolMap}
                 onShowInvestmentModel={selectedAccountInfo ? handleShowAccountInvestmentModel : null}

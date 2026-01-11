@@ -138,6 +138,67 @@ function normalizeSymbolKey(value) {
   return trimmed || '';
 }
 
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency = 'CAD') {
+  if (!isFiniteNumber(value)) {
+    return null;
+  }
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const normalizedCurrency = (currency || normalizedBase).toUpperCase();
+  const rate = currencyRates?.get(normalizedCurrency);
+  if (isFiniteNumber(rate) && rate > 0) {
+    return value * rate;
+  }
+  if (normalizedCurrency === normalizedBase) {
+    return value;
+  }
+  return value;
+}
+
+function convertBaseAmountToTarget(value, targetCurrency, currencyRates, baseCurrency = 'CAD') {
+  if (!isFiniteNumber(value)) {
+    return null;
+  }
+  const normalizedBase = (baseCurrency || 'CAD').toUpperCase();
+  const normalizedTarget = (targetCurrency || normalizedBase).toUpperCase();
+  if (normalizedTarget === normalizedBase) {
+    return value;
+  }
+  const targetRate = currencyRates?.get(normalizedTarget);
+  if (isFiniteNumber(targetRate) && targetRate > 0) {
+    return value / targetRate;
+  }
+  return value;
+}
+
+function resolveMarketValueDisplay(position, mode, currencyRates, baseCurrency = 'CAD') {
+  if (!position) {
+    return { value: null, currency: '' };
+  }
+  if (mode === 'default') {
+    const rawValue = isFiniteNumber(position.currentMarketValue) ? position.currentMarketValue : null;
+    const rawCurrency = position.currency || '';
+    return { value: rawValue, currency: rawCurrency };
+  }
+
+  const targetCurrency = mode === 'usd' ? 'USD' : 'CAD';
+  const baseValue = isFiniteNumber(position.normalizedMarketValue)
+    ? position.normalizedMarketValue
+    : (() => {
+        const rawValue = isFiniteNumber(position.currentMarketValue) ? position.currentMarketValue : null;
+        if (rawValue === null) {
+          return null;
+        }
+        return normalizeCurrencyAmount(rawValue, position.currency, currencyRates, baseCurrency);
+      })();
+  const convertedValue =
+    baseValue === null ? null : convertBaseAmountToTarget(baseValue, targetCurrency, currencyRates, baseCurrency);
+  return { value: convertedValue, currency: targetCurrency };
+}
+
 function resolveSymbolTotalPnlValue(symbolKey, accountId, symbolTotalPnlByAccountMap) {
   if (!symbolKey || !(symbolTotalPnlByAccountMap instanceof Map)) {
     return null;
@@ -273,6 +334,8 @@ function PositionsTable({
   symbolTotalPnlByAccountMap = null,
   focusedSymbolTotalPnlOverride = null,
   focusedSymbolKey = null,
+  currencyRates = null,
+  baseCurrency = 'CAD',
 }) {
   // No local mapping required when using Logo.dev ticker endpoint
   const resolvedDirection = sortDirection === 'asc' ? 'asc' : 'desc';
@@ -291,6 +354,9 @@ function PositionsTable({
   const [contextMenuState, setContextMenuState] = useState({ open: false, x: 0, y: 0, position: null });
   const pnlMenuRef = useRef(null);
   const [pnlMenuState, setPnlMenuState] = useState({ open: false, x: 0, y: 0 });
+  const marketValueMenuRef = useRef(null);
+  const [marketValueMenuState, setMarketValueMenuState] = useState({ open: false, x: 0, y: 0 });
+  const [marketValueMode, setMarketValueMode] = useState('default');
 
   const closeContextMenu = useCallback(() => {
     setContextMenuState((state) => {
@@ -310,9 +376,23 @@ function PositionsTable({
     });
   }, []);
 
+  const closeMarketValueMenu = useCallback(() => {
+    setMarketValueMenuState((state) => {
+      if (!state.open) {
+        return state;
+      }
+      return { open: false, x: 0, y: 0 };
+    });
+  }, []);
+
   const pnlMode = externalPnlMode === 'percent' || externalPnlMode === 'currency'
     ? externalPnlMode
     : internalPnlMode;
+
+  const resolveMarketValueDisplayForRow = useCallback(
+    (position) => resolveMarketValueDisplay(position, marketValueMode, currencyRates, baseCurrency),
+    [marketValueMode, currencyRates, baseCurrency]
+  );
 
   useEffect(() => {
     setSortState((current) => {
@@ -468,46 +548,52 @@ function PositionsTable({
       } else if (effectiveMode === 'percent') {
         accessorOverride = (row) => row.openPnlPercent ?? 0;
       }
+    } else if (header.key === 'currentMarketValue' && marketValueMode !== 'default') {
+      accessorOverride = (row) => {
+        const resolved = resolveMarketValueDisplayForRow(row);
+        return isFiniteNumber(resolved.value) ? resolved.value : 0;
+      };
+    } else if (header.key === 'currency' && marketValueMode !== 'default') {
+      accessorOverride = () => (marketValueMode === 'usd' ? 'USD' : 'CAD');
     }
     const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
-  }, [activeHeaders, decoratedPositions, sortState, pnlColumnMode]);
+  }, [activeHeaders, decoratedPositions, sortState, pnlColumnMode, marketValueMode, resolveMarketValueDisplayForRow]);
 
   const handleSort = useCallback((columnKey) => {
     const header = activeHeaders.find((column) => column.key === columnKey);
     if (!header) {
       return;
     }
-    setSortState((current) => {
-      let nextState;
-      if (current.column === columnKey) {
-        let nextDirection = current.direction === 'asc' ? 'desc' : 'asc';
-        let nextValueMode = current.valueMode;
+    const current = sortState;
+    let nextState;
+    if (current.column === columnKey) {
+      let nextDirection = current.direction === 'asc' ? 'desc' : 'asc';
+      let nextValueMode = current.valueMode;
 
-        if (isPnlColumn(columnKey, pnlColumnMode)) {
-          if (current.valueMode !== pnlMode) {
-            nextDirection = current.direction;
-            nextValueMode = pnlMode;
-          }
-        } else {
-          nextValueMode = null;
+      if (isPnlColumn(columnKey, pnlColumnMode)) {
+        if (current.valueMode !== pnlMode) {
+          nextDirection = current.direction;
+          nextValueMode = pnlMode;
         }
-
-        nextState = { column: columnKey, direction: nextDirection, valueMode: nextValueMode };
       } else {
-        const defaultDirection = header.sortType === 'text' ? 'asc' : 'desc';
-        nextState = {
-          column: columnKey,
-          direction: defaultDirection,
-          valueMode: isPnlColumn(columnKey, pnlColumnMode) ? pnlMode : null,
-        };
+        nextValueMode = null;
       }
-      if (typeof onSortChange === 'function') {
-        onSortChange({ column: nextState.column, direction: nextState.direction });
-      }
-      return nextState;
-    });
-  }, [activeHeaders, onSortChange, pnlMode, pnlColumnMode]);
+
+      nextState = { column: columnKey, direction: nextDirection, valueMode: nextValueMode };
+    } else {
+      const defaultDirection = header.sortType === 'text' ? 'asc' : 'desc';
+      nextState = {
+        column: columnKey,
+        direction: defaultDirection,
+        valueMode: isPnlColumn(columnKey, pnlColumnMode) ? pnlMode : null,
+      };
+    }
+    setSortState(nextState);
+    if (typeof onSortChange === 'function') {
+      onSortChange({ column: nextState.column, direction: nextState.direction });
+    }
+  }, [activeHeaders, onSortChange, pnlMode, pnlColumnMode, sortState]);
 
   useEffect(() => {
     if (showTargetColumn || sortState.column !== 'targetProportion') {
@@ -535,13 +621,29 @@ function PositionsTable({
       event.preventDefault();
       event.stopPropagation();
       closeContextMenu();
+      closeMarketValueMenu();
       setPnlMenuState({
         open: true,
         x: event.clientX,
         y: event.clientY,
       });
     },
-    [closeContextMenu]
+    [closeContextMenu, closeMarketValueMenu]
+  );
+
+  const handleMarketValueHeaderContextMenu = useCallback(
+    (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeContextMenu();
+      closePnlMenu();
+      setMarketValueMenuState({
+        open: true,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    [closeContextMenu, closePnlMenu]
   );
 
   const handlePnlColumnSelect = useCallback(
@@ -550,6 +652,14 @@ function PositionsTable({
       closePnlMenu();
     },
     [closePnlMenu]
+  );
+
+  const handleMarketValueColumnSelect = useCallback(
+    (nextMode) => {
+      setMarketValueMode(nextMode);
+      closeMarketValueMenu();
+    },
+    [closeMarketValueMenu]
   );
 
   const handleRowContextMenu = useCallback(
@@ -564,6 +674,7 @@ function PositionsTable({
       event.preventDefault();
       event.stopPropagation();
       closePnlMenu();
+      closeMarketValueMenu();
       setContextMenuState({
         open: true,
         x: event.clientX,
@@ -571,7 +682,7 @@ function PositionsTable({
         position,
       });
     },
-    [closePnlMenu]
+    [closePnlMenu, closeMarketValueMenu]
   );
 
   const handleExplainMovement = useCallback(async () => {
@@ -854,6 +965,85 @@ function PositionsTable({
     }
   }, [pnlMenuState.open]);
 
+  useEffect(() => {
+    if (!marketValueMenuState.open) {
+      return undefined;
+    }
+
+    const handlePointer = (event) => {
+      if (!marketValueMenuRef.current) {
+        closeMarketValueMenu();
+        return;
+      }
+      if (marketValueMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeMarketValueMenu();
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeMarketValueMenu();
+      }
+    };
+
+    const handleViewportChange = () => {
+      closeMarketValueMenu();
+    };
+
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('touchstart', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('touchstart', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [closeMarketValueMenu, marketValueMenuState.open]);
+
+  useEffect(() => {
+    if (!marketValueMenuState.open || !marketValueMenuRef.current) {
+      return;
+    }
+
+    const { innerWidth, innerHeight } = window;
+    const rect = marketValueMenuRef.current.getBoundingClientRect();
+    const padding = 12;
+    let nextX = marketValueMenuState.x;
+    let nextY = marketValueMenuState.y;
+
+    if (nextX + rect.width > innerWidth - padding) {
+      nextX = Math.max(padding, innerWidth - rect.width - padding);
+    }
+    if (nextY + rect.height > innerHeight - padding) {
+      nextY = Math.max(padding, innerHeight - rect.height - padding);
+    }
+
+    if (nextX !== marketValueMenuState.x || nextY !== marketValueMenuState.y) {
+      setMarketValueMenuState((state) => {
+        if (!state.open) {
+          return state;
+        }
+        return { ...state, x: nextX, y: nextY };
+      });
+    }
+  }, [marketValueMenuState.open, marketValueMenuState.x, marketValueMenuState.y]);
+
+  useEffect(() => {
+    if (!marketValueMenuState.open || !marketValueMenuRef.current) {
+      return;
+    }
+    const firstButton = marketValueMenuRef.current.querySelector('button');
+    if (firstButton && typeof firstButton.focus === 'function') {
+      firstButton.focus({ preventScroll: true });
+    }
+  }, [marketValueMenuState.open]);
+
   if (!positions.length) {
     if (embedded) {
       return <div className="empty-state">No positions to display.</div>;
@@ -895,6 +1085,14 @@ function PositionsTable({
     { value: 'total', label: 'Total P&L' },
     { value: 'annualized', label: 'Total P&L Annualized (XIRR)' },
   ];
+  const marketValueSuffix =
+    marketValueMode === 'usd' ? 'USD' : marketValueMode === 'cad' ? 'CAD' : null;
+  const marketValueColumnLabel = marketValueSuffix ? `Market value (${marketValueSuffix})` : 'Market value';
+  const marketValueColumnOptions = [
+    { value: 'default', label: 'Default' },
+    { value: 'usd', label: 'USD' },
+    { value: 'cad', label: 'CAD' },
+  ];
 
   const renderTable = () => (
     <div className={tableClassName} role="table">
@@ -903,7 +1101,12 @@ function PositionsTable({
           const isSorted = column.key === sortState.column;
           const sortDirectionValue = isSorted ? (sortState.direction === 'asc' ? 'ascending' : 'descending') : 'none';
           const isPnlHeader = column.key === 'openPnl';
-          const headerLabel = isPnlHeader ? pnlColumnLabel : column.label;
+          const isMarketValueHeader = column.key === 'currentMarketValue';
+          const headerLabel = isPnlHeader
+            ? pnlColumnLabel
+            : isMarketValueHeader
+              ? marketValueColumnLabel
+              : column.label;
           return (
               <div
                 key={column.key}
@@ -915,9 +1118,21 @@ function PositionsTable({
                   type="button"
                   className="positions-table__head-button"
                   onClick={() => handleSort(column.key)}
-                  onContextMenu={isPnlHeader ? handlePnlHeaderContextMenu : undefined}
-                  aria-haspopup={isPnlHeader ? 'menu' : undefined}
-                  aria-expanded={isPnlHeader && pnlMenuState.open ? true : undefined}
+                  onContextMenu={
+                    isPnlHeader
+                      ? handlePnlHeaderContextMenu
+                      : isMarketValueHeader
+                        ? handleMarketValueHeaderContextMenu
+                        : undefined
+                  }
+                  aria-haspopup={isPnlHeader || isMarketValueHeader ? 'menu' : undefined}
+                  aria-expanded={
+                    isPnlHeader
+                      ? (pnlMenuState.open ? true : undefined)
+                      : isMarketValueHeader
+                        ? (marketValueMenuState.open ? true : undefined)
+                        : undefined
+                  }
                 >
                   <span>{headerLabel}</span>
                   {isSorted && (
@@ -961,9 +1176,11 @@ function PositionsTable({
           const currentPrice = sanitizeDisplayValue(
             formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           );
+          const marketValueDisplay = resolveMarketValueDisplayForRow(position);
           const currentMarketValue = sanitizeDisplayValue(
-            formatMoney(position.currentMarketValue, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            formatMoney(marketValueDisplay.value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           );
+          const marketValueCurrency = marketValueDisplay.currency || '';
           const fallbackKey = `${position.accountNumber || position.accountId || 'row'}:${
             position.symbolId ?? position.symbol ?? index
           }`;
@@ -1164,7 +1381,7 @@ function PositionsTable({
                 {currentMarketValue}
               </div>
               <div className="positions-table__cell positions-table__cell--currency" role="cell">
-                <span>{position.currency || ''}</span>
+                <span>{marketValueCurrency}</span>
               </div>
               {showPortfolioShare ? (
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
@@ -1294,11 +1511,43 @@ function PositionsTable({
     </div>
   ) : null;
 
+  const marketValueMenuElement = marketValueMenuState.open ? (
+    <div
+      className="positions-table__context-menu"
+      ref={marketValueMenuRef}
+      style={{ top: `${marketValueMenuState.y}px`, left: `${marketValueMenuState.x}px` }}
+    >
+      <ul className="positions-table__context-menu-list" role="menu">
+        {marketValueColumnOptions.map((option) => {
+          const isSelected = option.value === marketValueMode;
+          return (
+            <li key={option.value} role="none">
+              <button
+                type="button"
+                className="positions-table__context-menu-item positions-table__context-menu-item--choice"
+                role="menuitemradio"
+                aria-checked={isSelected}
+                onClick={() => handleMarketValueColumnSelect(option.value)}
+              >
+                <span
+                  className={`positions-table__context-menu-check${isSelected ? ' positions-table__context-menu-check--active' : ''}`}
+                  aria-hidden="true"
+                />
+                <span>{option.label}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ) : null;
+
   if (embedded) {
     return (
       <>
         {renderTable()}
         {pnlMenuElement}
+        {marketValueMenuElement}
         {contextMenuElement}
       </>
     );
@@ -1330,6 +1579,7 @@ function PositionsTable({
         {renderTable()}
       </section>
       {pnlMenuElement}
+      {marketValueMenuElement}
       {contextMenuElement}
     </>
   );
@@ -1396,6 +1646,8 @@ PositionsTable.propTypes = {
   symbolTotalPnlByAccountMap: PropTypes.instanceOf(Map),
   focusedSymbolTotalPnlOverride: PropTypes.number,
   focusedSymbolKey: PropTypes.string,
+  currencyRates: PropTypes.instanceOf(Map),
+  baseCurrency: PropTypes.string,
 };
 
 PositionsTable.defaultProps = {
@@ -1424,6 +1676,8 @@ PositionsTable.defaultProps = {
   symbolTotalPnlByAccountMap: null,
   focusedSymbolTotalPnlOverride: null,
   focusedSymbolKey: null,
+  currencyRates: null,
+  baseCurrency: 'CAD',
 };
 
 export default PositionsTable;
