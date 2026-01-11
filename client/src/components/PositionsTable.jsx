@@ -6,6 +6,7 @@ import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
 import { normalizeSymbolKey as normalizeSymbolGroupKey } from '../../../shared/symbolGroups.js';
 import { resolveSymbolAnnualizedEntry } from '../utils/annualized.js';
+import usePersistentState from '../hooks/usePersistentState';
 import {
   buildExplainMovementPrompt,
   derivePercentages,
@@ -97,6 +98,7 @@ const TABLE_HEADERS = [
 ];
 
 const TABLE_HEADERS_WITHOUT_TARGET = TABLE_HEADERS.filter((column) => column.key !== 'targetProportion');
+const MARKET_VALUE_MODE_STORAGE_KEY = 'positions.marketValueMode';
 
 function hasTargetProportionValue(position) {
   if (!position || position.targetProportion === null || position.targetProportion === undefined) {
@@ -140,6 +142,13 @@ function normalizeSymbolKey(value) {
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function normalizeMarketValueMode(value) {
+  if (value === 'usd' || value === 'cad' || value === 'default') {
+    return value;
+  }
+  return 'default';
 }
 
 function normalizeCurrencyAmount(value, currency, currencyRates, baseCurrency = 'CAD') {
@@ -356,7 +365,17 @@ function PositionsTable({
   const [pnlMenuState, setPnlMenuState] = useState({ open: false, x: 0, y: 0 });
   const marketValueMenuRef = useRef(null);
   const [marketValueMenuState, setMarketValueMenuState] = useState({ open: false, x: 0, y: 0 });
-  const [marketValueMode, setMarketValueMode] = useState('default');
+  const [marketValueModeRaw, setMarketValueModeRaw] = usePersistentState(
+    MARKET_VALUE_MODE_STORAGE_KEY,
+    'default'
+  );
+  const marketValueMode = normalizeMarketValueMode(marketValueModeRaw);
+  const setMarketValueMode = useCallback(
+    (nextMode) => {
+      setMarketValueModeRaw(normalizeMarketValueMode(nextMode));
+    },
+    [setMarketValueModeRaw]
+  );
 
   const closeContextMenu = useCallback(() => {
     setContextMenuState((state) => {
