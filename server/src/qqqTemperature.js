@@ -2,6 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const { resolveDataPath } = require('./dataPaths');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
+const {
+  MARKET_DATA_PROVIDER_PREFERENCE,
+  buildProviderOrder,
+  normalizeMarketDataProvider,
+} = require('./marketDataConfig');
 
 let yahooFinance = null;
 let yahooFinanceLoadError = null;
@@ -41,6 +46,7 @@ if (!yahooFinance && yahooFinanceLoadError) {
 const CACHE_DIR = resolveDataPath('data', 'qqq-cache');
 const SUMMARY_TTL_MS = 1000 * 60 * 60 * 4; // refresh every 4 hours
 const LOOKBACK_DAYS = 10;
+const SERIES_COVERAGE_TOLERANCE_DAYS = 10;
 const DAYS_PER_YEAR = 365.25;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const FIT_THRESHOLDS = [0.35, 0.15];
@@ -49,6 +55,11 @@ const TICKERS = {
   qqq: 'QQQ',
   ndx: '^NDX',
   ixic: '^IXIC',
+};
+
+const TICKER_PROVIDER_OVERRIDES = {
+  '^NDX': 'yahoo',
+  '^IXIC': 'yahoo',
 };
 
 const TICKER_START = {
@@ -68,6 +79,25 @@ function daysBetweenUTC(a, b) {
   if (!da || !db) return 0;
   const ms = db.getTime() - da.getTime();
   return Math.floor(ms / MS_PER_DAY);
+}
+
+function resolveProviderPreference(marketData) {
+  const candidate = marketData && marketData.providerPreference ? marketData.providerPreference : null;
+  return normalizeMarketDataProvider(candidate) || MARKET_DATA_PROVIDER_PREFERENCE;
+}
+
+function resolveProviderOrderForTicker(ticker, marketData) {
+  const override = TICKER_PROVIDER_OVERRIDES[ticker];
+  if (override) {
+    return [override];
+  }
+  return buildProviderOrder(resolveProviderPreference(marketData));
+}
+
+function buildTickerCacheKey(ticker, provider) {
+  const safeTicker = sanitizeTickerForCache(ticker);
+  const safeProvider = sanitizeTickerForCache(provider || 'provider');
+  return `${safeTicker}_${safeProvider}`;
 }
 
 function ensureYahooFinance() {
@@ -170,10 +200,11 @@ function readCachedSeries(cachePath) {
   }
 }
 
-function writeCachedSeries(cachePath, ticker, series) {
+function writeCachedSeries(cachePath, ticker, series, provider) {
   try {
     const payload = {
       ticker,
+      provider: provider || null,
       updated: new Date().toISOString(),
       series,
     };
@@ -200,6 +231,39 @@ function sanitizeChartQuotes(quotes) {
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+function normalizeQuestradeSeries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries
+    .map((entry) => {
+      const date = formatDate(entry && (entry.date || entry.start || entry.time));
+      const close = Number(entry && (entry.price ?? entry.close));
+      if (!date || !Number.isFinite(close) || close <= 0) {
+        return null;
+      }
+      return { date, close };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+function isSeriesCoverageSufficient(series, startKey, endKey, toleranceDays = SERIES_COVERAGE_TOLERANCE_DAYS) {
+  if (!Array.isArray(series) || series.length === 0) {
+    return false;
+  }
+  const firstKey = series[0] && series[0].date ? series[0].date : null;
+  const lastKey = series[series.length - 1] && series[series.length - 1].date
+    ? series[series.length - 1].date
+    : null;
+  if (!firstKey || !lastKey || !startKey || !endKey) {
+    return false;
+  }
+  const startGap = Math.max(0, daysBetweenUTC(startKey, firstKey));
+  const endGap = Math.max(0, daysBetweenUTC(lastKey, endKey));
+  return startGap <= toleranceDays && endGap <= toleranceDays;
+}
+
 function describeYahooError(error) {
   if (!error || typeof error !== 'object') {
     return null;
@@ -219,7 +283,7 @@ function describeYahooError(error) {
   return null;
 }
 
-async function downloadTickerSlice(ticker, fetchStart, today) {
+async function downloadYahooTickerSlice(ticker, fetchStart, today) {
   const finance = ensureYahooFinance();
   const startKey = formatDate(fetchStart);
   const endKey = formatDate(today);
@@ -281,9 +345,61 @@ async function downloadTickerSlice(ticker, fetchStart, today) {
   }
 }
 
-async function loadTickerSeries(ticker) {
+async function downloadQuestradeTickerSlice(ticker, fetchStart, today, marketData) {
+  if (!marketData || typeof marketData.fetchQuestradeHistory !== 'function') {
+    return [];
+  }
+  const startKey = formatDate(fetchStart);
+  const endKey = formatDate(today);
+  if (!startKey || !endKey) {
+    return [];
+  }
+  let history = null;
+  try {
+    history = await marketData.fetchQuestradeHistory({
+      symbol: ticker,
+      startDate: startKey,
+      endDate: endKey,
+    });
+  } catch (error) {
+    logErrorOnce(`Failed to download Questrade data for ${ticker}`, error);
+    return [];
+  }
+  const normalized = normalizeQuestradeSeries(history);
+  if (!normalized.length) {
+    return [];
+  }
+  if (!isSeriesCoverageSufficient(normalized, startKey, endKey)) {
+    logErrorOnce(`Questrade history partial for ${ticker}`, new Error('Partial history window'));
+  }
+  return normalized;
+}
+
+async function downloadTickerSlice(ticker, fetchStart, today, marketData) {
+  const providerOrder = resolveProviderOrderForTicker(ticker, marketData);
+  for (const provider of providerOrder) {
+    const normalizedProvider = normalizeMarketDataProvider(provider) || provider;
+    if (normalizedProvider === 'questrade') {
+      const series = await downloadQuestradeTickerSlice(ticker, fetchStart, today, marketData);
+      if (series.length) {
+        return series;
+      }
+    }
+    if (normalizedProvider === 'yahoo') {
+      const series = await downloadYahooTickerSlice(ticker, fetchStart, today);
+      if (series.length) {
+        return series;
+      }
+    }
+  }
+  return [];
+}
+
+async function loadTickerSeries(ticker, marketData) {
   ensureCacheDir();
-  const cachePath = path.join(CACHE_DIR, `${sanitizeTickerForCache(ticker)}.json`);
+  const providerOrder = resolveProviderOrderForTicker(ticker, marketData);
+  const primaryProvider = providerOrder[0] || 'yahoo';
+  const cachePath = path.join(CACHE_DIR, `${buildTickerCacheKey(ticker, primaryProvider)}.json`);
   const cachedSeries = readCachedSeries(cachePath);
   const startDate = parseDate(TICKER_START[ticker] || '1970-01-01');
   const today = new Date();
@@ -306,12 +422,12 @@ async function loadTickerSeries(ticker) {
   let mergedSeries = cachedSeries.slice();
 
   if (fetchStart && fetchStart <= today) {
-    const fresh = await downloadTickerSlice(ticker, fetchStart, today);
+    const fresh = await downloadTickerSlice(ticker, fetchStart, today, marketData);
     if (!fresh.length && !mergedSeries.length && fetchStart && fetchStart > startDate) {
-      const fullHistory = await downloadTickerSlice(ticker, startDate, today);
+      const fullHistory = await downloadTickerSlice(ticker, startDate, today, marketData);
       if (fullHistory.length) {
         mergedSeries = fullHistory;
-        writeCachedSeries(cachePath, ticker, mergedSeries);
+        writeCachedSeries(cachePath, ticker, mergedSeries, primaryProvider);
       }
     }
     if (fresh.length) {
@@ -327,7 +443,7 @@ async function loadTickerSeries(ticker) {
       mergedSeries = Array.from(map.entries())
         .map(([date, close]) => ({ date, close }))
         .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-      writeCachedSeries(cachePath, ticker, mergedSeries);
+      writeCachedSeries(cachePath, ticker, mergedSeries, primaryProvider);
     }
   }
 
@@ -363,54 +479,116 @@ function valueOnDate(series, date) {
 }
 
 function buildUnifiedSeries(qqq, ndx, ixic) {
-  if (!qqq.length || !ndx.length || !ixic.length) {
+  if (!qqq.length) {
     return [];
   }
 
-  const seamQqqNdx = findFirstOverlap(qqq, ndx);
-  const seamIxicNdx = findFirstOverlap(ixic, ndx);
-  if (!seamQqqNdx || !seamIxicNdx) {
-    return [];
-  }
+  const hasNdx = ndx && ndx.length;
+  const hasIxic = ixic && ixic.length;
 
-  const qqqAtSeam = valueOnDate(qqq, seamQqqNdx);
-  const ndxAtQqqSeam = valueOnDate(ndx, seamQqqNdx);
-  const ndxAtIxicSeam = valueOnDate(ndx, seamIxicNdx);
-  const ixicAtSeam = valueOnDate(ixic, seamIxicNdx);
-
-  if (
-    !Number.isFinite(qqqAtSeam) ||
-    !Number.isFinite(ndxAtQqqSeam) ||
-    !Number.isFinite(ndxAtIxicSeam) ||
-    !Number.isFinite(ixicAtSeam)
-  ) {
-    return [];
-  }
-
-  const scaleNdxToQqq = qqqAtSeam / ndxAtQqqSeam;
-  const scaleIxicToNdx = (ndxAtIxicSeam * scaleNdxToQqq) / ixicAtSeam;
-
-  const unified = [];
-
-  for (const entry of ixic) {
-    if (entry.date < seamIxicNdx) {
-      unified.push({ date: entry.date, close: entry.close * scaleIxicToNdx });
+  if (hasNdx && hasIxic) {
+    const seamQqqNdx = findFirstOverlap(qqq, ndx);
+    const seamIxicNdx = findFirstOverlap(ixic, ndx);
+    if (!seamQqqNdx || !seamIxicNdx) {
+      return qqq.slice();
     }
-  }
 
-  for (const entry of ndx) {
-    if (entry.date >= seamIxicNdx && entry.date < seamQqqNdx) {
-      unified.push({ date: entry.date, close: entry.close * scaleNdxToQqq });
+    const qqqAtSeam = valueOnDate(qqq, seamQqqNdx);
+    const ndxAtQqqSeam = valueOnDate(ndx, seamQqqNdx);
+    const ndxAtIxicSeam = valueOnDate(ndx, seamIxicNdx);
+    const ixicAtSeam = valueOnDate(ixic, seamIxicNdx);
+
+    if (
+      !Number.isFinite(qqqAtSeam) ||
+      !Number.isFinite(ndxAtQqqSeam) ||
+      !Number.isFinite(ndxAtIxicSeam) ||
+      !Number.isFinite(ixicAtSeam)
+    ) {
+      return qqq.slice();
     }
-  }
 
-  for (const entry of qqq) {
-    if (entry.date >= seamQqqNdx) {
-      unified.push({ date: entry.date, close: entry.close });
+    const scaleNdxToQqq = qqqAtSeam / ndxAtQqqSeam;
+    const scaleIxicToNdx = (ndxAtIxicSeam * scaleNdxToQqq) / ixicAtSeam;
+    const unified = [];
+
+    for (const entry of ixic) {
+      if (entry.date < seamIxicNdx) {
+        unified.push({ date: entry.date, close: entry.close * scaleIxicToNdx });
+      }
     }
+
+    for (const entry of ndx) {
+      if (entry.date >= seamIxicNdx && entry.date < seamQqqNdx) {
+        unified.push({ date: entry.date, close: entry.close * scaleNdxToQqq });
+      }
+    }
+
+    for (const entry of qqq) {
+      if (entry.date >= seamQqqNdx) {
+        unified.push({ date: entry.date, close: entry.close });
+      }
+    }
+
+    return unified
+      .filter((entry) => Number.isFinite(entry.close) && entry.close > 0)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   }
 
-  return unified
+  if (hasNdx) {
+    const seamQqqNdx = findFirstOverlap(qqq, ndx);
+    if (!seamQqqNdx) {
+      return qqq.slice();
+    }
+    const qqqAtSeam = valueOnDate(qqq, seamQqqNdx);
+    const ndxAtSeam = valueOnDate(ndx, seamQqqNdx);
+    if (!Number.isFinite(qqqAtSeam) || !Number.isFinite(ndxAtSeam)) {
+      return qqq.slice();
+    }
+    const scaleNdxToQqq = qqqAtSeam / ndxAtSeam;
+    const unified = [];
+    for (const entry of ndx) {
+      if (entry.date < seamQqqNdx) {
+        unified.push({ date: entry.date, close: entry.close * scaleNdxToQqq });
+      }
+    }
+    for (const entry of qqq) {
+      if (entry.date >= seamQqqNdx) {
+        unified.push({ date: entry.date, close: entry.close });
+      }
+    }
+    return unified
+      .filter((entry) => Number.isFinite(entry.close) && entry.close > 0)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }
+
+  if (hasIxic) {
+    const seamQqqIxic = findFirstOverlap(qqq, ixic);
+    if (!seamQqqIxic) {
+      return qqq.slice();
+    }
+    const qqqAtSeam = valueOnDate(qqq, seamQqqIxic);
+    const ixicAtSeam = valueOnDate(ixic, seamQqqIxic);
+    if (!Number.isFinite(qqqAtSeam) || !Number.isFinite(ixicAtSeam)) {
+      return qqq.slice();
+    }
+    const scaleIxicToQqq = qqqAtSeam / ixicAtSeam;
+    const unified = [];
+    for (const entry of ixic) {
+      if (entry.date < seamQqqIxic) {
+        unified.push({ date: entry.date, close: entry.close * scaleIxicToQqq });
+      }
+    }
+    for (const entry of qqq) {
+      if (entry.date >= seamQqqIxic) {
+        unified.push({ date: entry.date, close: entry.close });
+      }
+    }
+    return unified
+      .filter((entry) => Number.isFinite(entry.close) && entry.close > 0)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }
+
+  return qqq
     .filter((entry) => Number.isFinite(entry.close) && entry.close > 0)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
@@ -552,48 +730,78 @@ function normalizeQuoteTimestamp(value) {
   return parsed;
 }
 
-async function fetchLiveQqqPrice() {
-  try {
-    const finance = ensureYahooFinance();
-    const quote = await finance.quote(TICKERS.qqq);
-    if (!quote || typeof quote !== 'object') {
-      return null;
+async function fetchLiveQqqPrice(marketData) {
+  const providerOrder = resolveProviderOrderForTicker(TICKERS.qqq, marketData);
+  for (const provider of providerOrder) {
+    const normalizedProvider = normalizeMarketDataProvider(provider) || provider;
+    if (normalizedProvider === 'questrade') {
+      if (marketData && typeof marketData.fetchQuestradeQuote === 'function') {
+        try {
+          const quote = await marketData.fetchQuestradeQuote(TICKERS.qqq);
+          if (quote && Number.isFinite(quote.price) && quote.price > 0) {
+            return {
+              price: Number(quote.price),
+              asOf: quote.asOf || null,
+              source: quote.source || 'questrade',
+            };
+          }
+        } catch (error) {
+          logErrorOnce('Failed to fetch Questrade live QQQ price', error);
+        }
+      }
+      continue;
     }
-    const priceCandidates = [
-      { value: quote.regularMarketPrice, source: 'regular' },
-      { value: quote.postMarketPrice, source: 'post' },
-      { value: quote.preMarketPrice, source: 'pre' },
-    ];
-    const resolved = priceCandidates.find((entry) => Number.isFinite(entry.value) && entry.value > 0);
-    if (!resolved) {
-      return null;
+    if (normalizedProvider === 'yahoo') {
+      try {
+        const finance = ensureYahooFinance();
+        const quote = await finance.quote(TICKERS.qqq);
+        if (!quote || typeof quote !== 'object') {
+          return null;
+        }
+        const priceCandidates = [
+          { value: quote.regularMarketPrice, source: 'regular' },
+          { value: quote.postMarketPrice, source: 'post' },
+          { value: quote.preMarketPrice, source: 'pre' },
+        ];
+        const resolved = priceCandidates.find((entry) => Number.isFinite(entry.value) && entry.value > 0);
+        if (!resolved) {
+          return null;
+        }
+        const timeCandidates = [
+          { value: quote.regularMarketTime, source: 'regular' },
+          { value: quote.postMarketTime, source: 'post' },
+          { value: quote.preMarketTime, source: 'pre' },
+        ];
+        const match = timeCandidates.find((entry) => entry.source === resolved.source && entry.value);
+        const fallback = timeCandidates.find((entry) => entry.value);
+        const timestamp = normalizeQuoteTimestamp((match && match.value) || (fallback && fallback.value));
+        return {
+          price: Number(resolved.value),
+          asOf: timestamp ? timestamp.toISOString() : null,
+          source: resolved.source,
+        };
+      } catch (error) {
+        logErrorOnce('Failed to fetch live QQQ price', error);
+        return null;
+      }
     }
-    const timeCandidates = [
-      { value: quote.regularMarketTime, source: 'regular' },
-      { value: quote.postMarketTime, source: 'post' },
-      { value: quote.preMarketTime, source: 'pre' },
-    ];
-    const match = timeCandidates.find((entry) => entry.source === resolved.source && entry.value);
-    const fallback = timeCandidates.find((entry) => entry.value);
-    const timestamp = normalizeQuoteTimestamp((match && match.value) || (fallback && fallback.value));
-    return {
-      price: Number(resolved.value),
-      asOf: timestamp ? timestamp.toISOString() : null,
-      source: resolved.source,
-    };
-  } catch (error) {
-    logErrorOnce('Failed to fetch live QQQ price', error);
-    return null;
   }
+  return null;
 }
 
 async function refreshSummary(options = {}) {
   const includeLivePrice = Boolean(options && options.includeLivePrice);
-  ensureYahooFinance();
+  const marketData = options && options.marketData ? options.marketData : null;
+  const requiresYahoo = [TICKERS.qqq, TICKERS.ndx, TICKERS.ixic].some((ticker) =>
+    resolveProviderOrderForTicker(ticker, marketData).includes('yahoo')
+  );
+  if (requiresYahoo) {
+    ensureYahooFinance();
+  }
   const [qqqSeries, ndxSeries, ixicSeries] = await Promise.all([
-    loadTickerSeries(TICKERS.qqq),
-    loadTickerSeries(TICKERS.ndx),
-    loadTickerSeries(TICKERS.ixic),
+    loadTickerSeries(TICKERS.qqq, marketData),
+    loadTickerSeries(TICKERS.ndx, marketData),
+    loadTickerSeries(TICKERS.ixic, marketData),
   ]);
 
   const unified = buildUnifiedSeries(qqqSeries, ndxSeries, ixicSeries);
@@ -645,7 +853,7 @@ async function refreshSummary(options = {}) {
   };
 
   if (includeLivePrice) {
-    const liveQuote = await fetchLiveQqqPrice();
+    const liveQuote = await fetchLiveQqqPrice(marketData);
     if (liveQuote && Number.isFinite(liveQuote.price) && liveQuote.price > 0) {
       const liveDate = formatDate(liveQuote.asOf || new Date());
       const startDate = parseDate(series[0].date);
@@ -689,6 +897,7 @@ async function refreshSummary(options = {}) {
 async function getQqqTemperatureSummary(options = {}) {
   const forceRefresh = Boolean(options && options.forceRefresh);
   const includeLivePrice = Boolean(options && options.includeLivePrice);
+  const marketData = options && options.marketData ? options.marketData : null;
   const now = Date.now();
   // If the cached summary predates today by at least one full day,
   // bypass TTL so we always pull in yesterday's close first thing.
@@ -710,7 +919,7 @@ async function getQqqTemperatureSummary(options = {}) {
   }
 
   const refreshPromise = (async () => {
-    const summary = await refreshSummary({ includeLivePrice });
+    const summary = await refreshSummary({ includeLivePrice, marketData });
     if (summary) {
       cachedSummary = summary;
       summaryExpiresAt = Date.now() + SUMMARY_TTL_MS;

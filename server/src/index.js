@@ -45,6 +45,12 @@ additionalEnvPaths.forEach((candidate) => {
   }
 });
 
+const {
+  MARKET_DATA_PROVIDER_PREFERENCE,
+  normalizeMarketDataProvider,
+  buildProviderOrder,
+} = require('./marketDataConfig');
+
 const accountNamesModule = require('./accountNames');
 const {
   getAccountNameOverrides,
@@ -160,6 +166,10 @@ const AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD = 250;
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = resolveDataPath('token-store.json');
+const QUESTRADE_MARKET_DATA_LOGIN_ID =
+  typeof process.env.QUESTRADE_MARKET_DATA_LOGIN_ID === 'string'
+    ? process.env.QUESTRADE_MARKET_DATA_LOGIN_ID.trim()
+    : '';
 const QUESTRADE_API_MAX_ATTEMPTS = 4;
 const QUESTRADE_API_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
@@ -3587,6 +3597,8 @@ const BENCHMARK_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const benchmarkReturnCache = new Map();
 const interestRateCache = new Map();
 const priceHistoryCache = new Map();
+const questradeSymbolSearchCache = new Map();
+const QUESTRADE_SYMBOL_SEARCH_TTL_MS = 12 * 60 * 60 * 1000;
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
 const PRICE_SERIES_CACHE_DIR = resolveCachePath('prices');
 const PRICE_SERIES_DEFAULT_START = '1990-01-01';
@@ -3673,13 +3685,30 @@ function writePriceSeriesCache(symbolKey, payload) {
 }
 
 const BENCHMARK_SYMBOLS = {
-  sp500: { symbol: '^GSPC', name: 'S&P 500' },
-  qqq: { symbol: 'QQQ', name: 'QQQ' },
+  sp500: {
+    name: 'S&P 500',
+    symbols: {
+      yahoo: '^GSPC',
+      questrade: 'SPY',
+    },
+    providerNames: {
+      questrade: 'S&P 500 (SPY)',
+    },
+  },
+  qqq: {
+    name: 'QQQ',
+    symbols: {
+      yahoo: 'QQQ',
+      questrade: 'QQQ',
+    },
+  },
 };
 
 const INTEREST_RATE_SERIES = {
-  symbol: '^IRX',
   name: '13-Week Treasury Bill Yield',
+  symbols: {
+    yahoo: '^IRX',
+  },
 };
 
 function resolveLoginDisplay(login) {
@@ -3687,6 +3716,235 @@ function resolveLoginDisplay(login) {
     return null;
   }
   return login.label || login.email || login.id;
+}
+
+function resolveQuestradeMarketDataLogin() {
+  if (!Array.isArray(allLogins) || allLogins.length === 0) {
+    return null;
+  }
+  if (QUESTRADE_MARKET_DATA_LOGIN_ID) {
+    const normalizedId = QUESTRADE_MARKET_DATA_LOGIN_ID.trim().toLowerCase();
+    const match = allLogins.find((login) => {
+      const id = login && login.id ? String(login.id).trim().toLowerCase() : '';
+      const label = login && login.label ? String(login.label).trim().toLowerCase() : '';
+      const email = login && login.email ? String(login.email).trim().toLowerCase() : '';
+      return normalizedId && (id === normalizedId || label === normalizedId || email === normalizedId);
+    });
+    if (match) {
+      return match;
+    }
+  }
+  return allLogins[0] || null;
+}
+
+function getQuestradeSymbolSearchCacheKey(login, symbol) {
+  if (!login || !symbol) {
+    return null;
+  }
+  const loginId = login.id ? String(login.id).trim() : '';
+  const normalizedSymbol = normalizeSymbol(symbol) || String(symbol).trim().toUpperCase();
+  if (!loginId || !normalizedSymbol) {
+    return null;
+  }
+  return `${loginId}|${normalizedSymbol}`;
+}
+
+function getCachedQuestradeSymbolSearch(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+  const entry = questradeSymbolSearchCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  if (entry.expiresAt && entry.expiresAt < Date.now()) {
+    questradeSymbolSearchCache.delete(cacheKey);
+    return null;
+  }
+  return entry.value || null;
+}
+
+function setCachedQuestradeSymbolSearch(cacheKey, value) {
+  if (!cacheKey || !value) {
+    return;
+  }
+  questradeSymbolSearchCache.set(cacheKey, {
+    value,
+    expiresAt: Date.now() + QUESTRADE_SYMBOL_SEARCH_TTL_MS,
+  });
+}
+
+async function fetchQuestradeSymbolSearch(login, symbol) {
+  const normalizedSymbol = normalizeSymbol(symbol) || String(symbol || '').trim().toUpperCase();
+  if (!login || !normalizedSymbol) {
+    return null;
+  }
+  const cacheKey = getQuestradeSymbolSearchCacheKey(login, normalizedSymbol);
+  if (cacheKey) {
+    const cached = getCachedQuestradeSymbolSearch(cacheKey);
+    if (cached) {
+      return cached;
+    }
+  }
+  const data = await questradeRequest(login, '/v1/symbols/search', {
+    params: { prefix: normalizedSymbol },
+  });
+  const symbols = data && Array.isArray(data.symbols) ? data.symbols : [];
+  if (!symbols.length) {
+    return null;
+  }
+  const exact = symbols.find(
+    (entry) => normalizeSymbol(entry && entry.symbol) === normalizedSymbol
+  );
+  const resolved = exact || symbols[0] || null;
+  if (cacheKey && resolved) {
+    setCachedQuestradeSymbolSearch(cacheKey, resolved);
+  }
+  return resolved;
+}
+
+async function fetchQuestradeHistoryForSymbol(symbolOrOptions, startDateKey, endDateKey) {
+  const options =
+    symbolOrOptions &&
+    typeof symbolOrOptions === 'object' &&
+    !(symbolOrOptions instanceof Date) &&
+    !Array.isArray(symbolOrOptions)
+      ? symbolOrOptions
+      : null;
+  const symbol = options ? options.symbol : symbolOrOptions;
+  const effectiveStartKey = options ? options.startDate || options.startDateKey : startDateKey;
+  const effectiveEndKey = options ? options.endDate || options.endDateKey : endDateKey;
+  const login = resolveQuestradeMarketDataLogin();
+  if (!login || !symbol || !effectiveStartKey || !effectiveEndKey) {
+    return [];
+  }
+  let detail = null;
+  try {
+    detail = await fetchQuestradeSymbolSearch(login, symbol);
+  } catch (error) {
+    return [];
+  }
+  const symbolId = Number(detail && detail.symbolId);
+  if (!Number.isFinite(symbolId) || symbolId <= 0) {
+    return [];
+  }
+  const startDate = parseDateOnlyString(effectiveStartKey) || new Date(`${effectiveStartKey}T00:00:00Z`);
+  const endDate = parseDateOnlyString(effectiveEndKey) || new Date(`${effectiveEndKey}T00:00:00Z`);
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    return [];
+  }
+  if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
+    return [];
+  }
+  const exclusiveEnd = addDays(endDate, 1) || new Date(endDate.getTime() + DAY_IN_MS);
+  try {
+    return await fetchQuestradePriceHistorySeries(
+      login,
+      symbolId,
+      startDate,
+      exclusiveEnd,
+      'market-data',
+      symbol
+    );
+  } catch (error) {
+    return [];
+  }
+}
+
+function extractQuestradeQuotePrice(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+  const candidates = [
+    quote.lastTradePrice,
+    quote.bidPrice,
+    quote.askPrice,
+    quote.prevDayClosePrice,
+    quote.closePrice,
+    quote.highPrice,
+    quote.lowPrice,
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function extractQuestradeQuoteTimestamp(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+  const raw = quote.lastTradeTime || quote.lastTradeTimeStamp || quote.tradeTime || null;
+  if (!raw) {
+    return null;
+  }
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+    return raw.toISOString();
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    const millis = raw > 2_000_000_000 ? raw : raw * 1000;
+    const parsed = new Date(millis);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  if (typeof raw === 'string') {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return null;
+}
+
+async function fetchQuestradeQuoteForSymbol(symbol) {
+  const login = resolveQuestradeMarketDataLogin();
+  if (!login || !symbol) {
+    return null;
+  }
+  let detail = null;
+  try {
+    detail = await fetchQuestradeSymbolSearch(login, symbol);
+  } catch (error) {
+    return null;
+  }
+  const symbolId = Number(detail && detail.symbolId);
+  if (!Number.isFinite(symbolId) || symbolId <= 0) {
+    return null;
+  }
+  let data = null;
+  try {
+    data = await questradeRequest(login, '/v1/markets/quotes', {
+      params: { ids: String(symbolId) },
+    });
+  } catch (error) {
+    try {
+      data = await questradeRequest(login, `/v1/markets/quotes/${symbolId}`);
+    } catch (_) {
+      return null;
+    }
+  }
+  const quotes = data && Array.isArray(data.quotes) ? data.quotes : Array.isArray(data) ? data : [];
+  if (!quotes.length) {
+    return null;
+  }
+  const quote =
+    quotes.find((entry) => Number(entry && entry.symbolId) === symbolId) || quotes[0] || null;
+  if (!quote) {
+    return null;
+  }
+  const price = extractQuestradeQuotePrice(quote);
+  if (!Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+  return {
+    price,
+    asOf: extractQuestradeQuoteTimestamp(quote),
+    source: 'questrade',
+  };
 }
 
 const app = express();
@@ -4523,11 +4781,12 @@ async function fetchPortfolioNewsFromOpenAi(params) {
   };
 }
 
-function getBenchmarkCacheKey(symbol, startDate, endDate) {
+function getBenchmarkCacheKey(symbol, startDate, endDate, provider) {
   if (!symbol || !startDate || !endDate) {
     return null;
   }
-  return [symbol, startDate, endDate].join('|');
+  const providerKey = normalizeMarketDataProvider(provider) || 'default';
+  return [symbol, startDate, endDate, providerKey].join('|');
 }
 
 function getCachedBenchmarkReturn(cacheKey) {
@@ -4552,11 +4811,12 @@ function setCachedBenchmarkReturn(cacheKey, value) {
   benchmarkReturnCache.set(cacheKey, { value, cachedAt: Date.now() });
 }
 
-function getInterestRateCacheKey(symbol, startDate, endDate) {
+function getInterestRateCacheKey(symbol, startDate, endDate, provider) {
   if (!symbol || !startDate || !endDate) {
     return null;
   }
-  return [symbol, startDate, endDate].join('|');
+  const providerKey = normalizeMarketDataProvider(provider) || 'default';
+  return [symbol, startDate, endDate, providerKey].join('|');
 }
 
 function getCachedInterestRate(cacheKey) {
@@ -4581,12 +4841,74 @@ function setCachedInterestRate(cacheKey, value) {
   interestRateCache.set(cacheKey, { value, cachedAt: Date.now() });
 }
 
-async function computeBenchmarkReturn(symbol, startDate, endDate) {
+function resolveSeriesSymbol(series, provider) {
+  if (!series) {
+    return null;
+  }
+  if (typeof series === 'string') {
+    return series;
+  }
+  const normalizedProvider = normalizeMarketDataProvider(provider);
+  const symbols = series.symbols && typeof series.symbols === 'object' ? series.symbols : null;
+  if (symbols && normalizedProvider && symbols[normalizedProvider]) {
+    return symbols[normalizedProvider];
+  }
+  if (symbols) {
+    if (symbols.yahoo) {
+      return symbols.yahoo;
+    }
+    const fallbackKey = Object.keys(symbols)[0];
+    if (fallbackKey) {
+      return symbols[fallbackKey];
+    }
+  }
+  return series.symbol || null;
+}
+
+function resolveSeriesName(series, provider) {
+  if (!series || typeof series !== 'object') {
+    return null;
+  }
+  const normalizedProvider = normalizeMarketDataProvider(provider);
+  if (
+    normalizedProvider &&
+    series.providerNames &&
+    Object.prototype.hasOwnProperty.call(series.providerNames, normalizedProvider)
+  ) {
+    return series.providerNames[normalizedProvider];
+  }
+  return series.name || null;
+}
+
+function isHistoryCoverageSufficient(history, startDateKey, endDateKey, toleranceDays = 10) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return false;
+  }
+  const first = history[0];
+  const last = history[history.length - 1];
+  const firstKey = first && first.date ? formatDateOnly(first.date) : null;
+  const lastKey = last && last.date ? formatDateOnly(last.date) : null;
+  if (!firstKey || !lastKey) {
+    return false;
+  }
+  const startDate = parseDateOnlyString(startDateKey);
+  const endDate = parseDateOnlyString(endDateKey);
+  const firstDate = parseDateOnlyString(firstKey);
+  const lastDate = parseDateOnlyString(lastKey);
+  if (!startDate || !endDate || !firstDate || !lastDate) {
+    return false;
+  }
+  const startGapDays = Math.max(0, Math.floor((firstDate.getTime() - startDate.getTime()) / DAY_IN_MS));
+  const endGapDays = Math.max(0, Math.floor((endDate.getTime() - lastDate.getTime()) / DAY_IN_MS));
+  return startGapDays <= toleranceDays && endGapDays <= toleranceDays;
+}
+
+async function computeBenchmarkReturnFromYahoo(symbol, startDate, endDate, provider = 'yahoo') {
   if (!symbol || !startDate || !endDate) {
     return null;
   }
 
-  const cacheKey = getBenchmarkCacheKey(symbol, startDate, endDate);
+  const cacheKey = getBenchmarkCacheKey(symbol, startDate, endDate, provider);
   if (cacheKey) {
     const cached = getCachedBenchmarkReturn(cacheKey);
     if (cached.hit) {
@@ -4611,6 +4933,7 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
             endPrice: cachedLast.price,
             returnRate: Number.isFinite(cachedGrowth) ? cachedGrowth : null,
             source: 'yahoo-finance2',
+            provider,
           };
           if (cacheKey) {
             setCachedBenchmarkReturn(cacheKey, cachedPayload);
@@ -4707,6 +5030,7 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
     endPrice: last.price,
     returnRate: Number.isFinite(growth) ? growth : null,
     source: 'yahoo-finance2',
+    provider,
   };
 
   if (cacheKey) {
@@ -4716,12 +5040,124 @@ async function computeBenchmarkReturn(symbol, startDate, endDate) {
   return payload;
 }
 
-async function computeAverageInterestRate(symbol, startDate, endDate) {
+async function computeBenchmarkReturnFromQuestrade(symbol, startDate, endDate, provider = 'questrade') {
   if (!symbol || !startDate || !endDate) {
     return null;
   }
 
-  const cacheKey = getInterestRateCacheKey(symbol, startDate, endDate);
+  const cacheKey = getBenchmarkCacheKey(symbol, startDate, endDate, provider);
+  if (cacheKey) {
+    const cached = getCachedBenchmarkReturn(cacheKey);
+    if (cached.hit) {
+      return cached.value;
+    }
+  }
+
+  const history = await fetchQuestradeHistoryForSymbol(symbol, startDate, endDate);
+  const normalized = Array.isArray(history)
+    ? history
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return null;
+          }
+          const entryDate =
+            entry.date instanceof Date && !Number.isNaN(entry.date.getTime())
+              ? entry.date
+              : typeof entry.date === 'string'
+                ? new Date(entry.date)
+                : null;
+          if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
+            return null;
+          }
+          const price = Number(entry.price);
+          if (!Number.isFinite(price) || price <= 0) {
+            return null;
+          }
+          return { date: entryDate, price };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.date - b.date)
+    : [];
+
+  if (!normalized.length) {
+    if (cacheKey) {
+      setCachedBenchmarkReturn(cacheKey, null);
+    }
+    return null;
+  }
+
+  if (!isHistoryCoverageSufficient(normalized, startDate, endDate)) {
+    if (cacheKey) {
+      setCachedBenchmarkReturn(cacheKey, null);
+    }
+    return null;
+  }
+
+  const first = normalized[0];
+  const last = normalized[normalized.length - 1];
+  if (!first || !last || !Number.isFinite(first.price) || !Number.isFinite(last.price) || first.price <= 0) {
+    if (cacheKey) {
+      setCachedBenchmarkReturn(cacheKey, null);
+    }
+    return null;
+  }
+
+  const growth = (last.price - first.price) / first.price;
+  const payload = {
+    symbol,
+    startDate: formatDateOnly(first.date),
+    endDate: formatDateOnly(last.date),
+    startPrice: first.price,
+    endPrice: last.price,
+    returnRate: Number.isFinite(growth) ? growth : null,
+    source: 'questrade',
+    provider,
+  };
+
+  if (cacheKey) {
+    setCachedBenchmarkReturn(cacheKey, payload);
+  }
+
+  return payload;
+}
+
+async function computeBenchmarkReturn(benchmark, startDate, endDate, options = {}) {
+  if (!benchmark || !startDate || !endDate) {
+    return null;
+  }
+
+  const providerOrder = Array.isArray(options.providerOrder) && options.providerOrder.length
+    ? options.providerOrder
+    : buildProviderOrder(options.providerPreference || MARKET_DATA_PROVIDER_PREFERENCE);
+
+  for (const provider of providerOrder) {
+    const normalizedProvider = normalizeMarketDataProvider(provider) || provider;
+    const symbol = resolveSeriesSymbol(benchmark, normalizedProvider);
+    if (!symbol) {
+      continue;
+    }
+    let result = null;
+    if (normalizedProvider === 'questrade') {
+      result = await computeBenchmarkReturnFromQuestrade(symbol, startDate, endDate, normalizedProvider);
+    } else if (normalizedProvider === 'yahoo') {
+      result = await computeBenchmarkReturnFromYahoo(symbol, startDate, endDate, normalizedProvider);
+    }
+    if (result) {
+      return result;
+    }
+  }
+
+  return null;
+}
+
+async function computeAverageInterestRate(series, startDate, endDate) {
+  const provider = 'yahoo';
+  const symbol = resolveSeriesSymbol(series, provider);
+  if (!symbol || !startDate || !endDate) {
+    return null;
+  }
+
+  const cacheKey = getInterestRateCacheKey(symbol, startDate, endDate, provider);
   if (cacheKey) {
     const cached = getCachedInterestRate(cacheKey);
     if (cached.hit) {
@@ -4862,6 +5298,7 @@ async function computeAverageInterestRate(symbol, startDate, endDate) {
     periodDays: Number.isFinite(periodDays) ? periodDays : null,
     dataPoints: normalized.length,
     source: 'yahoo-finance2',
+    provider,
   };
 
   if (cacheKey) {
@@ -6666,6 +7103,33 @@ function inferSplitRatioFromActivity(activity) {
   }
   const combined = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
   return parseSplitRatioFromText(combined);
+}
+
+function updateSymbolMetaId(meta, symbolId, timestampMs) {
+  if (!meta || !Number.isFinite(symbolId) || symbolId <= 0) {
+    return;
+  }
+  const nextTimestamp = Number.isFinite(timestampMs) ? timestampMs : null;
+  const currentId = Number.isFinite(meta.symbolId) ? meta.symbolId : null;
+  const currentTimestamp = Number.isFinite(meta.symbolIdTimestamp) ? meta.symbolIdTimestamp : null;
+
+  if (!currentId || currentId <= 0) {
+    meta.symbolId = symbolId;
+    meta.symbolIdTimestamp = nextTimestamp;
+    return;
+  }
+
+  if (currentId === symbolId) {
+    if (nextTimestamp !== null && (currentTimestamp === null || nextTimestamp > currentTimestamp)) {
+      meta.symbolIdTimestamp = nextTimestamp;
+    }
+    return;
+  }
+
+  if (nextTimestamp !== null && (currentTimestamp === null || nextTimestamp >= currentTimestamp)) {
+    meta.symbolId = symbolId;
+    meta.symbolIdTimestamp = nextTimestamp;
+  }
 }
 
 function collectSplitEventsFromActivities(processedActivities) {
@@ -11109,6 +11573,7 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
   })();
 
   let normalized = [];
+  let cachedCandidate = null;
   for (const candidate of candidates) {
     // Use any existing cached range that fully covers the requested window
     try {
@@ -11157,6 +11622,7 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     }
     normalized = normalizeYahooHistoricalEntries(history);
     if (normalized.length) {
+      cachedCandidate = candidate;
       try {
         const cacheKey = getPriceHistoryCacheKey(candidate, startDateKey, endDateKey);
         if (cacheKey) {
@@ -11173,41 +11639,91 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
   const questradeSymbolDetail =
     options && options.questradeSymbolDetail ? options.questradeSymbolDetail : null;
 
-  if (!normalized.length && options && options.login) {
-    const rawSymbolId = Number.isFinite(options.symbolId)
-      ? options.symbolId
-      : Number(options.symbolId);
-    const symbolId = Number.isFinite(rawSymbolId) ? rawSymbolId : null;
-    if (symbolId && symbolId > 0) {
-      const questradeSymbolIsUnquotable =
-        questradeSymbolDetail &&
-        (questradeSymbolDetail.isQuotable === false || questradeSymbolDetail.isTradable === false);
-      if (questradeSymbolIsUnquotable) {
-        if (DEBUG_TOTAL_PNL) {
-          debugTotalPnl(options.accountKey, 'Skipping Questrade candles for unquotable symbol', {
-            symbol,
-            symbolId,
-            symbolDescription: questradeSymbolDetail.description || null,
-          });
-        }
-        return normalized;
-      }
+  const rawSymbolId = options && Number.isFinite(options.symbolId)
+    ? options.symbolId
+    : Number(options && options.symbolId);
+  const symbolId = Number.isFinite(rawSymbolId) ? rawSymbolId : null;
+  const yahooLastDate =
+    normalized.length && normalized[normalized.length - 1]
+      ? normalized[normalized.length - 1].date
+      : null;
+  const yahooEndKey =
+    yahooLastDate instanceof Date && !Number.isNaN(yahooLastDate.getTime())
+      ? formatDateOnly(yahooLastDate)
+      : null;
+  const needsQuestradeBackfill =
+    normalized.length > 0 && yahooEndKey && yahooEndKey < endDateKey;
+
+  if (options && options.login && symbolId && (normalized.length === 0 || needsQuestradeBackfill)) {
+    const questradeSymbolIsUnquotable =
+      questradeSymbolDetail &&
+      (questradeSymbolDetail.isQuotable === false || questradeSymbolDetail.isTradable === false);
+    if (questradeSymbolIsUnquotable && normalized.length === 0) {
       if (DEBUG_TOTAL_PNL) {
-        debugTotalPnl(options.accountKey, 'Falling back to Questrade candles for price history', {
+        debugTotalPnl(options.accountKey, 'Skipping Questrade candles for unquotable symbol', {
           symbol,
           symbolId,
-          startDateKey,
-          endDateKey,
+          symbolDescription: questradeSymbolDetail.description || null,
         });
       }
-      normalized = await fetchQuestradePriceHistorySeries(
+      return normalized;
+    }
+    let questradeStartDate = startDate;
+    if (normalized.length > 0 && yahooEndKey) {
+      const parsedYahooEnd = parseDateOnlyString(yahooEndKey);
+      const nextStart = parsedYahooEnd ? addDays(parsedYahooEnd, 1) : null;
+      if (nextStart) {
+        questradeStartDate = nextStart;
+      }
+    }
+    if (questradeStartDate <= endDate) {
+      if (DEBUG_TOTAL_PNL) {
+        debugTotalPnl(options.accountKey, 'Fetching Questrade candles for price history', {
+          symbol,
+          symbolId,
+          startDateKey: formatDateOnly(questradeStartDate),
+          endDateKey,
+          needsBackfill: needsQuestradeBackfill,
+        });
+      }
+      const supplemental = await fetchQuestradePriceHistorySeries(
         options.login,
         symbolId,
-        startDate,
+        questradeStartDate,
         exclusiveEnd,
         options.accountKey,
         symbol
       );
+      if (Array.isArray(supplemental) && supplemental.length) {
+        const merged = new Map();
+        normalized.forEach((entry) => {
+          const key = entry && entry.date instanceof Date ? formatDateOnly(entry.date) : null;
+          if (key) {
+            merged.set(key, entry);
+          }
+        });
+        supplemental.forEach((entry) => {
+          const key = entry && entry.date instanceof Date ? formatDateOnly(entry.date) : null;
+          if (key) {
+            merged.set(key, entry);
+          }
+        });
+        normalized = Array.from(merged.values()).sort((a, b) => a.date - b.date);
+      }
+    }
+  }
+
+  if (Array.isArray(normalized) && normalized.length) {
+    const cacheKey = getPriceHistoryCacheKey(
+      cachedCandidate || normalizedSymbolKey || symbol,
+      startDateKey,
+      endDateKey
+    );
+    if (cacheKey) {
+      setCachedPriceHistory(cacheKey, normalized);
+    }
+    if (cachedCandidate) {
+      cacheYahooPriceSeries(cachedCandidate, startDateKey, endDateKey, normalized);
     }
   }
 
@@ -11752,6 +12268,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol });
 
     const symbolId = Number(activity.symbolId);
+    const symbolIdTimestamp = timestamp.getTime();
     const activityCurrency = normalizeCurrency(activity.currency) || null;
     const isTrade = isOrderLikeActivity(activity);
     const activityDesc = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
@@ -11774,15 +12291,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!symbolMeta.has(resolvedSymbol)) {
       symbolMeta.set(resolvedSymbol, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+        symbolIdTimestamp: Number.isFinite(symbolId) && symbolId > 0 ? symbolIdTimestamp : null,
         currency: resolvedCurrency || null,
         activityCurrency,
       });
     } else {
       const meta = symbolMeta.get(resolvedSymbol);
       if (meta) {
-        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
-          meta.symbolId = symbolId;
-        }
+        updateSymbolMetaId(meta, symbolId, symbolIdTimestamp);
         if (preferredFromActivity && (!inferredCurrency || preferredFromActivity === inferredCurrency)) {
           if (meta.currency !== preferredFromActivity) {
             meta.currency = preferredFromActivity;
@@ -11904,6 +12420,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     }
   }
 
+  const positionTimestamp =
+    activityContext && activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
+      ? activityContext.now.getTime()
+      : Date.now();
   if (Array.isArray(closingPositions)) {
     closingPositions.forEach((position) => {
       if (!position || typeof position !== 'object') {
@@ -11925,14 +12445,13 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       if (!symbolMeta.has(symbol)) {
         symbolMeta.set(symbol, {
           symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+          symbolIdTimestamp: Number.isFinite(symbolId) && symbolId > 0 ? positionTimestamp : null,
           currency: inferSymbolCurrency(symbol),
         });
       } else {
         const meta = symbolMeta.get(symbol);
         if (meta) {
-          if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
-            meta.symbolId = symbolId;
-          }
+          updateSymbolMetaId(meta, symbolId, positionTimestamp);
           if (!meta.currency) {
             meta.currency = inferSymbolCurrency(symbol);
           }
@@ -12819,6 +13338,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     if (!normalizedResolved || !symbolMemberSet.has(normalizedResolved)) return;
     processedActivities.push({ activity, timestamp, dateKey, symbol: normalizedResolved });
     const symbolId = Number(activity.symbolId);
+    const symbolIdTimestamp = timestamp.getTime();
     if (Number.isFinite(symbolId) && symbolId > 0) {
       symbolIds.add(symbolId);
       if (!symbolIdToSymbols.has(symbolId)) {
@@ -12830,14 +13350,13 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     if (!symbolMeta.has(normalizedResolved)) {
       symbolMeta.set(normalizedResolved, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+        symbolIdTimestamp: Number.isFinite(symbolId) && symbolId > 0 ? symbolIdTimestamp : null,
         currency: inferSymbolCurrency(normalizedResolved) || activityCurrency || null,
       });
     } else {
       const meta = symbolMeta.get(normalizedResolved);
       if (meta) {
-        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
-          meta.symbolId = symbolId;
-        }
+        updateSymbolMetaId(meta, symbolId, symbolIdTimestamp);
         if (!meta.currency) {
           meta.currency = inferSymbolCurrency(normalizedResolved) || activityCurrency || null;
         }
@@ -12916,6 +13435,10 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
     adjustNumericMap(activityQtyBySymbol, entry.symbol, qty, LEDGER_QUANTITY_EPSILON);
   });
   if (providedPositionsBySymbol.size) {
+    const positionTimestamp =
+      activityContext && activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
+        ? activityContext.now.getTime()
+        : Date.now();
     const syntheticDateKey = formatDateOnly(startDate);
     providedPositionsBySymbol.forEach((pos, sym) => {
       if (!symbolMemberSet.has(sym)) {
@@ -12934,6 +13457,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         (Number(pos.averageEntryPrice) && pos.averageEntryPrice > 0 ? Number(pos.averageEntryPrice) : null) ||
         (Number(pos.totalCost) && Number(targetQty) ? Number(pos.totalCost) / Number(targetQty) : null) ||
         (Number(pos.currentPrice) && pos.currentPrice > 0 ? Number(pos.currentPrice) : null);
+      const posSymbolId = Number(pos.symbolId);
       const currency =
         normalizeCurrency(pos.currency) ||
         (symbolMeta.get(sym) && symbolMeta.get(sym).currency) ||
@@ -12947,7 +13471,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         currency,
         description: 'Synthetic baseline from provided positions',
         symbol: sym,
-        symbolId: Number(pos.symbolId),
+        symbolId: posSymbolId,
       };
       if (syntheticDateKey) {
         const syntheticTimestamp =
@@ -12962,16 +13486,22 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         });
         adjustNumericMap(activityQtyBySymbol, sym, missingQty, LEDGER_QUANTITY_EPSILON);
       }
+      if (Number.isFinite(posSymbolId) && posSymbolId > 0) {
+        symbolIds.add(posSymbolId);
+        if (!symbolIdToSymbols.has(posSymbolId)) {
+          symbolIdToSymbols.set(posSymbolId, new Set());
+        }
+        symbolIdToSymbols.get(posSymbolId).add(sym);
+      }
       if (!symbolMeta.has(sym)) {
         symbolMeta.set(sym, {
-          symbolId: Number.isFinite(Number(pos.symbolId)) && Number(pos.symbolId) > 0 ? Number(pos.symbolId) : null,
+          symbolId: Number.isFinite(posSymbolId) && posSymbolId > 0 ? posSymbolId : null,
+          symbolIdTimestamp: Number.isFinite(posSymbolId) && posSymbolId > 0 ? positionTimestamp : null,
           currency,
         });
       } else {
         const meta = symbolMeta.get(sym) || {};
-        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(Number(pos.symbolId)) && Number(pos.symbolId) > 0) {
-          meta.symbolId = Number(pos.symbolId);
-        }
+        updateSymbolMetaId(meta, posSymbolId, positionTimestamp);
         if (!meta.currency && currency) {
           meta.currency = currency;
         }
@@ -13432,6 +13962,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol });
 
     const symbolId = Number(activity.symbolId);
+    const symbolIdTimestamp = timestamp.getTime();
     const activityCurrency = normalizeCurrency(activity.currency) || null;
 
     if (Number.isFinite(symbolId) && symbolId > 0) {
@@ -13444,15 +13975,14 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     if (!symbolMeta.has(resolvedSymbol)) {
       symbolMeta.set(resolvedSymbol, {
         symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+        symbolIdTimestamp: Number.isFinite(symbolId) && symbolId > 0 ? symbolIdTimestamp : null,
         currency: inferSymbolCurrency(resolvedSymbol) || null,
         activityCurrency,
       });
     } else {
       const meta = symbolMeta.get(resolvedSymbol);
       if (meta) {
-        if ((!meta.symbolId || meta.symbolId <= 0) && Number.isFinite(symbolId) && symbolId > 0) {
-          meta.symbolId = symbolId;
-        }
+        updateSymbolMetaId(meta, symbolId, symbolIdTimestamp);
         if (!meta.currency) {
           meta.currency = inferSymbolCurrency(resolvedSymbol) || activityCurrency || null;
         }
@@ -15647,10 +16177,11 @@ app.get('/api/benchmark-returns', async function (req, res) {
   }
 
   try {
+    const providerOrder = buildProviderOrder(MARKET_DATA_PROVIDER_PREFERENCE);
     const [sp500Return, qqqReturn, interestRate] = await Promise.all([
-      computeBenchmarkReturn(BENCHMARK_SYMBOLS.sp500.symbol, normalizedStart, normalizedEnd),
-      computeBenchmarkReturn(BENCHMARK_SYMBOLS.qqq.symbol, normalizedStart, normalizedEnd),
-      computeAverageInterestRate(INTEREST_RATE_SERIES.symbol, normalizedStart, normalizedEnd),
+      computeBenchmarkReturn(BENCHMARK_SYMBOLS.sp500, normalizedStart, normalizedEnd, { providerOrder }),
+      computeBenchmarkReturn(BENCHMARK_SYMBOLS.qqq, normalizedStart, normalizedEnd, { providerOrder }),
+      computeAverageInterestRate(INTEREST_RATE_SERIES, normalizedStart, normalizedEnd),
     ]);
 
     return res.json({
@@ -15658,19 +16189,19 @@ app.get('/api/benchmark-returns', async function (req, res) {
       endDate: normalizedEnd,
       sp500: sp500Return
         ? {
-            name: BENCHMARK_SYMBOLS.sp500.name,
+            name: resolveSeriesName(BENCHMARK_SYMBOLS.sp500, sp500Return.provider) || BENCHMARK_SYMBOLS.sp500.name,
             ...sp500Return,
           }
         : null,
       qqq: qqqReturn
         ? {
-            name: BENCHMARK_SYMBOLS.qqq.name,
+            name: resolveSeriesName(BENCHMARK_SYMBOLS.qqq, qqqReturn.provider) || BENCHMARK_SYMBOLS.qqq.name,
             ...qqqReturn,
           }
         : null,
       interestRate: interestRate
         ? {
-            name: INTEREST_RATE_SERIES.name,
+            name: resolveSeriesName(INTEREST_RATE_SERIES, interestRate.provider) || INTEREST_RATE_SERIES.name,
             ...interestRate,
           }
         : null,
@@ -15692,7 +16223,15 @@ app.get('/api/qqq-temperature', async function (req, res) {
     const includeLivePrice =
       forceRefresh ||
       (typeof req.query.live === 'string' && req.query.live.toLowerCase() === 'true');
-    const summary = await getQqqTemperatureSummary({ forceRefresh, includeLivePrice });
+    const summary = await getQqqTemperatureSummary({
+      forceRefresh,
+      includeLivePrice,
+      marketData: {
+        providerPreference: MARKET_DATA_PROVIDER_PREFERENCE,
+        fetchQuestradeHistory: fetchQuestradeHistoryForSymbol,
+        fetchQuestradeQuote: fetchQuestradeQuoteForSymbol,
+      },
+    });
     if (!summary) {
       return res.status(404).json({ message: 'QQQ temperature data unavailable' });
     }
