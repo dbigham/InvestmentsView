@@ -1992,7 +1992,7 @@ export default function SummaryMetrics({
   }, [selectionRange, resolvePointAtX]);
 
   const selectionRangeSummary = useMemo(() => {
-    if (!selectionSummary || !isTotalPnlMetric || symbolMode) {
+    if (!selectionSummary || !isTotalPnlMetric) {
       return null;
     }
     const startKey = normalizeSeriesDateKey(selectionSummary.startPoint?.date);
@@ -2007,7 +2007,7 @@ export default function SummaryMetrics({
       fallbackDeltaValue,
       useSnapshotTotals: false,
     });
-  }, [selectionSummary, isTotalPnlMetric, symbolMode, filteredTotalPnlSeries]);
+  }, [selectionSummary, isTotalPnlMetric, filteredTotalPnlSeries]);
 
   const hoverRangeSummary = useMemo(() => {
     if (!hoverPoint || !isTotalPnlMetric || symbolMode || selectionRangeSummary) {
