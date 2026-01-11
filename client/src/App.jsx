@@ -14272,9 +14272,12 @@ export default function App() {
 
   const symbolAnnualizedMapForPositions = useMemo(() => {
     const map = new Map();
-    const container =
-      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol) ||
-      resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll);
+    const preferAllTime = isAggregateSelection;
+    const container = preferAllTime
+      ? resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll) ||
+        resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol)
+      : resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbol) ||
+        resolveSymbolTotalsContainer(data?.accountTotalPnlBySymbolAll);
     const normalizeKey = (value) => normalizeSymbolGroupKey(value || '');
     if (!container || !Array.isArray(container.entries)) {
       return map;
@@ -14308,7 +14311,7 @@ export default function App() {
       }
     });
     return map;
-  }, [data?.accountTotalPnlBySymbolAll, data?.accountTotalPnlBySymbol, resolveSymbolTotalsContainer]);
+  }, [data?.accountTotalPnlBySymbolAll, data?.accountTotalPnlBySymbol, resolveSymbolTotalsContainer, isAggregateSelection]);
 
   const symbolAnnualizedByAccountMapForPositions = useMemo(() => {
     const mapByAccount = new Map();
@@ -14572,11 +14575,19 @@ export default function App() {
     if (!focusedSymbol) {
       return null;
     }
-    const entry = focusedSymbolTotalsEntry.current || focusedSymbolTotalsEntry.allTime || null;
+    const preferAllTime = isAggregateSelection;
+    const entry = preferAllTime
+      ? focusedSymbolTotalsEntry.allTime || focusedSymbolTotalsEntry.current || null
+      : focusedSymbolTotalsEntry.current || focusedSymbolTotalsEntry.allTime || null;
     if (!entry) {
       return null;
     }
-    const annualized = entry.annualizedReturn || focusedSymbolTotalsEntry.allTime?.annualizedReturn || null;
+    const annualized = preferAllTime
+      ? entry.annualizedReturn || focusedSymbolTotalsEntry.allTime?.annualizedReturn || null
+      : entry.annualizedReturn ||
+        focusedSymbolTotalsEntry.current?.annualizedReturn ||
+        focusedSymbolTotalsEntry.allTime?.annualizedReturn ||
+        null;
     const annualizedRate = Number.isFinite(Number(annualized?.rate)) ? Number(annualized.rate) : null;
     const annualizedAsOf =
       typeof annualized?.asOf === 'string' && annualized.asOf.trim()
@@ -14588,11 +14599,18 @@ export default function App() {
         : null;
     const annualizedIncomplete = annualized?.incomplete === true;
     const positionsTotalPnl = Number(focusedSymbolPnl?.totalPnl);
-    const totalPnlCad = Number.isFinite(positionsTotalPnl)
-      ? positionsTotalPnl
-      : Number.isFinite(entry.totalPnlCad)
-        ? entry.totalPnlCad
-        : null;
+    const entryTotalPnl = Number(entry.totalPnlCad);
+    const totalPnlCad = preferAllTime
+      ? Number.isFinite(entryTotalPnl)
+        ? entryTotalPnl
+        : Number.isFinite(positionsTotalPnl)
+          ? positionsTotalPnl
+          : null
+      : Number.isFinite(positionsTotalPnl)
+        ? positionsTotalPnl
+        : Number.isFinite(entryTotalPnl)
+          ? entryTotalPnl
+          : null;
     const equityFromPositions = Number(symbolFilteredPositions.total);
     const totalEquityCad = Number.isFinite(equityFromPositions)
       ? equityFromPositions
@@ -14617,6 +14635,7 @@ export default function App() {
     focusedSymbolPnl?.totalPnl,
     symbolFilteredPositions.total,
     asOf,
+    isAggregateSelection,
   ]);
 
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
