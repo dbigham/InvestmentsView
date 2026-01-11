@@ -553,8 +553,6 @@ function PositionsTable({
         const resolved = resolveMarketValueDisplayForRow(row);
         return isFiniteNumber(resolved.value) ? resolved.value : 0;
       };
-    } else if (header.key === 'currency' && marketValueMode !== 'default') {
-      accessorOverride = () => (marketValueMode === 'usd' ? 'USD' : 'CAD');
     }
     const sorter = compareRows(header, sortState.direction, accessorOverride);
     return decoratedPositions.slice().sort((a, b) => sorter(a, b));
@@ -1177,10 +1175,19 @@ function PositionsTable({
             formatMoney(position.currentPrice, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           );
           const marketValueDisplay = resolveMarketValueDisplayForRow(position);
+          const marketValueDigits =
+            marketValueMode !== 'default' &&
+            isFiniteNumber(marketValueDisplay.value) &&
+            Math.abs(marketValueDisplay.value) >= 1000
+              ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+              : { minimumFractionDigits: 2, maximumFractionDigits: 2 };
           const currentMarketValue = sanitizeDisplayValue(
-            formatMoney(marketValueDisplay.value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            formatMoney(marketValueDisplay.value, marketValueDigits)
           );
-          const marketValueCurrency = marketValueDisplay.currency || '';
+          const marketValueLabel =
+            marketValueMode !== 'default' && isFiniteNumber(marketValueDisplay.value)
+              ? `${currentMarketValue} ${marketValueDisplay.currency}`
+              : currentMarketValue;
           const fallbackKey = `${position.accountNumber || position.accountId || 'row'}:${
             position.symbolId ?? position.symbol ?? index
           }`;
@@ -1378,10 +1385,10 @@ function PositionsTable({
                 {currentPrice}
               </div>
               <div className="positions-table__cell positions-table__cell--numeric" role="cell">
-                {currentMarketValue}
+                {marketValueLabel}
               </div>
               <div className="positions-table__cell positions-table__cell--currency" role="cell">
-                <span>{marketValueCurrency}</span>
+                <span>{position.currency || ''}</span>
               </div>
               {showPortfolioShare ? (
                 <div className="positions-table__cell positions-table__cell--numeric" role="cell">
