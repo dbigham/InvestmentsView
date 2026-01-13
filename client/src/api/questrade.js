@@ -42,6 +42,45 @@ function fetchWithDemo(url, options = {}) {
   });
 }
 
+async function buildApiError(response, fallbackMessage) {
+  let text = '';
+  try {
+    text = await response.text();
+  } catch {
+    text = '';
+  }
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
+
+  let message = fallbackMessage;
+  if (payload && typeof payload === 'object') {
+    message = payload.message || payload.details || message;
+  } else if (text && text.trim()) {
+    message = text.trim();
+  }
+
+  const error = new Error(message);
+  if (payload && typeof payload === 'object') {
+    if (payload.code) {
+      error.code = payload.code;
+    }
+    if (payload.login) {
+      error.login = payload.login;
+    }
+    if (payload.details) {
+      error.details = payload.details;
+    }
+  }
+  error.status = response.status;
+  return error;
+}
+
 function buildUrl(accountId, options = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/summary', base);
@@ -268,21 +307,7 @@ function buildLoginsUrl() {
 export async function getSummary(accountId, options = {}) {
   const response = await fetchWithDemo(buildUrl(accountId, options));
   if (!response.ok) {
-    let message = 'Failed to load summary data';
-    try {
-      const payload = await response.json();
-      message = payload?.message || payload?.details || message;
-    } catch {
-      try {
-        const text = await response.text();
-        if (text && text.trim()) {
-          message = text.trim();
-        }
-      } catch {
-        // ignore
-      }
-    }
-    throw new Error(message);
+    throw await buildApiError(response, 'Failed to load summary data');
   }
   return response.json();
 }

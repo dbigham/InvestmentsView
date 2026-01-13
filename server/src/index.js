@@ -6387,6 +6387,48 @@ function updateLoginRefreshToken(login, nextRefreshToken) {
   persistTokenStore(tokenStoreState);
 }
 
+function isInvalidRefreshTokenResponse(status, payload) {
+  const numericStatus = Number(status);
+  if (numericStatus !== 400 && numericStatus !== 401) {
+    return false;
+  }
+  if (payload == null) {
+    return true;
+  }
+  if (typeof payload === 'string') {
+    const normalized = payload.trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+    if (normalized === 'bad request' || normalized === 'unauthorized') {
+      return true;
+    }
+    return (
+      normalized.includes('invalid') ||
+      normalized.includes('expired') ||
+      normalized.includes('revoked') ||
+      normalized.includes('token')
+    );
+  }
+  if (typeof payload === 'object') {
+    const errorCode = String(payload.error || payload.code || '').toLowerCase();
+    const errorDescription = String(
+      payload.error_description || payload.errorDescription || payload.message || ''
+    ).toLowerCase();
+    const combined = `${errorCode} ${errorDescription}`.trim();
+    if (!combined) {
+      return true;
+    }
+    return (
+      combined.includes('invalid') ||
+      combined.includes('expired') ||
+      combined.includes('revoked') ||
+      combined.includes('token')
+    );
+  }
+  return true;
+}
+
 async function refreshAccessToken(login) {
   if (!login || !login.refreshToken) {
     throw new Error('Missing refresh token for Questrade login');
@@ -6526,6 +6568,15 @@ async function refreshAccessToken(login) {
     const status = responsePayload ? responsePayload.status : 'NO_RESPONSE';
     const payload = responsePayload ? responsePayload.data : null;
     console.error('Failed to refresh Questrade token for login ' + resolveLoginDisplay(login), status, payload);
+    if (isInvalidRefreshTokenResponse(status, payload)) {
+      const error = new Error(
+        'Questrade refresh token is no longer valid for login ' + resolveLoginDisplay(login)
+      );
+      error.code = 'INVALID_REFRESH_TOKEN';
+      error.status = status;
+      error.login = sanitizeLoginForClient(login);
+      throw error;
+    }
     throw new Error('Unable to refresh Questrade token: ' + status);
   }
 
@@ -18755,6 +18806,14 @@ app.get('/api/summary', async function (req, res) {
 
     res.json(responsePayload);
   } catch (error) {
+    if (error && error.code === 'INVALID_REFRESH_TOKEN') {
+      return res.status(401).json({
+        message:
+          'Your Questrade refresh token expired. Generate a new token and update your login to continue.',
+        code: 'INVALID_REFRESH_TOKEN',
+        login: error.login || null,
+      });
+    }
     if (error.response) {
       return res.status(error.response.status).json({ message: 'Questrade API error', details: error.response.data });
     }

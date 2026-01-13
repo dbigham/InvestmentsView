@@ -569,6 +569,13 @@ textarea {
   color: var(--color-negative);
 }
 
+.status-message__actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .todo-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -6995,6 +7002,11 @@ button.time-pill:hover .time-pill__icon {
 .login-setup-dialog__status--error {
   background: rgba(255, 235, 230, 0.9);
   color: #7f1d1d;
+}
+
+.login-setup-dialog__status--warning {
+  background: rgba(254, 243, 199, 0.92);
+  color: #92400e;
 }
 
 .login-setup-dialog__status--success {

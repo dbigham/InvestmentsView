@@ -10,6 +10,9 @@ function resolveLoginDisplay(login) {
 
 export default function QuestradeLoginDialog({
   logins,
+  notice,
+  prefillEmail,
+  mode,
   onClose,
   onSave,
   onShowInstructions,
@@ -24,6 +27,22 @@ export default function QuestradeLoginDialog({
   const [status, setStatus] = useState({ saving: false, error: null, success: null });
   const [showAccountPrompt, setShowAccountPrompt] = useState(false);
   const [accountPromptMessage, setAccountPromptMessage] = useState('');
+  const didPrefillRef = useRef(false);
+  const isReconnect = mode === 'reconnect';
+  const allowClose = !isReconnect;
+  const titleText = isReconnect ? 'Reconnect Questrade' : 'Connect Questrade';
+  const subtitleText = isReconnect
+    ? 'Update your Questrade refresh token to continue syncing accounts.'
+    : 'Add your Questrade refresh token so the app can sync accounts.';
+  const primaryLabel = isReconnect
+    ? status.saving
+      ? 'Verifying...'
+      : status.error
+        ? 'Retry'
+        : 'Continue'
+    : status.saving
+      ? 'Saving...'
+      : 'Save login';
 
   const loginList = useMemo(() => (Array.isArray(logins) ? logins : []), [logins]);
 
@@ -34,6 +53,9 @@ export default function QuestradeLoginDialog({
   }, []);
 
   useEffect(() => {
+    if (!allowClose) {
+      return;
+    }
     const handler = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -42,7 +64,22 @@ export default function QuestradeLoginDialog({
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
+  }, [allowClose, onClose]);
+
+  useEffect(() => {
+    if (didPrefillRef.current) {
+      return;
+    }
+    if (email) {
+      didPrefillRef.current = true;
+      return;
+    }
+    const candidate = typeof prefillEmail === 'string' ? prefillEmail.trim() : '';
+    if (candidate) {
+      setEmail(candidate);
+      didPrefillRef.current = true;
+    }
+  }, [prefillEmail, email]);
 
   const handleSubmit = useCallback(
     async (event) => {
@@ -61,18 +98,24 @@ export default function QuestradeLoginDialog({
         await onSave({ email: trimmedEmail, refreshToken: trimmedToken });
         setEmail('');
         setRefreshToken('');
-        setStatus({ saving: false, error: null, success: 'Login saved. Add another if you like.' });
-        setShowAccountPrompt(true);
-        setAccountPromptMessage('');
-        if (emailInputRef.current && typeof emailInputRef.current.focus === 'function') {
-          emailInputRef.current.focus({ preventScroll: true });
+        if (isReconnect) {
+          setStatus({ saving: false, error: null, success: null });
+          setShowAccountPrompt(false);
+          setAccountPromptMessage('');
+        } else {
+          setStatus({ saving: false, error: null, success: 'Login saved. Add another if you like.' });
+          setShowAccountPrompt(true);
+          setAccountPromptMessage('');
+          if (emailInputRef.current && typeof emailInputRef.current.focus === 'function') {
+            emailInputRef.current.focus({ preventScroll: true });
+          }
         }
       } catch (error) {
         const message = error && error.message ? error.message : 'Failed to save login.';
         setStatus({ saving: false, error: message, success: null });
       }
     },
-    [email, refreshToken, onSave, status.saving]
+    [email, refreshToken, isReconnect, onSave, status.saving]
   );
 
   const handleAccountPromptYes = useCallback(() => {
@@ -99,29 +142,36 @@ export default function QuestradeLoginDialog({
       >
         <header className="login-setup-dialog__header">
           <div className="login-setup-dialog__heading">
-            <h2 id={titleId} className="login-setup-dialog__title">Connect Questrade</h2>
+            <h2 id={titleId} className="login-setup-dialog__title">{titleText}</h2>
             <p id={subtitleId} className="login-setup-dialog__subtitle">
-              Add your Questrade refresh token so the app can sync accounts.
+              {subtitleText}
             </p>
           </div>
-          <button type="button" className="login-setup-dialog__close" onClick={onClose} aria-label="Close dialog">
-            &times;
-          </button>
+          {allowClose ? (
+            <button type="button" className="login-setup-dialog__close" onClick={onClose} aria-label="Close dialog">
+              &times;
+            </button>
+          ) : null}
         </header>
         <form className="login-setup-dialog__form" onSubmit={handleSubmit}>
           <div className="login-setup-dialog__body">
             <section className="login-setup-dialog__panel login-setup-dialog__panel--form">
+              {notice ? (
+                <div className="login-setup-dialog__status login-setup-dialog__status--warning" role="status">
+                  {notice}
+                </div>
+              ) : null}
               {status.error ? (
                 <div className="login-setup-dialog__status login-setup-dialog__status--error" role="alert">
                   {status.error}
                 </div>
               ) : null}
-              {status.success ? (
+              {status.success && !isReconnect ? (
                 <div className="login-setup-dialog__status login-setup-dialog__status--success">
                   {status.success}
                 </div>
               ) : null}
-              {showAccountPrompt ? (
+              {showAccountPrompt && !isReconnect ? (
                 <div className="login-setup-dialog__followup">
                   <p className="login-setup-dialog__followup-text">
                     Would you like to name your accounts and set up groups now?
@@ -181,7 +231,7 @@ export default function QuestradeLoginDialog({
               <button type="button" className="login-setup-dialog__link" onClick={onShowInstructions}>
                 How do I get a refresh token?
               </button>
-              {typeof onStartDemoMode === 'function' ? (
+              {!isReconnect && typeof onStartDemoMode === 'function' ? (
                 <div className="login-setup-dialog__demo">
                   <div className="login-setup-dialog__demo-title">Just exploring?</div>
                   <p className="login-setup-dialog__demo-text">
@@ -216,11 +266,13 @@ export default function QuestradeLoginDialog({
             </aside>
           </div>
           <footer className="login-setup-dialog__footer">
-            <button type="button" className="login-setup-dialog__button" onClick={onClose} disabled={status.saving}>
-              Close
-            </button>
+            {allowClose ? (
+              <button type="button" className="login-setup-dialog__button" onClick={onClose} disabled={status.saving}>
+                Close
+              </button>
+            ) : null}
             <button type="submit" className="login-setup-dialog__button login-setup-dialog__button--primary" disabled={status.saving}>
-              {status.saving ? 'Saving...' : 'Save login'}
+              {primaryLabel}
             </button>
           </footer>
         </form>
@@ -238,6 +290,9 @@ QuestradeLoginDialog.propTypes = {
       updatedAt: PropTypes.string,
     })
   ),
+  notice: PropTypes.string,
+  prefillEmail: PropTypes.string,
+  mode: PropTypes.oneOf(['setup', 'reconnect']),
   onClose: PropTypes.func.isRequired,
   onSave: PropTypes.func.isRequired,
   onShowInstructions: PropTypes.func.isRequired,
@@ -247,6 +302,9 @@ QuestradeLoginDialog.propTypes = {
 
 QuestradeLoginDialog.defaultProps = {
   logins: [],
+  notice: null,
+  prefillEmail: '',
+  mode: 'setup',
   onStartAccountStructure: null,
   onStartDemoMode: null,
 };

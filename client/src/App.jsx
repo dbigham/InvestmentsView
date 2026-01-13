@@ -5744,6 +5744,7 @@ export default function App() {
     updatedAt: null,
   });
   const [loginSetupPrompted, setLoginSetupPrompted] = useState(false);
+  const [invalidRefreshTokenPrompted, setInvalidRefreshTokenPrompted] = useState(false);
   const [showLoginSetupDialog, setShowLoginSetupDialog] = useState(false);
   const [showRefreshTokenHelpDialog, setShowRefreshTokenHelpDialog] = useState(false);
   const [loginSetupNeedsRefresh, setLoginSetupNeedsRefresh] = useState(false);
@@ -6304,6 +6305,17 @@ export default function App() {
       return nextKey;
     });
   }, []);
+
+  const handleReconnectLogin = useCallback(
+    async ({ email, refreshToken }) => {
+      await addLogin({ email, refreshToken });
+      await refreshLoginSetup();
+      setShowLoginSetupDialog(false);
+      setLoginSetupNeedsRefresh(false);
+      triggerRefreshNotice('Refreshing account data...');
+    },
+    [refreshLoginSetup, triggerRefreshNotice]
+  );
 
   const handleCloseAccountStructureDialog = useCallback(() => {
     setShowAccountStructureDialog(false);
@@ -12135,7 +12147,31 @@ export default function App() {
   const showContent = hasData;
   const isMissingLoginsError =
     !demoModeActive &&
-    Boolean(error && typeof error.message === 'string' && /no questrade logins configured yet/i.test(error.message));
+    Boolean(
+      error &&
+        (error.code === 'NO_LOGINS' ||
+          (typeof error.message === 'string' && /no questrade logins configured yet/i.test(error.message)))
+    );
+  const isInvalidRefreshTokenError =
+    !demoModeActive && Boolean(error && error.code === 'INVALID_REFRESH_TOKEN');
+  const invalidRefreshLogin =
+    isInvalidRefreshTokenError && error && error.login && typeof error.login === 'object'
+      ? error.login
+      : null;
+  const invalidRefreshLoginLabel = invalidRefreshLogin
+    ? invalidRefreshLogin.label || invalidRefreshLogin.email || invalidRefreshLogin.id || null
+    : null;
+  const loginSetupNotice = isInvalidRefreshTokenError
+    ? `Your Questrade refresh token${invalidRefreshLoginLabel ? ' for ' + invalidRefreshLoginLabel : ''} is no longer valid. Generate a new token and paste it below to reconnect.`
+    : null;
+  const loginSetupPrefillEmail = (() => {
+    if (!isInvalidRefreshTokenError || !invalidRefreshLogin) {
+      return '';
+    }
+    const candidate = invalidRefreshLogin.email || invalidRefreshLogin.id || '';
+    return typeof candidate === 'string' ? candidate.trim() : '';
+  })();
+  const loginDialogMode = isInvalidRefreshTokenError ? 'reconnect' : 'setup';
 
   useEffect(() => {
     if (!isMissingLoginsError) {
@@ -12144,6 +12180,21 @@ export default function App() {
     setShowLoginSetupDialog(true);
     setLoginSetupPrompted(true);
   }, [isMissingLoginsError]);
+
+  useEffect(() => {
+    if (!isInvalidRefreshTokenError) {
+      if (invalidRefreshTokenPrompted) {
+        setInvalidRefreshTokenPrompted(false);
+      }
+      return;
+    }
+    if (invalidRefreshTokenPrompted) {
+      return;
+    }
+    setShowLoginSetupDialog(true);
+    setLoginSetupPrompted(true);
+    setInvalidRefreshTokenPrompted(true);
+  }, [isInvalidRefreshTokenError, invalidRefreshTokenPrompted]);
 
   const handleShowPnlBreakdown = useCallback(
     (mode, accountKey = null, options = {}) => {
@@ -15298,8 +15349,19 @@ export default function App() {
 
         {error && !isMissingLoginsError && (
           <div className="status-message error">
-            <strong>Unable to load data.</strong>
+            <strong>{isInvalidRefreshTokenError ? 'Questrade login needs attention.' : 'Unable to load data.'}</strong>
             <p>{error.message}</p>
+            {isInvalidRefreshTokenError ? (
+              <div className="status-message__actions">
+                <button
+                  type="button"
+                  className="pnl-dialog__link-button"
+                  onClick={handleOpenLoginSetupDialog}
+                >
+                  Update refresh token
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -16022,8 +16084,11 @@ export default function App() {
       {showLoginSetupDialog && (
         <QuestradeLoginDialog
           logins={loginSetupState.logins}
+          notice={loginSetupNotice}
+          prefillEmail={loginSetupPrefillEmail}
+          mode={loginDialogMode}
           onClose={handleCloseLoginSetupDialog}
-          onSave={handleSaveLogin}
+          onSave={isInvalidRefreshTokenError ? handleReconnectLogin : handleSaveLogin}
           onShowInstructions={handleShowRefreshTokenHelpDialog}
           onStartAccountStructure={handleStartAccountStructureFromLogin}
           onStartDemoMode={handleStartDemoMode}
