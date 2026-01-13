@@ -48,10 +48,18 @@ import AccountActionDialog from './components/AccountActionDialog';
 import QuestradeLoginDialog from './components/QuestradeLoginDialog';
 import QuestradeRefreshTokenDialog from './components/QuestradeRefreshTokenDialog';
 import AccountStructureDialog from './components/AccountStructureDialog';
-import { formatMoney, formatNumber, formatDate, formatPercent, formatSignedPercent } from './utils/formatters';
+import {
+  formatMoney,
+  formatNumber,
+  formatDate,
+  formatPercent,
+  formatSignedMoney,
+  formatSignedPercent,
+} from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
 import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
+import { resolveSymbolAnnualizedEntry } from './utils/annualized.js';
 import {
   buildAccountViewUrl,
   readAccountIdFromLocation,
@@ -910,42 +918,83 @@ function formatPortfolioShare(value) {
   return `${formatNumber(numeric, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
-function buildPositionsAllocationTable(positions) {
+function resolveSymbolTotalPnlValue(symbolKey, accountId, symbolTotalPnlByAccountMap) {
+  if (!symbolKey || !(symbolTotalPnlByAccountMap instanceof Map)) {
+    return null;
+  }
+  const accountKey =
+    accountId !== null && accountId !== undefined && accountId !== '' ? String(accountId) : '';
+  if (accountKey && symbolTotalPnlByAccountMap.has(accountKey)) {
+    const accountMap = symbolTotalPnlByAccountMap.get(accountKey);
+    return accountMap?.get(symbolKey) ?? null;
+  }
+  if (symbolTotalPnlByAccountMap.has('all')) {
+    const aggregateMap = symbolTotalPnlByAccountMap.get('all');
+    return aggregateMap?.get(symbolKey) ?? null;
+  }
+  return null;
+}
+
+function buildPositionsAllocationTable(positions, options = {}) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return 'No positions';
   }
+
+  const sectionDivider = '-'.repeat(80);
+  const emptyCell = '\u2014';
+  const {
+    symbolTotalPnlByAccountMap = null,
+    symbolAnnualizedByAccountMap = null,
+    symbolAnnualizedMap = null,
+    accountKey = null,
+    includeNotes = true,
+    includeTarget = null,
+  } = options;
+
+  const hasTargetData =
+    includeTarget === true
+      ? true
+      : includeTarget === false
+        ? false
+        : positions.some((row) => Number.isFinite(row?.targetProportion));
 
   const columns = [
     {
       key: 'symbol',
       label: 'Symbol',
-      getValue: (row) => (row.symbol ? String(row.symbol).trim() : '—'),
+      getValue: (row) => (row.symbol ? String(row.symbol).trim() : emptyCell),
     },
     {
       key: 'portfolioShare',
       label: '% of portfolio',
+      align: 'right',
       getValue: (row) => formatPortfolioShare(row.portfolioShare),
     },
-    {
-      key: 'targetProportion',
-      label: 'Target %',
-      getValue: (row) => {
-        if (!Number.isFinite(row.targetProportion)) {
-          return '—';
-        }
-        return `${formatNumber(row.targetProportion, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}%`;
-      },
-    },
+    ...(hasTargetData
+      ? [
+        {
+          key: 'targetProportion',
+          label: 'Target %',
+          align: 'right',
+          getValue: (row) => {
+            if (!Number.isFinite(row.targetProportion)) {
+              return emptyCell;
+            }
+            return `${formatNumber(row.targetProportion, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}%`;
+          },
+        },
+      ]
+      : []),
     {
       key: 'shares',
       label: 'Shares',
       getValue: (row) => {
         const formattedQuantity = formatQuantity(row.openQuantity);
-        if (formattedQuantity === '—') {
-          return '—';
+        if (formattedQuantity === emptyCell) {
+          return emptyCell;
         }
         const numericQuantity = Number(row.openQuantity);
         const isSingular = Number.isFinite(numericQuantity) && Math.abs(numericQuantity - 1) < 1e-9;
@@ -957,25 +1006,84 @@ function buildPositionsAllocationTable(positions) {
       label: 'Current value',
       getValue: (row) => {
         const formattedValue = formatMoney(row.currentMarketValue);
-        if (formattedValue === '—') {
-          return '—';
+        if (formattedValue === emptyCell) {
+          return emptyCell;
         }
         const currency = row.currency ? String(row.currency).trim().toUpperCase() : '';
         return currency ? `${formattedValue} ${currency}` : formattedValue;
       },
     },
+    {
+      key: 'totalPnl',
+      label: 'Total P&L',
+      align: 'right',
+      getValue: (row) => {
+        const symbolKey = normalizeSymbolGroupKey(row?.symbol || '');
+        const resolvedAccountKey = row?.accountId ?? row?.accountNumber ?? accountKey;
+        const mappedTotal = resolveSymbolTotalPnlValue(symbolKey, resolvedAccountKey, symbolTotalPnlByAccountMap);
+        const baseTotal = Number.isFinite(mappedTotal)
+          ? mappedTotal
+          : Number.isFinite(row?.totalPnl)
+            ? row.totalPnl
+            : null;
+        const dayPnl = Number.isFinite(row?.normalizedDayPnl)
+          ? row.normalizedDayPnl
+          : Number.isFinite(row?.dayPnl)
+            ? row.dayPnl
+            : 0;
+        const totalValue =
+          Number.isFinite(baseTotal) && Number.isFinite(dayPnl) ? baseTotal + dayPnl : baseTotal;
+        if (!Number.isFinite(totalValue)) {
+          return emptyCell;
+        }
+        const formatted = formatSignedMoney(totalValue);
+        return formatted === emptyCell ? emptyCell : `${formatted} CAD`;
+      },
+    },
+    {
+      key: 'annualizedReturn',
+      label: 'Annualized return',
+      align: 'right',
+      getValue: (row) => {
+        const symbolKey = normalizeSymbolGroupKey(row?.symbol || '');
+        const resolvedAccountKey = row?.accountId ?? row?.accountNumber ?? accountKey;
+        const annualizedEntry = resolveSymbolAnnualizedEntry(
+          symbolKey,
+          resolvedAccountKey,
+          symbolAnnualizedByAccountMap,
+          symbolAnnualizedMap
+        );
+        const rate = annualizedEntry && Number.isFinite(annualizedEntry.rate) ? annualizedEntry.rate : null;
+        if (!Number.isFinite(rate)) {
+          return emptyCell;
+        }
+        return formatPercent(rate * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      },
+    },
   ];
 
-  const rows = positions.map((position) => {
-    return columns.map((column) => {
-      try {
-        return column.getValue(position) ?? '—';
-      } catch (error) {
-        console.error('Failed to format column', column.key, error);
-        return '—';
+  const rows = positions
+    .slice()
+    .sort((a, b) => {
+      const aValue = Number(a?.currentMarketValue ?? 0) || 0;
+      const bValue = Number(b?.currentMarketValue ?? 0) || 0;
+      if (aValue !== bValue) {
+        return bValue - aValue;
       }
+      const aSymbol = a?.symbol ? String(a.symbol) : '';
+      const bSymbol = b?.symbol ? String(b.symbol) : '';
+      return aSymbol.localeCompare(bSymbol, undefined, { sensitivity: 'base' });
+    })
+    .map((position) => {
+      return columns.map((column) => {
+        try {
+          return column.getValue(position) ?? emptyCell;
+        } catch (error) {
+          console.error('Failed to format column', column.key, error);
+          return emptyCell;
+        }
+      });
     });
-  });
 
   const header = columns.map((column) => column.label);
   const widths = header.map((label, columnIndex) => {
@@ -991,7 +1099,9 @@ function buildPositionsAllocationTable(positions) {
     return cells
       .map((cell, index) => {
         const value = typeof cell === 'string' ? cell : String(cell ?? '');
-        return value.padEnd(widths[index], ' ');
+        const column = columns[index];
+        const alignRight = column && column.align === 'right';
+        return alignRight ? value.padStart(widths[index], ' ') : value.padEnd(widths[index], ' ');
       })
       .join('  ');
   };
@@ -1062,9 +1172,10 @@ function buildPositionsAllocationTable(positions) {
     }
   });
 
-  if (noteEntries.length) {
+  if (includeNotes && noteEntries.length) {
     lines.push('');
     lines.push('Notes:');
+    lines.push('');
     noteEntries.forEach((entry) => {
       lines.push(entry);
     });
@@ -1073,8 +1184,846 @@ function buildPositionsAllocationTable(positions) {
   return lines.join('\n');
 }
 
-function buildClipboardSummary({ positions, planningContext }) {
+function buildAccountHierarchySummary({
+  selectedAccountId,
+  accounts,
+  accountGroups,
+  groupRelations,
+  accountFunding,
+  positions,
+  symbolTotalPnlByAccountMap,
+  symbolAnnualizedByAccountMap,
+  symbolAnnualizedMap,
+}) {
+  if (!selectedAccountId || !Array.isArray(accounts) || accounts.length === 0) {
+    return null;
+  }
+
+  const sectionDivider = '-'.repeat(80);
+
+  const resolvedAccounts = accounts.filter(Boolean);
+  const resolvedGroups = Array.isArray(accountGroups) ? accountGroups.filter(Boolean) : [];
+  const resolvedRelations = groupRelations && typeof groupRelations === 'object' ? groupRelations : {};
+
+  const normalizeLabel = (value) => {
+    if (!value) {
+      return '';
+    }
+    return String(value)
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const toFriendlyLabel = (value) => {
+    const normalized = normalizeLabel(value);
+    if (!normalized) {
+      return '';
+    }
+    return normalized
+      .split(' ')
+      .map((word) => {
+        if (!word) {
+          return '';
+        }
+        const isShort = word.length <= 3;
+        const isAllCaps = word === word.toUpperCase();
+        if (isShort || isAllCaps) {
+          return word.toUpperCase();
+        }
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      })
+      .filter(Boolean)
+      .join(' ');
+  };
+
+  const buildPrimaryLabel = (account) => {
+    if (!account) {
+      return 'Account';
+    }
+    const displayName = normalizeLabel(account.displayName);
+    if (displayName) {
+      return displayName;
+    }
+    const ownerLabel = normalizeLabel(account.ownerLabel);
+    if (ownerLabel) {
+      return ownerLabel;
+    }
+    const typeLabel = toFriendlyLabel(account.clientAccountType || account.type);
+    if (account.isPrimary && typeLabel) {
+      return `Main ${typeLabel}`;
+    }
+    if (typeLabel) {
+      return typeLabel;
+    }
+    const number = account.number ? String(account.number).trim() : '';
+    if (number) {
+      return `Account ${number}`;
+    }
+    return 'Account';
+  };
+
+  const groupsById = new Map();
+  const groupNamesByKey = new Map();
+  const groupIdsByKey = new Map();
+  const groupNodesByKey = new Map();
+  const groupNodesList = [];
+  const accountNodes = [];
+
+  const baseGroupCount = resolvedGroups.length;
+  let syntheticGroupIndex = 0;
+
+  resolvedGroups.forEach((group, index) => {
+    const rawName = typeof group.name === 'string' ? group.name.trim() : '';
+    const key = normalizeAccountGroupKey(rawName);
+    if (key) {
+      if (!groupNamesByKey.has(key)) {
+        groupNamesByKey.set(key, rawName);
+      }
+      if (group.id !== undefined && group.id !== null) {
+        groupIdsByKey.set(key, String(group.id).trim());
+      }
+    }
+    if (group && group.id !== undefined && group.id !== null) {
+      groupsById.set(String(group.id).trim(), group);
+    }
+    if (group) {
+      const groupName = typeof group.name === 'string' ? group.name.trim() : '';
+      if (groupName && key) {
+        const node = {
+          type: 'group',
+          option: { primary: groupName },
+          orderIndex: index,
+          normalizedKey: key,
+          children: [],
+          parent: null,
+        };
+        groupNodesByKey.set(key, node);
+        groupNodesList.push(node);
+      }
+    }
+  });
+
+  resolvedAccounts.forEach((account, index) => {
+    const rawGroup = typeof account.accountGroup === 'string' ? account.accountGroup.trim() : '';
+    const key = normalizeAccountGroupKey(rawGroup);
+    if (key && !groupNamesByKey.has(key)) {
+      groupNamesByKey.set(key, rawGroup);
+    }
+    if (shouldHideAccountSummaryEntry(account)) {
+      return;
+    }
+    accountNodes.push({
+      type: 'account',
+      option: { primary: buildPrimaryLabel(account) },
+      orderIndex: index,
+      account,
+      children: [],
+    });
+  });
+
+  Object.entries(resolvedRelations).forEach(([childName, parents]) => {
+    const childKey = normalizeAccountGroupKey(childName);
+    if (childKey && !groupNamesByKey.has(childKey)) {
+      groupNamesByKey.set(childKey, childName);
+    }
+    const parentList = Array.isArray(parents) ? parents : [parents];
+    parentList.forEach((parentName) => {
+      const parentKey = normalizeAccountGroupKey(parentName);
+      if (parentKey && !groupNamesByKey.has(parentKey)) {
+        groupNamesByKey.set(parentKey, parentName);
+      }
+    });
+  });
+
+  const groupParentsMap = new Map();
+  const groupChildrenMap = new Map();
+
+  Object.entries(resolvedRelations).forEach(([childName, parents]) => {
+    const childKey = normalizeAccountGroupKey(childName);
+    if (!childKey) {
+      return;
+    }
+    const parentList = Array.isArray(parents) ? parents : [parents];
+    parentList.forEach((parentName) => {
+      const parentKey = normalizeAccountGroupKey(parentName);
+      if (!parentKey) {
+        return;
+      }
+      if (!groupParentsMap.has(childKey)) {
+        groupParentsMap.set(childKey, new Set());
+      }
+      groupParentsMap.get(childKey).add(parentKey);
+
+      if (!groupChildrenMap.has(parentKey)) {
+        groupChildrenMap.set(parentKey, new Set());
+      }
+      groupChildrenMap.get(parentKey).add(childKey);
+    });
+  });
+
+  const accountsByGroupKey = new Map();
+  resolvedAccounts.forEach((account) => {
+    if (shouldHideAccountSummaryEntry(account)) {
+      return;
+    }
+    const key = normalizeAccountGroupKey(account.accountGroup);
+    if (!key) {
+      return;
+    }
+    if (!accountsByGroupKey.has(key)) {
+      accountsByGroupKey.set(key, []);
+    }
+    accountsByGroupKey.get(key).push(account);
+  });
+
+  const allGroupKeys = new Set();
+  groupNamesByKey.forEach((_, key) => allGroupKeys.add(key));
+  accountsByGroupKey.forEach((_, key) => allGroupKeys.add(key));
+  groupChildrenMap.forEach((_, key) => allGroupKeys.add(key));
+  groupParentsMap.forEach((_, key) => allGroupKeys.add(key));
+
+  const resolveGroupLabel = (key) => groupNamesByKey.get(key) || key;
+
+  const resolveAccountKey = (account) => {
+    if (!account || typeof account !== 'object') {
+      return null;
+    }
+    if (account.id !== undefined && account.id !== null) {
+      const id = String(account.id).trim();
+      if (id) {
+        return id;
+      }
+    }
+    const number = account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+    return number || null;
+  };
+
+  const resolveFundingEntry = (key) => {
+    if (!key || !accountFunding || typeof accountFunding !== 'object') {
+      return null;
+    }
+    const entry = accountFunding[key];
+    return entry && typeof entry === 'object' ? entry : null;
+  };
+
+  const resolveStartDate = (entry, mode, account) => {
+    const candidates =
+      mode === 'all'
+        ? [
+          entry?.annualizedReturnAllTime?.startDate,
+          entry?.annualizedReturn?.startDate,
+          entry?.annualizedReturnStartDate,
+          entry?.cagrStartDate,
+          entry?.periodStartDate,
+          account?.cagrStartDate,
+        ]
+        : [
+          entry?.annualizedReturn?.startDate,
+          entry?.annualizedReturnStartDate,
+          entry?.cagrStartDate,
+          entry?.periodStartDate,
+          account?.cagrStartDate,
+          entry?.annualizedReturnAllTime?.startDate,
+        ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+    return null;
+  };
+
+  const resolveAnnualizedRate = (entry, mode) => {
+    const candidates =
+      mode === 'all'
+        ? [
+          entry?.annualizedReturnAllTime?.rate,
+          entry?.annualizedReturn?.rate,
+          entry?.annualizedReturnRate,
+        ]
+        : [
+          entry?.annualizedReturn?.rate,
+          entry?.annualizedReturnRate,
+          entry?.annualizedReturnAllTime?.rate,
+        ];
+    for (const candidate of candidates) {
+      if (Number.isFinite(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+
+  const resolveTotalPnl = (entry, mode) => {
+    const candidates =
+      mode === 'all'
+        ? [
+          entry?.totalPnl?.allTimeCad,
+          entry?.totalPnlCad,
+          entry?.totalPnl?.combinedCad,
+          entry?.totalPnlSinceDisplayStartCad,
+        ]
+        : [
+          entry?.totalPnlSinceDisplayStartCad,
+          entry?.totalPnl?.combinedCad,
+          entry?.totalPnlCad,
+          entry?.totalPnl?.allTimeCad,
+        ];
+    for (const candidate of candidates) {
+      if (Number.isFinite(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+
+  const resolveTotalEquity = (primaryEntry, fallbackEntry) => {
+    if (Number.isFinite(primaryEntry?.totalEquityCad)) {
+      return primaryEntry.totalEquityCad;
+    }
+    if (Number.isFinite(fallbackEntry?.totalEquityCad)) {
+      return fallbackEntry.totalEquityCad;
+    }
+    return null;
+  };
+
+  const formatAmount = (value) => (Number.isFinite(value) ? `${formatMoney(value)} CAD` : '—');
+  const formatRate = (value) =>
+    Number.isFinite(value)
+      ? formatPercent(value * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : '—';
+  const formatDateValue = (value) => {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim().slice(0, 10);
+    }
+    return '—';
+  };
+
+  const collectGroupAccountIds = (groupKey) => {
+    const accountIds = new Set();
+    if (!groupKey) {
+      return accountIds;
+    }
+    const queue = [groupKey];
+    const visited = new Set();
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      const members = accountsByGroupKey.get(current) || [];
+      members.forEach((account) => {
+        const accountId = resolveAccountKey(account);
+        if (accountId) {
+          accountIds.add(accountId);
+        }
+      });
+      const children = groupChildrenMap.get(current);
+      if (children && children.size) {
+        children.forEach((childKey) => {
+          if (childKey && !visited.has(childKey)) {
+            queue.push(childKey);
+          }
+        });
+      }
+    }
+    return accountIds;
+  };
+
+  const positionsByAccountKey = new Map();
+  const positionsSource = Array.isArray(positions) ? positions.filter(Boolean) : [];
+  const addPositionToAccount = (key, position) => {
+    if (!key) {
+      return;
+    }
+    if (!positionsByAccountKey.has(key)) {
+      positionsByAccountKey.set(key, []);
+    }
+    positionsByAccountKey.get(key).push(position);
+  };
+
+  positionsSource.forEach((position) => {
+    const accountId =
+      position?.accountId !== undefined && position?.accountId !== null ? String(position.accountId).trim() : '';
+    const accountNumber =
+      position?.accountNumber !== undefined && position?.accountNumber !== null
+        ? String(position.accountNumber).trim()
+        : '';
+    if (accountId) {
+      addPositionToAccount(accountId, position);
+    }
+    if (accountNumber && accountNumber !== accountId) {
+      addPositionToAccount(accountNumber, position);
+    }
+  });
+
+  const collectPositionsForAccount = (account) => {
+    if (!account) {
+      return [];
+    }
+    const keys = new Set();
+    const accountId = account?.id !== undefined && account?.id !== null ? String(account.id).trim() : '';
+    const accountNumber =
+      account?.number !== undefined && account?.number !== null ? String(account.number).trim() : '';
+    if (accountId) {
+      keys.add(accountId);
+    }
+    if (accountNumber) {
+      keys.add(accountNumber);
+    }
+    const results = [];
+    const seen = new Set();
+    keys.forEach((key) => {
+      const entries = positionsByAccountKey.get(key) || [];
+      entries.forEach((entry) => {
+        if (!seen.has(entry)) {
+          seen.add(entry);
+          results.push(entry);
+        }
+      });
+    });
+    return results;
+  };
+
+  const appendixAccounts = new Map();
+  const appendixOrder = [];
+
+  const addAppendixAccount = (account, label) => {
+    if (!account) {
+      return;
+    }
+    const key = resolveAccountKey(account);
+    if (!key || appendixAccounts.has(key)) {
+      return;
+    }
+    if (!isAccountGroupSelection(selectedAccountId)) {
+      if (selectedAccountId && (key === selectedAccountId || account?.number === selectedAccountId)) {
+        return;
+      }
+    }
+    const context = typeof account.planningContext === 'string' ? account.planningContext.trim() : '';
+    appendixAccounts.set(key, { label, context, account });
+    appendixOrder.push(key);
+  };
+
+  const buildAccountLine = (account, depth) => {
+    const indent = '  '.repeat(depth);
+    const isRootAccountLine =
+      depth === 0 && !isAccountGroupSelection(selectedAccountId) && selectedAccountId !== 'all';
+    const prefix = isRootAccountLine ? '' : `${indent}- `;
+    const accountId = resolveAccountKey(account);
+    const labelBase = getAccountLabel(account) || accountId || 'Account';
+    const number = account?.number ? String(account.number).trim() : '';
+    const label =
+      number && labelBase && !labelBase.includes(number) ? `${labelBase} (${number})` : labelBase;
+
+    const fundingEntry = resolveFundingEntry(accountId);
+    const totalEquity = resolveTotalEquity(fundingEntry, null);
+    const totalPnl = resolveTotalPnl(fundingEntry, 'cagr');
+    const startDate = resolveStartDate(fundingEntry, 'cagr', account);
+    const annualizedRate = resolveAnnualizedRate(fundingEntry, 'cagr');
+
+    const metrics = [
+      `Value: ${formatAmount(totalEquity)}`,
+      `Total P&L: ${formatAmount(totalPnl)}`,
+      `Start: ${formatDateValue(startDate)}`,
+      `Annualized return (XIRR): ${formatRate(annualizedRate)}`,
+    ].join(' | ');
+
+    const detailParts = [label, metrics].filter(Boolean);
+    addAppendixAccount(account, label);
+    return `${prefix}${detailParts.join(' | ')}`;
+  };
+
+  const buildGroupLine = (groupKey, metrics, depth) => {
+    const indent = '  '.repeat(depth);
+    const label = `${resolveGroupLabel(groupKey)} (Group)`;
+    const metricsText = [
+      `Value: ${formatAmount(metrics.totalEquity)}`,
+      `Total P&L: ${formatAmount(metrics.totalPnl)}`,
+      `Start: ${formatDateValue(metrics.startDate)}`,
+      `Annualized return (XIRR): ${formatRate(metrics.annualizedRate)}`,
+    ].join(' | ');
+    return `${indent}- ${[label, metricsText].filter(Boolean).join(' | ')}`;
+  };
+
+  const buildGroupMetrics = (groupKey) => {
+    const groupId = groupIdsByKey.get(groupKey) || null;
+    const directEntry = groupId ? resolveFundingEntry(groupId) : null;
+    const accountIds = Array.from(collectGroupAccountIds(groupKey));
+    const aggregateEntry =
+      accountIds.length > 0 ? aggregateFundingSummariesForAccounts(accountFunding, accountIds) : null;
+
+    const resolvedEntry = directEntry || aggregateEntry;
+    const totalEquity = resolveTotalEquity(directEntry, aggregateEntry);
+    const totalPnl = resolveTotalPnl(resolvedEntry, 'all');
+    const startDate = resolveStartDate(resolvedEntry, 'all', null);
+    const annualizedRate = resolveAnnualizedRate(resolvedEntry, 'all');
+
+    return {
+      totalEquity,
+      totalPnl,
+      startDate,
+      annualizedRate,
+    };
+  };
+
+  const lines = [];
+  const visitedGroups = new Set();
+  const accountNodesByGroupKey = new Map();
+  const rootAccountNodes = [];
+  const ensureGroupNode = (groupKey, groupName) => {
+    if (!groupKey) {
+      return null;
+    }
+    if (groupNodesByKey.has(groupKey)) {
+      return groupNodesByKey.get(groupKey);
+    }
+    const display = groupName || resolveGroupLabel(groupKey);
+    const node = {
+      type: 'group',
+      option: { primary: display },
+      orderIndex: baseGroupCount + syntheticGroupIndex,
+      normalizedKey: groupKey,
+      children: [],
+      parent: null,
+      isPlaceholder: true,
+    };
+    syntheticGroupIndex += 1;
+    groupNodesByKey.set(groupKey, node);
+    groupNodesList.push(node);
+    return node;
+  };
+
+  groupParentsMap.forEach((parents, childKey) => {
+    if (childKey && !groupNodesByKey.has(childKey)) {
+      ensureGroupNode(childKey, resolveGroupLabel(childKey));
+    }
+    parents.forEach((parentKey) => {
+      if (parentKey && !groupNodesByKey.has(parentKey)) {
+        ensureGroupNode(parentKey, resolveGroupLabel(parentKey));
+      }
+    });
+  });
+
+  accountNodes.forEach((node) => {
+    const account = node.account;
+    const groupKey = normalizeAccountGroupKey(account?.accountGroup);
+    if (groupKey) {
+      const parent = ensureGroupNode(groupKey, resolveGroupLabel(groupKey));
+      parent.children.push(node);
+      node.parent = parent;
+      if (!accountNodesByGroupKey.has(groupKey)) {
+        accountNodesByGroupKey.set(groupKey, []);
+      }
+      accountNodesByGroupKey.get(groupKey).push(node);
+    } else {
+      rootAccountNodes.push(node);
+    }
+  });
+
+  const isAncestor = (maybeParentName, childName) => {
+    const parentKey = normalizeAccountGroupKey(maybeParentName);
+    const childKey = normalizeAccountGroupKey(childName);
+    if (!parentKey || !childKey || parentKey === childKey) {
+      return false;
+    }
+    const seen = new Set();
+    const queue = [childKey];
+    while (queue.length) {
+      const current = queue.shift();
+      if (seen.has(current)) {
+        continue;
+      }
+      seen.add(current);
+      const parents = groupParentsMap.get(current);
+      if (!parents) {
+        continue;
+      }
+      if (parents.has(parentKey)) {
+        return true;
+      }
+      parents.forEach((p) => {
+        if (!seen.has(p)) {
+          queue.push(p);
+        }
+      });
+    }
+    return false;
+  };
+
+  const rootGroupNodes = [];
+  const sortedGroupNodes = groupNodesList
+    .slice()
+    .sort((a, b) => {
+      const aOrder = Number.isFinite(a.orderIndex) ? a.orderIndex : Number.MAX_SAFE_INTEGER;
+      const bOrder = Number.isFinite(b.orderIndex) ? b.orderIndex : Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+      const aName = (a.option?.primary || '').toLowerCase();
+      const bName = (b.option?.primary || '').toLowerCase();
+      return aName.localeCompare(bName);
+    });
+
+  sortedGroupNodes.forEach((node) => {
+    const key = node.normalizedKey;
+    if (!key) {
+      rootGroupNodes.push(node);
+      return;
+    }
+    const parentCandidates = groupParentsMap.get(key) ? Array.from(groupParentsMap.get(key)) : [];
+    let parentNode = null;
+    for (let i = 0; i < parentCandidates.length; i += 1) {
+      const parentKey = parentCandidates[i];
+      if (!parentKey || parentKey === key) {
+        continue;
+      }
+      if (isAncestor(key, parentKey)) {
+        continue;
+      }
+      const candidate = groupNodesByKey.get(parentKey);
+      if (candidate) {
+        parentNode = candidate;
+        break;
+      }
+    }
+    if (parentNode) {
+      node.parent = parentNode;
+      parentNode.children.push(node);
+    } else {
+      rootGroupNodes.push(node);
+    }
+  });
+
+  const computeEffectiveOrder = (node) => {
+    if (!node) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    if (node.type === 'account') {
+      const orderValue = Number.isFinite(node.orderIndex)
+        ? node.orderIndex
+        : Number.MAX_SAFE_INTEGER;
+      node.effectiveOrder = orderValue;
+      return orderValue;
+    }
+    let minOrder = Number.isFinite(node.orderIndex)
+      ? node.orderIndex
+      : Number.MAX_SAFE_INTEGER;
+    node.children.forEach((child) => {
+      const childOrder = computeEffectiveOrder(child);
+      if (childOrder < minOrder) {
+        minOrder = childOrder;
+      }
+    });
+    node.effectiveOrder = minOrder;
+    return minOrder;
+  };
+
+  const compareNodes = (a, b) => {
+    const aOrder = Number.isFinite(a.effectiveOrder) ? a.effectiveOrder : Number.MAX_SAFE_INTEGER;
+    const bOrder = Number.isFinite(b.effectiveOrder) ? b.effectiveOrder : Number.MAX_SAFE_INTEGER;
+    if (aOrder !== bOrder) {
+      return aOrder - bOrder;
+    }
+    if (a.type !== b.type) {
+      if (a.type === 'group') {
+        return -1;
+      }
+      if (b.type === 'group') {
+        return 1;
+      }
+    }
+    const aName = (a.option?.primary || '').toLowerCase();
+    const bName = (b.option?.primary || '').toLowerCase();
+    if (aName && bName) {
+      const cmp = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+      if (cmp !== 0) {
+        return cmp;
+      }
+    }
+    return 0;
+  };
+
+  const renderGroup = (groupKey, depth, forceRender) => {
+    if (!groupKey || visitedGroups.has(groupKey)) {
+      return;
+    }
+    visitedGroups.add(groupKey);
+
+    const groupNode = groupNodesByKey.get(groupKey);
+    const groupAccounts = accountNodesByGroupKey.get(groupKey) || [];
+    const childGroupNodes =
+      groupNode && Array.isArray(groupNode.children)
+        ? groupNode.children.filter((child) => child.type === 'group')
+        : [];
+
+    if (!forceRender && groupAccounts.length === 0 && childGroupNodes.length === 0) {
+      return;
+    }
+
+    const metrics = buildGroupMetrics(groupKey);
+    lines.push(buildGroupLine(groupKey, metrics, depth));
+
+    childGroupNodes
+      .slice()
+      .sort(compareNodes)
+      .forEach((childNode) => {
+        renderGroup(childNode.normalizedKey, depth + 1, false);
+    });
+    groupAccounts
+      .slice()
+      .sort(compareNodes)
+      .forEach((node) => {
+        lines.push(buildAccountLine(node.account, depth + 1));
+    });
+  };
+
+  if (selectedAccountId === 'all') {
+    const topLevelNodes = [...rootGroupNodes, ...rootAccountNodes];
+    topLevelNodes.forEach((node) => {
+      computeEffectiveOrder(node);
+    });
+    const sortedTopLevel = topLevelNodes.slice().sort(compareNodes);
+    sortedTopLevel.forEach((node) => {
+      if (node.type === 'group') {
+        renderGroup(node.normalizedKey, 0, false);
+      } else if (node.type === 'account') {
+        lines.push(buildAccountLine(node.account, 0));
+      }
+    });
+  } else if (isAccountGroupSelection(selectedAccountId)) {
+    const group = groupsById.get(selectedAccountId) || null;
+    const groupKey = group ? normalizeAccountGroupKey(group.name) : null;
+    if (groupKey) {
+      const rootNode = groupNodesByKey.get(groupKey);
+      if (rootNode) {
+        computeEffectiveOrder(rootNode);
+      }
+      renderGroup(groupKey, 0, true);
+    }
+  } else {
+    const match = resolvedAccounts.find((account) => {
+      const accountId = resolveAccountKey(account);
+      return accountId === selectedAccountId || account?.number === selectedAccountId;
+    });
+    if (match && !shouldHideAccountSummaryEntry(match)) {
+      lines.push(buildAccountLine(match, 0));
+    }
+  }
+
+  if (!lines.length) {
+    return null;
+  }
+
+  const appendixLines = [];
+  if (appendixAccounts.size) {
+    const entries = appendixOrder
+      .map((key) => appendixAccounts.get(key))
+      .filter(Boolean);
+    entries.forEach((entry, index) => {
+      if (index > 0) {
+        appendixLines.push('');
+      }
+      const account = entry.account || null;
+      const accountId = account?.id !== undefined && account?.id !== null ? String(account.id).trim() : '';
+      const accountNumber =
+        account?.number !== undefined && account?.number !== null ? String(account.number).trim() : '';
+      const resolvedAccountKey = accountId || accountNumber || null;
+      const accountPositions = collectPositionsForAccount(account);
+      const positionsTable = buildPositionsAllocationTable(accountPositions, {
+        symbolTotalPnlByAccountMap,
+        symbolAnnualizedByAccountMap,
+        symbolAnnualizedMap,
+        accountKey: resolvedAccountKey,
+      });
+
+      appendixLines.push(sectionDivider);
+      appendixLines.push(entry.label);
+      appendixLines.push(sectionDivider);
+      appendixLines.push('');
+      if (entry.context) {
+        entry.context.split('\n').forEach((line) => {
+          appendixLines.push(`  ${line}`);
+        });
+        appendixLines.push('');
+      }
+      appendixLines.push(positionsTable);
+    });
+  }
+
+  let parentLine = null;
+  if (selectedAccountId !== 'all') {
+    if (isAccountGroupSelection(selectedAccountId)) {
+      const group = groupsById.get(selectedAccountId) || null;
+      const groupKey = group ? normalizeAccountGroupKey(group.name) : null;
+      const parents = groupKey ? groupParentsMap.get(groupKey) : null;
+      const labels = parents
+        ? Array.from(parents)
+            .map((key) => resolveGroupLabel(key))
+            .filter(Boolean)
+        : [];
+      if (labels.length) {
+        parentLine = `Parent group: ${labels.join(', ')}`;
+      }
+    } else {
+      const match = resolvedAccounts.find((account) => {
+        const accountId = resolveAccountKey(account);
+        return accountId === selectedAccountId || account?.number === selectedAccountId;
+      });
+      const parentKey = normalizeAccountGroupKey(match?.accountGroup);
+      if (parentKey) {
+        parentLine = `Parent group: ${resolveGroupLabel(parentKey)}`;
+      }
+    }
+  }
+
+  const hierarchyLines = [];
+  hierarchyLines.push(sectionDivider);
+  hierarchyLines.push('Account Hierarchy');
+  hierarchyLines.push(sectionDivider);
+  hierarchyLines.push('');
+  if (parentLine) {
+    hierarchyLines.push('');
+    hierarchyLines.push(parentLine);
+    hierarchyLines.push('');
+  }
+  hierarchyLines.push(...lines);
+
+  const appendixBlock = appendixLines.length
+    ? [
+      sectionDivider,
+      'SUB-ACCOUNTS',
+      sectionDivider,
+      '',
+      ...appendixLines,
+    ].join('\n')
+    : null;
+
+  return {
+    hierarchy: hierarchyLines.join('\n'),
+    appendix: appendixBlock,
+    hasSubAccounts: appendixAccounts.size > 0,
+  };
+}
+
+function buildClipboardSummary({
+  selectedAccountId,
+  accounts,
+  accountGroups,
+  groupRelations,
+  accountFunding,
+  positions,
+  allPositions,
+  symbolTotalPnlByAccountMap,
+  symbolAnnualizedByAccountMap,
+  symbolAnnualizedMap,
+  planningContext,
+}) {
   const sections = [];
+  const sectionDivider = '-'.repeat(80);
 
   if (planningContext && typeof planningContext === 'string') {
     const trimmedContext = planningContext.trim();
@@ -1083,9 +2032,35 @@ function buildClipboardSummary({ positions, planningContext }) {
     }
   }
 
-  const allocation = buildPositionsAllocationTable(positions);
+  const hierarchy = buildAccountHierarchySummary({
+    selectedAccountId,
+    accounts,
+    accountGroups,
+    groupRelations,
+    accountFunding,
+    positions: allPositions,
+    symbolTotalPnlByAccountMap,
+    symbolAnnualizedByAccountMap,
+    symbolAnnualizedMap,
+  });
+  if (hierarchy?.hierarchy) {
+    sections.push(hierarchy.hierarchy);
+  }
+
+  const allocation = buildPositionsAllocationTable(positions, {
+    symbolTotalPnlByAccountMap,
+    symbolAnnualizedByAccountMap,
+    symbolAnnualizedMap,
+    accountKey: selectedAccountId,
+    includeNotes: !hierarchy?.hasSubAccounts,
+    includeTarget: !isAccountGroupSelection(selectedAccountId),
+  });
   if (allocation) {
-    sections.push(allocation);
+    sections.push([sectionDivider, 'Positions', sectionDivider, '', allocation].join('\n'));
+  }
+
+  if (hierarchy?.appendix) {
+    sections.push(hierarchy.appendix);
   }
 
   return sections.join('\n\n');
@@ -5722,7 +6697,7 @@ export default function App() {
   const [demoModeEnabled, setDemoModeEnabled] = usePersistentState(DEMO_MODE_STORAGE_KEY, false);
   const [ordersFilter, setOrdersFilter] = useState('');
   const [dividendTimeframe, setDividendTimeframe] = useState(DEFAULT_DIVIDEND_TIMEFRAME);
-  const [_accountPlanningContexts, _setAccountPlanningContexts] = usePersistentState(
+  const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
     'accountPlanningContexts',
     EMPTY_OBJECT
   );
@@ -6971,8 +7946,24 @@ export default function App() {
       return '';
     }
     const stored = selectedAccountInfo?.planningContext;
-    return typeof stored === 'string' ? stored : '';
-  }, [isAggregateSelection, selectedAccountInfo]);
+    const fallback = typeof stored === 'string' ? stored : '';
+    const contextOverrides =
+      accountPlanningContexts && typeof accountPlanningContexts === 'object'
+        ? accountPlanningContexts
+        : EMPTY_OBJECT;
+    const keys = [
+      selectedAccount ? String(selectedAccount) : null,
+      selectedAccountInfo?.id != null ? String(selectedAccountInfo.id) : null,
+      selectedAccountInfo?.number != null ? String(selectedAccountInfo.number) : null,
+    ].filter(Boolean);
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(contextOverrides, key)) {
+        const value = contextOverrides[key];
+        return typeof value === 'string' ? value : fallback;
+      }
+    }
+    return fallback;
+  }, [accountPlanningContexts, isAggregateSelection, selectedAccount, selectedAccountInfo]);
 
   // (Note: Selected retirement settings already include inflation above.)
 
@@ -10645,7 +11636,7 @@ export default function App() {
     const options = [];
     if (cagrStartDate) {
       const formatted = formatDate(cagrStartDate);
-      if (formatted && formatted !== '\u2014') {
+      if (formatted && formatted !== '?') {
         options.push({ value: 'cagr', label: `From ${formatted.replace(',', '')}` });
       }
     }
@@ -10657,7 +11648,7 @@ export default function App() {
         fundingSummaryVariants?.allTime?.periodStartDate ||
         null;
       const allFormatted = allStart ? formatDate(allStart) : null;
-      if (allFormatted && allFormatted !== '\u2014') {
+      if (allFormatted && allFormatted !== '?') {
         options.push({ value: 'all', label: `From ${allFormatted.replace(',', '')}` });
       } else {
         options.push({ value: 'all', label: 'From start' });
@@ -13073,49 +14064,6 @@ export default function App() {
     openAccountSummary,
   ]);
 
-  const getSummaryText = useCallback(() => {
-    if (!showContent) {
-      return null;
-    }
-
-    return buildClipboardSummary({
-      selectedAccountId: selectedAccount,
-      accounts,
-      balances: activeBalances,
-      displayTotalEquity,
-      usdToCadRate,
-      pnl: activePnl,
-      positions: orderedPositions,
-      asOf,
-      currencyOption: activeCurrency,
-      planningContext: activePlanningContext,
-    });
-  }, [
-    showContent,
-    selectedAccount,
-    accounts,
-    activeBalances,
-    displayTotalEquity,
-    usdToCadRate,
-    activePnl,
-    orderedPositions,
-    asOf,
-    activeCurrency,
-    activePlanningContext,
-  ]);
-
-  const handleCopySummary = useCallback(async () => {
-    const text = getSummaryText();
-    if (!text) {
-      return;
-    }
-
-    try {
-      await copyTextToClipboard(text);
-    } catch (error) {
-      console.error('Failed to copy account summary', error);
-    }
-  }, [getSummaryText]);
 
   const handleOrdersFilterChange = useCallback((event) => {
     setOrdersFilter(event.target.value);
@@ -13479,10 +14427,16 @@ export default function App() {
         throw new Error(message);
       }
 
+      setAccountPlanningContexts((prev) => {
+        const next = { ...(prev && typeof prev === 'object' ? prev : {}) };
+        const normalizedKey = String(accountKey);
+        next[normalizedKey] = trimmed;
+        return next;
+      });
       setPlanningContextEditor(null);
       setRefreshKey((value) => value + 1);
     },
-    [activePlanningContext, setPlanningContextEditor, setRefreshKey]
+    [activePlanningContext, setAccountPlanningContexts, setPlanningContextEditor, setRefreshKey]
   );
 
   const handleOpenAccountMetadata = useCallback(() => {
@@ -13821,24 +14775,6 @@ export default function App() {
     [accountsById, setPendingMetadataOverrides]
   );
 
-  const handleEstimateFutureCagr = useCallback(async () => {
-    openChatGpt();
-
-    const summary = getSummaryText();
-    if (!summary) {
-      return;
-    }
-
-    const prompt =
-      "Please review the general economic news for the last 1 year, 6 months, 1 month, 1 week, and 1 day, and then review the news and performance of the below companies for 1 year, 6 months, 1 week, and 1 day. Once you've digested all of the news, put that information to work coming up with your best estimate of the CAGR of this portfolio over the next 10 years.\n\nPortfolio:\n\n" +
-      summary;
-
-    try {
-      await copyTextToClipboard(prompt);
-    } catch (error) {
-      console.error('Failed to copy CAGR estimate prompt', error);
-    }
-  }, [getSummaryText]);
 
   const handleShowProjections = useCallback(() => {
     if (!selectedAccountKey) {
@@ -14416,6 +15352,7 @@ export default function App() {
     return mapByAccount;
   }, [data?.accountTotalPnlBySymbol, data?.accountTotalPnlBySymbolAll]);
 
+
   const symbolTotalPnlByAccountMapForPositions = useMemo(() => {
     const mapByAccount = new Map();
     const source =
@@ -14458,6 +15395,81 @@ export default function App() {
     });
     return mapByAccount;
   }, [data?.accountTotalPnlBySymbol, data?.accountTotalPnlBySymbolAll]);
+  const getSummaryText = useCallback(() => {
+    if (!showContent) {
+      return null;
+    }
+
+    return buildClipboardSummary({
+      selectedAccountId: selectedAccount,
+      accounts,
+      accountGroups,
+      groupRelations,
+      accountFunding,
+      balances: activeBalances,
+      displayTotalEquity,
+      usdToCadRate,
+      pnl: activePnl,
+      positions: orderedPositions,
+      allPositions: rawPositions,
+      symbolTotalPnlByAccountMap: symbolTotalPnlByAccountMapForPositions,
+      symbolAnnualizedByAccountMap: symbolAnnualizedByAccountMapForPositions,
+      symbolAnnualizedMap: symbolAnnualizedMapForPositions,
+      asOf,
+      currencyOption: activeCurrency,
+      planningContext: activePlanningContext,
+    });
+  }, [
+    showContent,
+    selectedAccount,
+    accounts,
+    accountGroups,
+    groupRelations,
+    accountFunding,
+    activeBalances,
+    displayTotalEquity,
+    usdToCadRate,
+    activePnl,
+    orderedPositions,
+    rawPositions,
+    symbolTotalPnlByAccountMapForPositions,
+    symbolAnnualizedByAccountMapForPositions,
+    symbolAnnualizedMapForPositions,
+    asOf,
+    activeCurrency,
+    activePlanningContext,
+  ]);
+
+  const handleCopySummary = useCallback(async () => {
+    const text = getSummaryText();
+    if (!text) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(text);
+    } catch (error) {
+      console.error('Failed to copy account summary', error);
+    }
+  }, [getSummaryText]);
+  const handleEstimateFutureCagr = useCallback(async () => {
+    openChatGpt();
+
+    const summary = getSummaryText();
+    if (!summary) {
+      return;
+    }
+
+    const prompt =
+      "Please review the general economic news for the last 1 year, 6 months, 1 month, 1 week, and 1 day, and then review the news and performance of the below companies for 1 year, 6 months, 1 week, and 1 day. Once you've digested all of the news, put that information to work coming up with your best estimate of the CAGR of this portfolio over the next 10 years.\n\nPortfolio:\n\n" +
+      summary;
+
+    try {
+      await copyTextToClipboard(prompt);
+    } catch (error) {
+      console.error('Failed to copy CAGR estimate prompt', error);
+    }
+  }, [getSummaryText]);
 
   // Resolve symbol Total P&L series for header chart (when focusing a symbol)
   const selectedSymbolTotalPnlSeries = useMemo(() => {
