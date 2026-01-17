@@ -1225,7 +1225,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  min-width: 720px;
+  min-width: 800px;
 }
 
 .projection-dialog {
@@ -3762,7 +3762,7 @@ textarea {
   border-radius: 20px;
   border: 1px solid var(--color-border);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
-  width: min(1300px, 96vw);
+  width: min(1400px, 96vw);
   height: min(760px, 94vh);
   display: flex;
   flex-direction: column;
