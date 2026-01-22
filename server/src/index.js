@@ -58,6 +58,7 @@ const {
   getAccountChatOverrides,
   getAccountOrdering,
   getAccountSettings,
+  getAppSettings,
   getDefaultAccountId,
   updateAccountLastRebalance,
   updateAccountTargetProportions,
@@ -114,6 +115,93 @@ function parseBooleanEnv(value, defaultValue = false) {
     }
   }
   return defaultValue;
+}
+
+const DEFAULT_UNBILLED_EARNINGS_ENDPOINT = 'http://localhost:3840/lui';
+const DEFAULT_UNBILLED_EARNINGS_TODAY_QUERY = 'amount earned today';
+const DEFAULT_UNBILLED_EARNINGS_UNBILLED_QUERY = 'get unbilled revenue';
+
+function resolveUnbilledEarningsConfig(appSettings) {
+  if (!appSettings || typeof appSettings !== 'object') {
+    return null;
+  }
+  const settings = appSettings.unbilledEarnings;
+  if (!settings || settings.enabled !== true) {
+    return null;
+  }
+  const endpoint =
+    typeof settings.endpoint === 'string' && settings.endpoint.trim()
+      ? settings.endpoint.trim()
+      : DEFAULT_UNBILLED_EARNINGS_ENDPOINT;
+  const todayQuery =
+    typeof settings.todayQuery === 'string' && settings.todayQuery.trim()
+      ? settings.todayQuery.trim()
+      : DEFAULT_UNBILLED_EARNINGS_TODAY_QUERY;
+  const unbilledQuery =
+    typeof settings.unbilledQuery === 'string' && settings.unbilledQuery.trim()
+      ? settings.unbilledQuery.trim()
+      : DEFAULT_UNBILLED_EARNINGS_UNBILLED_QUERY;
+  return { endpoint, todayQuery, unbilledQuery };
+}
+
+function coerceLuiNumericResult(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalized = trimmed.replace(/,/g, '');
+    const parsed = Number.parseFloat(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+async function fetchLuiMetric(endpoint, query) {
+  const response = await performUndiciApiRequest({
+    url: endpoint,
+    params: { Query: query },
+  });
+  let payload = response && response.data;
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown JSON parse error';
+      throw new Error('LUI response was not valid JSON: ' + message);
+    }
+  }
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('LUI response was not valid JSON');
+  }
+  if (payload.failure === true) {
+    const message =
+      typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
+        : 'LUI request failed';
+    throw new Error(message);
+  }
+  const numeric = coerceLuiNumericResult(payload.result);
+  if (!Number.isFinite(numeric)) {
+    throw new Error('LUI response did not contain a numeric result');
+  }
+  return numeric;
+}
+
+function buildFeatureFlagsPayload(appSettings) {
+  const settings = appSettings && typeof appSettings === 'object' ? appSettings.unbilledEarnings : null;
+  const enabled = settings && settings.enabled === true;
+  return {
+    unbilledEarnings: {
+      enabled,
+    },
+  };
 }
 
 const RETURN_BREAKDOWN_PERIODS = [
@@ -2505,6 +2593,8 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     accountTotalPnlSeries,
     asOf: superset.asOf || new Date().toISOString(),
     usdToCadRate: superset.usdToCadRate || null,
+    featureFlags: superset.payload?.featureFlags || null,
+    otherAssets: superset.payload?.otherAssets || null,
   };
 
   return payload;
@@ -16706,6 +16796,54 @@ app.post('/api/logins', async function (req, res) {
   });
 });
 
+app.get('/api/earnings', async function (req, res) {
+  const appSettings = getAppSettings();
+  const unbilledConfig = resolveUnbilledEarningsConfig(appSettings);
+  if (!unbilledConfig) {
+    return res.json({ enabled: false });
+  }
+
+  const { endpoint, todayQuery, unbilledQuery } = unbilledConfig;
+  const settledResults = await Promise.allSettled([
+    fetchLuiMetric(endpoint, todayQuery),
+    fetchLuiMetric(endpoint, unbilledQuery),
+  ]);
+
+  const todayResult = settledResults[0];
+  const unbilledResult = settledResults[1];
+  const todayCad = todayResult.status === 'fulfilled' ? todayResult.value : null;
+  const unbilledCad = unbilledResult.status === 'fulfilled' ? unbilledResult.value : null;
+
+  const errors = {};
+  if (todayResult.status === 'rejected') {
+    errors.today = todayResult.reason?.message || 'Failed to load today earnings';
+  }
+  if (unbilledResult.status === 'rejected') {
+    errors.unbilled = unbilledResult.reason?.message || 'Failed to load unbilled earnings';
+  }
+
+  const hasToday = Number.isFinite(todayCad);
+  const hasUnbilled = Number.isFinite(unbilledCad);
+  const status = hasToday && hasUnbilled ? 'ok' : hasToday || hasUnbilled ? 'partial' : 'error';
+
+  if (status !== 'ok') {
+    console.warn('[Earnings] Failed to load some LUI metrics', {
+      status,
+      errors,
+    });
+  }
+
+  return res.json({
+    enabled: true,
+    currency: 'CAD',
+    todayCad,
+    unbilledCad,
+    status,
+    errors: Object.keys(errors).length ? errors : undefined,
+    updatedAt: new Date().toISOString(),
+  });
+});
+
 app.get('/api/summary', async function (req, res) {
   if (!allLogins.length) {
     return res.status(409).json({
@@ -16817,6 +16955,9 @@ app.get('/api/summary', async function (req, res) {
     const accountChatOverrides = getAccountChatOverrides();
     const configuredOrdering = getAccountOrdering();
     const accountSettings = getAccountSettings();
+    const appSettings = getAppSettings();
+    const featureFlags = buildFeatureFlagsPayload(appSettings);
+    const otherAssets = appSettings.otherAssets || null;
     const accountBeneficiaries = getAccountBeneficiaries();
     const accountCollections = await Promise.all(
       allLogins.map(async function (login) {
@@ -18656,6 +18797,8 @@ app.get('/api/summary', async function (req, res) {
       accountTotalPnlBySymbolAll,
       accountTotalPnlSeries,
       accountNorbertJournals,
+      featureFlags,
+      otherAssets,
       asOf: new Date().toISOString(),
       usdToCadRate: latestUsdToCadRate,
     };

@@ -3719,6 +3719,11 @@ textarea {
   color: var(--color-text-primary);
 }
 
+.equity-card__metric-value--loading {
+  color: var(--color-text-secondary);
+  font-weight: 400;
+}
+
 .equity-card__metric-extra {
   font-size: 13px;
   color: var(--color-text-muted);

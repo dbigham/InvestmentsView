@@ -222,6 +222,12 @@ function buildAccountsUrl() {
   return url.toString();
 }
 
+function buildEarningsUrl() {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/earnings', base);
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -805,6 +811,14 @@ export async function getAccounts() {
       }
     }
     throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function getEarnings() {
+  const response = await fetchWithDemo(buildEarningsUrl());
+  if (!response.ok) {
+    throw await buildApiError(response, 'Failed to load earnings data');
   }
   return response.json();
 }

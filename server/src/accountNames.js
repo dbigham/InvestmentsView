@@ -48,6 +48,7 @@ let cachedOverrides = {};
 let cachedPortalOverrides = {};
 let cachedChatOverrides = {};
 let cachedSettings = {};
+let cachedAppSettings = {};
 let cachedOrdering = [];
 let cachedDefaultAccount = null;
 let cachedGroupRelations = {};
@@ -124,6 +125,71 @@ function coerceBoolean(value) {
   return null;
 }
 
+function normalizeUnbilledEarningsSettings(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+
+  const normalized = {};
+  const enabled = coerceBoolean(entry.enabled);
+  if (enabled !== null) {
+    normalized.enabled = enabled;
+  }
+
+  const endpoint =
+    typeof entry.endpoint === 'string' && entry.endpoint.trim() ? entry.endpoint.trim() : '';
+  if (endpoint) {
+    normalized.endpoint = endpoint;
+  }
+
+  const todayQuery =
+    typeof entry.todayQuery === 'string' && entry.todayQuery.trim() ? entry.todayQuery.trim() : '';
+  if (todayQuery) {
+    normalized.todayQuery = todayQuery;
+  }
+
+  const unbilledQuery =
+    typeof entry.unbilledQuery === 'string' && entry.unbilledQuery.trim()
+      ? entry.unbilledQuery.trim()
+      : '';
+  if (unbilledQuery) {
+    normalized.unbilledQuery = unbilledQuery;
+  }
+
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function resolveAppSettingsSource(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const candidate = raw.appSettings || raw.appConfig || null;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
+function normalizeAppSettings(raw) {
+  const source = resolveAppSettingsSource(raw);
+  if (!source) {
+    return {};
+  }
+  const appSettings = {};
+  const unbilledCandidate = source.unbilledEarnings || source.unbilledRevenue || null;
+  const normalizedUnbilled = normalizeUnbilledEarningsSettings(unbilledCandidate);
+  if (normalizedUnbilled) {
+    appSettings.unbilledEarnings = normalizedUnbilled;
+  }
+  const otherAssetsCandidate =
+    source.otherAssets || source.assetValues || source.assets || source.netWorthAssets || null;
+  const normalizedOtherAssets = normalizeOtherAssetsSettings(otherAssetsCandidate);
+  if (normalizedOtherAssets) {
+    appSettings.otherAssets = normalizedOtherAssets;
+  }
+  return appSettings;
+}
+
 function ensureAccountSettingsEntry(target, key) {
   if (!target || !key) {
     return null;
@@ -166,6 +232,41 @@ function normalizeNumberLike(value) {
     }
   }
   return null;
+}
+
+function normalizeOtherAssetsSettings(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+
+  const homeCad = normalizeNumberLike(entry.homeCad ?? entry.home ?? entry.house ?? entry.homeValue);
+  const vehiclesCad = normalizeNumberLike(entry.vehiclesCad ?? entry.vehicles ?? entry.vehicle ?? entry.cars);
+  const otherAssetsCad = normalizeNumberLike(
+    entry.otherAssetsCad ?? entry.otherAssets ?? entry.other ?? entry.misc
+  );
+
+  const normalized = {};
+  if (homeCad !== null) {
+    normalized.homeCad = homeCad;
+  }
+  if (vehiclesCad !== null) {
+    normalized.vehiclesCad = vehiclesCad;
+  }
+  if (otherAssetsCad !== null) {
+    normalized.otherAssetsCad = otherAssetsCad;
+  }
+
+  if (!Object.keys(normalized).length) {
+    return null;
+  }
+
+  const totalCad =
+    (Number.isFinite(homeCad) ? homeCad : 0) +
+    (Number.isFinite(vehiclesCad) ? vehiclesCad : 0) +
+    (Number.isFinite(otherAssetsCad) ? otherAssetsCad : 0);
+  normalized.totalCad = totalCad;
+
+  return normalized;
 }
 
 function normalizePositiveInteger(value) {
@@ -1773,6 +1874,7 @@ function normalizeAccountOverrides(raw) {
   const portalOverrides = {};
   const chatOverrides = {};
   const settings = {};
+  const appSettings = normalizeAppSettings(raw);
   const orderingTracker = { list: [], seen: new Set() };
   const defaultTracker = { value: null };
   const explicitAccountGroupKeys = new Set();
@@ -1792,6 +1894,7 @@ function normalizeAccountOverrides(raw) {
       portalOverrides,
       chatOverrides,
       settings,
+      appSettings,
       ordering: orderingTracker.list,
       defaultAccount: null,
       groupRelations: {},
@@ -1804,6 +1907,7 @@ function normalizeAccountOverrides(raw) {
       portalOverrides,
       chatOverrides,
       settings,
+      appSettings,
       ordering: orderingTracker.list,
       defaultAccount: null,
       groupRelations: {},
@@ -1834,6 +1938,7 @@ function normalizeAccountOverrides(raw) {
       portalOverrides,
       chatOverrides,
       settings,
+      appSettings,
       ordering: orderingTracker.list,
       defaultAccount: defaultTracker.value,
       groupRelations: serializedRelations,
@@ -1885,6 +1990,7 @@ function normalizeAccountOverrides(raw) {
     portalOverrides,
     chatOverrides,
     settings,
+    appSettings,
     ordering: orderingTracker.list,
     defaultAccount: defaultTracker.value,
     groupRelations: serializedRelations,
@@ -1903,6 +2009,7 @@ function loadAccountOverrides() {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedGroupRelations = {};
     cachedGroupMetadata = {};
@@ -1914,6 +2021,7 @@ function loadAccountOverrides() {
       portalOverrides: cachedPortalOverrides,
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
+      appSettings: cachedAppSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
       groupMetadata: cachedGroupMetadata,
@@ -1925,6 +2033,7 @@ function loadAccountOverrides() {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedGroupRelations = {};
     cachedGroupMetadata = {};
@@ -1936,6 +2045,7 @@ function loadAccountOverrides() {
       portalOverrides: cachedPortalOverrides,
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
+      appSettings: cachedAppSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
       groupMetadata: cachedGroupMetadata,
@@ -1950,6 +2060,7 @@ function loadAccountOverrides() {
       portalOverrides: cachedPortalOverrides,
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
+      appSettings: cachedAppSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
       groupMetadata: cachedGroupMetadata,
@@ -1962,6 +2073,7 @@ function loadAccountOverrides() {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedGroupRelations = {};
     cachedGroupMetadata = {};
@@ -1973,6 +2085,7 @@ function loadAccountOverrides() {
       portalOverrides: cachedPortalOverrides,
       chatOverrides: cachedChatOverrides,
       settings: cachedSettings,
+      appSettings: cachedAppSettings,
       ordering: cachedOrdering,
       groupRelations: cachedGroupRelations,
       groupMetadata: cachedGroupMetadata,
@@ -1985,6 +2098,7 @@ function loadAccountOverrides() {
   cachedPortalOverrides = normalized.portalOverrides;
   cachedChatOverrides = normalized.chatOverrides;
   cachedSettings = normalized.settings || {};
+  cachedAppSettings = normalized.appSettings || {};
   cachedOrdering = normalized.ordering || [];
   cachedGroupRelations = normalized.groupRelations || {};
   cachedGroupMetadata = normalized.groupMetadata || {};
@@ -1996,6 +2110,7 @@ function loadAccountOverrides() {
     portalOverrides: cachedPortalOverrides,
     chatOverrides: cachedChatOverrides,
     settings: cachedSettings,
+    appSettings: cachedAppSettings,
     ordering: cachedOrdering,
     groupRelations: cachedGroupRelations,
     groupMetadata: cachedGroupMetadata,
@@ -2060,6 +2175,18 @@ function getAccountSettings() {
       hasLoggedError = true;
     }
     return cachedSettings || {};
+  }
+}
+
+function getAppSettings() {
+  try {
+    return loadAccountOverrides().appSettings || {};
+  } catch (error) {
+    if (!hasLoggedError) {
+      console.warn('Failed to load app settings from ' + resolvedFilePath + ':', error.message);
+      hasLoggedError = true;
+    }
+    return cachedAppSettings || {};
   }
 }
 
@@ -2948,6 +3075,7 @@ function updateAccountMetadata(accountKey, updates) {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
     cachedGroupRelations = {};
@@ -3207,6 +3335,7 @@ function updateAccountOverrideEntries(entries) {
   cachedPortalOverrides = {};
   cachedChatOverrides = {};
   cachedSettings = {};
+  cachedAppSettings = {};
   cachedOrdering = [];
   cachedDefaultAccount = null;
   cachedGroupRelations = {};
@@ -3274,6 +3403,7 @@ function updateAccountLastRebalance(accountKey, options = {}) {
   cachedPortalOverrides = {};
   cachedChatOverrides = {};
   cachedSettings = {};
+  cachedAppSettings = {};
   cachedOrdering = [];
   cachedDefaultAccount = null;
   cachedGroupRelations = {};
@@ -3347,6 +3477,7 @@ function updateAccountTargetProportions(accountKey, rawProportions) {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
     cachedGroupRelations = {};
@@ -3427,6 +3558,7 @@ function updateAccountSymbolNote(accountKey, symbolKey, noteValue) {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
     cachedGroupRelations = {};
@@ -3499,6 +3631,7 @@ function updateAccountPlanningContext(accountKey, contextValue) {
     cachedPortalOverrides = {};
     cachedChatOverrides = {};
     cachedSettings = {};
+    cachedAppSettings = {};
     cachedOrdering = [];
     cachedDefaultAccount = null;
     cachedGroupRelations = {};
@@ -3531,6 +3664,7 @@ module.exports = {
   extractSymbolSettingsFromOverride,
   getAccountGroupRelations,
   getAccountGroupMetadata,
+  getAppSettings,
   get accountNamesFilePath() {
     return resolvedFilePath;
   },

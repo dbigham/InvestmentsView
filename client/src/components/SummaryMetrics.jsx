@@ -540,6 +540,7 @@ function MetricRow({
   extra,
   tone,
   className,
+  valueClassName,
   onActivate,
   tooltip,
   extraTooltip,
@@ -611,7 +612,17 @@ function MetricRow({
     <div className={rowClass} {...interactiveProps}>
       <dt>{labelContent}</dt>
       <dd>
-        <span className={`equity-card__metric-value equity-card__metric-value--${tone}`}>{value}</span>
+        <span
+          className={[
+            'equity-card__metric-value',
+            `equity-card__metric-value--${tone}`,
+            valueClassName,
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
+          {value}
+        </span>
         {extra && <span className="equity-card__metric-extra">{extraContent}</span>}
       </dd>
     </div>
@@ -624,6 +635,7 @@ MetricRow.propTypes = {
   extra: PropTypes.node,
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
   className: PropTypes.string,
+  valueClassName: PropTypes.string,
   onActivate: PropTypes.func,
   tooltip: PropTypes.string,
   extraTooltip: PropTypes.string,
@@ -634,6 +646,7 @@ MetricRow.propTypes = {
 MetricRow.defaultProps = {
   extra: null,
   className: '',
+  valueClassName: '',
   onActivate: null,
   tooltip: null,
   extraTooltip: null,
@@ -1072,6 +1085,12 @@ export default function SummaryMetrics({
   asOf,
   onRefresh,
   displayTotalEquity,
+  investedEquityCad,
+  earningsSummary,
+  showUnbilledInTotalEquity,
+  otherAssetsSummary,
+  showOtherAssetsInTotalEquity,
+  onRefreshEarnings,
   usdToCadRate,
   onShowPeople,
   peopleDisabled,
@@ -1198,6 +1217,11 @@ export default function SummaryMetrics({
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
   const cash = balances?.cash ?? null;
+  const normalizedInvestedEquityCad = Number.isFinite(investedEquityCad) ? investedEquityCad : null;
+  const normalizedUnbilledEarningsCad =
+    Number.isFinite(earningsSummary?.unbilledCad) ? earningsSummary.unbilledCad : null;
+  const normalizedOtherAssetsTotalCad =
+    Number.isFinite(otherAssetsSummary?.totalCad) ? otherAssetsSummary.totalCad : null;
   const usdCurrencyFormatter = useMemo(
     () => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }),
     []
@@ -1223,6 +1247,37 @@ export default function SummaryMetrics({
     const usdValue = resolvedTotalEquityValue / usdToCadRate;
     return `≈ ${usdCurrencyFormatter.format(usdValue)} USD`;
   }, [resolvedTotalEquityValue, usdCurrencyFormatter, usdToCadRate]);
+  const totalEquityTooltip = useMemo(() => {
+    const lines = [];
+    const canShowBreakdown =
+      !symbolMode &&
+      Number.isFinite(normalizedInvestedEquityCad) &&
+      Number.isFinite(resolvedTotalEquityValue) &&
+      (showUnbilledInTotalEquity || showOtherAssetsInTotalEquity);
+    if (canShowBreakdown) {
+      lines.push(`Total invested equity: ${formatMoney(normalizedInvestedEquityCad)}`);
+      if (showUnbilledInTotalEquity && Number.isFinite(normalizedUnbilledEarningsCad)) {
+        lines.push(`Unbilled earnings: ${formatMoney(normalizedUnbilledEarningsCad)}`);
+      }
+      if (showOtherAssetsInTotalEquity && Number.isFinite(normalizedOtherAssetsTotalCad)) {
+        lines.push(`Other assets: ${formatMoney(normalizedOtherAssetsTotalCad)}`);
+      }
+      lines.push(`Total equity: ${formatMoney(resolvedTotalEquityValue)}`);
+    }
+    if (totalEquityUsdTooltip) {
+      lines.push(totalEquityUsdTooltip);
+    }
+    return lines.length ? lines.join('\n') : null;
+  }, [
+    showUnbilledInTotalEquity,
+    showOtherAssetsInTotalEquity,
+    symbolMode,
+    normalizedInvestedEquityCad,
+    normalizedUnbilledEarningsCad,
+    normalizedOtherAssetsTotalCad,
+    resolvedTotalEquityValue,
+    totalEquityUsdTooltip,
+  ]);
   const deploymentAvailable =
     deploymentSummary &&
     (Number.isFinite(deploymentSummary.deployedValue) ||
@@ -1256,6 +1311,33 @@ export default function SummaryMetrics({
   const openTone = classifyPnL(pnl?.openPnl);
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);
   const formattedOpen = formatSignedMoney(pnl?.openPnl ?? null);
+  const earningsStatus = earningsSummary?.status || 'idle';
+  const earningsLoading = earningsStatus === 'loading' || earningsStatus === 'refreshing';
+  const earningsValueClassName = earningsLoading ? 'equity-card__metric-value--loading' : '';
+  const formattedTodayEarnings = earningsLoading
+    ? 'Loading...'
+    : formatMoney(earningsSummary?.todayCad ?? null);
+  const formattedUnbilledEarnings = earningsLoading
+    ? 'Loading...'
+    : formatMoney(earningsSummary?.unbilledCad ?? null);
+  const todayEarningsTone = classifyPnL(earningsSummary?.todayCad);
+  const unbilledEarningsTone = classifyPnL(earningsSummary?.unbilledCad);
+  const otherAssetsHomeCad = Number.isFinite(otherAssetsSummary?.homeCad)
+    ? otherAssetsSummary.homeCad
+    : null;
+  const otherAssetsVehiclesCad = Number.isFinite(otherAssetsSummary?.vehiclesCad)
+    ? otherAssetsSummary.vehiclesCad
+    : null;
+  const otherAssetsOtherCad = Number.isFinite(otherAssetsSummary?.otherAssetsCad)
+    ? otherAssetsSummary.otherAssetsCad
+    : null;
+  const showOtherAssetsMetrics =
+    !symbolMode &&
+    (Number.isFinite(otherAssetsHomeCad) ||
+      Number.isFinite(otherAssetsVehiclesCad) ||
+      Number.isFinite(otherAssetsOtherCad));
+  const refreshEarningsAction =
+    typeof onRefreshEarnings === 'function' ? onRefreshEarnings : null;
   const qqqStatus = qqqSummary?.status || 'loading';
   const canRefreshQqqTemperature = typeof onRefreshQqqTemperature === 'function';
 
@@ -3181,7 +3263,7 @@ export default function SummaryMetrics({
           <h2 className="equity-card__title">{title}</h2>
           <p
             className="equity-card__value"
-            title={totalEquityUsdTooltip ?? undefined}
+            title={totalEquityTooltip ?? undefined}
           >
             {formatMoney(displayTotalEquity ?? totalEquity)}
           </p>
@@ -3579,6 +3661,24 @@ export default function SummaryMetrics({
               onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
             />
           )}
+          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+            <MetricRow
+              label="Today's Earnings"
+              value={formattedTodayEarnings}
+              tone={todayEarningsTone}
+              onActivate={refreshEarningsAction}
+              valueClassName={earningsValueClassName}
+            />
+          )}
+          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+            <MetricRow
+              label="Unbilled Earnings"
+              value={formattedUnbilledEarnings}
+              tone={unbilledEarningsTone}
+              onActivate={refreshEarningsAction}
+              valueClassName={earningsValueClassName}
+            />
+          )}
           {!hasActiveRangeSummary && (
             <MetricRow
               label="Open P&L"
@@ -3639,6 +3739,15 @@ export default function SummaryMetrics({
                 tone="neutral"
                 onActivate={onAdjustDeployment}
               />
+            )}
+            {showOtherAssetsMetrics && Number.isFinite(otherAssetsHomeCad) && (
+              <MetricRow label="Home" value={formatMoney(otherAssetsHomeCad)} tone="neutral" />
+            )}
+            {showOtherAssetsMetrics && Number.isFinite(otherAssetsVehiclesCad) && (
+              <MetricRow label="Vehicles" value={formatMoney(otherAssetsVehiclesCad)} tone="neutral" />
+            )}
+            {showOtherAssetsMetrics && Number.isFinite(otherAssetsOtherCad) && (
+              <MetricRow label="Other assets" value={formatMoney(otherAssetsOtherCad)} tone="neutral" />
             )}
           </dl>
         )}
@@ -3715,6 +3824,23 @@ SummaryMetrics.propTypes = {
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
+  investedEquityCad: PropTypes.number,
+  earningsSummary: PropTypes.shape({
+    status: PropTypes.oneOf(['idle', 'loading', 'refreshing', 'ready', 'error']),
+    todayCad: PropTypes.number,
+    unbilledCad: PropTypes.number,
+    updatedAt: PropTypes.string,
+    error: PropTypes.instanceOf(Error),
+  }),
+  showUnbilledInTotalEquity: PropTypes.bool,
+  otherAssetsSummary: PropTypes.shape({
+    homeCad: PropTypes.number,
+    vehiclesCad: PropTypes.number,
+    otherAssetsCad: PropTypes.number,
+    totalCad: PropTypes.number,
+  }),
+  showOtherAssetsInTotalEquity: PropTypes.bool,
+  onRefreshEarnings: PropTypes.func,
   usdToCadRate: PropTypes.number,
   onShowPeople: PropTypes.func,
   peopleDisabled: PropTypes.bool,
@@ -3882,6 +4008,12 @@ SummaryMetrics.defaultProps = {
   asOf: null,
   onRefresh: null,
   displayTotalEquity: null,
+  investedEquityCad: null,
+  earningsSummary: null,
+  showUnbilledInTotalEquity: false,
+  otherAssetsSummary: null,
+  showOtherAssetsInTotalEquity: false,
+  onRefreshEarnings: null,
   usdToCadRate: null,
   onShowPeople: null,
   peopleDisabled: false,

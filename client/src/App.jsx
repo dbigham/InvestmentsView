@@ -25,6 +25,7 @@ import {
   getAccountOverrides,
   setAccountOverrides,
   getAccounts,
+  getEarnings,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -3455,6 +3456,8 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
     positions,
     orders,
     balances: balances || null,
+    featureFlags: baseData.featureFlags || null,
+    otherAssets: baseData.otherAssets || null,
     accountFunding: nextAccountFunding,
     accountDividends: nextAccountDividends,
     accountTotalPnlBySymbol: nextTotalPnlMap ?? baseData.accountTotalPnlBySymbol ?? null,
@@ -6683,6 +6686,7 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState(() => initialAccountIdFromUrl || 'default');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [earningsState, setEarningsState] = useState({ status: 'idle', data: null, error: null });
   const [symbolPriceSnapshots, setSymbolPriceSnapshots] = useState(() => new Map());
   const [priceRefreshState, setPriceRefreshState] = useState({
     status: 'idle',
@@ -7102,12 +7106,61 @@ export default function App() {
   const demoModeSource =
     typeof data?.demoModeSource === 'string' ? data.demoModeSource.trim() : null;
   const demoModeActive = demoModeEnabled || (demoModeFromServer && demoModeSource === 'env');
+  const earningsEnabled = data?.featureFlags?.unbilledEarnings?.enabled === true;
 
   useEffect(() => {
     if (demoModeSource === 'env' && demoModeFromServer && !demoModeEnabled) {
       setDemoModeEnabled(true);
     }
   }, [demoModeFromServer, demoModeSource, demoModeEnabled, setDemoModeEnabled]);
+
+  const refreshEarnings = useCallback(
+    (options = {}) => {
+      const { isCancelled } = options;
+      if (!earningsEnabled) {
+        setEarningsState({ status: 'idle', data: null, error: null });
+        return Promise.resolve(null);
+      }
+
+      setEarningsState((prev) => {
+        const nextStatus = prev.data ? 'refreshing' : 'loading';
+        if (prev.status === nextStatus && prev.error === null) {
+          return prev;
+        }
+        return { status: nextStatus, data: prev.data, error: null };
+      });
+
+      return getEarnings()
+        .then((payload) => {
+          if (typeof isCancelled === 'function' && isCancelled()) {
+            return null;
+          }
+          if (!payload || payload.enabled !== true) {
+            setEarningsState({ status: 'idle', data: null, error: null });
+            return null;
+          }
+          setEarningsState({ status: 'ready', data: payload, error: null });
+          return payload;
+        })
+        .catch((err) => {
+          if (typeof isCancelled === 'function' && isCancelled()) {
+            return null;
+          }
+          const normalizedError = err instanceof Error ? err : new Error('Failed to load earnings data');
+          setEarningsState({ status: 'error', data: null, error: normalizedError });
+          return null;
+        });
+    },
+    [earningsEnabled, getEarnings]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    refreshEarnings({ isCancelled: () => cancelled });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey, refreshEarnings]);
   const refreshLoginSetup = useCallback(async () => {
     setLoginSetupState((prev) => ({
       status: 'loading',
@@ -11841,13 +11894,98 @@ export default function App() {
       cancelled = true;
     };
   }, [benchmarkPeriodStart, benchmarkPeriodEnd]);
-  const displayTotalEquity = useMemo(() => {
+  const earningsSummary = useMemo(() => {
+    if (!earningsEnabled) {
+      return null;
+    }
+    const payload = earningsState?.data;
+    return {
+      status: earningsState?.status || 'idle',
+      todayCad: Number.isFinite(payload?.todayCad) ? payload.todayCad : null,
+      unbilledCad: Number.isFinite(payload?.unbilledCad) ? payload.unbilledCad : null,
+      error: earningsState?.error || null,
+      updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : null,
+    };
+  }, [earningsEnabled, earningsState]);
+  const otherAssetsSummary = useMemo(() => {
+    if (!showingAllAccounts) {
+      return null;
+    }
+    const payload = data?.otherAssets;
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const homeCad = coerceNumber(payload.homeCad);
+    const vehiclesCad = coerceNumber(payload.vehiclesCad);
+    const otherAssetsCad = coerceNumber(payload.otherAssetsCad);
+    const totalCadFromPayload = coerceNumber(payload.totalCad);
+    const hasAny =
+      Number.isFinite(homeCad) ||
+      Number.isFinite(vehiclesCad) ||
+      Number.isFinite(otherAssetsCad) ||
+      Number.isFinite(totalCadFromPayload);
+    if (!hasAny) {
+      return null;
+    }
+    const computedTotal = Number.isFinite(totalCadFromPayload)
+      ? totalCadFromPayload
+      : (Number.isFinite(homeCad) ? homeCad : 0) +
+        (Number.isFinite(vehiclesCad) ? vehiclesCad : 0) +
+        (Number.isFinite(otherAssetsCad) ? otherAssetsCad : 0);
+    return {
+      homeCad,
+      vehiclesCad,
+      otherAssetsCad,
+      totalCad: computedTotal,
+    };
+  }, [data?.otherAssets, showingAllAccounts]);
+
+  const baseDisplayTotalEquity = useMemo(() => {
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
       return canonical;
     }
     return coerceNumber(activeBalances?.totalEquity);
   }, [balances, activeBalances]);
+  const unbilledEarningsCad =
+    earningsSummary && Number.isFinite(earningsSummary.unbilledCad)
+      ? earningsSummary.unbilledCad
+      : null;
+  const otherAssetsTotalCad =
+    otherAssetsSummary && Number.isFinite(otherAssetsSummary.totalCad)
+      ? otherAssetsSummary.totalCad
+      : null;
+  const includeUnbilledInTotalEquity =
+    showingAllAccounts &&
+    earningsEnabled &&
+    Number.isFinite(baseDisplayTotalEquity) &&
+    Number.isFinite(unbilledEarningsCad);
+  const includeOtherAssetsInTotalEquity =
+    showingAllAccounts &&
+    Number.isFinite(baseDisplayTotalEquity) &&
+    Number.isFinite(otherAssetsTotalCad);
+  const displayTotalEquity = useMemo(() => {
+    if (!Number.isFinite(baseDisplayTotalEquity)) {
+      return baseDisplayTotalEquity;
+    }
+    if (!includeUnbilledInTotalEquity && !includeOtherAssetsInTotalEquity) {
+      return baseDisplayTotalEquity;
+    }
+    let total = baseDisplayTotalEquity;
+    if (includeUnbilledInTotalEquity) {
+      total += unbilledEarningsCad;
+    }
+    if (includeOtherAssetsInTotalEquity) {
+      total += otherAssetsTotalCad;
+    }
+    return total;
+  }, [
+    baseDisplayTotalEquity,
+    includeUnbilledInTotalEquity,
+    includeOtherAssetsInTotalEquity,
+    unbilledEarningsCad,
+    otherAssetsTotalCad,
+  ]);
 
   const fallbackPnl = useMemo(() => {
     if (!activeCurrency) {
@@ -14999,6 +15137,10 @@ export default function App() {
     }
   };
 
+  const handleRefreshEarnings = useCallback(() => {
+    refreshEarnings();
+  }, [refreshEarnings]);
+
   const handleClosePnlBreakdown = () => {
     setPnlBreakdownMode(null);
     setPnlBreakdownInitialAccount(null);
@@ -16443,6 +16585,12 @@ export default function App() {
             asOf={asOf}
             onRefresh={handleRefresh}
             displayTotalEquity={focusedSymbol ? symbolFilteredPositions.total : displayTotalEquity}
+            investedEquityCad={baseDisplayTotalEquity}
+            earningsSummary={earningsSummary}
+            showUnbilledInTotalEquity={includeUnbilledInTotalEquity}
+            otherAssetsSummary={otherAssetsSummary}
+            showOtherAssetsInTotalEquity={includeOtherAssetsInTotalEquity}
+            onRefreshEarnings={handleRefreshEarnings}
             usdToCadRate={usdToCadRate}
             onShowPeople={handleOpenPeople}
             peopleDisabled={peopleDisabled}
