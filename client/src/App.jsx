@@ -26,6 +26,7 @@ import {
   setAccountOverrides,
   getAccounts,
   getEarnings,
+  setOtherAssets,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
@@ -3771,6 +3772,36 @@ function coerceNumber(value) {
   return null;
 }
 
+function parseCadAmountInput(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = trimmed.replace(/,/g, '').replace(/\s+/g, '').replace(/\$/g, '');
+  const match = normalized.match(/^(-?\d*\.?\d+)([kKmM])?$/);
+  if (!match) {
+    return null;
+  }
+  const base = Number(match[1]);
+  if (!Number.isFinite(base)) {
+    return null;
+  }
+  const suffix = match[2] ? match[2].toLowerCase() : '';
+  if (suffix === 'k') {
+    return base * 1000;
+  }
+  if (suffix === 'm') {
+    return base * 1000000;
+  }
+  return base;
+}
+
 function coercePositiveNumber(value) {
   const numeric = coerceNumber(value);
   if (numeric === null || !Number.isFinite(numeric) || numeric <= 0) {
@@ -3882,6 +3913,11 @@ function resolveDisplayTotalEquity(balances) {
 
 const ZERO_PNL = Object.freeze({ dayPnl: 0, openPnl: 0, totalPnl: 0 });
 const MINIMUM_CASH_BREAKDOWN_AMOUNT = 5;
+const OTHER_ASSET_LABELS = Object.freeze({
+  homeCad: 'Home',
+  vehiclesCad: 'Vehicles',
+  otherAssetsCad: 'Other assets',
+});
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -6699,6 +6735,10 @@ export default function App() {
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
   const [demoModeEnabled, setDemoModeEnabled] = usePersistentState(DEMO_MODE_STORAGE_KEY, false);
+  const [includeUnbilledEarningsInTotalEquityPreference, setIncludeUnbilledEarningsInTotalEquityPreference] =
+    usePersistentState('includeUnbilledEarningsInTotalEquity', true);
+  const [includeOtherAssetsInTotalEquityPreference, setIncludeOtherAssetsInTotalEquityPreference] =
+    usePersistentState('includeOtherAssetsInTotalEquity', true);
   const [ordersFilter, setOrdersFilter] = useState('');
   const [dividendTimeframe, setDividendTimeframe] = useState(DEFAULT_DIVIDEND_TIMEFRAME);
   const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
@@ -11902,6 +11942,7 @@ export default function App() {
     return {
       status: earningsState?.status || 'idle',
       todayCad: Number.isFinite(payload?.todayCad) ? payload.todayCad : null,
+      yearlyCad: Number.isFinite(payload?.yearlyCad) ? payload.yearlyCad : null,
       unbilledCad: Number.isFinite(payload?.unbilledCad) ? payload.unbilledCad : null,
       error: earningsState?.error || null,
       updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : null,
@@ -11955,15 +11996,19 @@ export default function App() {
     otherAssetsSummary && Number.isFinite(otherAssetsSummary.totalCad)
       ? otherAssetsSummary.totalCad
       : null;
-  const includeUnbilledInTotalEquity =
+  const canToggleUnbilledInTotalEquity =
     showingAllAccounts &&
     earningsEnabled &&
     Number.isFinite(baseDisplayTotalEquity) &&
     Number.isFinite(unbilledEarningsCad);
-  const includeOtherAssetsInTotalEquity =
+  const canToggleOtherAssetsInTotalEquity =
     showingAllAccounts &&
     Number.isFinite(baseDisplayTotalEquity) &&
     Number.isFinite(otherAssetsTotalCad);
+  const includeUnbilledInTotalEquity =
+    canToggleUnbilledInTotalEquity && includeUnbilledEarningsInTotalEquityPreference;
+  const includeOtherAssetsInTotalEquity =
+    canToggleOtherAssetsInTotalEquity && includeOtherAssetsInTotalEquityPreference;
   const displayTotalEquity = useMemo(() => {
     if (!Number.isFinite(baseDisplayTotalEquity)) {
       return baseDisplayTotalEquity;
@@ -11986,6 +12031,56 @@ export default function App() {
     unbilledEarningsCad,
     otherAssetsTotalCad,
   ]);
+  const handleToggleUnbilledInTotalEquity = useCallback(() => {
+    setIncludeUnbilledEarningsInTotalEquityPreference((value) => !value);
+  }, [setIncludeUnbilledEarningsInTotalEquityPreference]);
+  const handleToggleOtherAssetsInTotalEquity = useCallback(() => {
+    setIncludeOtherAssetsInTotalEquityPreference((value) => !value);
+  }, [setIncludeOtherAssetsInTotalEquityPreference]);
+  const handleEditOtherAsset = useCallback(
+    async (assetKey) => {
+      if (!showingAllAccounts) {
+        return;
+      }
+      const label = OTHER_ASSET_LABELS[assetKey];
+      if (!label || typeof window === 'undefined') {
+        return;
+      }
+      const currentValue = Number.isFinite(otherAssetsSummary?.[assetKey])
+        ? otherAssetsSummary[assetKey]
+        : null;
+      const defaultValue = currentValue !== null ? String(Math.round(currentValue)) : '';
+      const input = window.prompt(
+        `Set ${label} value in CAD (e.g., 820000 or 820k)`,
+        defaultValue
+      );
+      if (input === null) {
+        return;
+      }
+      const trimmedInput = input.trim();
+      if (!trimmedInput) {
+        return;
+      }
+      const parsedValue = parseCadAmountInput(trimmedInput);
+      if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+        window.alert('Enter a non-negative number (examples: 820000 or 820k).');
+        return;
+      }
+      if (Number.isFinite(currentValue) && Math.abs(parsedValue - currentValue) < 0.005) {
+        return;
+      }
+      try {
+        await setOtherAssets({ [assetKey]: parsedValue });
+        setRefreshKey((value) => value + 1);
+      } catch (error) {
+        console.error('Failed to update other assets', error);
+        const message =
+          error instanceof Error && error.message ? error.message : 'Failed to update other assets';
+        window.alert(message);
+      }
+    },
+    [otherAssetsSummary, setOtherAssets, setRefreshKey, showingAllAccounts]
+  );
 
   const fallbackPnl = useMemo(() => {
     if (!activeCurrency) {
@@ -16586,10 +16681,15 @@ export default function App() {
             onRefresh={handleRefresh}
             displayTotalEquity={focusedSymbol ? symbolFilteredPositions.total : displayTotalEquity}
             investedEquityCad={baseDisplayTotalEquity}
-            earningsSummary={earningsSummary}
+            earningsSummary={showingAllAccounts ? earningsSummary : null}
             showUnbilledInTotalEquity={includeUnbilledInTotalEquity}
             otherAssetsSummary={otherAssetsSummary}
             showOtherAssetsInTotalEquity={includeOtherAssetsInTotalEquity}
+            canToggleUnbilledInTotalEquity={canToggleUnbilledInTotalEquity}
+            canToggleOtherAssetsInTotalEquity={canToggleOtherAssetsInTotalEquity}
+            onToggleUnbilledInTotalEquity={handleToggleUnbilledInTotalEquity}
+            onToggleOtherAssetsInTotalEquity={handleToggleOtherAssetsInTotalEquity}
+            onEditOtherAsset={handleEditOtherAsset}
             onRefreshEarnings={handleRefreshEarnings}
             usdToCadRate={usdToCadRate}
             onShowPeople={handleOpenPeople}

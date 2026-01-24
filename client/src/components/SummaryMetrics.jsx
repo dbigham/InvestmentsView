@@ -1090,6 +1090,11 @@ export default function SummaryMetrics({
   showUnbilledInTotalEquity,
   otherAssetsSummary,
   showOtherAssetsInTotalEquity,
+  canToggleUnbilledInTotalEquity,
+  canToggleOtherAssetsInTotalEquity,
+  onToggleUnbilledInTotalEquity,
+  onToggleOtherAssetsInTotalEquity,
+  onEditOtherAsset,
   onRefreshEarnings,
   usdToCadRate,
   onShowPeople,
@@ -1314,13 +1319,55 @@ export default function SummaryMetrics({
   const earningsStatus = earningsSummary?.status || 'idle';
   const earningsLoading = earningsStatus === 'loading' || earningsStatus === 'refreshing';
   const earningsValueClassName = earningsLoading ? 'equity-card__metric-value--loading' : '';
+  const earningsLabelYear = useMemo(() => {
+    const asOfDate = parseDateString(asOf, { assumeDateOnly: true });
+    if (asOfDate) {
+      return asOfDate.getUTCFullYear();
+    }
+    return new Date().getFullYear();
+  }, [asOf]);
+  const yearlyEarningsLabel = `${earningsLabelYear} Earnings`;
+  const projectedEarningsLabel = `${earningsLabelYear} Projected Earnings`;
+  const projectedYearlyEarningsCad = useMemo(() => {
+    const yearlyCad = earningsSummary?.yearlyCad;
+    if (!Number.isFinite(yearlyCad)) {
+      return null;
+    }
+    const asOfDate = parseDateString(asOf, { assumeDateOnly: true }) || new Date();
+    if (!isValidDate(asOfDate)) {
+      return null;
+    }
+    const year = asOfDate.getUTCFullYear();
+    const startOfYear = new Date(Date.UTC(year, 0, 1));
+    const startOfNextYear = new Date(Date.UTC(year + 1, 0, 1));
+    const asOfUtcMidnight = new Date(Date.UTC(year, asOfDate.getUTCMonth(), asOfDate.getUTCDate()));
+    const totalDays = (startOfNextYear - startOfYear) / MS_PER_DAY;
+    const elapsedDays = Math.floor((asOfUtcMidnight - startOfYear) / MS_PER_DAY) + 1;
+    if (!Number.isFinite(totalDays) || totalDays <= 0 || elapsedDays <= 0) {
+      return null;
+    }
+    const fraction = elapsedDays / totalDays;
+    if (!Number.isFinite(fraction) || fraction <= 0) {
+      return null;
+    }
+    const projected = yearlyCad / fraction;
+    return Number.isFinite(projected) ? projected : null;
+  }, [asOf, earningsSummary?.yearlyCad]);
   const formattedTodayEarnings = earningsLoading
     ? 'Loading...'
     : formatMoney(earningsSummary?.todayCad ?? null);
+  const formattedYearlyEarnings = earningsLoading
+    ? 'Loading...'
+    : formatMoney(earningsSummary?.yearlyCad ?? null);
+  const formattedProjectedYearlyEarnings = earningsLoading
+    ? 'Loading...'
+    : formatMoney(projectedYearlyEarningsCad);
   const formattedUnbilledEarnings = earningsLoading
     ? 'Loading...'
     : formatMoney(earningsSummary?.unbilledCad ?? null);
   const todayEarningsTone = classifyPnL(earningsSummary?.todayCad);
+  const yearlyEarningsTone = classifyPnL(earningsSummary?.yearlyCad);
+  const projectedYearlyEarningsTone = classifyPnL(projectedYearlyEarningsCad);
   const unbilledEarningsTone = classifyPnL(earningsSummary?.unbilledCad);
   const otherAssetsHomeCad = Number.isFinite(otherAssetsSummary?.homeCad)
     ? otherAssetsSummary.homeCad
@@ -1336,6 +1383,8 @@ export default function SummaryMetrics({
     (Number.isFinite(otherAssetsHomeCad) ||
       Number.isFinite(otherAssetsVehiclesCad) ||
       Number.isFinite(otherAssetsOtherCad));
+  const canEditOtherAssets = typeof onEditOtherAsset === 'function';
+  const editOtherAssetsAction = canEditOtherAssets ? onEditOtherAsset : null;
   const refreshEarningsAction =
     typeof onRefreshEarnings === 'function' ? onRefreshEarnings : null;
   const qqqStatus = qqqSummary?.status || 'loading';
@@ -2711,6 +2760,9 @@ export default function SummaryMetrics({
 
   const hasTotalMenuActions =
     typeof onShowTotalPnl === 'function' || typeof onShowPnlBreakdown === 'function';
+  const hasTotalEquityMenuActions =
+    (canToggleUnbilledInTotalEquity && typeof onToggleUnbilledInTotalEquity === 'function') ||
+    (canToggleOtherAssetsInTotalEquity && typeof onToggleOtherAssetsInTotalEquity === 'function');
 
   const [totalMenuState, setTotalMenuState] = useState({ open: false, x: 0, y: 0 });
   const totalMenuRef = useRef(null);
@@ -2797,6 +2849,96 @@ export default function SummaryMetrics({
     },
     [onShowTotalPnl, onShowPnlBreakdown, closeTotalMenu]
   );
+
+  const [totalEquityMenuState, setTotalEquityMenuState] = useState({ open: false, x: 0, y: 0 });
+  const totalEquityMenuRef = useRef(null);
+
+  const closeTotalEquityMenu = useCallback(() => {
+    setTotalEquityMenuState((state) => (state.open ? { open: false, x: 0, y: 0 } : state));
+  }, []);
+
+  const openTotalEquityMenu = useCallback(
+    (x, y) => {
+      if (!hasTotalEquityMenuActions) {
+        return;
+      }
+      let targetX = x;
+      let targetY = y;
+      if (typeof window !== 'undefined') {
+        const padding = 12;
+        const estimatedWidth = 260;
+        const estimatedHeight = 110;
+        const viewportWidth = window.innerWidth || 0;
+        const viewportHeight = window.innerHeight || 0;
+        targetX = Math.min(Math.max(padding, targetX), Math.max(padding, viewportWidth - estimatedWidth));
+        targetY = Math.min(Math.max(padding, targetY), Math.max(padding, viewportHeight - estimatedHeight));
+      }
+      closeChildMenu();
+      closeTotalMenu();
+      setTotalEquityMenuState({ open: true, x: targetX, y: targetY });
+    },
+    [hasTotalEquityMenuActions, closeChildMenu, closeTotalMenu]
+  );
+
+  useEffect(() => {
+    if (!totalEquityMenuState.open) {
+      return undefined;
+    }
+    const handlePointer = (event) => {
+      if (totalEquityMenuRef.current && totalEquityMenuRef.current.contains(event.target)) {
+        return;
+      }
+      closeTotalEquityMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeTotalEquityMenu();
+      }
+    };
+    document.addEventListener('mousedown', handlePointer);
+    document.addEventListener('contextmenu', handlePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointer);
+      document.removeEventListener('contextmenu', handlePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [totalEquityMenuState.open, closeTotalEquityMenu]);
+
+  useEffect(() => {
+    if (!hasTotalEquityMenuActions) {
+      closeTotalEquityMenu();
+    }
+  }, [hasTotalEquityMenuActions, closeTotalEquityMenu]);
+
+  const handleTotalEquityContextMenu = useCallback(
+    (event) => {
+      if (!hasTotalEquityMenuActions) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const x = event.clientX ?? 0;
+      const y = event.clientY ?? 0;
+      openTotalEquityMenu(x, y);
+    },
+    [hasTotalEquityMenuActions, openTotalEquityMenu]
+  );
+
+  const handleToggleUnbilledInTotalEquity = useCallback(() => {
+    closeTotalEquityMenu();
+    if (canToggleUnbilledInTotalEquity && typeof onToggleUnbilledInTotalEquity === 'function') {
+      onToggleUnbilledInTotalEquity();
+    }
+  }, [closeTotalEquityMenu, canToggleUnbilledInTotalEquity, onToggleUnbilledInTotalEquity]);
+
+  const handleToggleOtherAssetsInTotalEquity = useCallback(() => {
+    closeTotalEquityMenu();
+    if (canToggleOtherAssetsInTotalEquity && typeof onToggleOtherAssetsInTotalEquity === 'function') {
+      onToggleOtherAssetsInTotalEquity();
+    }
+  }, [closeTotalEquityMenu, canToggleOtherAssetsInTotalEquity, onToggleOtherAssetsInTotalEquity]);
 
   useEffect(() => {
     if (!childMenuState.open) {
@@ -3217,6 +3359,49 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  const totalEquityContextMenu = totalEquityMenuState.open ? (
+    <div
+      ref={totalEquityMenuRef}
+      className="equity-card__context-menu"
+      style={{ top: `${totalEquityMenuState.y}px`, left: `${totalEquityMenuState.x}px` }}
+      role="menu"
+      aria-label="Total equity options"
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {canToggleOtherAssetsInTotalEquity && (
+        <button
+          type="button"
+          className="equity-card__context-menu-item positions-table__context-menu-item--choice"
+          role="menuitemcheckbox"
+          aria-checked={showOtherAssetsInTotalEquity}
+          onClick={handleToggleOtherAssetsInTotalEquity}
+        >
+          <span
+            className={`positions-table__context-menu-check${showOtherAssetsInTotalEquity ? ' positions-table__context-menu-check--active' : ''}`}
+            aria-hidden="true"
+          />
+          <span>Include non-investment assets</span>
+        </button>
+      )}
+      {canToggleUnbilledInTotalEquity && (
+        <button
+          type="button"
+          className="equity-card__context-menu-item positions-table__context-menu-item--choice"
+          role="menuitemcheckbox"
+          aria-checked={showUnbilledInTotalEquity}
+          onClick={handleToggleUnbilledInTotalEquity}
+        >
+          <span
+            className={`positions-table__context-menu-check${showUnbilledInTotalEquity ? ' positions-table__context-menu-check--active' : ''}`}
+            aria-hidden="true"
+          />
+          <span>Include unbilled earnings</span>
+        </button>
+      )}
+    </div>
+  ) : null;
+
   const qqqContextMenu = qqqMenuState.open ? (
     <div
       ref={qqqMenuRef}
@@ -3236,6 +3421,14 @@ export default function SummaryMetrics({
       </button>
     </div>
   ) : null;
+
+  const totalEquityValueContextProps = hasTotalEquityMenuActions
+    ? {
+        onContextMenu: handleTotalEquityContextMenu,
+        'aria-haspopup': 'menu',
+        'aria-expanded': totalEquityMenuState.open ? 'true' : 'false',
+      }
+    : {};
 
   const qqqButtonContextProps = canRefreshQqqTemperature
     ? {
@@ -3264,6 +3457,7 @@ export default function SummaryMetrics({
           <p
             className="equity-card__value"
             title={totalEquityTooltip ?? undefined}
+            {...totalEquityValueContextProps}
           >
             {formatMoney(displayTotalEquity ?? totalEquity)}
           </p>
@@ -3672,6 +3866,24 @@ export default function SummaryMetrics({
           )}
           {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
             <MetricRow
+              label={yearlyEarningsLabel}
+              value={formattedYearlyEarnings}
+              tone={yearlyEarningsTone}
+              onActivate={refreshEarningsAction}
+              valueClassName={earningsValueClassName}
+            />
+          )}
+          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+            <MetricRow
+              label={projectedEarningsLabel}
+              value={formattedProjectedYearlyEarnings}
+              tone={projectedYearlyEarningsTone}
+              onActivate={refreshEarningsAction}
+              valueClassName={earningsValueClassName}
+            />
+          )}
+          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+            <MetricRow
               label="Unbilled Earnings"
               value={formattedUnbilledEarnings}
               tone={unbilledEarningsTone}
@@ -3741,13 +3953,28 @@ export default function SummaryMetrics({
               />
             )}
             {showOtherAssetsMetrics && Number.isFinite(otherAssetsHomeCad) && (
-              <MetricRow label="Home" value={formatMoney(otherAssetsHomeCad)} tone="neutral" />
+              <MetricRow
+                label="Home"
+                value={formatMoney(otherAssetsHomeCad)}
+                tone="neutral"
+                onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('homeCad') : null}
+              />
             )}
             {showOtherAssetsMetrics && Number.isFinite(otherAssetsVehiclesCad) && (
-              <MetricRow label="Vehicles" value={formatMoney(otherAssetsVehiclesCad)} tone="neutral" />
+              <MetricRow
+                label="Vehicles"
+                value={formatMoney(otherAssetsVehiclesCad)}
+                tone="neutral"
+                onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('vehiclesCad') : null}
+              />
             )}
             {showOtherAssetsMetrics && Number.isFinite(otherAssetsOtherCad) && (
-              <MetricRow label="Other assets" value={formatMoney(otherAssetsOtherCad)} tone="neutral" />
+              <MetricRow
+                label="Other assets"
+                value={formatMoney(otherAssetsOtherCad)}
+                tone="neutral"
+                onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('otherAssetsCad') : null}
+              />
             )}
           </dl>
         )}
@@ -3755,6 +3982,7 @@ export default function SummaryMetrics({
 
       {parentGroupList}
       {childAccountList}
+      {totalEquityContextMenu}
       {qqqContextMenu}
       {childContextMenu}
       {totalContextMenu}
@@ -3828,6 +4056,7 @@ SummaryMetrics.propTypes = {
   earningsSummary: PropTypes.shape({
     status: PropTypes.oneOf(['idle', 'loading', 'refreshing', 'ready', 'error']),
     todayCad: PropTypes.number,
+    yearlyCad: PropTypes.number,
     unbilledCad: PropTypes.number,
     updatedAt: PropTypes.string,
     error: PropTypes.instanceOf(Error),
@@ -3840,6 +4069,11 @@ SummaryMetrics.propTypes = {
     totalCad: PropTypes.number,
   }),
   showOtherAssetsInTotalEquity: PropTypes.bool,
+  canToggleUnbilledInTotalEquity: PropTypes.bool,
+  canToggleOtherAssetsInTotalEquity: PropTypes.bool,
+  onToggleUnbilledInTotalEquity: PropTypes.func,
+  onToggleOtherAssetsInTotalEquity: PropTypes.func,
+  onEditOtherAsset: PropTypes.func,
   onRefreshEarnings: PropTypes.func,
   usdToCadRate: PropTypes.number,
   onShowPeople: PropTypes.func,
@@ -4013,6 +4247,11 @@ SummaryMetrics.defaultProps = {
   showUnbilledInTotalEquity: false,
   otherAssetsSummary: null,
   showOtherAssetsInTotalEquity: false,
+  canToggleUnbilledInTotalEquity: false,
+  canToggleOtherAssetsInTotalEquity: false,
+  onToggleUnbilledInTotalEquity: null,
+  onToggleOtherAssetsInTotalEquity: null,
+  onEditOtherAsset: null,
   onRefreshEarnings: null,
   usdToCadRate: null,
   onShowPeople: null,

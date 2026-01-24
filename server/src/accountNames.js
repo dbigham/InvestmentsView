@@ -148,6 +148,12 @@ function normalizeUnbilledEarningsSettings(entry) {
     normalized.todayQuery = todayQuery;
   }
 
+  const yearlyQuery =
+    typeof entry.yearlyQuery === 'string' && entry.yearlyQuery.trim() ? entry.yearlyQuery.trim() : '';
+  if (yearlyQuery) {
+    normalized.yearlyQuery = yearlyQuery;
+  }
+
   const unbilledQuery =
     typeof entry.unbilledQuery === 'string' && entry.unbilledQuery.trim()
       ? entry.unbilledQuery.trim()
@@ -3346,6 +3352,117 @@ function updateAccountOverrideEntries(entries) {
   return { updated: true, entries: sanitized, filePath };
 }
 
+function updateOtherAssetsSettings(updates) {
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+    const error = new Error('Other assets payload is required');
+    error.code = 'INVALID_VALUE';
+    throw error;
+  }
+
+  const updateValues = {};
+  const applyUpdateValue = (key) => {
+    if (!Object.prototype.hasOwnProperty.call(updates, key)) {
+      return false;
+    }
+    const normalized = normalizeNumberLike(updates[key]);
+    if (normalized === null || !Number.isFinite(normalized) || normalized < 0) {
+      const error = new Error(`Invalid ${key} value`);
+      error.code = 'INVALID_VALUE';
+      throw error;
+    }
+    updateValues[key] = normalized;
+    return true;
+  };
+
+  const hasHomeUpdate = applyUpdateValue('homeCad');
+  const hasVehicleUpdate = applyUpdateValue('vehiclesCad');
+  const hasOtherUpdate = applyUpdateValue('otherAssetsCad');
+  const hasUpdates = hasHomeUpdate || hasVehicleUpdate || hasOtherUpdate;
+
+  if (!hasUpdates) {
+    const error = new Error('Other assets payload must include at least one value');
+    error.code = 'INVALID_VALUE';
+    throw error;
+  }
+
+  const filePath = resolveConfiguredFilePath();
+  if (!filePath) {
+    const error = new Error('Accounts file path is not configured');
+    error.code = 'NO_FILE';
+    throw error;
+  }
+  if (!fs.existsSync(filePath)) {
+    const error = new Error('Accounts file not found at ' + filePath);
+    error.code = 'NO_FILE';
+    throw error;
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, '');
+  if (!content.trim()) {
+    const error = new Error('Accounts file is empty');
+    error.code = 'NOT_FOUND';
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (parseError) {
+    const error = new Error('Failed to parse accounts file');
+    error.code = 'PARSE_ERROR';
+    error.cause = parseError;
+    throw error;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const error = new Error('Accounts file must be an object to update app settings');
+    error.code = 'INVALID_FORMAT';
+    throw error;
+  }
+
+  const appSettings =
+    parsed.appSettings && typeof parsed.appSettings === 'object' && !Array.isArray(parsed.appSettings)
+      ? { ...parsed.appSettings }
+      : {};
+  const existingOtherAssets =
+    appSettings.otherAssets && typeof appSettings.otherAssets === 'object' && !Array.isArray(appSettings.otherAssets)
+      ? appSettings.otherAssets
+      : {};
+  const mergedOtherAssets = { ...existingOtherAssets, ...updateValues };
+  const normalizedOtherAssets = normalizeOtherAssetsSettings(mergedOtherAssets);
+
+  if (normalizedOtherAssets) {
+    appSettings.otherAssets = normalizedOtherAssets;
+  } else {
+    delete appSettings.otherAssets;
+  }
+
+  parsed.appSettings = appSettings;
+  parsed.updatedAt = new Date().toISOString();
+
+  const serialized = JSON.stringify(parsed, null, 2);
+  fs.writeFileSync(filePath, serialized + (serialized.endsWith('\n') ? '' : '\n'), 'utf-8');
+
+  cachedMarker = null;
+  cachedOverrides = {};
+  cachedPortalOverrides = {};
+  cachedChatOverrides = {};
+  cachedSettings = {};
+  cachedAppSettings = {};
+  cachedOrdering = [];
+  cachedDefaultAccount = null;
+  cachedGroupRelations = {};
+  cachedGroupMetadata = {};
+  hasLoggedError = false;
+  loadAccountOverrides();
+
+  return {
+    updated: true,
+    otherAssets: normalizedOtherAssets,
+    filePath,
+  };
+}
+
 function updateAccountLastRebalance(accountKey, options = {}) {
   const keySet = buildAccountKeySet(accountKey);
   if (!keySet) {
@@ -3659,6 +3776,7 @@ module.exports = {
   updateAccountSymbolNote,
   updateAccountPlanningContext,
   updateAccountMetadata,
+  updateOtherAssetsSettings,
   getAccountOverrideEntries,
   updateAccountOverrideEntries,
   extractSymbolSettingsFromOverride,

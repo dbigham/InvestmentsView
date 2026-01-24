@@ -68,6 +68,7 @@ const {
   getAccountGroupRelations,
   getAccountGroupMetadata,
   updateAccountMetadata,
+  updateOtherAssetsSettings,
   getAccountOverrideEntries,
   updateAccountOverrideEntries,
 } = require('./accountNames');
@@ -119,6 +120,7 @@ function parseBooleanEnv(value, defaultValue = false) {
 
 const DEFAULT_UNBILLED_EARNINGS_ENDPOINT = 'http://localhost:3840/lui';
 const DEFAULT_UNBILLED_EARNINGS_TODAY_QUERY = 'amount earned today';
+const DEFAULT_UNBILLED_EARNINGS_YEARLY_QUERY = 'amount earned this year';
 const DEFAULT_UNBILLED_EARNINGS_UNBILLED_QUERY = 'get unbilled revenue';
 
 function resolveUnbilledEarningsConfig(appSettings) {
@@ -137,11 +139,15 @@ function resolveUnbilledEarningsConfig(appSettings) {
     typeof settings.todayQuery === 'string' && settings.todayQuery.trim()
       ? settings.todayQuery.trim()
       : DEFAULT_UNBILLED_EARNINGS_TODAY_QUERY;
+  const yearlyQuery =
+    typeof settings.yearlyQuery === 'string' && settings.yearlyQuery.trim()
+      ? settings.yearlyQuery.trim()
+      : DEFAULT_UNBILLED_EARNINGS_YEARLY_QUERY;
   const unbilledQuery =
     typeof settings.unbilledQuery === 'string' && settings.unbilledQuery.trim()
       ? settings.unbilledQuery.trim()
       : DEFAULT_UNBILLED_EARNINGS_UNBILLED_QUERY;
-  return { endpoint, todayQuery, unbilledQuery };
+  return { endpoint, todayQuery, yearlyQuery, unbilledQuery };
 }
 
 function coerceLuiNumericResult(value) {
@@ -16669,6 +16675,35 @@ app.post('/api/account-overrides', function (req, res) {
   }
 });
 
+app.post('/api/app-settings/other-assets', function (req, res) {
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+
+  try {
+    const result = updateOtherAssetsSettings(payload);
+    return res.json({ updated: result.updated, otherAssets: result.otherAssets });
+  } catch (error) {
+    if (error && error.code === 'INVALID_VALUE') {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error && error.code === 'INVALID_FORMAT') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'NOT_FOUND') {
+      return res.status(404).json({ message: 'Accounts configuration not found' });
+    }
+    if (error && error.code === 'NO_FILE') {
+      return res.status(500).json({ message: error.message });
+    }
+    if (error && error.code === 'PARSE_ERROR') {
+      return res
+        .status(500)
+        .json({ message: 'Failed to parse accounts configuration file', details: error.message });
+    }
+    console.error('Failed to update other assets:', error);
+    return res.status(500).json({ message: 'Failed to update other assets' });
+  }
+});
+
 app.get('/api/accounts', async function (req, res) {
   if (!allLogins.length) {
     return res.status(409).json({
@@ -16803,28 +16838,40 @@ app.get('/api/earnings', async function (req, res) {
     return res.json({ enabled: false });
   }
 
-  const { endpoint, todayQuery, unbilledQuery } = unbilledConfig;
+  const { endpoint, todayQuery, yearlyQuery, unbilledQuery } = unbilledConfig;
   const settledResults = await Promise.allSettled([
     fetchLuiMetric(endpoint, todayQuery),
+    fetchLuiMetric(endpoint, yearlyQuery),
     fetchLuiMetric(endpoint, unbilledQuery),
   ]);
 
   const todayResult = settledResults[0];
-  const unbilledResult = settledResults[1];
+  const yearlyResult = settledResults[1];
+  const unbilledResult = settledResults[2];
   const todayCad = todayResult.status === 'fulfilled' ? todayResult.value : null;
+  const yearlyCad = yearlyResult.status === 'fulfilled' ? yearlyResult.value : null;
   const unbilledCad = unbilledResult.status === 'fulfilled' ? unbilledResult.value : null;
 
   const errors = {};
   if (todayResult.status === 'rejected') {
     errors.today = todayResult.reason?.message || 'Failed to load today earnings';
   }
+  if (yearlyResult.status === 'rejected') {
+    errors.yearly = yearlyResult.reason?.message || 'Failed to load yearly earnings';
+  }
   if (unbilledResult.status === 'rejected') {
     errors.unbilled = unbilledResult.reason?.message || 'Failed to load unbilled earnings';
   }
 
   const hasToday = Number.isFinite(todayCad);
+  const hasYearly = Number.isFinite(yearlyCad);
   const hasUnbilled = Number.isFinite(unbilledCad);
-  const status = hasToday && hasUnbilled ? 'ok' : hasToday || hasUnbilled ? 'partial' : 'error';
+  const status =
+    hasToday && hasYearly && hasUnbilled
+      ? 'ok'
+      : hasToday || hasYearly || hasUnbilled
+        ? 'partial'
+        : 'error';
 
   if (status !== 'ok') {
     console.warn('[Earnings] Failed to load some LUI metrics', {
@@ -16837,6 +16884,7 @@ app.get('/api/earnings', async function (req, res) {
     enabled: true,
     currency: 'CAD',
     todayCad,
+    yearlyCad,
     unbilledCad,
     status,
     errors: Object.keys(errors).length ? errors : undefined,
