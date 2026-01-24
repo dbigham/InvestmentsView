@@ -202,6 +202,9 @@ function demoMiddleware(req, res, next) {
       return respondDemo(res, { ok: true, message: 'Demo mode: overrides not persisted.' });
     }
   }
+  if (method === 'POST' && pathName === '/app-settings/other-assets') {
+    return respondDemo(res, { ok: true, message: 'Demo mode: changes not persisted.' });
+  }
   if (method === 'POST' && segments[0] === 'accounts') {
     return respondDemo(res, { ok: true, message: 'Demo mode: changes not persisted.' });
   }

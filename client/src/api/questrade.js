@@ -228,6 +228,12 @@ function buildEarningsUrl() {
   return url.toString();
 }
 
+function buildOtherAssetsUrl() {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/app-settings/other-assets', base);
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -820,6 +826,46 @@ export async function getEarnings() {
   if (!response.ok) {
     throw await buildApiError(response, 'Failed to load earnings data');
   }
+  return response.json();
+}
+
+export async function setOtherAssets(values) {
+  const payload = {};
+  if (values && typeof values === 'object') {
+    ['homeCad', 'vehiclesCad', 'otherAssetsCad'].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(values, key)) {
+        payload[key] = values[key];
+      }
+    });
+  }
+  if (!Object.keys(payload).length) {
+    throw new Error('Other assets payload is required');
+  }
+
+  const response = await fetchWithDemo(buildOtherAssetsUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let message = 'Failed to update other assets';
+    try {
+      const data = await response.json();
+      message = data?.message || data?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+
   return response.json();
 }
 
