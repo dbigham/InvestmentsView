@@ -11,6 +11,10 @@ import { buildQuoteUrl, openQuote } from '../utils/quotes';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { openChatGpt } from '../utils/chat';
 import {
+  aggregatePositionsByMergedSymbol,
+  resolveHoldingsDisplaySymbol,
+} from '../utils/holdings';
+import {
   buildExplainMovementPrompt,
   derivePercentages,
   resolveAccountForPosition,
@@ -239,207 +243,7 @@ function buildTreemapLayout(items, rect = { x: 0, y: 0, width: 1, height: 1 }) {
 
 const STYLE_TWO_MIN_SHARE = 0.005;
 
-const HEATMAP_SYMBOL_LABELS = {
-  SGOV: 'T-Bills',
-  SPLG: 'S&P 500',
-  SPYM: 'S&P 500',
-  TSLA: 'Tesla',
-  NVDA: 'NVIDIA',
-  VXUS: 'Non-US',
-  VCN: 'Canadian',
-  QQQ: 'Nasdaq-100',
-  ENB: "Enbridge"
-};
-
 const USD_TRUST_SYMBOL_IDS = new Set([1729]);
-
-function resolveDisplaySymbol(symbol) {
-  if (!symbol) {
-    return symbol;
-  }
-  const key = String(symbol).toUpperCase();
-  return HEATMAP_SYMBOL_LABELS[key] || symbol;
-}
-
-const MERGED_SYMBOL_ALIASES = new Map([
-  ['QQQM', 'QQQ'],
-  ['IBIT.U', 'IBIT'],
-  ['VBIL', 'SGOV'],
-  ['BIL', 'SGOV'],
-]);
-
-function normalizeMergedSymbol(position, fallbackId) {
-  const rawSymbol =
-    typeof position.symbol === 'string' && position.symbol.trim()
-      ? position.symbol.trim()
-      : position.symbolId !== undefined && position.symbolId !== null
-      ? String(position.symbolId)
-      : position.rowId
-      ? String(position.rowId)
-      : fallbackId;
-
-  const normalized = rawSymbol ? rawSymbol.toUpperCase() : '';
-  const withoutToSuffix = normalized.endsWith('.TO') ? normalized.slice(0, -3) : normalized;
-  const base = MERGED_SYMBOL_ALIASES.get(withoutToSuffix) || withoutToSuffix;
-
-  return {
-    key: base || normalized || fallbackId,
-    display: base || rawSymbol || '—',
-    raw: rawSymbol || '—',
-  };
-}
-
-function aggregatePositionsByMergedSymbol(positions) {
-  const groups = new Map();
-
-  const entries = Array.isArray(positions) ? positions : [];
-
-  entries.forEach((position, index) => {
-    const { key, display, raw } = normalizeMergedSymbol(position, `__merged_${index}`);
-    const rawSymbolsFromPosition = Array.isArray(position.rawSymbols)
-      ? position.rawSymbols
-          .map((value) => (typeof value === 'string' ? value.trim() : ''))
-          .filter(Boolean)
-      : [];
-    const resolvedCost = resolveTotalCost(position);
-    const normalizedMarketValue = isFiniteNumber(position.normalizedMarketValue)
-      ? position.normalizedMarketValue
-      : 0;
-    const normalizedDayPnl = isFiniteNumber(position.normalizedDayPnl)
-      ? position.normalizedDayPnl
-      : 0;
-    const normalizedOpenPnl = isFiniteNumber(position.normalizedOpenPnl)
-      ? position.normalizedOpenPnl
-      : 0;
-    const currentMarketValue = isFiniteNumber(position.currentMarketValue)
-      ? position.currentMarketValue
-      : 0;
-    const dayPnl = isFiniteNumber(position.dayPnl) ? position.dayPnl : 0;
-    const openPnl = isFiniteNumber(position.openPnl) ? position.openPnl : 0;
-    const totalPnl = isFiniteNumber(position.totalPnl) ? position.totalPnl : 0;
-    const portfolioShare = isFiniteNumber(position.portfolioShare)
-      ? position.portfolioShare
-      : null;
-    const currency =
-      typeof position.currency === 'string' && position.currency.trim()
-        ? position.currency.trim().toUpperCase()
-        : null;
-    const description =
-      typeof position.description === 'string' && position.description.trim()
-        ? position.description.trim()
-        : position.description ?? null;
-    const currentPrice = isFiniteNumber(position.currentPrice) ? position.currentPrice : null;
-    const openQuantity = isFiniteNumber(position.openQuantity) ? position.openQuantity : null;
-    const accountNumber =
-      typeof position.accountNumber === 'string' && position.accountNumber.trim()
-        ? position.accountNumber.trim()
-        : null;
-    const accountId =
-      position.accountId !== undefined && position.accountId !== null ? position.accountId : null;
-
-    if (groups.has(key)) {
-      const entry = groups.get(key);
-      entry.normalizedMarketValue += normalizedMarketValue;
-      entry.normalizedDayPnl += normalizedDayPnl;
-      entry.normalizedOpenPnl += normalizedOpenPnl;
-      entry.currentMarketValue += currentMarketValue;
-      entry.dayPnl += dayPnl;
-      entry.openPnl += openPnl;
-      entry.totalPnl += totalPnl;
-      if (portfolioShare !== null) {
-        entry.portfolioShare = (entry.portfolioShare ?? 0) + portfolioShare;
-      }
-      if (entry.totalCost !== null) {
-        if (isFiniteNumber(resolvedCost)) {
-          entry.totalCost += resolvedCost;
-        } else {
-          entry.totalCost = null;
-        }
-      }
-      if (entry.openQuantity !== null) {
-        if (openQuantity !== null) {
-          entry.openQuantity += openQuantity;
-        } else {
-          entry.openQuantity = null;
-        }
-      }
-      if (entry.accountNumber) {
-        if (accountNumber && entry.accountNumber !== accountNumber) {
-          entry.accountNumber = null;
-        }
-      } else if (accountNumber) {
-        entry.accountNumber = accountNumber;
-      }
-      if (entry.accountId !== null && entry.accountId !== undefined) {
-        if (accountId !== null && accountId !== undefined) {
-          if (String(entry.accountId) !== String(accountId)) {
-            entry.accountId = null;
-          }
-        }
-      } else if (accountId !== null && accountId !== undefined) {
-        entry.accountId = accountId;
-      }
-      if (!entry.description && description) {
-        entry.description = description;
-      }
-      if (currentPrice !== null && entry.currentPrice === null) {
-        entry.currentPrice = currentPrice;
-      }
-      if (currency) {
-        if (entry.currency && entry.currency !== currency) {
-          entry.currency = null;
-        } else if (!entry.currency) {
-          entry.currency = currency;
-        }
-      }
-      entry.rawSymbols.add(raw);
-      rawSymbolsFromPosition.forEach((rawSymbol) => entry.rawSymbols.add(rawSymbol));
-    } else {
-      groups.set(key, {
-        id: `${key}-merged`,
-        symbol: display,
-        description: description || null,
-        normalizedMarketValue,
-        normalizedDayPnl,
-        normalizedOpenPnl,
-        currentMarketValue,
-        dayPnl,
-        openPnl,
-        totalPnl,
-        portfolioShare,
-        currency,
-        currentPrice,
-        totalCost: isFiniteNumber(resolvedCost) ? resolvedCost : null,
-        averageEntryPrice: isFiniteNumber(position.averageEntryPrice)
-          ? position.averageEntryPrice
-          : null,
-        openQuantity,
-        accountNumber,
-        accountId,
-        rawSymbols: new Set([raw, ...rawSymbolsFromPosition]),
-      });
-    }
-  });
-
-  return Array.from(groups.values()).map((entry) => {
-    const { rawSymbols, ...rest } = entry;
-    const { totalCost, openQuantity, averageEntryPrice } = rest;
-    let resolvedAverage = averageEntryPrice;
-    if (resolvedAverage === null && totalCost !== null && openQuantity) {
-      const quantity = isFiniteNumber(openQuantity) ? openQuantity : null;
-      if (quantity) {
-        resolvedAverage = totalCost / quantity;
-      }
-    }
-
-    return {
-      ...rest,
-      averageEntryPrice: resolvedAverage,
-      rawSymbols: Array.from(rawSymbols),
-      rowId: Array.from(rawSymbols).join(','),
-    };
-  });
-}
 
 function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
   const sourcePositions = aggregatePositionsByMergedSymbol(positions);
@@ -465,7 +269,7 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
           position.symbolId ||
           String(position.id || position.symbol || Math.random()),
         symbol: position.symbol || position.symbolId || '—',
-        displaySymbol: resolveDisplaySymbol(position.symbol || position.symbolId || '—'),
+        displaySymbol: resolveHoldingsDisplaySymbol(position.symbol || position.symbolId || '—'),
         description: position.description || null,
         weight: metricKey === 'totalPnl' && styleMode === 'style1' ? Math.abs(metricValue) : marketValue,
         marketValue,
@@ -2099,3 +1903,4 @@ PnlHeatmapDialog.defaultProps = {
   onClearRange: null,
   onRetryRange: null,
 };
+

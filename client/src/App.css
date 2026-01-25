@@ -1968,6 +1968,204 @@ textarea {
   color: var(--color-text-primary);
 }
 
+.holdings-pie-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1000;
+}
+
+.holdings-pie-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  width: min(760px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.holdings-pie-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.holdings-pie-dialog__heading h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.holdings-pie-dialog__subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.holdings-pie-dialog__meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.holdings-pie-dialog__close {
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.holdings-pie-dialog__close:hover,
+.holdings-pie-dialog__close:focus-visible {
+  color: var(--color-text-primary);
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.holdings-pie-dialog__body {
+  margin-top: 20px;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.holdings-pie-dialog__content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.holdings-pie-chart {
+  width: 100%;
+  max-width: 320px;
+  margin: 0 auto;
+  aspect-ratio: 1 / 1;
+}
+
+.holdings-pie-chart svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.holdings-pie-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.holdings-pie-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.holdings-pie-legend__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.holdings-pie-legend__info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.holdings-pie-legend__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.holdings-pie-legend__subtitle {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.holdings-pie-legend__values {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.holdings-pie-legend__percent {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.holdings-pie-legend__value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.holdings-pie-dialog__empty {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.holdings-pie-dialog__footer {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.holdings-pie-dialog__total-label {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.holdings-pie-dialog__total-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+@media (max-width: 720px) {
+  .holdings-pie-dialog {
+    padding: 20px;
+  }
+
+  .holdings-pie-dialog__content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .holdings-pie-chart {
+    max-width: 280px;
+  }
+}
+
 .target-proportions-overlay {
   position: fixed;
   inset: 0;

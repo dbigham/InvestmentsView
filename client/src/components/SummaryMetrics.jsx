@@ -657,6 +657,7 @@ MetricRow.defaultProps = {
 function ActionMenu({
   onCopySummary,
   onShowProjections,
+  onShowHoldingsPieChart,
   onEstimateCagr,
   onPlanInvestEvenly,
   onExplainMovement,
@@ -677,6 +678,7 @@ function ActionMenu({
   const hasChatLink = Boolean(normalizedChatUrl);
   const hasCopyAction = typeof onCopySummary === 'function';
   const hasProjectionsAction = typeof onShowProjections === 'function';
+  const hasHoldingsPieChartAction = typeof onShowHoldingsPieChart === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
   const hasExplainMovementAction = typeof onExplainMovement === 'function';
@@ -739,6 +741,14 @@ function ActionMenu({
       setBusy(false);
       setOpen(false);
     }
+  };
+
+  const handleShowHoldingsPieChart = () => {
+    if (!onShowHoldingsPieChart || disabled || busy) {
+      return;
+    }
+    setOpen(false);
+    onShowHoldingsPieChart();
   };
 
   const handleCopy = async () => {
@@ -919,6 +929,19 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasHoldingsPieChartAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleShowHoldingsPieChart}
+                disabled={busy}
+              >
+                Pie chart
+              </button>
+            </li>
+          )}
           {hasExplainMovementAction && (
             <li role="none">
               <button
@@ -1045,6 +1068,7 @@ function ActionMenu({
 ActionMenu.propTypes = {
   onCopySummary: PropTypes.func,
   onShowProjections: PropTypes.func,
+  onShowHoldingsPieChart: PropTypes.func,
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onExplainMovement: PropTypes.func,
@@ -1061,6 +1085,7 @@ ActionMenu.propTypes = {
 ActionMenu.defaultProps = {
   onCopySummary: null,
   onShowProjections: null,
+  onShowHoldingsPieChart: null,
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
   onExplainMovement: null,
@@ -1108,6 +1133,7 @@ export default function SummaryMetrics({
   onCopySummary,
   onEstimateFutureCagr,
   onShowProjections,
+  onShowHoldingsPieChart,
   onMarkRebalanced,
   onPlanInvestEvenly,
   onExplainMovement,
@@ -3521,6 +3547,7 @@ export default function SummaryMetrics({
           )}
           {(onCopySummary ||
             onShowProjections ||
+            onShowHoldingsPieChart ||
             onEstimateFutureCagr ||
             onPlanInvestEvenly ||
             onExplainMovement ||
@@ -3534,6 +3561,7 @@ export default function SummaryMetrics({
             <ActionMenu
               onCopySummary={onCopySummary}
               onShowProjections={onShowProjections}
+              onShowHoldingsPieChart={onShowHoldingsPieChart}
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
               onMarkRebalanced={onMarkRebalanced}
@@ -4088,6 +4116,7 @@ SummaryMetrics.propTypes = {
   onCopySummary: PropTypes.func,
   onEstimateFutureCagr: PropTypes.func,
   onShowProjections: PropTypes.func,
+  onShowHoldingsPieChart: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
   onExplainMovement: PropTypes.func,
@@ -4266,6 +4295,7 @@ SummaryMetrics.defaultProps = {
   onCopySummary: null,
   onEstimateFutureCagr: null,
   onShowProjections: null,
+  onShowHoldingsPieChart: null,
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
   onExplainMovement: null,

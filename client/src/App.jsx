@@ -32,6 +32,7 @@ import {
 import usePersistentState from './hooks/usePersistentState';
 import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
+import HoldingsPieChartDialog from './components/HoldingsPieChartDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
 import DeploymentAdjustmentDialog from './components/DeploymentAdjustmentDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
@@ -6807,6 +6808,7 @@ export default function App() {
   const [totalPnlSelectionResetKey, setTotalPnlSelectionResetKey] = useState(0);
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [showProjectionDialog, setShowProjectionDialog] = useState(false);
+  const [showHoldingsPieChart, setShowHoldingsPieChart] = useState(false);
   const [projectionContext, setProjectionContext] = useState({
     accountKey: null,
     label: null,
@@ -10574,6 +10576,15 @@ export default function App() {
       return getAccountLabel(selectedAccountInfo) || '';
     }
     return '';
+  }, [isAggregateSelection, aggregateAccountLabel, selectedAccountInfo]);
+  const holdingsPieChartAccountLabel = useMemo(() => {
+    if (isAggregateSelection) {
+      return aggregateAccountLabel || 'All accounts';
+    }
+    if (selectedAccountInfo) {
+      return getAccountLabel(selectedAccountInfo) || null;
+    }
+    return null;
   }, [isAggregateSelection, aggregateAccountLabel, selectedAccountInfo]);
   const newsCacheKey = useMemo(() => {
     const accountComponent = newsAccountId || newsAccountLabel || 'portfolio';
@@ -15116,6 +15127,14 @@ export default function App() {
     setProjectionContext({ accountKey: null, label: null, cagrStartDate: null, parentAccountId: null, retireAtAge: null });
   }, []);
 
+  const handleShowHoldingsPieChart = useCallback(() => {
+    setShowHoldingsPieChart(true);
+  }, []);
+
+  const handleCloseHoldingsPieChart = useCallback(() => {
+    setShowHoldingsPieChart(false);
+  }, []);
+
   const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
   const skipUsdToggle = investEvenlyPlan?.skipUsdPurchases ?? false;
 
@@ -16790,6 +16809,7 @@ export default function App() {
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
             onShowProjections={handleShowProjections}
+            onShowHoldingsPieChart={orderedPositions.length ? handleShowHoldingsPieChart : null}
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
             onExplainMovement={focusedSymbol ? handleExplainMovementForSymbol : null}
@@ -17185,6 +17205,15 @@ export default function App() {
           entries={cashBreakdownData.entries}
           onClose={handleCloseCashBreakdown}
           onSelectAccount={handleSelectAccountFromBreakdown}
+        />
+      )}
+      {showHoldingsPieChart && (
+        <HoldingsPieChartDialog
+          positions={orderedPositions}
+          accountLabel={holdingsPieChartAccountLabel}
+          asOf={asOf}
+          baseCurrency={baseCurrency}
+          onClose={handleCloseHoldingsPieChart}
         />
       )}
       {showInvestmentModelDialog && (
