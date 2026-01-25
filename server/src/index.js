@@ -19540,6 +19540,166 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
   res.json(payload);
 });
 
+app.get('/api/symbols/annualized', async function (req, res) {
+  const rawSymbols = normalizeSymbolList(req.query.symbols || req.query.symbol);
+  if (!rawSymbols.length) {
+    return res.status(400).json({ message: 'symbols are required.' });
+  }
+
+  const scopeParam =
+    typeof req.query.accountId === 'string' && req.query.accountId.trim()
+      ? req.query.accountId.trim()
+      : 'all';
+  const superset = getSupersetCacheEntry();
+  if (!superset) {
+    return res.status(409).json({ message: 'Summary data unavailable. Refresh and try again.' });
+  }
+
+  const normalizedSelection = normalizeSummaryRequestKey(scopeParam);
+  const accountIds = resolveAccountIdsForSelection(superset, normalizedSelection);
+  if (!accountIds.length) {
+    return res.status(404).json({ message: 'Requested scope is unavailable.' });
+  }
+
+  const contexts = accountIds
+    .map((accountId) => buildContextFromSupersetAccount(superset, accountId))
+    .filter(Boolean);
+  if (!contexts.length) {
+    return res.status(404).json({ message: 'Accounts unavailable for requested scope.' });
+  }
+
+  const symbolSet = new Set(rawSymbols);
+  const matchedSymbols = new Set();
+  const cashFlowsCad = [];
+  const cashFlowsNoFxCad = [];
+  const activityContextStore =
+    superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
+      ? superset.activityContextsByAccountId
+      : {};
+
+  let failureCount = 0;
+
+  const entryMatchesSymbols = (entry) => {
+    const symbol = normalizeSymbol(entry?.symbol);
+    if (symbol && symbolSet.has(symbol)) {
+      return true;
+    }
+    if (Array.isArray(entry?.components)) {
+      return entry.components.some((component) => {
+        const componentSymbol = normalizeSymbol(component?.symbol);
+        return componentSymbol && symbolSet.has(componentSymbol);
+      });
+    }
+    return false;
+  };
+
+  await mapWithConcurrency(
+    contexts,
+    Math.min(4, contexts.length),
+    async function (context) {
+      if (!context || !context.account || !context.account.id) {
+        failureCount += 1;
+        return;
+      }
+      const accountId = context.account.id;
+      let activityContext = activityContextStore[accountId];
+      if (!activityContext) {
+        try {
+          activityContext = await buildAccountActivityContext(context.login, context.account);
+          if (activityContext) {
+            activityContextStore[accountId] = activityContext;
+          }
+        } catch (activityError) {
+          const message = activityError && activityError.message ? activityError.message : String(activityError);
+          console.warn('Failed to prepare activity history for symbol annualized account ' + accountId + ':', message);
+          failureCount += 1;
+          return;
+        }
+      }
+      if (!activityContext) {
+        failureCount += 1;
+        return;
+      }
+      try {
+        const totals = await computeTotalPnlBySymbol(context.login, context.account, {
+          applyAccountCagrStartDate: false,
+          activityContext,
+        });
+        const entries = Array.isArray(totals?.entries) ? totals.entries : [];
+        entries.forEach((entry) => {
+          if (!entryMatchesSymbols(entry)) {
+            return;
+          }
+          const symbol = normalizeSymbol(entry?.symbol);
+          if (symbol) {
+            matchedSymbols.add(symbol);
+          }
+          if (Array.isArray(entry.cashFlowsCad) && entry.cashFlowsCad.length) {
+            cashFlowsCad.push(...entry.cashFlowsCad);
+          }
+          if (Array.isArray(entry.cashFlowsNoFxCad) && entry.cashFlowsNoFxCad.length) {
+            cashFlowsNoFxCad.push(...entry.cashFlowsNoFxCad);
+          }
+        });
+      } catch (totalsError) {
+        const message = totalsError && totalsError.message ? totalsError.message : String(totalsError);
+        console.warn('Failed to compute symbol totals for annualized calculation on account ' + accountId + ':', message);
+        failureCount += 1;
+      }
+    }
+  );
+
+  const buildAnnualizedFromFlows = (flows, label) => {
+    const normalized = normalizeCashFlowsForXirr(flows);
+    if (!normalized.length) {
+      return null;
+    }
+    const rate = computeAccountAnnualizedReturn(normalized, label || scopeParam || 'symbols');
+    const earliest = normalized[0]?.date || null;
+    const latest = normalized[normalized.length - 1]?.date || null;
+    const startDateIso =
+      earliest instanceof Date && !Number.isNaN(earliest.getTime()) ? earliest.toISOString().slice(0, 10) : undefined;
+    const asOfIso =
+      latest instanceof Date && !Number.isNaN(latest.getTime()) ? latest.toISOString() : superset.asOf || undefined;
+    if (Number.isFinite(rate)) {
+      return {
+        rate,
+        method: 'xirr',
+        cashFlowCount: normalized.length,
+        startDate: startDateIso,
+        asOf: asOfIso,
+      };
+    }
+    return {
+      method: 'xirr',
+      cashFlowCount: normalized.length,
+      startDate: startDateIso,
+      asOf: asOfIso,
+      incomplete: true,
+    };
+  };
+
+  const annualizedReturn = buildAnnualizedFromFlows(cashFlowsCad, `symbols:${rawSymbols.join(',')}`);
+  const annualizedReturnNoFx =
+    cashFlowsNoFxCad.length > 0
+      ? buildAnnualizedFromFlows(cashFlowsNoFxCad, `symbols-nofx:${rawSymbols.join(',')}`)
+      : null;
+
+  const payload = {
+    scope: scopeParam,
+    accountCount: contexts.length,
+    symbols: rawSymbols,
+    matchedSymbols: Array.from(matchedSymbols),
+    annualizedReturn: annualizedReturn || null,
+    annualizedReturnNoFx: annualizedReturnNoFx || null,
+  };
+  if (failureCount > 0) {
+    payload.partial = true;
+  }
+
+  res.json(payload);
+});
+
 app.get('/health', function (req, res) {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });

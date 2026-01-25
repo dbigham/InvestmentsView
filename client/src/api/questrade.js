@@ -272,6 +272,31 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   return url.toString();
 }
 
+function buildSymbolAnnualizedUrl(params = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/symbols/annualized', base);
+  if (params && typeof params.accountId === 'string' && params.accountId.trim() && params.accountId !== 'all') {
+    url.searchParams.set('accountId', params.accountId.trim());
+  }
+  const symbols = [];
+  if (params && Array.isArray(params.symbols)) {
+    params.symbols.forEach((symbol) => {
+      if (typeof symbol === 'string' && symbol.trim()) {
+        symbols.push(symbol.trim());
+      }
+    });
+  } else if (params && typeof params.symbols === 'string' && params.symbols.trim()) {
+    symbols.push(...params.symbols.split(',').map((value) => value.trim()).filter(Boolean));
+  }
+  if (params && typeof params.symbol === 'string' && params.symbol.trim()) {
+    symbols.push(params.symbol.trim());
+  }
+  if (symbols.length) {
+    url.searchParams.set('symbols', symbols.join(','));
+  }
+  return url.toString();
+}
+
 function buildSymbolPriceHistoryUrl(symbol, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedSymbol = typeof symbol === 'string' ? symbol.trim() : '';
@@ -921,6 +946,29 @@ export async function getTotalPnlSeries(accountKey, params = {}) {
     throw new Error(message);
   }
 
+  return response.json();
+}
+
+export async function getSymbolAnnualized(params = {}) {
+  const response = await fetchWithDemo(buildSymbolAnnualizedUrl(params));
+  if (!response.ok) {
+    let message = 'Failed to load symbol annualized return';
+    try {
+      const payload = await response.json();
+      message = payload?.message || payload?.details || message;
+    } catch (parseError) {
+      console.warn('Failed to parse symbol annualized error response as JSON', parseError);
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch (nestedError) {
+        console.warn('Failed to read symbol annualized error response', nestedError);
+      }
+    }
+    throw new Error(message);
+  }
   return response.json();
 }
 

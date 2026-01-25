@@ -13,6 +13,7 @@ import {
   getBenchmarkReturns,
   markAccountRebalanced,
   getTotalPnlSeries,
+  getSymbolAnnualized,
   getSymbolPriceHistory,
   setAccountTargetProportions,
   getPortfolioNews,
@@ -6946,6 +6947,12 @@ export default function App() {
     symbol: null,
     symbolGroupKey: null,
   });
+  const [symbolGroupAnnualizedState, setSymbolGroupAnnualizedState] = useState({
+    status: 'idle',
+    data: null,
+    error: null,
+    key: null,
+  });
   const [symbolPriceSeriesState, setSymbolPriceSeriesState] = useState({
     symbol: null,
     status: 'idle',
@@ -8289,6 +8296,74 @@ export default function App() {
     }
     return null;
   }, [selectedAccountInfo, selectedAccount, isAggregateSelection]);
+
+  const symbolGroupAnnualizedSymbols = useMemo(() => {
+    if (!focusedSymbolMembers.length) {
+      return [];
+    }
+    const seen = new Set();
+    focusedSymbolMembers.forEach((symbol) => {
+      const normalized = normalizeSymbolGroupKey(symbol);
+      if (normalized) {
+        seen.add(normalized);
+      }
+    });
+    return Array.from(seen);
+  }, [focusedSymbolMembers]);
+
+  const symbolGroupAnnualizedKey = useMemo(() => {
+    if (!focusedSymbol || symbolGroupAnnualizedSymbols.length < 2) {
+      return null;
+    }
+    const accountKey = selectedAccountKey || 'all';
+    return `${accountKey}::${symbolGroupAnnualizedSymbols.join(',')}::${refreshKey}`;
+  }, [focusedSymbol, selectedAccountKey, symbolGroupAnnualizedSymbols, refreshKey]);
+
+  useEffect(() => {
+    if (!symbolGroupAnnualizedKey) {
+      setSymbolGroupAnnualizedState((prev) =>
+        prev.status === 'idle' && prev.key === null
+          ? prev
+          : { status: 'idle', data: null, error: null, key: null }
+      );
+      return;
+    }
+    let cancelled = false;
+    setSymbolGroupAnnualizedState((prev) => ({
+      status: 'loading',
+      data: prev.key === symbolGroupAnnualizedKey ? prev.data : null,
+      error: null,
+      key: symbolGroupAnnualizedKey,
+    }));
+    const accountKey = selectedAccountKey || 'all';
+    getSymbolAnnualized({ accountId: accountKey, symbols: symbolGroupAnnualizedSymbols })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setSymbolGroupAnnualizedState({
+          status: 'success',
+          data: payload,
+          error: null,
+          key: symbolGroupAnnualizedKey,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        const normalized = err instanceof Error ? err : new Error('Failed to load symbol annualized return');
+        setSymbolGroupAnnualizedState({
+          status: 'error',
+          data: null,
+          error: normalized,
+          key: symbolGroupAnnualizedKey,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [symbolGroupAnnualizedKey, selectedAccountKey, symbolGroupAnnualizedSymbols]);
 
   useEffect(() => {
     if (!selectedRebalanceReminder) {
@@ -15888,16 +15963,25 @@ export default function App() {
         focusedSymbolTotalsEntry.current?.annualizedReturn ||
         focusedSymbolTotalsEntry.allTime?.annualizedReturn ||
         null;
-    const annualizedRate = Number.isFinite(Number(annualized?.rate)) ? Number(annualized.rate) : null;
+    const groupAnnualized =
+      symbolGroupAnnualizedState.status === 'success' &&
+      symbolGroupAnnualizedState.key === symbolGroupAnnualizedKey
+        ? symbolGroupAnnualizedState.data?.annualizedReturn || null
+        : null;
+    const resolvedAnnualized =
+      focusedSymbolMembers.length > 1 && groupAnnualized ? groupAnnualized : annualized;
+    const annualizedRate = Number.isFinite(Number(resolvedAnnualized?.rate))
+      ? Number(resolvedAnnualized.rate)
+      : null;
     const annualizedAsOf =
-      typeof annualized?.asOf === 'string' && annualized.asOf.trim()
-        ? annualized.asOf.trim()
+      typeof resolvedAnnualized?.asOf === 'string' && resolvedAnnualized.asOf.trim()
+        ? resolvedAnnualized.asOf.trim()
         : asOf;
     const annualizedStart =
-      typeof annualized?.startDate === 'string' && annualized.startDate.trim()
-        ? annualized.startDate.trim()
+      typeof resolvedAnnualized?.startDate === 'string' && resolvedAnnualized.startDate.trim()
+        ? resolvedAnnualized.startDate.trim()
         : null;
-    const annualizedIncomplete = annualized?.incomplete === true;
+    const annualizedIncomplete = resolvedAnnualized?.incomplete === true;
     const positionsTotalPnl = Number(focusedSymbolPnl?.totalPnl);
     const entryTotalPnl = Number(entry.totalPnlCad);
     const totalPnlCad = preferAllTime
@@ -15936,6 +16020,9 @@ export default function App() {
     symbolFilteredPositions.total,
     asOf,
     isAggregateSelection,
+    focusedSymbolMembers,
+    symbolGroupAnnualizedKey,
+    symbolGroupAnnualizedState,
   ]);
 
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog
