@@ -1193,6 +1193,10 @@ export default function SummaryMetrics({
   );
   const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
   const [chartMetric, setChartMetric] = usePersistentState('total-pnl-chart-metric', DEFAULT_CHART_METRIC);
+  const [includeFxInTotalPnlChart, setIncludeFxInTotalPnlChart] = usePersistentState(
+    'total-pnl-chart-include-fx',
+    true
+  );
   const normalizedChartMetric = availableChartMetricOptions.some((option) => option.value === chartMetric)
     ? chartMetric
     : DEFAULT_CHART_METRIC;
@@ -1236,6 +1240,8 @@ export default function SummaryMetrics({
       ? chartMetricConfig.useDisplayStartDelta
       : Boolean(totalPnlSeries?.displayStartDate);
   const isTotalPnlMetric = chartMetricConfig.valueKey === 'totalPnl';
+  const includeFxInChart = includeFxInTotalPnlChart !== false;
+  const canToggleIncludeFx = isTotalPnlMetric;
   const totalPnlRangeId = useId();
   const chartMetricSelectId = useId();
   const priceSymbolSelectId = useId();
@@ -1676,29 +1682,150 @@ export default function SummaryMetrics({
     </div>
   ) : null;
 
+  // For the no-FX chart, revalue USD components at a fixed (latest) rate.
+  const baseUsdToCadRate = useMemo(() => {
+    const points = Array.isArray(totalPnlSeries?.points) ? totalPnlSeries.points : [];
+    for (let i = points.length - 1; i >= 0; i -= 1) {
+      const rate = Number(points[i]?.usdToCadRate);
+      if (Number.isFinite(rate) && rate > 0) {
+        return rate;
+      }
+    }
+    const fallback = Number(usdToCadRate);
+    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+  }, [totalPnlSeries?.points, usdToCadRate]);
+
+  const totalPnlSeriesNoFxPoints = useMemo(() => {
+    const points = Array.isArray(totalPnlSeries?.points) ? totalPnlSeries.points : null;
+    if (!points || !points.length) {
+      return null;
+    }
+    if (!Number.isFinite(baseUsdToCadRate) || baseUsdToCadRate <= 0) {
+      return null;
+    }
+    return points.map((point) => {
+      if (!point || typeof point !== 'object') {
+        return point;
+      }
+      const cadCash = Number(point.cadCash);
+      const usdCash = Number(point.usdCash);
+      const cadSecurityValue = Number(point.cadSecurityValue);
+      const usdSecurityValue = Number(point.usdSecurityValue);
+      const resolvedCadCash = Number.isFinite(cadCash) ? cadCash : 0;
+      const resolvedUsdCash = Number.isFinite(usdCash) ? usdCash : 0;
+      const resolvedCadSecurity = Number.isFinite(cadSecurityValue) ? cadSecurityValue : 0;
+      const resolvedUsdSecurity = Number.isFinite(usdSecurityValue) ? usdSecurityValue : 0;
+      const hasComponent =
+        Number.isFinite(cadCash) ||
+        Number.isFinite(usdCash) ||
+        Number.isFinite(cadSecurityValue) ||
+        Number.isFinite(usdSecurityValue);
+      const equityNoFx = hasComponent
+        ? resolvedCadCash + resolvedCadSecurity + (resolvedUsdCash + resolvedUsdSecurity) * baseUsdToCadRate
+        : Number(point.equityCad);
+      const deposits = Number(point.cumulativeNetDepositsCad);
+      const totalPnlNoFx =
+        Number.isFinite(equityNoFx) && Number.isFinite(deposits)
+          ? equityNoFx - deposits
+          : Number(point.totalPnlCad);
+      return {
+        ...point,
+        equityCad: Number.isFinite(equityNoFx) ? equityNoFx : point.equityCad ?? null,
+        totalPnlCad: Number.isFinite(totalPnlNoFx) ? totalPnlNoFx : point.totalPnlCad ?? null,
+        totalPnlSinceDisplayStartCad: null,
+        equitySinceDisplayStartCad: null,
+        cumulativeNetDepositsSinceDisplayStartCad: null,
+      };
+    });
+  }, [totalPnlSeries?.points, baseUsdToCadRate]);
+
+  const shouldUseNoFxSeries =
+    !includeFxInChart && isTotalPnlMetric && Boolean(totalPnlSeriesNoFxPoints);
+
+  const effectiveTotalPnlPoints = useMemo(() => {
+    if (!Array.isArray(totalPnlSeries?.points)) {
+      return [];
+    }
+    return shouldUseNoFxSeries ? totalPnlSeriesNoFxPoints : totalPnlSeries.points;
+  }, [totalPnlSeries?.points, totalPnlSeriesNoFxPoints, shouldUseNoFxSeries]);
+
+  const effectiveDisplayStartTotals = useMemo(() => {
+    if (!totalPnlSeries) {
+      return null;
+    }
+    if (!shouldUseNoFxSeries) {
+      return totalPnlSeries?.summary?.displayStartTotals ?? null;
+    }
+    const points = totalPnlSeriesNoFxPoints;
+    if (!points.length) {
+      return totalPnlSeries?.summary?.displayStartTotals ?? null;
+    }
+    const displayStartKey = totalPnlSeries.displayStartDate;
+    let startPoint = points[0];
+    if (displayStartKey) {
+      const match = points.find((entry) => entry?.date === displayStartKey);
+      if (match) {
+        startPoint = match;
+      }
+    }
+    if (!startPoint) {
+      return totalPnlSeries?.summary?.displayStartTotals ?? null;
+    }
+    return {
+      totalPnlCad: Number.isFinite(startPoint?.totalPnlCad) ? startPoint.totalPnlCad : null,
+      equityCad: Number.isFinite(startPoint?.equityCad) ? startPoint.equityCad : null,
+      cumulativeNetDepositsCad: Number.isFinite(startPoint?.cumulativeNetDepositsCad)
+        ? startPoint.cumulativeNetDepositsCad
+        : null,
+      priceCad: Number.isFinite(startPoint?.priceCad) ? startPoint.priceCad : null,
+      priceNative: Number.isFinite(startPoint?.priceNative) ? startPoint.priceNative : null,
+    };
+  }, [totalPnlSeries, totalPnlSeriesNoFxPoints, shouldUseNoFxSeries]);
+
   const filteredTotalPnlSeries = useMemo(() => {
     if (!totalPnlSeries) {
       return [];
     }
-    const baseSeries = buildTotalPnlDisplaySeries(totalPnlSeries.points, chartTimeframe, {
+    const baseSeries = buildTotalPnlDisplaySeries(effectiveTotalPnlPoints, chartTimeframe, {
       displayStartDate: totalPnlSeries.displayStartDate,
-      displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
+      displayStartTotals: effectiveDisplayStartTotals,
     });
-    const targetTotal = Number.isFinite(baseTotalPnlValue) ? baseTotalPnlValue : null;
+    const targetTotal = shouldUseNoFxSeries
+      ? null
+      : Number.isFinite(baseTotalPnlValue)
+        ? baseTotalPnlValue
+        : null;
     return alignTotalPnlSeriesToSummary(baseSeries, targetTotal, totalPnlSeries.displayStartDate);
-  }, [totalPnlSeries, chartTimeframe, baseTotalPnlValue]);
+  }, [
+    totalPnlSeries,
+    effectiveTotalPnlPoints,
+    effectiveDisplayStartTotals,
+    chartTimeframe,
+    baseTotalPnlValue,
+    shouldUseNoFxSeries,
+  ]);
 
   const fullTotalPnlSeries = useMemo(() => {
     if (!totalPnlSeries) {
       return [];
     }
-    const baseSeries = buildTotalPnlDisplaySeries(totalPnlSeries.points, 'ALL', {
+    const baseSeries = buildTotalPnlDisplaySeries(effectiveTotalPnlPoints, 'ALL', {
       displayStartDate: totalPnlSeries.displayStartDate,
-      displayStartTotals: totalPnlSeries?.summary?.displayStartTotals,
+      displayStartTotals: effectiveDisplayStartTotals,
     });
-    const targetTotal = Number.isFinite(baseTotalPnlValue) ? baseTotalPnlValue : null;
+    const targetTotal = shouldUseNoFxSeries
+      ? null
+      : Number.isFinite(baseTotalPnlValue)
+        ? baseTotalPnlValue
+        : null;
     return alignTotalPnlSeriesToSummary(baseSeries, targetTotal, totalPnlSeries.displayStartDate);
-  }, [totalPnlSeries, baseTotalPnlValue]);
+  }, [
+    totalPnlSeries,
+    effectiveTotalPnlPoints,
+    effectiveDisplayStartTotals,
+    baseTotalPnlValue,
+    shouldUseNoFxSeries,
+  ]);
 
   const priceChartSeries = useMemo(() => {
     if (!symbolMode || !Array.isArray(symbolPriceSeries?.points)) {
@@ -2583,6 +2710,9 @@ export default function SummaryMetrics({
 
   const selectionActive = selectionState.active;
   const handleMouseDown = useCallback((event) => {
+    if (event.button !== 0) {
+      return;
+    }
     // Prevent selecting text (axis labels) while dragging
     event.preventDefault();
     if (!totalPnlChartHasSeries) {
@@ -2785,7 +2915,7 @@ export default function SummaryMetrics({
     : null;
 
   const hasTotalMenuActions =
-    typeof onShowTotalPnl === 'function' || typeof onShowPnlBreakdown === 'function';
+    canToggleIncludeFx || typeof onShowPnlBreakdown === 'function';
   const hasTotalEquityMenuActions =
     (canToggleUnbilledInTotalEquity && typeof onToggleUnbilledInTotalEquity === 'function') ||
     (canToggleOtherAssetsInTotalEquity && typeof onToggleOtherAssetsInTotalEquity === 'function');
@@ -2803,7 +2933,7 @@ export default function SummaryMetrics({
     if (typeof window !== 'undefined') {
       const padding = 12;
       const estimatedWidth = 220;
-      const estimatedHeight = 96;
+      const estimatedHeight = 140;
       const viewportWidth = window.innerWidth || 0;
       const viewportHeight = window.innerHeight || 0;
       targetX = Math.min(Math.max(padding, targetX), Math.max(padding, viewportWidth - estimatedWidth));
@@ -2867,14 +2997,17 @@ export default function SummaryMetrics({
   const handleTotalMenuAction = useCallback(
     (action) => {
       closeTotalMenu();
-      if (action === 'graph' && typeof onShowTotalPnl === 'function') {
-        onShowTotalPnl();
-      } else if (action === 'breakdown' && typeof onShowPnlBreakdown === 'function') {
+      if (action === 'breakdown' && typeof onShowPnlBreakdown === 'function') {
         onShowPnlBreakdown('total');
       }
     },
-    [onShowTotalPnl, onShowPnlBreakdown, closeTotalMenu]
+    [onShowPnlBreakdown, closeTotalMenu]
   );
+
+  const handleToggleIncludeFx = useCallback(() => {
+    closeTotalMenu();
+    setIncludeFxInTotalPnlChart((prev) => !prev);
+  }, [closeTotalMenu, setIncludeFxInTotalPnlChart]);
 
   const [totalEquityMenuState, setTotalEquityMenuState] = useState({ open: false, x: 0, y: 0 });
   const totalEquityMenuRef = useRef(null);
@@ -3364,15 +3497,6 @@ export default function SummaryMetrics({
       onMouseDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      {typeof onShowTotalPnl === 'function' && (
-        <button
-          type="button"
-          className="equity-card__context-menu-item"
-          onClick={() => handleTotalMenuAction('graph')}
-        >
-          Graph
-        </button>
-      )}
       {typeof onShowPnlBreakdown === 'function' && (
         <button
           type="button"
@@ -3380,6 +3504,24 @@ export default function SummaryMetrics({
           onClick={() => handleTotalMenuAction('breakdown')}
         >
           Breakdown
+        </button>
+      )}
+      {canToggleIncludeFx && typeof onShowPnlBreakdown === 'function' && (
+        <div className="equity-card__context-menu-separator" role="separator" aria-hidden="true" />
+      )}
+      {canToggleIncludeFx && (
+        <button
+          type="button"
+          className="equity-card__context-menu-item positions-table__context-menu-item--choice"
+          role="menuitemcheckbox"
+          aria-checked={includeFxInChart}
+          onClick={handleToggleIncludeFx}
+        >
+          <span
+            className={`positions-table__context-menu-check${includeFxInChart ? ' positions-table__context-menu-check--active' : ''}`}
+            aria-hidden="true"
+          />
+          <span>Include FX</span>
         </button>
       )}
     </div>
@@ -3661,6 +3803,16 @@ export default function SummaryMetrics({
                   onMouseDown={handleMouseDown}
                   onMouseMove={handleMouseMove}
                   onMouseLeave={handleMouseLeave}
+                  onContextMenu={(event) => {
+                    if (!isTotalPnlMetric) {
+                      return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const x = event.clientX ?? 0;
+                    const y = event.clientY ?? 0;
+                    handleTotalContextMenuRequest(x, y);
+                  }}
                   style={{ cursor: chartSupportsBreakdown ? 'pointer' : 'default' }}
                   onClick={handleChartClick}
                   tabIndex={0}
@@ -4186,6 +4338,11 @@ SummaryMetrics.propTypes = {
         totalPnlSinceDisplayStartCad: PropTypes.number,
         equityCad: PropTypes.number,
         cumulativeNetDepositsCad: PropTypes.number,
+        cadCash: PropTypes.number,
+        usdCash: PropTypes.number,
+        cadSecurityValue: PropTypes.number,
+        usdSecurityValue: PropTypes.number,
+        usdToCadRate: PropTypes.number,
         priceCad: PropTypes.number,
         priceSinceDisplayStartCad: PropTypes.number,
         priceNative: PropTypes.number,

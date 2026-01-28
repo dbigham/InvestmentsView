@@ -717,6 +717,15 @@ async function computeAggregateTotalPnlSeriesForContexts(
             reserveCount: 0,
             deployed: 0,
             deployedCount: 0,
+            cadCash: 0,
+            cadCashCount: 0,
+            usdCash: 0,
+            usdCashCount: 0,
+            cadSecurityValue: 0,
+            cadSecurityValueCount: 0,
+            usdSecurityValue: 0,
+            usdSecurityValueCount: 0,
+            usdToCadRate: undefined,
             priceCad: undefined,
             priceNative: undefined,
           };
@@ -746,6 +755,30 @@ async function computeAggregateTotalPnlSeriesForContexts(
         if (Number.isFinite(deployedValue)) {
           bucket.deployed += deployedValue;
           bucket.deployedCount += 1;
+        }
+        const cadCash = Number(point.cadCash);
+        if (Number.isFinite(cadCash)) {
+          bucket.cadCash += cadCash;
+          bucket.cadCashCount += 1;
+        }
+        const usdCash = Number(point.usdCash);
+        if (Number.isFinite(usdCash)) {
+          bucket.usdCash += usdCash;
+          bucket.usdCashCount += 1;
+        }
+        const cadSecurityValue = Number(point.cadSecurityValue);
+        if (Number.isFinite(cadSecurityValue)) {
+          bucket.cadSecurityValue += cadSecurityValue;
+          bucket.cadSecurityValueCount += 1;
+        }
+        const usdSecurityValue = Number(point.usdSecurityValue);
+        if (Number.isFinite(usdSecurityValue)) {
+          bucket.usdSecurityValue += usdSecurityValue;
+          bucket.usdSecurityValueCount += 1;
+        }
+        const usdToCadRate = Number(point.usdToCadRate);
+        if (Number.isFinite(usdToCadRate) && !Number.isFinite(bucket.usdToCadRate)) {
+          bucket.usdToCadRate = usdToCadRate;
         }
         if (symbolParam) {
           const pointPriceCad = point && Number.isFinite(point.priceCad) ? point.priceCad : null;
@@ -812,6 +845,11 @@ async function computeAggregateTotalPnlSeriesForContexts(
         equityCad: bucket && bucket.equityCount > 0 ? bucket.equity : undefined,
         cumulativeNetDepositsCad: bucket && bucket.depositsCount > 0 ? bucket.deposits : undefined,
         totalPnlCad: bucket && bucket.pnlCount > 0 ? bucket.pnl : undefined,
+        cadCash: bucket && bucket.cadCashCount > 0 ? bucket.cadCash : undefined,
+        usdCash: bucket && bucket.usdCashCount > 0 ? bucket.usdCash : undefined,
+        cadSecurityValue: bucket && bucket.cadSecurityValueCount > 0 ? bucket.cadSecurityValue : undefined,
+        usdSecurityValue: bucket && bucket.usdSecurityValueCount > 0 ? bucket.usdSecurityValue : undefined,
+        usdToCadRate: Number.isFinite(bucket?.usdToCadRate) ? bucket.usdToCadRate : undefined,
         reserveValueCad: bucket && bucket.reserveCount > 0 ? bucket.reserve : undefined,
         deployedValueCad: bucket && bucket.deployedCount > 0 ? bucket.deployed : undefined,
         deployedPercent:
@@ -12940,6 +12978,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       equityCad,
       cumulativeNetDepositsCad,
       totalPnlCad,
+      cadCash: Number.isFinite(snapshot.cadCash) ? snapshot.cadCash : null,
+      usdCash: Number.isFinite(snapshot.usdCash) ? snapshot.usdCash : null,
+      cadSecurityValue: Number.isFinite(snapshot.cadSecurityValue) ? snapshot.cadSecurityValue : null,
+      usdSecurityValue: Number.isFinite(snapshot.usdSecurityValue) ? snapshot.usdSecurityValue : null,
       usdToCadRate: Number.isFinite(usdRate) ? usdRate : undefined,
       reserveValueCad,
       reserveSecurityValueCad: Number.isFinite(snapshot.reserveSecurityValueCad)
@@ -14015,6 +14057,11 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       equityCad,
       cumulativeNetDepositsCad: Number.isFinite(cumulativeInvested) ? cumulativeInvested : null,
       totalPnlCad,
+      cadCash: Number.isFinite(snapshot.cadCash) ? snapshot.cadCash : null,
+      usdCash: Number.isFinite(snapshot.usdCash) ? snapshot.usdCash : null,
+      cadSecurityValue: Number.isFinite(snapshot.cadSecurityValue) ? snapshot.cadSecurityValue : null,
+      usdSecurityValue: Number.isFinite(snapshot.usdSecurityValue) ? snapshot.usdSecurityValue : null,
+      usdToCadRate: Number.isFinite(usdRate) ? usdRate : undefined,
       priceCad: Number.isFinite(priceCad) ? priceCad : null,
       priceNative: Number.isFinite(nativePrice) ? nativePrice : null,
     });
