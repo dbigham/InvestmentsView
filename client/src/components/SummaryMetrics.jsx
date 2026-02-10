@@ -17,10 +17,24 @@ import {
   CHART_WIDTH,
   PADDING, clampChartX, buildChartMetrics, buildHoverLabel,
 } from './TotalPnlChartUtils';
+import canadianFiftyBillImage from '../assets/canadian-50-bill.jpg';
+import canadianHundredBillImage from '../assets/canadian-100-bill.jpg';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_YEAR = 365.25;
 const CASH_FLOW_EPSILON = 1e-8;
+const EARNINGS_TOOLTIP_FIFTY_BILL_VALUE = 50;
+const EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE = 100;
+const EARNINGS_TOOLTIP_HUNDRED_BILL_THRESHOLD = 400;
+const YEARLY_EARNINGS_DIALOG_TARGET_DEPOSIT_MS = 25000;
+const YEARLY_EARNINGS_DIALOG_MIN_STAGGER_MS = 37;
+const YEARLY_EARNINGS_DIALOG_MAX_STAGGER_MS = 192;
+const YEARLY_EARNINGS_BASE_MAX_TURN_RATE = 0.04;
+const YEARLY_EARNINGS_EDGE_MAX_TURN_RATE = 0.085;
+const YEARLY_EARNINGS_BASE_MAX_TURN_ACCEL = 0.01;
+const YEARLY_EARNINGS_EDGE_MAX_TURN_ACCEL = 0.022;
+const YEARLY_EARNINGS_BASE_MAX_JERK = 0.003;
+const YEARLY_EARNINGS_EDGE_MAX_JERK = 0.011;
 const DEFAULT_CHART_METRIC = 'total-pnl';
 const CHART_METRIC_OPTIONS = [
   { value: DEFAULT_CHART_METRIC, label: 'Total P&L', valueKey: 'totalPnl', deltaKey: 'totalPnlDelta' },
@@ -42,6 +56,186 @@ const CHART_METRIC_OPTIONS = [
     valueFormatter: (value) => formatMoney(value),
   },
 ];
+
+function clampNumber(value, minimum, maximum) {
+  if (!Number.isFinite(value)) {
+    return minimum;
+  }
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function shortestAngleDifference(target, current) {
+  return Math.atan2(Math.sin(target - current), Math.cos(target - current));
+}
+
+function buildYearlyEarningsBillTrail({ billCount, width, height }) {
+  if (
+    !Number.isFinite(billCount) ||
+    billCount <= 0 ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return [];
+  }
+
+  const billWidth = clampNumber(width * 0.17, 120, 220);
+  const billHeight = billWidth / 2.35;
+  const minX = billWidth * 0.5;
+  const maxX = Math.max(minX, width - billWidth * 0.5);
+  const minY = billHeight * 0.55;
+  const maxY = Math.max(minY, height - billHeight * 0.55);
+  const sceneRangeX = Math.max(1, maxX - minX);
+  const sceneRangeY = Math.max(1, maxY - minY);
+  const insetX = Math.min(sceneRangeX * 0.31, Math.max(billWidth * 0.7, 52));
+  const insetY = Math.min(sceneRangeY * 0.31, Math.max(billHeight * 1.22, 52));
+  const pathMinX = minX + insetX;
+  const pathMaxX = maxX - insetX;
+  const pathMinY = minY + insetY;
+  const pathMaxY = maxY - insetY;
+  const pathCenterX = (pathMinX + pathMaxX) / 2;
+  const pathCenterY = (pathMinY + pathMaxY) / 2;
+  const amplitudeX = Math.max(6, (pathMaxX - pathMinX) / 2);
+  const amplitudeY = Math.max(6, (pathMaxY - pathMinY) / 2);
+  const baseStepDistance = clampNumber(billWidth * 0.06, 6, 12);
+  const edgeZoneX = Math.max(14, amplitudeX * 0.3);
+  const edgeZoneY = Math.max(14, amplitudeY * 0.3);
+
+  const points = [];
+  let x = pathCenterX;
+  let y = pathCenterY;
+  let heading = -Math.PI / 2; // Start by moving straight up.
+  let turnRate = 0;
+  let turnAcceleration = 0;
+  points.push({ x, y, rotation: (heading * 180) / Math.PI + 90 });
+  if (billCount === 1) {
+    return points;
+  }
+
+  let phase = Math.PI / 2;
+  let phaseSpeed = 0.048 + Math.random() * 0.012;
+  let eightOffset = (Math.random() * 2 - 1) * 0.55;
+  let wobblePhase = Math.random() * Math.PI * 2;
+  let wobbleSpeed = 0.027 + Math.random() * 0.011;
+  let jerkNoise = 0;
+  let jerkNoiseTarget = (Math.random() * 2 - 1) * 0.0016;
+  let stepsUntilJerkRetarget = 16 + Math.floor(Math.random() * 26);
+
+  for (let index = 1; index < billCount; index += 1) {
+    phaseSpeed = clampNumber(phaseSpeed + (Math.random() * 2 - 1) * 0.00035, 0.038, 0.068);
+    phase += phaseSpeed;
+    wobblePhase += wobbleSpeed + (Math.random() * 2 - 1) * 0.00045;
+    wobbleSpeed = clampNumber(wobbleSpeed + (Math.random() * 2 - 1) * 0.00025, 0.018, 0.045);
+
+    stepsUntilJerkRetarget -= 1;
+    if (stepsUntilJerkRetarget <= 0) {
+      jerkNoiseTarget = (Math.random() * 2 - 1) * 0.0022;
+      stepsUntilJerkRetarget = 12 + Math.floor(Math.random() * 30);
+    }
+    jerkNoise += (jerkNoiseTarget - jerkNoise) * 0.085;
+
+    const eightX = Math.sin(phase);
+    const eightY = 0.5 * Math.sin(phase * 2 + eightOffset);
+    const wanderX = Math.sin(wobblePhase + 0.7 * Math.sin(phase * 0.31)) * 0.16;
+    const wanderY = Math.sin(wobblePhase * 1.23 + 0.8 + 0.5 * Math.sin(phase * 0.27)) * 0.16;
+    const targetX = pathCenterX + amplitudeX * (eightX + wanderX) * 0.96;
+    const targetY = pathCenterY + amplitudeY * (eightY + wanderY) * 0.96;
+
+    // Figure-eight tangent direction.
+    const tangentX = amplitudeX * Math.cos(phase);
+    const tangentY = amplitudeY * Math.cos(phase * 2 + eightOffset);
+    const tangentHeading = Math.atan2(tangentY, tangentX);
+    const attractHeading = Math.atan2(targetY - y, targetX - x);
+    const tangentError = shortestAngleDifference(tangentHeading, heading);
+    const attractError = shortestAngleDifference(attractHeading, heading);
+    const desiredTurnRate = tangentError * 0.22 + attractError * 0.12;
+
+    const leftProximity = clampNumber((edgeZoneX - (x - pathMinX)) / edgeZoneX, 0, 1);
+    const rightProximity = clampNumber((edgeZoneX - (pathMaxX - x)) / edgeZoneX, 0, 1);
+    const topProximity = clampNumber((edgeZoneY - (y - pathMinY)) / edgeZoneY, 0, 1);
+    const bottomProximity = clampNumber((edgeZoneY - (pathMaxY - y)) / edgeZoneY, 0, 1);
+    const edgeInfluence = Math.max(leftProximity, rightProximity, topProximity, bottomProximity);
+    const outsideX = x < pathMinX ? pathMinX - x : x > pathMaxX ? x - pathMaxX : 0;
+    const outsideY = y < pathMinY ? pathMinY - y : y > pathMaxY ? y - pathMaxY : 0;
+    const outsideInfluence = clampNumber(
+      Math.hypot(outsideX, outsideY) / Math.max(edgeZoneX, edgeZoneY),
+      0,
+      2
+    );
+    const steeringInfluence = clampNumber(edgeInfluence + outsideInfluence * 0.9, 0, 2);
+    const inwardX = leftProximity - rightProximity;
+    const inwardY = topProximity - bottomProximity;
+
+    let edgeJerk = 0;
+    if (steeringInfluence > 1e-5 && (Math.abs(inwardX) > 1e-8 || Math.abs(inwardY) > 1e-8)) {
+      const inwardHeading = Math.atan2(inwardY, inwardX);
+      const inwardError = shortestAngleDifference(inwardHeading, heading);
+      edgeJerk = inwardError * (0.0035 + steeringInfluence * 0.014);
+      edgeJerk = clampNumber(edgeJerk, -(0.02 + outsideInfluence * 0.04), 0.02 + outsideInfluence * 0.04);
+    }
+
+    const maxTurnRate =
+      YEARLY_EARNINGS_BASE_MAX_TURN_RATE +
+      steeringInfluence * (YEARLY_EARNINGS_EDGE_MAX_TURN_RATE - YEARLY_EARNINGS_BASE_MAX_TURN_RATE);
+    const clampedDesiredTurnRate = clampNumber(desiredTurnRate, -maxTurnRate, maxTurnRate);
+    const desiredTurnAcceleration = (clampedDesiredTurnRate - turnRate) * 0.22;
+    let jerk =
+      (desiredTurnAcceleration - turnAcceleration) * 0.32 +
+      jerkNoise +
+      edgeJerk +
+      (Math.random() * 2 - 1) * 0.001;
+    const maxJerk =
+      YEARLY_EARNINGS_BASE_MAX_JERK +
+      steeringInfluence * (YEARLY_EARNINGS_EDGE_MAX_JERK - YEARLY_EARNINGS_BASE_MAX_JERK);
+    jerk = clampNumber(jerk, -maxJerk, maxJerk);
+
+    turnAcceleration += jerk;
+    const maxTurnAcceleration =
+      YEARLY_EARNINGS_BASE_MAX_TURN_ACCEL +
+      steeringInfluence *
+        (YEARLY_EARNINGS_EDGE_MAX_TURN_ACCEL - YEARLY_EARNINGS_BASE_MAX_TURN_ACCEL);
+    turnAcceleration = clampNumber(turnAcceleration, -maxTurnAcceleration, maxTurnAcceleration);
+    turnRate += turnAcceleration;
+    turnRate = clampNumber(turnRate, -maxTurnRate, maxTurnRate);
+    heading += turnRate;
+
+    let stepDistance =
+      baseStepDistance *
+      clampNumber(0.93 + Math.abs(Math.sin(wobblePhase * 0.41)) * 0.12, 0.76, 1.06);
+    stepDistance *= clampNumber(1 - steeringInfluence * 0.35, 0.35, 1);
+
+    const previousX = x;
+    const previousY = y;
+    const candidateX = x + Math.cos(heading) * stepDistance;
+    const candidateY = y + Math.sin(heading) * stepDistance;
+    x = candidateX;
+    y = candidateY;
+
+    const deltaX = x - previousX;
+    const deltaY = y - previousY;
+    const movedDistance = Math.hypot(deltaX, deltaY);
+
+    const travelHeading = movedDistance > 1e-6 ? Math.atan2(deltaY, deltaX) : heading;
+    const rotation = (travelHeading * 180) / Math.PI + 90;
+    points.push({ x, y, rotation });
+    heading = travelHeading;
+  }
+
+  return points;
+}
+
+function resolveYearlyEarningsBillStaggerMs(billCount) {
+  if (!Number.isFinite(billCount) || billCount <= 0) {
+    return YEARLY_EARNINGS_DIALOG_MIN_STAGGER_MS;
+  }
+  return clampNumber(
+    YEARLY_EARNINGS_DIALOG_TARGET_DEPOSIT_MS / billCount,
+    YEARLY_EARNINGS_DIALOG_MIN_STAGGER_MS,
+    YEARLY_EARNINGS_DIALOG_MAX_STAGGER_MS
+  );
+}
+
 function parseDateString(value, { assumeDateOnly = false } = {}) {
   if (typeof value !== 'string') {
     return null;
@@ -631,7 +825,7 @@ function MetricRow({
 
 MetricRow.propTypes = {
   label: PropTypes.node.isRequired,
-  value: PropTypes.string.isRequired,
+  value: PropTypes.node.isRequired,
   extra: PropTypes.node,
   tone: PropTypes.oneOf(['positive', 'negative', 'neutral']).isRequired,
   className: PropTypes.string,
@@ -1401,6 +1595,241 @@ export default function SummaryMetrics({
   const yearlyEarningsTone = classifyPnL(earningsSummary?.yearlyCad);
   const projectedYearlyEarningsTone = classifyPnL(projectedYearlyEarningsCad);
   const unbilledEarningsTone = classifyPnL(earningsSummary?.unbilledCad);
+  const todayEarningsCad = Number.isFinite(earningsSummary?.todayCad) ? earningsSummary.todayCad : null;
+  const yearlyEarningsCad = Number.isFinite(earningsSummary?.yearlyCad) ? earningsSummary.yearlyCad : null;
+  const todayEarningsBillValue =
+    Number.isFinite(todayEarningsCad) && todayEarningsCad >= EARNINGS_TOOLTIP_HUNDRED_BILL_THRESHOLD
+      ? EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE
+      : EARNINGS_TOOLTIP_FIFTY_BILL_VALUE;
+  const todayEarningsBillImage =
+    todayEarningsBillValue === EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE
+      ? canadianHundredBillImage
+      : canadianFiftyBillImage;
+  const todayEarningsBillCount = useMemo(() => {
+    if (earningsLoading || !Number.isFinite(todayEarningsCad) || todayEarningsCad <= 0) {
+      return 0;
+    }
+    return Math.floor(todayEarningsCad / todayEarningsBillValue);
+  }, [earningsLoading, todayEarningsCad, todayEarningsBillValue]);
+  const yearlyEarningsBillCount = useMemo(() => {
+    if (earningsLoading || !Number.isFinite(yearlyEarningsCad) || yearlyEarningsCad <= 0) {
+      return 0;
+    }
+    return Math.floor(yearlyEarningsCad / EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE);
+  }, [earningsLoading, yearlyEarningsCad]);
+  const showTodayEarningsBills = todayEarningsBillCount > 0;
+  const showYearlyEarningsBills = yearlyEarningsBillCount > 0;
+  const [showYearlyEarningsBillsDialog, setShowYearlyEarningsBillsDialog] = useState(false);
+  const [yearlyEarningsBillTrail, setYearlyEarningsBillTrail] = useState([]);
+  const [yearlyEarningsAnimationRunId, setYearlyEarningsAnimationRunId] = useState(0);
+  const canShowYearlyEarningsBillsDialog = showYearlyEarningsBills && !earningsLoading;
+
+  const closeYearlyEarningsBillsDialog = useCallback(() => {
+    setShowYearlyEarningsBillsDialog(false);
+  }, []);
+
+  const generateYearlyEarningsBillTrail = useCallback(() => {
+    const viewportWidth =
+      typeof window !== 'undefined' && Number.isFinite(window.innerWidth) ? window.innerWidth : 1280;
+    const viewportHeight =
+      typeof window !== 'undefined' && Number.isFinite(window.innerHeight) ? window.innerHeight : 820;
+    const sceneWidth = Math.max(320, viewportWidth - 76);
+    const sceneHeight = Math.max(240, viewportHeight - 188);
+    setYearlyEarningsBillTrail(
+      buildYearlyEarningsBillTrail({
+        billCount: yearlyEarningsBillCount,
+        width: sceneWidth,
+        height: sceneHeight,
+      })
+    );
+    setYearlyEarningsAnimationRunId((runId) => runId + 1);
+  }, [yearlyEarningsBillCount]);
+
+  const openYearlyEarningsBillsDialog = useCallback(() => {
+    if (!canShowYearlyEarningsBillsDialog || showYearlyEarningsBillsDialog) {
+      return;
+    }
+    generateYearlyEarningsBillTrail();
+    setShowYearlyEarningsBillsDialog(true);
+  }, [
+    canShowYearlyEarningsBillsDialog,
+    showYearlyEarningsBillsDialog,
+    generateYearlyEarningsBillTrail,
+  ]);
+
+  const restartYearlyEarningsBillsDialog = useCallback(() => {
+    if (!showYearlyEarningsBillsDialog) {
+      return;
+    }
+    generateYearlyEarningsBillTrail();
+  }, [showYearlyEarningsBillsDialog, generateYearlyEarningsBillTrail]);
+
+  const handleYearlyEarningsDialogTrigger = useCallback(
+    (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openYearlyEarningsBillsDialog();
+    },
+    [openYearlyEarningsBillsDialog]
+  );
+
+  const handleYearlyEarningsDialogTriggerKeyDown = useCallback(
+    (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        handleYearlyEarningsDialogTrigger(event);
+      }
+    },
+    [handleYearlyEarningsDialogTrigger]
+  );
+
+  useEffect(() => {
+    if (!canShowYearlyEarningsBillsDialog && showYearlyEarningsBillsDialog) {
+      closeYearlyEarningsBillsDialog();
+    }
+  }, [canShowYearlyEarningsBillsDialog, showYearlyEarningsBillsDialog, closeYearlyEarningsBillsDialog]);
+
+  useEffect(() => {
+    if (!showYearlyEarningsBillsDialog) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeYearlyEarningsBillsDialog();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showYearlyEarningsBillsDialog, closeYearlyEarningsBillsDialog]);
+  const yearlyEarningsBillStaggerMs = useMemo(
+    () => resolveYearlyEarningsBillStaggerMs(yearlyEarningsBillCount),
+    [yearlyEarningsBillCount]
+  );
+
+  const renderTodayEarningsBillsTooltip = () => (
+    <span className="earnings-bills-tooltip" role="tooltip">
+      <span
+        className="earnings-bills-tooltip__grid"
+        style={{ '--earnings-bill-columns': Math.min(4, todayEarningsBillCount) }}
+      >
+        {Array.from({ length: todayEarningsBillCount }, (_, index) => (
+          <img
+            key={`today-earnings-bill-${index}`}
+            src={todayEarningsBillImage}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            decoding="async"
+            className="earnings-bills-tooltip__bill"
+          />
+        ))}
+      </span>
+    </span>
+  );
+  const todayEarningsLabelNode = showTodayEarningsBills ? (
+    <span className="earnings-bills-hover earnings-bills-hover--label">
+      <span>Today's Earnings</span>
+      {renderTodayEarningsBillsTooltip()}
+    </span>
+  ) : (
+    "Today's Earnings"
+  );
+  const todayEarningsValueNode = showTodayEarningsBills ? (
+    <span className="earnings-bills-hover">
+      <span>{formattedTodayEarnings}</span>
+      {renderTodayEarningsBillsTooltip()}
+    </span>
+  ) : (
+    formattedTodayEarnings
+  );
+  const yearlyEarningsLabelNode = canShowYearlyEarningsBillsDialog ? (
+    <span
+      className="yearly-earnings-hover"
+      role="button"
+      tabIndex={0}
+      onClick={handleYearlyEarningsDialogTrigger}
+      onKeyDown={handleYearlyEarningsDialogTriggerKeyDown}
+    >
+      <span>{yearlyEarningsLabel}</span>
+    </span>
+  ) : (
+    yearlyEarningsLabel
+  );
+  const yearlyEarningsValueNode = canShowYearlyEarningsBillsDialog ? (
+    <span
+      className="yearly-earnings-hover"
+      role="button"
+      tabIndex={0}
+      onClick={handleYearlyEarningsDialogTrigger}
+      onKeyDown={handleYearlyEarningsDialogTriggerKeyDown}
+    >
+      <span>{formattedYearlyEarnings}</span>
+    </span>
+  ) : (
+    formattedYearlyEarnings
+  );
+  const yearlyEarningsDialog = showYearlyEarningsBillsDialog ? (
+    <div
+      className="yearly-earnings-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${yearlyEarningsLabel} in one-hundred-dollar bills`}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          closeYearlyEarningsBillsDialog();
+        }
+      }}
+    >
+      <div className="yearly-earnings-dialog" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="yearly-earnings-dialog__header">
+          <div className="yearly-earnings-dialog__heading">
+            <h2>{`${yearlyEarningsLabel} in $100 bills`}</h2>
+            <p>{`${formattedYearlyEarnings} represented as ${formatNumber(yearlyEarningsBillCount)} bills`}</p>
+          </div>
+          <div className="yearly-earnings-dialog__actions">
+            <button
+              type="button"
+              className="yearly-earnings-dialog__restart"
+              onClick={restartYearlyEarningsBillsDialog}
+              aria-label="Restart yearly earnings bills animation"
+            >
+              Restart
+            </button>
+            <button
+              type="button"
+              className="yearly-earnings-dialog__close"
+              onClick={closeYearlyEarningsBillsDialog}
+              aria-label="Close yearly earnings bills view"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="yearly-earnings-dialog__scene">
+          {yearlyEarningsBillTrail.map((bill, index) => (
+            <img
+              key={`yearly-earnings-bill-${yearlyEarningsAnimationRunId}-${index}`}
+              src={canadianHundredBillImage}
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              decoding="async"
+              className="yearly-earnings-dialog__bill"
+              style={{
+                '--yearly-earnings-bill-x': `${bill.x}px`,
+                '--yearly-earnings-bill-y': `${bill.y}px`,
+                '--yearly-earnings-bill-rotation': `${bill.rotation}deg`,
+                '--yearly-earnings-bill-delay': `${Math.round(index * yearlyEarningsBillStaggerMs)}ms`,
+                zIndex: index + 1,
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  ) : null;
   const otherAssetsHomeCad = Number.isFinite(otherAssetsSummary?.homeCad)
     ? otherAssetsSummary.homeCad
     : null;
@@ -4037,8 +4466,8 @@ export default function SummaryMetrics({
           )}
           {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
             <MetricRow
-              label="Today's Earnings"
-              value={formattedTodayEarnings}
+              label={todayEarningsLabelNode}
+              value={todayEarningsValueNode}
               tone={todayEarningsTone}
               onActivate={refreshEarningsAction}
               valueClassName={earningsValueClassName}
@@ -4046,8 +4475,8 @@ export default function SummaryMetrics({
           )}
           {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
             <MetricRow
-              label={yearlyEarningsLabel}
-              value={formattedYearlyEarnings}
+              label={yearlyEarningsLabelNode}
+              value={yearlyEarningsValueNode}
               tone={yearlyEarningsTone}
               onActivate={refreshEarningsAction}
               valueClassName={earningsValueClassName}
@@ -4166,6 +4595,7 @@ export default function SummaryMetrics({
       {qqqContextMenu}
       {childContextMenu}
       {totalContextMenu}
+      {yearlyEarningsDialog}
 
     </section>
   );
