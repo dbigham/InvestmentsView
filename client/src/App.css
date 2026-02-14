@@ -4089,8 +4089,8 @@ textarea {
   border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.38);
   box-shadow:
-    0 7px 22px rgba(15, 23, 42, 0.18),
-    0 2px 6px rgba(15, 23, 42, 0.08);
+    0 7px 22px rgba(15, 23, 42, 0.09),
+    0 2px 6px rgba(15, 23, 42, 0.04);
   transform:
     translate(
       calc(var(--yearly-earnings-bill-x) - 50%),

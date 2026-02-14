@@ -26,9 +26,7 @@ const CASH_FLOW_EPSILON = 1e-8;
 const EARNINGS_TOOLTIP_FIFTY_BILL_VALUE = 50;
 const EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE = 100;
 const EARNINGS_TOOLTIP_HUNDRED_BILL_THRESHOLD = 400;
-const YEARLY_EARNINGS_DIALOG_TARGET_DEPOSIT_MS = 25000;
-const YEARLY_EARNINGS_DIALOG_MIN_STAGGER_MS = 37;
-const YEARLY_EARNINGS_DIALOG_MAX_STAGGER_MS = 192;
+const YEARLY_EARNINGS_DIALOG_TOTAL_DURATION_MS = 10000;
 const YEARLY_EARNINGS_BASE_MAX_TURN_RATE = 0.04;
 const YEARLY_EARNINGS_EDGE_MAX_TURN_RATE = 0.085;
 const YEARLY_EARNINGS_BASE_MAX_TURN_ACCEL = 0.01;
@@ -98,7 +96,7 @@ function buildYearlyEarningsBillTrail({ billCount, width, height }) {
   const pathCenterY = (pathMinY + pathMaxY) / 2;
   const amplitudeX = Math.max(6, (pathMaxX - pathMinX) / 2);
   const amplitudeY = Math.max(6, (pathMaxY - pathMinY) / 2);
-  const baseStepDistance = clampNumber(billWidth * 0.06, 6, 12);
+  const baseStepDistance = clampNumber(billWidth * 0.09, 9, 18);
   const edgeZoneX = Math.max(14, amplitudeX * 0.3);
   const edgeZoneY = Math.max(14, amplitudeY * 0.3);
 
@@ -121,6 +119,12 @@ function buildYearlyEarningsBillTrail({ billCount, width, height }) {
   let jerkNoise = 0;
   let jerkNoiseTarget = (Math.random() * 2 - 1) * 0.0016;
   let stepsUntilJerkRetarget = 16 + Math.floor(Math.random() * 26);
+  let edgeRecoveryMix = 0.34 + Math.random() * 0.24;
+  let edgeRecoveryMixTarget = edgeRecoveryMix;
+  let stepsUntilEdgeRecoveryRetarget = 18 + Math.floor(Math.random() * 34);
+  let edgeSlideBias = Math.random() * 2 - 1;
+  let edgeSlideBiasTarget = edgeSlideBias;
+  let stepsUntilEdgeSlideRetarget = 14 + Math.floor(Math.random() * 28);
 
   for (let index = 1; index < billCount; index += 1) {
     phaseSpeed = clampNumber(phaseSpeed + (Math.random() * 2 - 1) * 0.00035, 0.038, 0.068);
@@ -134,6 +138,18 @@ function buildYearlyEarningsBillTrail({ billCount, width, height }) {
       stepsUntilJerkRetarget = 12 + Math.floor(Math.random() * 30);
     }
     jerkNoise += (jerkNoiseTarget - jerkNoise) * 0.085;
+    stepsUntilEdgeRecoveryRetarget -= 1;
+    if (stepsUntilEdgeRecoveryRetarget <= 0) {
+      edgeRecoveryMixTarget = 0.26 + Math.random() * 0.42;
+      stepsUntilEdgeRecoveryRetarget = 16 + Math.floor(Math.random() * 36);
+    }
+    edgeRecoveryMix += (edgeRecoveryMixTarget - edgeRecoveryMix) * 0.06;
+    stepsUntilEdgeSlideRetarget -= 1;
+    if (stepsUntilEdgeSlideRetarget <= 0) {
+      edgeSlideBiasTarget = Math.random() * 2 - 1;
+      stepsUntilEdgeSlideRetarget = 10 + Math.floor(Math.random() * 24);
+    }
+    edgeSlideBias += (edgeSlideBiasTarget - edgeSlideBias) * 0.08;
 
     const eightX = Math.sin(phase);
     const eightY = 0.5 * Math.sin(phase * 2 + eightOffset);
@@ -164,15 +180,80 @@ function buildYearlyEarningsBillTrail({ billCount, width, height }) {
       2
     );
     const steeringInfluence = clampNumber(edgeInfluence + outsideInfluence * 0.9, 0, 2);
-    const inwardX = leftProximity - rightProximity;
-    const inwardY = topProximity - bottomProximity;
 
     let edgeJerk = 0;
-    if (steeringInfluence > 1e-5 && (Math.abs(inwardX) > 1e-8 || Math.abs(inwardY) > 1e-8)) {
-      const inwardHeading = Math.atan2(inwardY, inwardX);
-      const inwardError = shortestAngleDifference(inwardHeading, heading);
-      edgeJerk = inwardError * (0.0035 + steeringInfluence * 0.014);
-      edgeJerk = clampNumber(edgeJerk, -(0.02 + outsideInfluence * 0.04), 0.02 + outsideInfluence * 0.04);
+    if (steeringInfluence > 1e-5) {
+      const edgeCandidates = [
+        {
+          side: 'left',
+          strength: leftProximity + (x < pathMinX ? outsideInfluence * 1.35 : 0),
+        },
+        {
+          side: 'right',
+          strength: rightProximity + (x > pathMaxX ? outsideInfluence * 1.35 : 0),
+        },
+        {
+          side: 'top',
+          strength: topProximity + (y < pathMinY ? outsideInfluence * 1.35 : 0),
+        },
+        {
+          side: 'bottom',
+          strength: bottomProximity + (y > pathMaxY ? outsideInfluence * 1.35 : 0),
+        },
+      ];
+      let dominantEdge = edgeCandidates[0];
+      for (let edgeIndex = 1; edgeIndex < edgeCandidates.length; edgeIndex += 1) {
+        if (edgeCandidates[edgeIndex].strength > dominantEdge.strength) {
+          dominantEdge = edgeCandidates[edgeIndex];
+        }
+      }
+
+      let inwardNormalX = 0;
+      let inwardNormalY = 0;
+      let tangentX = 0;
+      let tangentY = 0;
+      if (dominantEdge.side === 'left') {
+        inwardNormalX = 1;
+        tangentY = 1;
+      } else if (dominantEdge.side === 'right') {
+        inwardNormalX = -1;
+        tangentY = 1;
+      } else if (dominantEdge.side === 'top') {
+        inwardNormalY = 1;
+        tangentX = 1;
+      } else {
+        inwardNormalY = -1;
+        tangentX = 1;
+      }
+
+      const velocityX = Math.cos(heading);
+      const velocityY = Math.sin(heading);
+      const tangentDot = velocityX * tangentX + velocityY * tangentY;
+      let tangentSign = tangentDot >= 0 ? 1 : -1;
+      if (Math.abs(tangentDot) < 0.26) {
+        tangentSign = edgeSlideBias >= 0 ? 1 : -1;
+      }
+      tangentX *= tangentSign;
+      tangentY *= tangentSign;
+
+      const outwardness = clampNumber(
+        -(velocityX * inwardNormalX + velocityY * inwardNormalY),
+        0,
+        1
+      );
+      let inwardWeight =
+        edgeRecoveryMix +
+        outsideInfluence * (0.18 + outwardness * 0.2) +
+        Math.sin(phase * 0.43 + wobblePhase * 0.29) * 0.08;
+      inwardWeight = clampNumber(inwardWeight, 0.16, 0.84);
+      const tangentWeight = 1 - inwardWeight;
+      const steerX = inwardNormalX * inwardWeight + tangentX * tangentWeight;
+      const steerY = inwardNormalY * inwardWeight + tangentY * tangentWeight;
+      const edgeHeading = Math.atan2(steerY, steerX);
+      const edgeError = shortestAngleDifference(edgeHeading, heading);
+      edgeJerk = edgeError * (0.0014 + steeringInfluence * 0.0058 + outsideInfluence * 0.0035);
+      const maxEdgeJerk = 0.007 + outsideInfluence * 0.016;
+      edgeJerk = clampNumber(edgeJerk, -maxEdgeJerk, maxEdgeJerk);
     }
 
     const maxTurnRate =
@@ -226,14 +307,10 @@ function buildYearlyEarningsBillTrail({ billCount, width, height }) {
 }
 
 function resolveYearlyEarningsBillStaggerMs(billCount) {
-  if (!Number.isFinite(billCount) || billCount <= 0) {
-    return YEARLY_EARNINGS_DIALOG_MIN_STAGGER_MS;
+  if (!Number.isFinite(billCount) || billCount <= 1) {
+    return 0;
   }
-  return clampNumber(
-    YEARLY_EARNINGS_DIALOG_TARGET_DEPOSIT_MS / billCount,
-    YEARLY_EARNINGS_DIALOG_MIN_STAGGER_MS,
-    YEARLY_EARNINGS_DIALOG_MAX_STAGGER_MS
-  );
+  return YEARLY_EARNINGS_DIALOG_TOTAL_DURATION_MS / (billCount - 1);
 }
 
 function parseDateString(value, { assumeDateOnly = false } = {}) {
@@ -1821,7 +1898,7 @@ export default function SummaryMetrics({
                 '--yearly-earnings-bill-x': `${bill.x}px`,
                 '--yearly-earnings-bill-y': `${bill.y}px`,
                 '--yearly-earnings-bill-rotation': `${bill.rotation}deg`,
-                '--yearly-earnings-bill-delay': `${Math.round(index * yearlyEarningsBillStaggerMs)}ms`,
+                '--yearly-earnings-bill-delay': `${index * yearlyEarningsBillStaggerMs}ms`,
                 zIndex: index + 1,
               }}
             />
