@@ -87,3 +87,42 @@ These steps ensure the **latest refresh token** is always used and stored.
 - **Multiple code paths** – Both the long-running server and the CLI utilities reuse the same persistence helpers, so every flow that encounters a rotated refresh token writes it back to disk.
 
 Always treat `token-store.json` as the single source of truth. After any manual exchange, verify the file contains the fresh refresh token before running the server or tooling.
+
+## Token debug log (enabled by default)
+
+The server now writes a structured token lifecycle log to:
+
+```
+<DATA_DIR>/.cache/questrade-token-debug.jsonl
+```
+
+By default (`DATA_DIR` unset), this is:
+
+```
+server/.cache/questrade-token-debug.jsonl
+```
+
+Each line is a JSON event with timestamps, request/refresh IDs, login metadata, and token fingerprints (hashed; raw tokens are redacted). Key events to watch:
+
+- `token-cache.miss`: A request needed a fresh access token.
+- `refresh.single-flight.join`: A second caller joined an in-flight refresh for the same login.
+- `refresh.single-flight.owner-success`: The owning refresh finished and released waiters.
+- `refresh.start`: A refresh exchange began (includes trigger + token fingerprint used).
+- `refresh.concurrent-detected`: More than one refresh is in-flight for the same login.
+- `refresh.http.response`: The OAuth endpoint replied (status, redirect info).
+- `refresh-token.rotate`: A new refresh token was detected and persisted.
+- `refresh.failed.invalid-token`: Questrade rejected the refresh token (`400`/`401` semantics).
+- `api.request.401`: A Questrade API call returned `401`, forcing a refresh.
+
+### Race signature to look for
+
+If two refreshes overlap for the same login, you may see:
+
+1. Two `refresh.start` events with the same `refreshTokenToUseFingerprint`.
+2. One refresh succeeds and logs `refresh-token.rotate`.
+3. Another refresh then logs `refresh.failed.invalid-token` with
+   `refreshTokenToUseFingerprint` different from `loginRefreshTokenFingerprintAtFailure`.
+
+That pattern indicates one call used an older refresh token after another call already rotated it.
+
+With `ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT=true` (default), you should usually see `refresh.single-flight.join` instead of parallel refreshes, which prevents most stale-refresh-token races.

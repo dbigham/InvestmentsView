@@ -43,6 +43,12 @@ This document collects every detail needed to stand up the dashboard locally, cu
 5. (Optional) Copy `client/.env.example` to `client/.env` if the frontend should target a non-default proxy URL or needs extra keys such as `VITE_LOGO_DEV_PUBLISHABLE_KEY`.
 6. (Optional) Provide `OPENAI_API_KEY` (and `OPENAI_NEWS_MODEL`) in `server/.env` to enable the News tab powered by OpenAI.
 7. Enable verbose API logging by setting `DEBUG_QUESTRADE_API=true` in `server/.env` when diagnosing proxy calls.
+8. Token lifecycle debug logging is enabled by default (`DEBUG_QUESTRADE_TOKEN_FLOW=true` when unset).
+   - Logs are written as JSON lines to `<DATA_DIR>/.cache/questrade-token-debug.jsonl` (`server/.cache/questrade-token-debug.jsonl` by default).
+   - Per-login refresh single-flight protection is also enabled by default (`ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT=true`) to prevent concurrent refresh races.
+   - Set `DEBUG_QUESTRADE_TOKEN_FLOW_VERBOSE=true` to include token-cache hit events.
+   - Set `DEBUG_QUESTRADE_TOKEN_FLOW_STDOUT=true` to mirror these events to server stdout.
+   - Use `QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES` to control rollover size (default 10 MB).
 
 ## 2. Install dependencies
 

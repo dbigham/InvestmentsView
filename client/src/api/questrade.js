@@ -266,6 +266,9 @@ function buildTotalPnlSeriesUrl(accountKey, params = {}) {
       }
     });
   }
+  if (params && params.includeSyntheticPositions === true) {
+    url.searchParams.set('includeSyntheticPositions', '1');
+  }
   if (params && params.refreshKey !== undefined && params.refreshKey !== null) {
     url.searchParams.set('refreshKey', String(params.refreshKey));
   }

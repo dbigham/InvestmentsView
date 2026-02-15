@@ -242,6 +242,7 @@ textarea {
   max-height: 400px;
   overflow: auto;
 }
+
 .global-search__option {
   padding: 10px 14px;
   cursor: pointer;
@@ -3975,14 +3976,26 @@ textarea {
   padding: 0;
 }
 
-.earnings-bills-tooltip__bill {
+.earnings-bills-tooltip__bill-frame {
   display: block;
-  width: 224px;
-  height: auto;
+  width: calc(224px * var(--earnings-bill-width-ratio, 1));
+  min-width: 0;
+  overflow: hidden;
   border-radius: 6px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 0 8px rgba(15, 23, 42, 0.12);
   background: #ffffff;
+}
+
+.earnings-bills-tooltip__bill-frame--partial {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.earnings-bills-tooltip__bill {
+  display: block;
+  width: 224px;
+  height: auto;
 }
 
 .yearly-earnings-hover {
@@ -5003,6 +5016,10 @@ textarea {
   border-bottom: 1px solid var(--color-divider);
 }
 
+.positions-table__body .positions-table__row--excluded {
+  opacity: 0.2;
+}
+
 .positions-table__row--clickable {
   cursor: pointer;
 }
@@ -5161,7 +5178,9 @@ textarea {
 }
 
 .positions-table__context-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   border: none;
   background: none;
@@ -5172,11 +5191,22 @@ textarea {
   cursor: pointer;
 }
 
+.positions-table__context-menu-item::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
 .positions-table__context-menu-item--choice {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
+}
+
+.positions-table__context-menu-item--choice::before {
+  display: none;
 }
 
 .positions-table__context-menu-check {

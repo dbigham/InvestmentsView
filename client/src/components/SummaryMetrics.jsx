@@ -26,6 +26,7 @@ const CASH_FLOW_EPSILON = 1e-8;
 const EARNINGS_TOOLTIP_FIFTY_BILL_VALUE = 50;
 const EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE = 100;
 const EARNINGS_TOOLTIP_HUNDRED_BILL_THRESHOLD = 400;
+const EARNINGS_TOOLTIP_PARTIAL_BILL_EPSILON = 1e-6;
 const YEARLY_EARNINGS_DIALOG_TOTAL_DURATION_MS = 10000;
 const YEARLY_EARNINGS_BASE_MAX_TURN_RATE = 0.04;
 const YEARLY_EARNINGS_EDGE_MAX_TURN_RATE = 0.085;
@@ -1688,13 +1689,51 @@ export default function SummaryMetrics({
     }
     return Math.floor(todayEarningsCad / todayEarningsBillValue);
   }, [earningsLoading, todayEarningsCad, todayEarningsBillValue]);
+  const todayEarningsPartialBillRatio = useMemo(() => {
+    if (earningsLoading || !Number.isFinite(todayEarningsCad) || todayEarningsCad <= 0) {
+      return 0;
+    }
+    const consumedByFullBills = todayEarningsBillCount * todayEarningsBillValue;
+    const remainder = todayEarningsCad - consumedByFullBills;
+    if (!Number.isFinite(remainder) || remainder <= EARNINGS_TOOLTIP_PARTIAL_BILL_EPSILON) {
+      return 0;
+    }
+    const ratio = remainder / todayEarningsBillValue;
+    if (ratio >= 1 - EARNINGS_TOOLTIP_PARTIAL_BILL_EPSILON) {
+      return 1;
+    }
+    return clampNumber(ratio, 0, 1);
+  }, [earningsLoading, todayEarningsCad, todayEarningsBillCount, todayEarningsBillValue]);
+  const todayEarningsBillItems = useMemo(() => {
+    if (earningsLoading || !Number.isFinite(todayEarningsCad) || todayEarningsCad <= 0) {
+      return [];
+    }
+    const items = Array.from({ length: todayEarningsBillCount }, (_, index) => ({
+      key: `today-earnings-bill-full-${index}`,
+      widthRatio: 1,
+      isPartial: false,
+    }));
+    if (todayEarningsPartialBillRatio > EARNINGS_TOOLTIP_PARTIAL_BILL_EPSILON) {
+      items.push({
+        key: 'today-earnings-bill-partial',
+        widthRatio: todayEarningsPartialBillRatio,
+        isPartial: true,
+      });
+    }
+    return items;
+  }, [
+    earningsLoading,
+    todayEarningsCad,
+    todayEarningsBillCount,
+    todayEarningsPartialBillRatio,
+  ]);
   const yearlyEarningsBillCount = useMemo(() => {
     if (earningsLoading || !Number.isFinite(yearlyEarningsCad) || yearlyEarningsCad <= 0) {
       return 0;
     }
     return Math.floor(yearlyEarningsCad / EARNINGS_TOOLTIP_HUNDRED_BILL_VALUE);
   }, [earningsLoading, yearlyEarningsCad]);
-  const showTodayEarningsBills = todayEarningsBillCount > 0;
+  const showTodayEarningsBills = todayEarningsBillItems.length > 0;
   const showYearlyEarningsBills = yearlyEarningsBillCount > 0;
   const [showYearlyEarningsBillsDialog, setShowYearlyEarningsBillsDialog] = useState(false);
   const [yearlyEarningsBillTrail, setYearlyEarningsBillTrail] = useState([]);
@@ -1789,18 +1828,24 @@ export default function SummaryMetrics({
     <span className="earnings-bills-tooltip" role="tooltip">
       <span
         className="earnings-bills-tooltip__grid"
-        style={{ '--earnings-bill-columns': Math.min(4, todayEarningsBillCount) }}
+        style={{ '--earnings-bill-columns': Math.min(4, todayEarningsBillItems.length) }}
       >
-        {Array.from({ length: todayEarningsBillCount }, (_, index) => (
-          <img
-            key={`today-earnings-bill-${index}`}
-            src={todayEarningsBillImage}
-            alt=""
+        {todayEarningsBillItems.map((bill, index) => (
+          <span
+            key={bill.key}
+            className={`earnings-bills-tooltip__bill-frame${bill.isPartial ? ' earnings-bills-tooltip__bill-frame--partial' : ''}`}
+            style={{ '--earnings-bill-width-ratio': `${bill.widthRatio}` }}
             aria-hidden="true"
-            loading="lazy"
-            decoding="async"
-            className="earnings-bills-tooltip__bill"
-          />
+          >
+            <img
+              src={todayEarningsBillImage}
+              alt=""
+              aria-hidden="true"
+              loading="lazy"
+              decoding="async"
+              className="earnings-bills-tooltip__bill"
+            />
+          </span>
         ))}
       </span>
     </span>

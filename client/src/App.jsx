@@ -3995,6 +3995,239 @@ function convertCombinedPnl(perCurrencySummary, currencyRates, targetCurrency, b
   return result;
 }
 
+function subtractFiniteValues(baseValue, deductionValue) {
+  const hasBase = Number.isFinite(baseValue);
+  const hasDeduction = Number.isFinite(deductionValue);
+  if (!hasBase && !hasDeduction) {
+    return null;
+  }
+  return (hasBase ? baseValue : 0) - (hasDeduction ? deductionValue : 0);
+}
+
+function subtractTotalsObject(baseTotals, deductionTotals, fields) {
+  if (!baseTotals && !deductionTotals) {
+    return null;
+  }
+  const next = { ...(baseTotals && typeof baseTotals === 'object' ? baseTotals : {}) };
+  let hasAnyValue = false;
+  fields.forEach((field) => {
+    const value = subtractFiniteValues(baseTotals?.[field], deductionTotals?.[field]);
+    if (Number.isFinite(value)) {
+      next[field] = value;
+      hasAnyValue = true;
+    } else if (Object.prototype.hasOwnProperty.call(next, field)) {
+      delete next[field];
+    }
+  });
+  return hasAnyValue ? next : null;
+}
+
+function subtractTotalPnlSeries(baseSeries, deductionSeries) {
+  if (!baseSeries || typeof baseSeries !== 'object') {
+    return baseSeries;
+  }
+  if (!deductionSeries || !Array.isArray(deductionSeries.points) || deductionSeries.points.length === 0) {
+    return baseSeries;
+  }
+  const basePoints = Array.isArray(baseSeries.points) ? baseSeries.points : [];
+  if (!basePoints.length) {
+    return baseSeries;
+  }
+
+  const normalizeDateKey = (value) => {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    const trimmed = value.trim();
+    return trimmed ? trimmed.slice(0, 10) : '';
+  };
+
+  const relativeFieldPairs = [
+    { absolute: 'equityCad', relative: 'equitySinceDisplayStartCad' },
+    { absolute: 'cumulativeNetDepositsCad', relative: 'cumulativeNetDepositsSinceDisplayStartCad' },
+    { absolute: 'totalPnlCad', relative: 'totalPnlSinceDisplayStartCad' },
+  ];
+
+  const basePointEntries = basePoints
+    .map((point) => ({ point, date: normalizeDateKey(point?.date) }))
+    .filter((entry) => entry.date);
+  const baseDisplayStartEntry = basePointEntries[0] || null;
+  const baseSeriesEndEntry = basePointEntries.length
+    ? basePointEntries[basePointEntries.length - 1]
+    : null;
+  const baseDisplayStartDate = baseDisplayStartEntry?.date || '';
+  const baseSeriesEndDate = baseSeriesEndEntry?.date || '';
+
+  const deductionPointEntries = deductionSeries.points
+    .map((point) => ({ point, date: normalizeDateKey(point?.date) }))
+    .filter((entry) => entry.date)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  if (!deductionPointEntries.length) {
+    return baseSeries;
+  }
+
+  let deductionDisplayStartEntry = null;
+  let deductionBaselineEntry = deductionPointEntries[0];
+  if (baseDisplayStartDate) {
+    let previousEntry = null;
+    deductionPointEntries.forEach((entry) => {
+      if (entry.date < baseDisplayStartDate) {
+        previousEntry = entry;
+        return;
+      }
+      if (!deductionDisplayStartEntry) {
+        deductionDisplayStartEntry = entry;
+      }
+    });
+    deductionBaselineEntry = previousEntry || deductionDisplayStartEntry || deductionPointEntries[0];
+  } else {
+    deductionDisplayStartEntry = deductionPointEntries[0];
+  }
+  if (!deductionDisplayStartEntry) {
+    deductionDisplayStartEntry = deductionPointEntries[0];
+  }
+
+  const subtractEpsilon = 0.000001;
+  const deriveRelativeValue = (point, baseline, absoluteField) => {
+    const pointValue = Number(point?.[absoluteField]);
+    const baselineValue = Number(baseline?.[absoluteField]);
+    if (!Number.isFinite(pointValue) || !Number.isFinite(baselineValue)) {
+      return null;
+    }
+    const delta = pointValue - baselineValue;
+    return Math.abs(delta) < subtractEpsilon ? 0 : delta;
+  };
+
+  const deductionByDate = new Map();
+  deductionPointEntries.forEach(({ point, date }) => {
+    const normalizedPoint = { ...point };
+    relativeFieldPairs.forEach(({ absolute, relative }) => {
+      if (Number.isFinite(normalizedPoint?.[relative])) {
+        return;
+      }
+      const derivedValue = deriveRelativeValue(point, deductionBaselineEntry?.point, absolute);
+      if (Number.isFinite(derivedValue)) {
+        normalizedPoint[relative] = derivedValue;
+      }
+    });
+    if (deductionDisplayStartEntry && date === deductionDisplayStartEntry.date) {
+      relativeFieldPairs.forEach(({ relative }) => {
+        if (Number.isFinite(normalizedPoint?.[relative])) {
+          normalizedPoint[relative] = 0;
+        }
+      });
+    }
+    deductionByDate.set(date, normalizedPoint);
+  });
+
+  const resolvedDeductionSummary =
+    deductionSeries.summary && typeof deductionSeries.summary === 'object'
+      ? { ...deductionSeries.summary }
+      : null;
+  const deductionSummaryPoint =
+    (baseSeriesEndDate && deductionByDate.get(baseSeriesEndDate)) ||
+    deductionByDate.get(deductionPointEntries[deductionPointEntries.length - 1].date) ||
+    null;
+  if (resolvedDeductionSummary) {
+    if (
+      !Number.isFinite(resolvedDeductionSummary.totalPnlSinceDisplayStartCad) &&
+      Number.isFinite(deductionSummaryPoint?.totalPnlSinceDisplayStartCad)
+    ) {
+      resolvedDeductionSummary.totalPnlSinceDisplayStartCad =
+        deductionSummaryPoint.totalPnlSinceDisplayStartCad;
+    }
+    if (
+      !Number.isFinite(resolvedDeductionSummary.totalEquitySinceDisplayStartCad) &&
+      Number.isFinite(deductionSummaryPoint?.equitySinceDisplayStartCad)
+    ) {
+      resolvedDeductionSummary.totalEquitySinceDisplayStartCad =
+        deductionSummaryPoint.equitySinceDisplayStartCad;
+    }
+    if (
+      (!resolvedDeductionSummary.displayStartTotals ||
+        typeof resolvedDeductionSummary.displayStartTotals !== 'object') &&
+      deductionDisplayStartEntry
+    ) {
+      const displayStartPoint = deductionDisplayStartEntry.point;
+      resolvedDeductionSummary.displayStartTotals = {
+        equityCad: Number.isFinite(displayStartPoint?.equityCad) ? displayStartPoint.equityCad : null,
+        cumulativeNetDepositsCad: Number.isFinite(displayStartPoint?.cumulativeNetDepositsCad)
+          ? displayStartPoint.cumulativeNetDepositsCad
+          : null,
+        totalPnlCad: Number.isFinite(displayStartPoint?.totalPnlCad) ? displayStartPoint.totalPnlCad : null,
+      };
+    }
+  }
+
+  const pointFields = [
+    'equityCad',
+    'cumulativeNetDepositsCad',
+    'totalPnlCad',
+    'equitySinceDisplayStartCad',
+    'cumulativeNetDepositsSinceDisplayStartCad',
+    'totalPnlSinceDisplayStartCad',
+  ];
+
+  const nextPoints = basePoints.map((point) => {
+    const date = typeof point?.date === 'string' ? point.date.trim().slice(0, 10) : '';
+    const deductionPoint = date ? deductionByDate.get(date) : null;
+    if (!deductionPoint) {
+      return { ...point };
+    }
+    const nextPoint = { ...point };
+    pointFields.forEach((field) => {
+      const value = subtractFiniteValues(point?.[field], deductionPoint?.[field]);
+      if (Number.isFinite(value)) {
+        nextPoint[field] = value;
+      } else if (Object.prototype.hasOwnProperty.call(nextPoint, field)) {
+        delete nextPoint[field];
+      }
+    });
+    return nextPoint;
+  });
+
+  const summaryFields = [
+    'totalPnlCad',
+    'totalPnlAllTimeCad',
+    'totalPnlSinceDisplayStartCad',
+    'totalEquityCad',
+    'totalEquitySinceDisplayStartCad',
+    'netDepositsCad',
+    'netDepositsAllTimeCad',
+  ];
+
+  const nextSummary = subtractTotalsObject(baseSeries.summary, resolvedDeductionSummary, summaryFields);
+  const nextDisplayStartTotals = subtractTotalsObject(
+    baseSeries.summary?.displayStartTotals,
+    resolvedDeductionSummary?.displayStartTotals,
+    ['equityCad', 'cumulativeNetDepositsCad', 'totalPnlCad']
+  );
+  const nextSeriesStartTotals = subtractTotalsObject(
+    baseSeries.summary?.seriesStartTotals,
+    resolvedDeductionSummary?.seriesStartTotals,
+    ['equityCad', 'cumulativeNetDepositsCad', 'totalPnlCad']
+  );
+
+  if (nextSummary) {
+    if (nextDisplayStartTotals) {
+      nextSummary.displayStartTotals = nextDisplayStartTotals;
+    } else if (Object.prototype.hasOwnProperty.call(nextSummary, 'displayStartTotals')) {
+      delete nextSummary.displayStartTotals;
+    }
+    if (nextSeriesStartTotals) {
+      nextSummary.seriesStartTotals = nextSeriesStartTotals;
+    } else if (Object.prototype.hasOwnProperty.call(nextSummary, 'seriesStartTotals')) {
+      delete nextSummary.seriesStartTotals;
+    }
+  }
+
+  return {
+    ...baseSeries,
+    points: nextPoints,
+    summary: nextSummary,
+  };
+}
+
 function findBalanceEntryForCurrency(balances, currency) {
   if (!balances || !currency) {
     return null;
@@ -4213,6 +4446,7 @@ const TODO_TYPE_ORDER = { rebalance: 0, norbert: 1, cash: 2 };
 
 const RESERVE_FALLBACK_SYMBOL = 'VBIL';
 const PRICE_REFRESH_CONCURRENCY = 6;
+const SYMBOL_EXCLUSION_EXCHANGE_SUFFIXES = ['.TO', '.VN', '.NE'];
 
 function normalizeSymbolKey(value) {
   if (typeof value !== 'string') {
@@ -4220,6 +4454,36 @@ function normalizeSymbolKey(value) {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed.toUpperCase() : '';
+}
+
+function normalizeSymbolAliasKey(value) {
+  const normalized = normalizeSymbolGroupKey(value || '');
+  if (!normalized) {
+    return '';
+  }
+
+  let alias = normalized;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 0; index < SYMBOL_EXCLUSION_EXCHANGE_SUFFIXES.length; index += 1) {
+      const suffix = SYMBOL_EXCLUSION_EXCHANGE_SUFFIXES[index];
+      if (alias.length > suffix.length && alias.endsWith(suffix)) {
+        alias = alias.slice(0, -suffix.length);
+        changed = true;
+        break;
+      }
+    }
+    if (changed) {
+      continue;
+    }
+    if (alias.length > 2 && alias.endsWith('.U')) {
+      alias = alias.slice(0, -2);
+      changed = true;
+    }
+  }
+
+  return alias;
 }
 
 function derivePositionDayOpenPrice(position) {
@@ -6735,6 +6999,7 @@ export default function App() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
   const [positionsPnlMode, setPositionsPnlMode] = usePersistentState('positionsTablePnlMode', 'currency');
+  const [excludedPositionSymbols, setExcludedPositionSymbols] = useState(() => new Set());
   const [portfolioViewTab, setPortfolioViewTab] = usePersistentState('portfolioViewTab', 'positions');
   const [demoModeEnabled, setDemoModeEnabled] = usePersistentState(DEMO_MODE_STORAGE_KEY, false);
   const [includeUnbilledEarningsInTotalEquityPreference, setIncludeUnbilledEarningsInTotalEquityPreference] =
@@ -6948,6 +7213,14 @@ export default function App() {
     mode: 'cagr',
     symbol: null,
     symbolGroupKey: null,
+  });
+  const [excludedSymbolsSeriesState, setExcludedSymbolsSeriesState] = useState({
+    status: 'idle',
+    data: null,
+    error: null,
+    accountKey: null,
+    mode: 'all',
+    symbolsKey: null,
   });
   const [symbolGroupAnnualizedState, setSymbolGroupAnnualizedState] = useState({
     status: 'idle',
@@ -8298,6 +8571,10 @@ export default function App() {
     }
     return null;
   }, [selectedAccountInfo, selectedAccount, isAggregateSelection]);
+
+  useEffect(() => {
+    setExcludedPositionSymbols(new Set());
+  }, [selectedAccountKey]);
 
   const symbolGroupAnnualizedSymbols = useMemo(() => {
     if (!focusedSymbolMembers.length) {
@@ -9818,6 +10095,217 @@ export default function App() {
   });
   }, [positions, totalMarketValue, currencyRates, baseCurrency]);
 
+  const excludedPositionSymbolKeys = useMemo(() => {
+    const normalized = new Set();
+    if (!(excludedPositionSymbols instanceof Set) || excludedPositionSymbols.size === 0) {
+      return normalized;
+    }
+    excludedPositionSymbols.forEach((value) => {
+      const key = normalizeSymbolGroupKey(value || '');
+      if (key) {
+        normalized.add(key);
+      }
+    });
+    return normalized;
+  }, [excludedPositionSymbols]);
+
+  const excludedPositionSymbolAliasKeys = useMemo(() => {
+    const aliases = new Set();
+    if (!(excludedPositionSymbolKeys instanceof Set) || excludedPositionSymbolKeys.size === 0) {
+      return aliases;
+    }
+
+    excludedPositionSymbolKeys.forEach((symbolKey) => {
+      const alias = normalizeSymbolAliasKey(symbolKey);
+      if (alias) {
+        aliases.add(alias);
+      }
+      const members = getSymbolGroupMembers(symbolKey);
+      members.forEach((member) => {
+        const memberAlias = normalizeSymbolAliasKey(member);
+        if (memberAlias) {
+          aliases.add(memberAlias);
+        }
+      });
+    });
+
+    return aliases;
+  }, [excludedPositionSymbolKeys]);
+
+  const isPositionSymbolExcluded = useCallback(
+    (symbolCandidate) => {
+      const key = normalizeSymbolGroupKey(symbolCandidate || '');
+      if (!key) {
+        return false;
+      }
+      if (excludedPositionSymbolKeys.has(key)) {
+        return true;
+      }
+      const alias = normalizeSymbolAliasKey(key);
+      return Boolean(alias && excludedPositionSymbolAliasKeys.has(alias));
+    },
+    [excludedPositionSymbolKeys, excludedPositionSymbolAliasKeys]
+  );
+
+  const symbolExclusionActive = !focusedSymbol && excludedPositionSymbolKeys.size > 0;
+
+  const excludedPositionsWithShare = useMemo(
+    () => positionsWithShare.filter((position) => isPositionSymbolExcluded(position?.symbol)),
+    [positionsWithShare, isPositionSymbolExcluded]
+  );
+
+  const includedPositionTotalsCad = useMemo(() => {
+    if (!symbolExclusionActive) {
+      return { marketValue: 0, dayPnl: 0, openPnl: 0 };
+    }
+    return positionsWithShare.reduce(
+      (accumulator, position) => {
+        if (isPositionSymbolExcluded(position?.symbol)) {
+          return accumulator;
+        }
+        const marketValue = Number(position?.normalizedMarketValue);
+        const dayPnl = Number(position?.normalizedDayPnl ?? position?.dayPnl);
+        const openPnl = Number(position?.normalizedOpenPnl ?? position?.openPnl);
+        if (Number.isFinite(marketValue)) {
+          accumulator.marketValue += marketValue;
+        }
+        if (Number.isFinite(dayPnl)) {
+          accumulator.dayPnl += dayPnl;
+        }
+        if (Number.isFinite(openPnl)) {
+          accumulator.openPnl += openPnl;
+        }
+        return accumulator;
+      },
+      { marketValue: 0, dayPnl: 0, openPnl: 0 }
+    );
+  }, [symbolExclusionActive, positionsWithShare, isPositionSymbolExcluded]);
+
+  const excludedPositionTotalsCad = useMemo(() => {
+    if (!symbolExclusionActive) {
+      return { marketValue: 0, dayPnl: 0, openPnl: 0 };
+    }
+    return excludedPositionsWithShare.reduce(
+      (accumulator, position) => {
+        const marketValue = Number(position?.normalizedMarketValue);
+        const dayPnl = Number(position?.normalizedDayPnl ?? position?.dayPnl);
+        const openPnl = Number(position?.normalizedOpenPnl ?? position?.openPnl);
+        if (Number.isFinite(marketValue)) {
+          accumulator.marketValue += marketValue;
+        }
+        if (Number.isFinite(dayPnl)) {
+          accumulator.dayPnl += dayPnl;
+        }
+        if (Number.isFinite(openPnl)) {
+          accumulator.openPnl += openPnl;
+        }
+        return accumulator;
+      },
+      { marketValue: 0, dayPnl: 0, openPnl: 0 }
+    );
+  }, [symbolExclusionActive, excludedPositionsWithShare]);
+
+  const exclusionSymbolTotalsContainers = useMemo(() => {
+    if (!selectedAccountKey) {
+      return [];
+    }
+
+    const resolveContainerFromMap = (source) => {
+      if (!source || typeof source !== 'object') {
+        return null;
+      }
+      if (isAggregateSelection) {
+        const key =
+          typeof selectedAccount === 'string' && selectedAccount.trim()
+            ? selectedAccount.trim()
+            : selectedAccountKey || 'all';
+        return source[key] || source.all || source['all'] || null;
+      }
+      if (selectedAccountInfo?.id) {
+        return source[selectedAccountInfo.id] || source[selectedAccountKey] || null;
+      }
+      return source[selectedAccountKey] || null;
+    };
+
+    const entries = [];
+    const seen = new Set();
+    const pushContainer = (container) => {
+      if (!container || seen.has(container) || !Array.isArray(container.entries) || !container.entries.length) {
+        return;
+      }
+      seen.add(container);
+      entries.push(container);
+    };
+
+    pushContainer(resolveContainerFromMap(data?.accountTotalPnlBySymbol));
+    pushContainer(resolveContainerFromMap(data?.accountTotalPnlBySymbolAll));
+
+    return entries;
+  }, [
+    selectedAccountKey,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountInfo?.id,
+    data?.accountTotalPnlBySymbol,
+    data?.accountTotalPnlBySymbolAll,
+  ]);
+
+  const excludedSymbolsForSeries = useMemo(() => {
+    if (!symbolExclusionActive) {
+      return [];
+    }
+    const symbols = new Set();
+    const addSymbol = (symbolCandidate) => {
+      const normalized = normalizeSymbolGroupKey(symbolCandidate || '');
+      if (normalized) {
+        symbols.add(normalized);
+      }
+    };
+
+    excludedPositionSymbolKeys.forEach((symbolKey) => {
+      addSymbol(symbolKey);
+      getSymbolGroupMembers(symbolKey).forEach((member) => addSymbol(member));
+    });
+
+    positionsWithShare.forEach((position) => {
+      if (!isPositionSymbolExcluded(position?.symbol)) {
+        return;
+      }
+      addSymbol(position?.symbol);
+    });
+
+    exclusionSymbolTotalsContainers.forEach((container) => {
+      const entries = Array.isArray(container?.entries) ? container.entries : [];
+      entries.forEach((entry) => {
+        const components = Array.isArray(entry?.components) ? entry.components : [];
+        const matchesEntry = isPositionSymbolExcluded(entry?.symbol);
+        if (matchesEntry) {
+          addSymbol(entry?.symbol);
+          components.forEach((component) => addSymbol(component?.symbol));
+          return;
+        }
+        components.forEach((component) => {
+          if (isPositionSymbolExcluded(component?.symbol)) {
+            addSymbol(component?.symbol);
+          }
+        });
+      });
+    });
+
+    return Array.from(symbols).sort();
+  }, [
+    symbolExclusionActive,
+    excludedPositionSymbolKeys,
+    positionsWithShare,
+    isPositionSymbolExcluded,
+    exclusionSymbolTotalsContainers,
+  ]);
+
+  const excludedSymbolsSeriesKey = useMemo(
+    () => excludedSymbolsForSeries.join('|'),
+    [excludedSymbolsForSeries]
+  );
+
   // Derive filtered positions and market value when a symbol is focused
   const symbolFilteredPositions = useMemo(() => {
     if (!focusedSymbol) {
@@ -10092,6 +10580,22 @@ export default function App() {
     },
     [triggerBuySell]
   );
+
+  const handleTogglePositionInclude = useCallback((position) => {
+    const symbolKey = normalizeSymbolGroupKey(position?.symbol || '');
+    if (!symbolKey) {
+      return;
+    }
+    setExcludedPositionSymbols((previous) => {
+      const next = new Set(previous);
+      if (next.has(symbolKey)) {
+        next.delete(symbolKey);
+      } else {
+        next.add(symbolKey);
+      }
+      return next;
+    });
+  }, []);
 
   const handleAccountActionCancel = useCallback(() => {
     setAccountActionPrompt(null);
@@ -11491,6 +11995,40 @@ export default function App() {
   const activeCurrency = currencyOptions.find((option) => option.value === currencyView) || null;
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
+  const activeBalancesForDisplay = useMemo(() => {
+    if (!symbolExclusionActive || !activeBalances || !activeCurrency) {
+      return activeBalances;
+    }
+    const targetCurrency = activeCurrency.currency || baseCurrency;
+    const excludedMarketValue = convertAmountToCurrency(
+      excludedPositionTotalsCad.marketValue,
+      baseCurrency,
+      targetCurrency,
+      currencyRates,
+      baseCurrency
+    );
+    if (!Number.isFinite(excludedMarketValue) || Math.abs(excludedMarketValue) < 0.000001) {
+      return activeBalances;
+    }
+
+    const nextBalances = { ...activeBalances };
+    const marketValue = coerceNumber(activeBalances.marketValue);
+    if (marketValue !== null) {
+      nextBalances.marketValue = marketValue - excludedMarketValue;
+    }
+    const totalEquity = coerceNumber(activeBalances.totalEquity);
+    if (totalEquity !== null) {
+      nextBalances.totalEquity = totalEquity - excludedMarketValue;
+    }
+    return nextBalances;
+  }, [
+    symbolExclusionActive,
+    activeBalances,
+    activeCurrency,
+    excludedPositionTotalsCad.marketValue,
+    currencyRates,
+    baseCurrency,
+  ]);
   const activeAccountIdsForDeployment = useMemo(() => {
     if (isAggregateSelection) {
       if (!accountsInView.length) {
@@ -11558,6 +12096,14 @@ export default function App() {
       return new Map();
     }
 
+    if (symbolExclusionActive && excludedPositionSymbolKeys.size > 0) {
+      relevantPositions = relevantPositions.filter((position) => !isPositionSymbolExcluded(position?.symbol));
+    }
+
+    if (!relevantPositions.length) {
+      return new Map();
+    }
+
     const totals = new Map();
     relevantPositions.forEach((position) => {
       if (!position) {
@@ -11583,15 +12129,21 @@ export default function App() {
     });
 
     return totals;
-  }, [rawPositions, activeAccountIdsForDeployment]);
+  }, [
+    rawPositions,
+    activeAccountIdsForDeployment,
+    symbolExclusionActive,
+    excludedPositionSymbolKeys,
+    isPositionSymbolExcluded,
+  ]);
 
   const activeDeploymentSummary = useMemo(() => {
-    if (!activeCurrency || !activeBalances) {
+    if (!activeCurrency || !activeBalancesForDisplay) {
       return null;
     }
 
-    const totalEquityValue = coerceNumber(activeBalances.totalEquity);
-    const marketValueValue = coerceNumber(activeBalances.marketValue);
+    const totalEquityValue = coerceNumber(activeBalancesForDisplay.totalEquity);
+    const marketValueValue = coerceNumber(activeBalancesForDisplay.marketValue);
     const total =
       totalEquityValue !== null
         ? totalEquityValue
@@ -11599,7 +12151,7 @@ export default function App() {
           ? marketValueValue
           : 0;
 
-    const cashValueRaw = coerceNumber(activeBalances.cash);
+    const cashValueRaw = coerceNumber(activeBalancesForDisplay.cash);
     const cashValue = cashValueRaw !== null ? cashValueRaw : 0;
 
     let reserveFromPositions = 0;
@@ -11635,7 +12187,7 @@ export default function App() {
     };
   }, [
     activeCurrency,
-    activeBalances,
+    activeBalancesForDisplay,
     reservePositionsByCurrency,
     currencyRates,
     baseCurrency,
@@ -11838,6 +12390,15 @@ export default function App() {
     return options;
   }, [fundingSummaryVariants, cagrStartDate]);
 
+  const selectedTotalPnlMode = useMemo(() => {
+    if (!selectedAccountKey) {
+      return 'all';
+    }
+    const aggregateMode =
+      selectedAccountKey === 'all' || isAccountGroupSelection(selectedAccountKey);
+    return aggregateMode ? 'all' : totalPnlRange === 'all' ? 'all' : 'cagr';
+  }, [selectedAccountKey, totalPnlRange]);
+
   const selectedAccountTotalPnlSeries = useMemo(() => {
     if (!selectedAccountKey) {
       return null;
@@ -11853,11 +12414,8 @@ export default function App() {
     if (!entry) {
       return null;
     }
-    const aggregateMode =
-      selectedAccountKey === 'all' || isAccountGroupSelection(selectedAccountKey);
-    const desiredMode = aggregateMode ? 'all' : totalPnlRange === 'all' ? 'all' : 'cagr';
-    return entry[desiredMode] || entry.cagr || entry.all || null;
-  }, [data?.accountTotalPnlSeries, selectedAccountKey, totalPnlRange]);
+    return entry[selectedTotalPnlMode] || entry.cagr || entry.all || null;
+  }, [data?.accountTotalPnlSeries, selectedAccountKey, selectedTotalPnlMode]);
 
   const selectedTotalPnlSeriesStatus =
     totalPnlSeriesState.accountKey === selectedAccountKey
@@ -11869,6 +12427,303 @@ export default function App() {
     totalPnlSeriesState.accountKey === selectedAccountKey && totalPnlSeriesState.status === 'error'
       ? totalPnlSeriesState.error
       : null;
+
+  useEffect(() => {
+    if (!symbolExclusionActive || !selectedAccountKey || !excludedSymbolsForSeries.length) {
+      setExcludedSymbolsSeriesState((previous) => {
+        if (previous.status === 'idle' && previous.data === null && previous.error === null) {
+          return previous;
+        }
+        return {
+          status: 'idle',
+          data: null,
+          error: null,
+          accountKey: selectedAccountKey || null,
+          mode: selectedTotalPnlMode,
+          symbolsKey: null,
+        };
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const symbolsKey = excludedSymbolsSeriesKey;
+    setExcludedSymbolsSeriesState((previous) => ({
+      status: 'loading',
+      data:
+        previous.accountKey === selectedAccountKey &&
+        previous.mode === selectedTotalPnlMode &&
+        previous.symbolsKey === symbolsKey
+          ? previous.data
+          : null,
+      error: null,
+      accountKey: selectedAccountKey,
+      mode: selectedTotalPnlMode,
+      symbolsKey,
+    }));
+
+    getTotalPnlSeries(selectedAccountKey, {
+      applyAccountCagrStartDate: selectedTotalPnlMode !== 'all',
+      symbol: excludedSymbolsForSeries[0],
+      symbolGroupKey: `excluded-${selectedAccountKey}`,
+      symbols: excludedSymbolsForSeries,
+      includeSyntheticPositions: true,
+      refreshKey,
+    })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setExcludedSymbolsSeriesState({
+          status: 'success',
+          data: payload,
+          error: null,
+          accountKey: selectedAccountKey,
+          mode: selectedTotalPnlMode,
+          symbolsKey,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        const normalized = error instanceof Error ? error : new Error('Failed to load excluded symbol series');
+        setExcludedSymbolsSeriesState({
+          status: 'error',
+          data: null,
+          error: normalized,
+          accountKey: selectedAccountKey,
+          mode: selectedTotalPnlMode,
+          symbolsKey,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    symbolExclusionActive,
+    selectedAccountKey,
+    selectedTotalPnlMode,
+    excludedSymbolsForSeries,
+    excludedSymbolsSeriesKey,
+    refreshKey,
+  ]);
+
+  const exclusionSeriesReady =
+    symbolExclusionActive &&
+    excludedSymbolsSeriesState.status === 'success' &&
+    excludedSymbolsSeriesState.accountKey === selectedAccountKey &&
+    excludedSymbolsSeriesState.mode === selectedTotalPnlMode &&
+    excludedSymbolsSeriesState.symbolsKey === excludedSymbolsSeriesKey &&
+    excludedSymbolsSeriesState.data;
+
+  const filteredSelectedAccountTotalPnlSeries = useMemo(() => {
+    if (!symbolExclusionActive || !selectedAccountTotalPnlSeries) {
+      return selectedAccountTotalPnlSeries;
+    }
+    if (!exclusionSeriesReady) {
+      return selectedAccountTotalPnlSeries;
+    }
+    return subtractTotalPnlSeries(selectedAccountTotalPnlSeries, excludedSymbolsSeriesState.data);
+  }, [
+    symbolExclusionActive,
+    selectedAccountTotalPnlSeries,
+    exclusionSeriesReady,
+    excludedSymbolsSeriesState.data,
+  ]);
+
+  const filteredSelectedTotalPnlSeriesStatus = useMemo(() => {
+    if (!symbolExclusionActive) {
+      return selectedTotalPnlSeriesStatus;
+    }
+    if (excludedSymbolsSeriesState.status === 'error') {
+      return 'error';
+    }
+    if (excludedSymbolsSeriesState.status === 'loading') {
+      return 'loading';
+    }
+    return selectedTotalPnlSeriesStatus;
+  }, [symbolExclusionActive, selectedTotalPnlSeriesStatus, excludedSymbolsSeriesState.status]);
+
+  const filteredSelectedTotalPnlSeriesError =
+    symbolExclusionActive && excludedSymbolsSeriesState.status === 'error'
+      ? excludedSymbolsSeriesState.error
+      : selectedTotalPnlSeriesError;
+
+  const excludedTotalPnlFallbackCad = useMemo(() => {
+    if (!symbolExclusionActive || !selectedAccountKey || excludedPositionSymbolKeys.size === 0) {
+      return null;
+    }
+    const source =
+      selectedTotalPnlMode === 'all'
+        ? data?.accountTotalPnlBySymbolAll || data?.accountTotalPnlBySymbol
+        : data?.accountTotalPnlBySymbol || data?.accountTotalPnlBySymbolAll;
+    if (!source || typeof source !== 'object') {
+      return null;
+    }
+    const resolveContainer = () => {
+      if (isAggregateSelection) {
+        const key =
+          typeof selectedAccount === 'string' && selectedAccount.trim()
+            ? selectedAccount.trim()
+            : selectedAccountKey || 'all';
+        return source[key] || source.all || source['all'] || null;
+      }
+      if (selectedAccountInfo?.id) {
+        return source[selectedAccountInfo.id] || null;
+      }
+      return source[selectedAccountKey] || null;
+    };
+    const container = resolveContainer();
+    if (!container || !Array.isArray(container.entries)) {
+      return null;
+    }
+    let total = 0;
+    let count = 0;
+    container.entries.forEach((entry) => {
+      const components = Array.isArray(entry?.components) ? entry.components : [];
+      const matchedComponents = components.filter((component) =>
+        isPositionSymbolExcluded(component?.symbol)
+      );
+      if (matchedComponents.length > 0) {
+        matchedComponents.forEach((component) => {
+          const componentValue = Number(component?.totalPnlCad);
+          if (!Number.isFinite(componentValue)) {
+            return;
+          }
+          total += componentValue;
+          count += 1;
+        });
+        return;
+      }
+
+      if (!isPositionSymbolExcluded(entry?.symbol)) {
+        return;
+      }
+      const value = Number(entry?.totalPnlCad);
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      total += value;
+      count += 1;
+    });
+    return count ? total : null;
+  }, [
+    symbolExclusionActive,
+    selectedAccountKey,
+    selectedTotalPnlMode,
+    data?.accountTotalPnlBySymbol,
+    data?.accountTotalPnlBySymbolAll,
+    excludedPositionSymbolKeys.size,
+    isPositionSymbolExcluded,
+    isAggregateSelection,
+    selectedAccount,
+    selectedAccountInfo?.id,
+  ]);
+
+  const filteredFundingSummaryForDisplay = useMemo(() => {
+    if (!symbolExclusionActive) {
+      return fundingSummaryForDisplay;
+    }
+    const baseSummary = fundingSummaryForDisplay && typeof fundingSummaryForDisplay === 'object'
+      ? { ...fundingSummaryForDisplay }
+      : {};
+    const seriesSummary = filteredSelectedAccountTotalPnlSeries?.summary;
+    if (!seriesSummary || typeof seriesSummary !== 'object') {
+      if (!fundingSummaryForDisplay || typeof fundingSummaryForDisplay !== 'object') {
+        return fundingSummaryForDisplay;
+      }
+      const fallbackTotalPnl = Number(fundingSummaryForDisplay.totalPnlCad);
+      const nextSummary = { ...fundingSummaryForDisplay };
+      if (Number.isFinite(fallbackTotalPnl) && Number.isFinite(excludedTotalPnlFallbackCad)) {
+        nextSummary.totalPnlCad = fallbackTotalPnl - excludedTotalPnlFallbackCad;
+      }
+      if (Number.isFinite(fundingSummaryForDisplay.totalEquityCad)) {
+        nextSummary.totalEquityCad =
+          fundingSummaryForDisplay.totalEquityCad - excludedPositionTotalsCad.marketValue;
+      }
+      return nextSummary;
+    }
+
+    const mode = selectedTotalPnlMode === 'all' ? 'all' : 'cagr';
+    const totalPnlCad =
+      mode === 'all'
+        ? (Number.isFinite(seriesSummary.totalPnlAllTimeCad)
+            ? seriesSummary.totalPnlAllTimeCad
+            : Number.isFinite(seriesSummary.totalPnlCad)
+              ? seriesSummary.totalPnlCad
+              : null)
+        : (Number.isFinite(seriesSummary.totalPnlSinceDisplayStartCad)
+            ? seriesSummary.totalPnlSinceDisplayStartCad
+            : Number.isFinite(seriesSummary.totalPnlCad)
+              ? seriesSummary.totalPnlCad
+              : null);
+    const netDepositsCad =
+      mode === 'all'
+        ? (Number.isFinite(seriesSummary.netDepositsAllTimeCad)
+            ? seriesSummary.netDepositsAllTimeCad
+            : Number.isFinite(seriesSummary.netDepositsCad)
+              ? seriesSummary.netDepositsCad
+              : null)
+        : (Number.isFinite(seriesSummary.netDepositsCad)
+            ? seriesSummary.netDepositsCad
+            : Number.isFinite(seriesSummary.netDepositsAllTimeCad)
+              ? seriesSummary.netDepositsAllTimeCad
+              : null);
+    const totalEquityCad = Number.isFinite(seriesSummary.totalEquityCad)
+      ? seriesSummary.totalEquityCad
+      : null;
+    const totalPnlDeltaCad = Number.isFinite(seriesSummary.totalPnlSinceDisplayStartCad)
+      ? seriesSummary.totalPnlSinceDisplayStartCad
+      : null;
+    const totalEquityDeltaCad = Number.isFinite(seriesSummary.totalEquitySinceDisplayStartCad)
+      ? seriesSummary.totalEquitySinceDisplayStartCad
+      : null;
+
+    if (totalPnlCad !== null) {
+      baseSummary.totalPnlCad = totalPnlCad;
+    }
+    if (netDepositsCad !== null) {
+      baseSummary.netDepositsCad = netDepositsCad;
+    }
+    if (totalEquityCad !== null) {
+      baseSummary.totalEquityCad = totalEquityCad;
+    }
+    if (totalPnlDeltaCad !== null) {
+      baseSummary.totalPnlDeltaCad = totalPnlDeltaCad;
+    }
+    if (totalEquityDeltaCad !== null) {
+      baseSummary.totalEquityDeltaCad = totalEquityDeltaCad;
+    }
+    if (seriesSummary.displayStartTotals && typeof seriesSummary.displayStartTotals === 'object') {
+      baseSummary.displayStartTotals = seriesSummary.displayStartTotals;
+    }
+    if (
+      typeof filteredSelectedAccountTotalPnlSeries?.periodStartDate === 'string' &&
+      filteredSelectedAccountTotalPnlSeries.periodStartDate
+    ) {
+      baseSummary.periodStartDate = filteredSelectedAccountTotalPnlSeries.periodStartDate;
+    }
+    if (
+      typeof filteredSelectedAccountTotalPnlSeries?.periodEndDate === 'string' &&
+      filteredSelectedAccountTotalPnlSeries.periodEndDate
+    ) {
+      baseSummary.periodEndDate = filteredSelectedAccountTotalPnlSeries.periodEndDate;
+    }
+    return baseSummary;
+  }, [
+    symbolExclusionActive,
+    fundingSummaryForDisplay,
+    filteredSelectedAccountTotalPnlSeries,
+    selectedTotalPnlMode,
+    excludedTotalPnlFallbackCad,
+    excludedPositionTotalsCad.marketValue,
+  ]);
+
+  const effectiveFundingSummaryForDisplay = symbolExclusionActive
+    ? filteredFundingSummaryForDisplay
+    : fundingSummaryForDisplay;
 
   useEffect(() => {
     const currentAccount = selectedAccountKey || null;
@@ -11922,7 +12777,7 @@ export default function App() {
   );
 
   const benchmarkPeriod = useMemo(() => {
-    if (!fundingSummaryForDisplay && !totalPnlSelectionRange) {
+    if (!effectiveFundingSummaryForDisplay && !totalPnlSelectionRange) {
       return null;
     }
 
@@ -11956,21 +12811,21 @@ export default function App() {
       };
     }
 
-    const normalizedStart = normalizeDate(fundingSummaryForDisplay?.periodStartDate);
+    const normalizedStart = normalizeDate(effectiveFundingSummaryForDisplay?.periodStartDate);
     if (!normalizedStart) {
       return null;
     }
 
     const normalizedEnd =
-      normalizeDate(fundingSummaryForDisplay?.periodEndDate) ||
-      normalizeDate(fundingSummaryForDisplay?.annualizedReturnAsOf) ||
+      normalizeDate(effectiveFundingSummaryForDisplay?.periodEndDate) ||
+      normalizeDate(effectiveFundingSummaryForDisplay?.annualizedReturnAsOf) ||
       normalizeDate(asOf);
 
     return {
       startDate: normalizedStart,
       endDate: normalizedEnd || null,
     };
-  }, [fundingSummaryForDisplay, asOf, totalPnlSelectionRange]);
+  }, [effectiveFundingSummaryForDisplay, asOf, totalPnlSelectionRange]);
 
   const benchmarkPeriodStart = benchmarkPeriod?.startDate || null;
   const benchmarkPeriodEnd = benchmarkPeriod?.endDate || null;
@@ -12068,12 +12923,19 @@ export default function App() {
   }, [data?.otherAssets, showingAllAccounts]);
 
   const baseDisplayTotalEquity = useMemo(() => {
+    if (symbolExclusionActive) {
+      const filteredTotal = coerceNumber(activeBalancesForDisplay?.totalEquity);
+      if (filteredTotal !== null) {
+        return filteredTotal;
+      }
+      return coerceNumber(activeBalancesForDisplay?.marketValue);
+    }
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
       return canonical;
     }
-    return coerceNumber(activeBalances?.totalEquity);
-  }, [balances, activeBalances]);
+    return coerceNumber(activeBalancesForDisplay?.totalEquity);
+  }, [symbolExclusionActive, activeBalancesForDisplay, balances]);
   const unbilledEarningsCad =
     earningsSummary && Number.isFinite(earningsSummary.unbilledCad)
       ? earningsSummary.unbilledCad
@@ -12202,18 +13064,79 @@ export default function App() {
       dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
       openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
       totalPnl:
-        fundingSummaryForDisplay && isFiniteNumber(fundingSummaryForDisplay.totalPnlCad)
-          ? fundingSummaryForDisplay.totalPnlCad
+        effectiveFundingSummaryForDisplay && isFiniteNumber(effectiveFundingSummaryForDisplay.totalPnlCad)
+          ? effectiveFundingSummaryForDisplay.totalPnlCad
           : hasBalanceTotal
             ? totalFromBalance
             : null,
     };
-  }, [activeCurrency, balancePnlSummaries, fallbackPnl, fundingSummaryForDisplay]);
+  }, [activeCurrency, balancePnlSummaries, fallbackPnl, effectiveFundingSummaryForDisplay]);
+
+  const activePnlForDisplay = useMemo(() => {
+    if (!symbolExclusionActive || !activeCurrency) {
+      return activePnl;
+    }
+    const targetCurrency = activeCurrency.currency || baseCurrency;
+    const excludedDayPnl = convertAmountToCurrency(
+      excludedPositionTotalsCad.dayPnl,
+      baseCurrency,
+      targetCurrency,
+      currencyRates,
+      baseCurrency
+    );
+    const excludedOpenPnl = convertAmountToCurrency(
+      excludedPositionTotalsCad.openPnl,
+      baseCurrency,
+      targetCurrency,
+      currencyRates,
+      baseCurrency
+    );
+
+    const dayPnl = Number.isFinite(activePnl?.dayPnl)
+      ? activePnl.dayPnl - excludedDayPnl
+      : convertAmountToCurrency(
+          includedPositionTotalsCad.dayPnl,
+          baseCurrency,
+          targetCurrency,
+          currencyRates,
+          baseCurrency
+        );
+    const openPnl = Number.isFinite(activePnl?.openPnl)
+      ? activePnl.openPnl - excludedOpenPnl
+      : convertAmountToCurrency(
+          includedPositionTotalsCad.openPnl,
+          baseCurrency,
+          targetCurrency,
+          currencyRates,
+          baseCurrency
+        );
+
+    const totalPnl = Number.isFinite(effectiveFundingSummaryForDisplay?.totalPnlCad)
+      ? effectiveFundingSummaryForDisplay.totalPnlCad
+      : activePnl?.totalPnl ?? null;
+
+    return {
+      dayPnl: Number.isFinite(dayPnl) ? dayPnl : 0,
+      openPnl: Number.isFinite(openPnl) ? openPnl : 0,
+      totalPnl: Number.isFinite(totalPnl) ? totalPnl : null,
+    };
+  }, [
+    symbolExclusionActive,
+    activeCurrency,
+    activePnl,
+    excludedPositionTotalsCad.dayPnl,
+    excludedPositionTotalsCad.openPnl,
+    includedPositionTotalsCad.dayPnl,
+    includedPositionTotalsCad.openPnl,
+    currencyRates,
+    baseCurrency,
+    effectiveFundingSummaryForDisplay,
+  ]);
 
   const heatmapMarketValue = useMemo(() => {
-    if (activeBalances && typeof activeBalances === 'object') {
-      const balanceTotalEquity = coerceNumber(activeBalances.totalEquity);
-      const balanceMarketValue = coerceNumber(activeBalances.marketValue);
+    if (activeBalancesForDisplay && typeof activeBalancesForDisplay === 'object') {
+      const balanceTotalEquity = coerceNumber(activeBalancesForDisplay.totalEquity);
+      const balanceMarketValue = coerceNumber(activeBalancesForDisplay.marketValue);
       const resolvedBalanceValue =
         balanceTotalEquity !== null ? balanceTotalEquity : balanceMarketValue !== null ? balanceMarketValue : null;
 
@@ -12227,7 +13150,7 @@ export default function App() {
     }
     return totalMarketValue;
   }, [
-    activeBalances,
+    activeBalancesForDisplay,
     activeCurrency,
     currencyRates,
     baseCurrency,
@@ -15737,10 +16660,10 @@ export default function App() {
       accountGroups,
       groupRelations,
       accountFunding,
-      balances: activeBalances,
+      balances: activeBalancesForDisplay,
       displayTotalEquity,
       usdToCadRate,
-      pnl: activePnl,
+      pnl: activePnlForDisplay,
       positions: orderedPositions,
       allPositions: rawPositions,
       symbolTotalPnlByAccountMap: symbolTotalPnlByAccountMapForPositions,
@@ -15757,10 +16680,10 @@ export default function App() {
     accountGroups,
     groupRelations,
     accountFunding,
-    activeBalances,
+    activeBalancesForDisplay,
     displayTotalEquity,
     usdToCadRate,
-    activePnl,
+    activePnlForDisplay,
     orderedPositions,
     rawPositions,
     symbolTotalPnlByAccountMapForPositions,
@@ -16729,9 +17652,9 @@ export default function App() {
             currencyOption={activeCurrency}
             currencyOptions={currencyOptions}
             onCurrencyChange={setCurrencyView}
-            balances={focusedSymbol ? { totalEquity: symbolFilteredPositions.total, marketValue: symbolFilteredPositions.total, cash: null } : activeBalances}
+            balances={focusedSymbol ? { totalEquity: symbolFilteredPositions.total, marketValue: symbolFilteredPositions.total, cash: null } : activeBalancesForDisplay}
             deploymentSummary={focusedSymbol ? null : activeDeploymentSummary}
-            pnl={focusedSymbol ? { dayPnl: focusedSymbolPnl?.dayPnl ?? 0, openPnl: focusedSymbolPnl?.openPnl ?? 0, totalPnl: focusedSymbolPnl?.totalPnl ?? null } : activePnl}
+            pnl={focusedSymbol ? { dayPnl: focusedSymbolPnl?.dayPnl ?? 0, openPnl: focusedSymbolPnl?.openPnl ?? 0, totalPnl: focusedSymbolPnl?.totalPnl ?? null } : activePnlForDisplay}
             fundingSummary={focusedSymbol ? (function buildSymbolFunding(){
               if (focusedSymbolFundingSummary) {
                 return focusedSymbolFundingSummary;
@@ -16782,7 +17705,7 @@ export default function App() {
                 periodStartDate: startKey,
                 periodEndDate: asOf,
               };
-            })() : fundingSummaryForDisplay}
+            })() : effectiveFundingSummaryForDisplay}
             asOf={asOf}
             onRefresh={handleRefresh}
             displayTotalEquity={focusedSymbol ? symbolFilteredPositions.total : displayTotalEquity}
@@ -16831,9 +17754,9 @@ export default function App() {
             totalPnlRangeOptions={focusedSymbol ? [] : totalPnlRangeOptions}
             selectedTotalPnlRange={focusedSymbol ? null : totalPnlRange}
             onTotalPnlRangeChange={focusedSymbol ? null : handleTotalPnlRangeChange}
-            totalPnlSeries={focusedSymbol ? selectedSymbolTotalPnlSeriesForChart : selectedAccountTotalPnlSeries}
-            totalPnlSeriesStatus={focusedSymbol ? selectedSymbolTotalPnlSeriesStatus : selectedTotalPnlSeriesStatus}
-            totalPnlSeriesError={focusedSymbol ? selectedSymbolTotalPnlSeriesError : selectedTotalPnlSeriesError}
+            totalPnlSeries={focusedSymbol ? selectedSymbolTotalPnlSeriesForChart : filteredSelectedAccountTotalPnlSeries}
+            totalPnlSeriesStatus={focusedSymbol ? selectedSymbolTotalPnlSeriesStatus : filteredSelectedTotalPnlSeriesStatus}
+            totalPnlSeriesError={focusedSymbol ? selectedSymbolTotalPnlSeriesError : filteredSelectedTotalPnlSeriesError}
             symbolPriceSeries={
               focusedSymbol && normalizedFocusedPriceSymbol === symbolPriceSeriesState.symbol
                 ? symbolPriceSeriesState.data
@@ -16985,6 +17908,8 @@ export default function App() {
                 onShowOrders={handleShowSymbolOrders}
                 onBuySell={handleBuySellPosition}
                 onFocusSymbol={handleSearchSelectSymbol}
+                onToggleSymbolInclude={handleTogglePositionInclude}
+                excludedSymbolKeys={excludedPositionSymbolKeys}
                 onGoToAccount={focusedSymbol ? handleGoToAccountFromSymbol : null}
                 forceShowTargetColumn={forcedTargetForSelectedAccount}
                 showPortfolioShare={!focusedSymbol}

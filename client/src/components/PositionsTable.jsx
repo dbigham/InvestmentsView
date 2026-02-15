@@ -331,6 +331,8 @@ function PositionsTable({
   onShowOrders = null,
   onBuySell = null,
   onFocusSymbol = null,
+  onToggleSymbolInclude = null,
+  excludedSymbolKeys = null,
   onGoToAccount = null,
   forceShowTargetColumn = false,
   showPortfolioShare = true,
@@ -375,6 +377,16 @@ function PositionsTable({
       setMarketValueModeRaw(normalizeMarketValueMode(nextMode));
     },
     [setMarketValueModeRaw]
+  );
+  const isPositionIncluded = useCallback(
+    (position) => {
+      const symbolKey = normalizeSymbolGroupKey(position?.symbol || '');
+      if (!symbolKey || !(excludedSymbolKeys instanceof Set)) {
+        return true;
+      }
+      return !excludedSymbolKeys.has(symbolKey);
+    },
+    [excludedSymbolKeys]
   );
 
   const closeContextMenu = useCallback(() => {
@@ -780,6 +792,15 @@ function PositionsTable({
     const account = resolveAccountForPosition(targetPosition, accountsById);
     onGoToAccount(targetPosition, account);
   }, [closeContextMenu, contextMenuState.position, onGoToAccount, accountsById]);
+
+  const handleToggleIncludeFromMenu = useCallback(() => {
+    const targetPosition = contextMenuState.position;
+    closeContextMenu();
+    if (!targetPosition || typeof onToggleSymbolInclude !== 'function') {
+      return;
+    }
+    onToggleSymbolInclude(targetPosition);
+  }, [closeContextMenu, contextMenuState.position, onToggleSymbolInclude]);
 
   const handleNotesIndicatorClick = useCallback(
     (event, targetPosition) => {
@@ -1296,11 +1317,15 @@ function PositionsTable({
             )
           );
           const annualizedTone = classifyPnL(Number.isFinite(annualizedRate) ? annualizedRate : 0);
+          const rowClassNames = ['positions-table__row', 'positions-table__row--clickable'];
+          if (!isPositionIncluded(position)) {
+            rowClassNames.push('positions-table__row--excluded');
+          }
 
           return (
             <div
               key={rowKey}
-              className="positions-table__row positions-table__row--clickable"
+              className={rowClassNames.join(' ')}
               role="row"
               onClick={(event) => handleRowNavigation(event, position.symbol)}
               onContextMenu={(event) => handleRowContextMenu(event, position)}
@@ -1433,6 +1458,22 @@ function PositionsTable({
       style={{ top: `${contextMenuState.y}px`, left: `${contextMenuState.x}px` }}
     >
       <ul className="positions-table__context-menu-list" role="menu">
+        <li role="none">
+          <button
+            type="button"
+            className="positions-table__context-menu-item positions-table__context-menu-item--choice"
+            role="menuitemcheckbox"
+            aria-checked={isPositionIncluded(contextMenuState.position)}
+            onClick={handleToggleIncludeFromMenu}
+            disabled={typeof onToggleSymbolInclude !== 'function'}
+          >
+            <span
+              className={`positions-table__context-menu-check${isPositionIncluded(contextMenuState.position) ? ' positions-table__context-menu-check--active' : ''}`}
+              aria-hidden="true"
+            />
+            <span>Include</span>
+          </button>
+        </li>
         {!hideDetailsOption ? (
           <li role="none">
             <button
@@ -1660,6 +1701,8 @@ PositionsTable.propTypes = {
   onShowOrders: PropTypes.func,
   onBuySell: PropTypes.func,
   onFocusSymbol: PropTypes.func,
+  onToggleSymbolInclude: PropTypes.func,
+  excludedSymbolKeys: PropTypes.instanceOf(Set),
   onGoToAccount: PropTypes.func,
   forceShowTargetColumn: PropTypes.bool,
   showPortfolioShare: PropTypes.bool,
@@ -1690,6 +1733,8 @@ PositionsTable.defaultProps = {
   onShowOrders: null,
   onBuySell: null,
   onFocusSymbol: null,
+  onToggleSymbolInclude: null,
+  excludedSymbolKeys: null,
   onGoToAccount: null,
   forceShowTargetColumn: false,
   showPortfolioShare: true,

@@ -238,6 +238,24 @@ const CLIENT_BUILD_DIR = (() => {
 const DEBUG_QUESTRADE_API = parseBooleanEnv(process.env.DEBUG_QUESTRADE_API, false);
 const DEBUG_API_REQUESTS = parseBooleanEnv(process.env.DEBUG_API_REQUESTS, false);
 const DEBUG_QUESTRADE_REFRESH = parseBooleanEnv(process.env.DEBUG_QUESTRADE_REFRESH, false);
+const ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT = parseBooleanEnv(
+  process.env.ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT,
+  true
+);
+const DEBUG_QUESTRADE_TOKEN_FLOW = parseBooleanEnv(process.env.DEBUG_QUESTRADE_TOKEN_FLOW, true);
+const DEBUG_QUESTRADE_TOKEN_FLOW_VERBOSE = parseBooleanEnv(
+  process.env.DEBUG_QUESTRADE_TOKEN_FLOW_VERBOSE,
+  false
+);
+const DEBUG_QUESTRADE_TOKEN_FLOW_STDOUT = parseBooleanEnv(
+  process.env.DEBUG_QUESTRADE_TOKEN_FLOW_STDOUT,
+  false
+);
+const QUESTRADE_TOKEN_DEBUG_LOG_PATH = resolveDataPath('.cache', 'questrade-token-debug.jsonl');
+const QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES = (() => {
+  const value = Number(process.env.QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 10 * 1024 * 1024;
+})();
 // Shorter HTTP timeouts so requests fail fast instead of hanging for minutes.
 // Adjustable via env if needed.
 const HTTP_HEADERS_TIMEOUT_MS = (() => {
@@ -466,6 +484,9 @@ function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
     if (SYMBOL_GROUPS_VERSION) {
       parts.push(`symver:${SYMBOL_GROUPS_VERSION}`);
     }
+    if (params.includeSyntheticPositions === true) {
+      parts.push('synpos:1');
+    }
   }
   const rk = params && params.refreshKey !== undefined && params.refreshKey !== null ? String(params.refreshKey) : '';
   if (rk) {
@@ -555,7 +576,8 @@ async function computeAggregateTotalPnlSeriesForContexts(
         // baseline holdings from appearing before real activity (aggregate views were
         // showing pre-activity spikes). For account-level series we still reuse
         // cached positions to save provider calls.
-        if (!options.symbol) {
+        const shouldInjectProvidedPositions = !options.symbol || options.includeSyntheticPositions === true;
+        if (shouldInjectProvidedPositions) {
           try {
             const positionsMap = options && options.positionsByAccountId ? options.positionsByAccountId : null;
             if (positionsMap) {
@@ -2718,6 +2740,198 @@ function maskTokenForLog(token) {
     return token;
   }
   return token.slice(0, 4) + '…' + token.slice(-4);
+}
+
+const TOKEN_DEBUG_SENSITIVE_KEY_PARTS = ['token', 'authorization', 'cookie', 'secret', 'password'];
+const TOKEN_DEBUG_MAX_STRING_LENGTH = 800;
+const TOKEN_DEBUG_MAX_SERIALIZED_LENGTH = 8_000;
+const tokenDebugSessionId = (() => {
+  try {
+    return crypto.randomBytes(8).toString('hex');
+  } catch (_) {
+    return 'session-fallback';
+  }
+})();
+let tokenDebugSequence = 0;
+let tokenDebugWriteFailed = false;
+const activeRefreshCountByLoginId = new Map();
+const inFlightRefreshByLoginId = new Map();
+
+function createQuestradeDebugId(prefix = 'debug') {
+  let suffix = null;
+  if (typeof crypto.randomUUID === 'function') {
+    suffix = crypto.randomUUID();
+  } else {
+    try {
+      suffix = crypto.randomBytes(12).toString('hex');
+    } catch (_) {
+      suffix = String(Date.now());
+    }
+  }
+  return `${prefix}-${suffix}`;
+}
+
+function incrementActiveRefreshCount(loginId) {
+  const key = loginId || 'unknown-login';
+  const next = (activeRefreshCountByLoginId.get(key) || 0) + 1;
+  activeRefreshCountByLoginId.set(key, next);
+  return next;
+}
+
+function decrementActiveRefreshCount(loginId) {
+  const key = loginId || 'unknown-login';
+  const current = activeRefreshCountByLoginId.get(key) || 0;
+  const next = Math.max(0, current - 1);
+  if (next === 0) {
+    activeRefreshCountByLoginId.delete(key);
+  } else {
+    activeRefreshCountByLoginId.set(key, next);
+  }
+  return next;
+}
+
+function getRefreshSingleFlightKey(login) {
+  if (!login || !login.id) {
+    return 'unknown-login';
+  }
+  return String(login.id);
+}
+
+function clipTokenDebugString(value, maxLength = TOKEN_DEBUG_MAX_STRING_LENGTH) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return value.slice(0, maxLength) + `...[truncated ${value.length - maxLength} chars]`;
+}
+
+function fingerprintTokenForDebug(token) {
+  if (!token || typeof token !== 'string') {
+    return null;
+  }
+  try {
+    return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+  } catch (_) {
+    return 'fingerprint-error';
+  }
+}
+
+function sanitizeTokenDebugUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = new URL(rawUrl);
+    ['access_token', 'refresh_token', 'token', 'code', 'api_key', 'apikey'].forEach((key) => {
+      if (parsed.searchParams.has(key)) {
+        parsed.searchParams.set(key, '<redacted>');
+      }
+    });
+    return parsed.toString();
+  } catch (_) {
+    return clipTokenDebugString(rawUrl);
+  }
+}
+
+function sanitizeTokenDebugValue(value) {
+  if (value === undefined) {
+    return null;
+  }
+  const replacer = (key, rawValue) => {
+    if (typeof key === 'string' && key) {
+      const loweredKey = key.toLowerCase();
+      if (TOKEN_DEBUG_SENSITIVE_KEY_PARTS.some((part) => loweredKey.includes(part))) {
+        if (loweredKey.includes('fingerprint')) {
+          return rawValue;
+        }
+        return '<redacted>';
+      }
+    }
+    if (typeof rawValue === 'string') {
+      return clipTokenDebugString(
+        rawValue.replace(/(refresh_token=)([^&]+)/gi, '$1<redacted>')
+      );
+    }
+    return rawValue;
+  };
+
+  try {
+    const serialized = JSON.stringify(value, replacer);
+    if (!serialized) {
+      return null;
+    }
+    if (serialized.length > TOKEN_DEBUG_MAX_SERIALIZED_LENGTH) {
+      return {
+        truncated: true,
+        preview: serialized.slice(0, TOKEN_DEBUG_MAX_SERIALIZED_LENGTH),
+      };
+    }
+    return JSON.parse(serialized);
+  } catch (_) {
+    return clipTokenDebugString(String(value));
+  }
+}
+
+function buildLoginTokenDebugSnapshot(login) {
+  if (!login || typeof login !== 'object') {
+    return null;
+  }
+  return {
+    id: login.id || null,
+    label: resolveLoginDisplay(login) || null,
+    refreshTokenFingerprint: fingerprintTokenForDebug(login.refreshToken),
+    updatedAt: login.updatedAt || null,
+  };
+}
+
+function rotateQuestradeTokenDebugLogIfNeeded() {
+  if (!QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES || QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES <= 0) {
+    return;
+  }
+  try {
+    const stats = fs.statSync(QUESTRADE_TOKEN_DEBUG_LOG_PATH);
+    if (!stats || !Number.isFinite(stats.size) || stats.size < QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES) {
+      return;
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rotatedPath = `${QUESTRADE_TOKEN_DEBUG_LOG_PATH}.${timestamp}.bak`;
+    fs.renameSync(QUESTRADE_TOKEN_DEBUG_LOG_PATH, rotatedPath);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+}
+
+function logQuestradeTokenDebug(event, details = {}) {
+  if (!DEBUG_QUESTRADE_TOKEN_FLOW || tokenDebugWriteFailed) {
+    return;
+  }
+  const entry = {
+    timestamp: new Date().toISOString(),
+    sessionId: tokenDebugSessionId,
+    pid: process.pid,
+    seq: ++tokenDebugSequence,
+    event,
+    details: sanitizeTokenDebugValue(details),
+  };
+  try {
+    ensureDirForFile(QUESTRADE_TOKEN_DEBUG_LOG_PATH);
+    rotateQuestradeTokenDebugLogIfNeeded();
+    fs.appendFileSync(QUESTRADE_TOKEN_DEBUG_LOG_PATH, JSON.stringify(entry) + '\n', 'utf-8');
+    if (DEBUG_QUESTRADE_TOKEN_FLOW_STDOUT) {
+      console.log('[Questrade][token-debug]', entry);
+    }
+  } catch (error) {
+    tokenDebugWriteFailed = true;
+    console.warn('[Questrade][token-debug] Failed to write debug log; disabling token-flow logging.', {
+      message: error && error.message ? error.message : String(error),
+      path: QUESTRADE_TOKEN_DEBUG_LOG_PATH,
+    });
+  }
 }
 
 function summarizeCookieHeader(cookieHeader) {
@@ -5758,6 +5972,23 @@ allLogins.forEach((login) => {
 if (!allLogins.length) {
   console.warn('Missing Questrade refresh token(s). Seed token-store.json with at least one login.');
 }
+if (DEBUG_QUESTRADE_TOKEN_FLOW) {
+  console.log(
+    '[Questrade][token-debug] Token flow logging enabled at',
+    QUESTRADE_TOKEN_DEBUG_LOG_PATH
+  );
+}
+console.log(
+  '[Questrade][refresh-guard] Single-flight refresh guard',
+  ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT ? 'enabled' : 'disabled'
+);
+logQuestradeTokenDebug('token-debug.startup', {
+  logPath: QUESTRADE_TOKEN_DEBUG_LOG_PATH,
+  maxBytes: QUESTRADE_TOKEN_DEBUG_LOG_MAX_BYTES,
+  verbose: DEBUG_QUESTRADE_TOKEN_FLOW_VERBOSE,
+  refreshSingleFlightEnabled: ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT,
+  logins: allLogins.map((login) => buildLoginTokenDebugSnapshot(login)),
+});
 
 function sanitizeLoginForClient(login) {
   if (!login || typeof login !== 'object') {
@@ -6507,10 +6738,17 @@ function getTokenCacheKey(loginId) {
   return 'tokenContext:' + loginId;
 }
 
-function updateLoginRefreshToken(login, nextRefreshToken) {
+function updateLoginRefreshToken(login, nextRefreshToken, context = {}) {
   if (!login || !nextRefreshToken || nextRefreshToken === login.refreshToken) {
     return;
   }
+  const previousRefreshToken = login.refreshToken;
+  logQuestradeTokenDebug('refresh-token.rotate', {
+    context,
+    login: buildLoginTokenDebugSnapshot(login),
+    previousRefreshTokenFingerprint: fingerprintTokenForDebug(previousRefreshToken),
+    nextRefreshTokenFingerprint: fingerprintTokenForDebug(nextRefreshToken),
+  });
   console.log(
     '[Questrade][refresh] Persisting new refresh token for login',
     resolveLoginDisplay(login),
@@ -6519,6 +6757,12 @@ function updateLoginRefreshToken(login, nextRefreshToken) {
   login.refreshToken = nextRefreshToken;
   login.updatedAt = new Date().toISOString();
   persistTokenStore(tokenStoreState);
+  logQuestradeTokenDebug('refresh-token.rotate.persisted', {
+    context,
+    login: buildLoginTokenDebugSnapshot(login),
+    previousRefreshTokenFingerprint: fingerprintTokenForDebug(previousRefreshToken),
+    nextRefreshTokenFingerprint: fingerprintTokenForDebug(nextRefreshToken),
+  });
 }
 
 function isInvalidRefreshTokenResponse(status, payload) {
@@ -6563,10 +6807,27 @@ function isInvalidRefreshTokenResponse(status, payload) {
   return true;
 }
 
-async function refreshAccessToken(login) {
+async function refreshAccessToken(login, context = {}) {
   if (!login || !login.refreshToken) {
+    logQuestradeTokenDebug('refresh.error.missing-refresh-token', {
+      context,
+      login: buildLoginTokenDebugSnapshot(login),
+    });
     throw new Error('Missing refresh token for Questrade login');
   }
+
+  const refreshOperationId =
+    typeof context.refreshOperationId === 'string' && context.refreshOperationId.trim()
+      ? context.refreshOperationId.trim()
+      : createQuestradeDebugId('refresh');
+  const requestId =
+    typeof context.requestId === 'string' && context.requestId.trim() ? context.requestId.trim() : null;
+  const trigger =
+    typeof context.trigger === 'string' && context.trigger.trim() ? context.trigger.trim() : 'unspecified';
+  const pathSegment =
+    typeof context.pathSegment === 'string' && context.pathSegment.trim() ? context.pathSegment.trim() : null;
+  const loginIdForRefresh = login && login.id ? String(login.id) : 'unknown-login';
+  const activeRefreshCount = incrementActiveRefreshCount(loginIdForRefresh);
 
   const tokenUrl = 'https://login.questrade.com/oauth2/token';
   const maxRedirects = 5;
@@ -6577,12 +6838,40 @@ async function refreshAccessToken(login) {
     'Accept-Encoding': 'gzip, compress, deflate, br',
   };
 
+  const refreshTokenToUse = login.refreshToken;
+  const refreshTokenToUseFingerprint = fingerprintTokenForDebug(refreshTokenToUse);
   const { dispatcher, proxyUri, shouldClose } = getDispatcherForUrl(tokenUrl);
-
-  if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh] Starting refresh for login', resolveLoginDisplay(login), {
-    token: maskTokenForLog(login.refreshToken),
-    proxy: proxyUri || false,
+  logQuestradeTokenDebug('refresh.start', {
+    refreshOperationId,
+    requestId,
+    trigger,
+    pathSegment,
+    activeRefreshCount,
+    login: buildLoginTokenDebugSnapshot(login),
+    refreshTokenToUseFingerprint,
+    proxy: proxyUri || null,
   });
+  if (activeRefreshCount > 1) {
+    logQuestradeTokenDebug('refresh.concurrent-detected', {
+      refreshOperationId,
+      requestId,
+      trigger,
+      pathSegment,
+      activeRefreshCount,
+      login: buildLoginTokenDebugSnapshot(login),
+      refreshTokenToUseFingerprint,
+    });
+  }
+
+  if (DEBUG_QUESTRADE_REFRESH) {
+    console.log('[Questrade][refresh] Starting refresh for login', resolveLoginDisplay(login), {
+      token: maskTokenForLog(refreshTokenToUse),
+      proxy: proxyUri || false,
+      refreshOperationId,
+      requestId,
+      trigger,
+    });
+  }
 
   let responsePayload = null;
   let currentUrl = tokenUrl;
@@ -6593,7 +6882,7 @@ async function refreshAccessToken(login) {
       const requestUrlObj = new URL(currentUrl);
       if (includeParams) {
         requestUrlObj.searchParams.set('grant_type', 'refresh_token');
-        requestUrlObj.searchParams.set('refresh_token', login.refreshToken);
+        requestUrlObj.searchParams.set('refresh_token', refreshTokenToUse);
       }
       const requestUrl = requestUrlObj.toString();
       const headers = { ...baseHeaders };
@@ -6602,10 +6891,21 @@ async function refreshAccessToken(login) {
         headers.Cookie = cookieHeader;
       }
 
-      if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh]', {
-        step: 'request',
+      if (DEBUG_QUESTRADE_REFRESH) {
+        console.log('[Questrade][refresh]', {
+          step: 'request',
+          attempt: attempt + 1,
+          url: requestUrl,
+          cookies: summarizeCookieHeader(headers.Cookie),
+          refreshOperationId,
+        });
+      }
+      logQuestradeTokenDebug('refresh.http.request', {
+        refreshOperationId,
+        requestId,
+        trigger,
         attempt: attempt + 1,
-        url: requestUrl,
+        url: sanitizeTokenDebugUrl(requestUrl),
         cookies: summarizeCookieHeader(headers.Cookie),
       });
 
@@ -6620,11 +6920,22 @@ async function refreshAccessToken(login) {
           bodyTimeout: HTTP_BODY_TIMEOUT_MS,
         });
       } catch (error) {
-        if (DEBUG_QUESTRADE_REFRESH) console.error('[Questrade][refresh] Network error during refresh', {
-          login: resolveLoginDisplay(login),
+        logQuestradeTokenDebug('refresh.http.network-error', {
+          refreshOperationId,
+          requestId,
+          trigger,
           attempt: attempt + 1,
-          message: error.message,
+          message: error && error.message ? error.message : String(error),
+          code: error && error.code ? error.code : null,
         });
+        if (DEBUG_QUESTRADE_REFRESH) {
+          console.error('[Questrade][refresh] Network error during refresh', {
+            login: resolveLoginDisplay(login),
+            attempt: attempt + 1,
+            message: error.message,
+            refreshOperationId,
+          });
+        }
         throw error;
       }
 
@@ -6641,9 +6952,12 @@ async function refreshAccessToken(login) {
         try {
           data = JSON.parse(decodedBody || '{}');
         } catch (parseError) {
-          if (DEBUG_QUESTRADE_REFRESH) console.warn('[Questrade][refresh] Failed to parse JSON response', {
-            message: parseError.message,
-          });
+          if (DEBUG_QUESTRADE_REFRESH) {
+            console.warn('[Questrade][refresh] Failed to parse JSON response', {
+              message: parseError.message,
+              refreshOperationId,
+            });
+          }
         }
       }
 
@@ -6651,11 +6965,23 @@ async function refreshAccessToken(login) {
       const setCookieHeader = headersObject['set-cookie'];
       const inboundCookieNames = summarizeCookieHeader(setCookieHeader);
 
-      if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh]', {
-        step: 'response',
+      if (DEBUG_QUESTRADE_REFRESH) {
+        console.log('[Questrade][refresh]', {
+          step: 'response',
+          attempt: attempt + 1,
+          status,
+          location: headersObject.location || null,
+          setCookies: inboundCookieNames,
+          refreshOperationId,
+        });
+      }
+      logQuestradeTokenDebug('refresh.http.response', {
+        refreshOperationId,
+        requestId,
+        trigger,
         attempt: attempt + 1,
         status,
-        location: headersObject.location || null,
+        location: sanitizeTokenDebugUrl(headersObject.location || null),
         setCookies: inboundCookieNames,
       });
 
@@ -6663,18 +6989,31 @@ async function refreshAccessToken(login) {
         try {
           await jar.setCookie(cookie, requestUrl);
         } catch (cookieError) {
-          if (DEBUG_QUESTRADE_REFRESH) console.warn('[Questrade][refresh] Failed to persist response cookie', {
-            message: cookieError.message,
-          });
+          if (DEBUG_QUESTRADE_REFRESH) {
+            console.warn('[Questrade][refresh] Failed to persist response cookie', {
+              message: cookieError.message,
+              refreshOperationId,
+            });
+          }
         }
       }
 
       if (status >= 300 && status < 400 && headersObject.location) {
         const nextUrl = new URL(headersObject.location, requestUrl).toString();
-        if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh]', {
-          step: 'redirect',
+        if (DEBUG_QUESTRADE_REFRESH) {
+          console.log('[Questrade][refresh]', {
+            step: 'redirect',
+            attempt: attempt + 1,
+            nextUrl,
+            refreshOperationId,
+          });
+        }
+        logQuestradeTokenDebug('refresh.http.redirect', {
+          refreshOperationId,
+          requestId,
+          trigger,
           attempt: attempt + 1,
-          nextUrl,
+          nextUrl: sanitizeTokenDebugUrl(nextUrl),
         });
         currentUrl = nextUrl;
         includeParams = false;
@@ -6693,16 +7032,53 @@ async function refreshAccessToken(login) {
       try {
         await dispatcher.close();
       } catch (closeError) {
-        if (DEBUG_QUESTRADE_REFRESH) console.warn('[Questrade][refresh] Failed to close dispatcher', { message: closeError.message });
+        if (DEBUG_QUESTRADE_REFRESH) {
+          console.warn('[Questrade][refresh] Failed to close dispatcher', {
+            message: closeError.message,
+            refreshOperationId,
+          });
+        }
       }
     }
+    const remainingActiveRefreshCount = decrementActiveRefreshCount(loginIdForRefresh);
+    logQuestradeTokenDebug('refresh.finish', {
+      refreshOperationId,
+      requestId,
+      trigger,
+      pathSegment,
+      login: buildLoginTokenDebugSnapshot(login),
+      remainingActiveRefreshCount,
+    });
   }
 
   if (!responsePayload || responsePayload.status < 200 || responsePayload.status >= 300) {
     const status = responsePayload ? responsePayload.status : 'NO_RESPONSE';
     const payload = responsePayload ? responsePayload.data : null;
+    const refreshTokenChangedDuringRequest = login.refreshToken !== refreshTokenToUse;
+    logQuestradeTokenDebug('refresh.failed', {
+      refreshOperationId,
+      requestId,
+      trigger,
+      status,
+      payload: sanitizeTokenDebugValue(payload),
+      login: buildLoginTokenDebugSnapshot(login),
+      refreshTokenToUseFingerprint,
+      loginRefreshTokenFingerprintAtFailure: fingerprintTokenForDebug(login.refreshToken),
+      refreshTokenChangedDuringRequest,
+    });
     console.error('Failed to refresh Questrade token for login ' + resolveLoginDisplay(login), status, payload);
     if (isInvalidRefreshTokenResponse(status, payload)) {
+      logQuestradeTokenDebug('refresh.failed.invalid-token', {
+        refreshOperationId,
+        requestId,
+        trigger,
+        status,
+        payload: sanitizeTokenDebugValue(payload),
+        login: buildLoginTokenDebugSnapshot(login),
+        refreshTokenToUseFingerprint,
+        loginRefreshTokenFingerprintAtFailure: fingerprintTokenForDebug(login.refreshToken),
+        refreshTokenChangedDuringRequest,
+      });
       const error = new Error(
         'Questrade refresh token is no longer valid for login ' + resolveLoginDisplay(login)
       );
@@ -6724,22 +7100,207 @@ async function refreshAccessToken(login) {
     loginId: login.id,
   };
   tokenCache.set(getTokenCacheKey(login.id), tokenContext, cacheTtl);
+  logQuestradeTokenDebug('token-cache.set', {
+    refreshOperationId,
+    requestId,
+    trigger,
+    login: buildLoginTokenDebugSnapshot(login),
+    cacheKey: getTokenCacheKey(login.id),
+    cacheTtlSeconds: cacheTtl,
+    accessTokenFingerprint: fingerprintTokenForDebug(tokenData.access_token),
+    apiServer: tokenData.api_server || null,
+    expiresIn: tokenData.expires_in || null,
+  });
 
-  const refreshRotated = Boolean(tokenData.refresh_token && tokenData.refresh_token !== login.refreshToken);
+  const refreshRotated = Boolean(tokenData.refresh_token && tokenData.refresh_token !== refreshTokenToUse);
   if (refreshRotated) {
-    updateLoginRefreshToken(login, tokenData.refresh_token);
+    updateLoginRefreshToken(login, tokenData.refresh_token, {
+      ...context,
+      refreshOperationId,
+      requestId,
+      trigger,
+      pathSegment,
+      reason: 'refresh-response',
+      refreshTokenToUseFingerprint,
+      returnedRefreshTokenFingerprint: fingerprintTokenForDebug(tokenData.refresh_token),
+    });
   }
 
-  if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][refresh] Completed refresh for login', resolveLoginDisplay(login), {
-    expiresIn: tokenData.expires_in,
-    apiServer: tokenData.api_server,
-    refreshTokenRotated: refreshRotated ? maskTokenForLog(tokenData.refresh_token) : false,
+  logQuestradeTokenDebug('refresh.success', {
+    refreshOperationId,
+    requestId,
+    trigger,
+    pathSegment,
+    login: buildLoginTokenDebugSnapshot(login),
+    refreshTokenToUseFingerprint,
+    returnedRefreshTokenFingerprint: fingerprintTokenForDebug(tokenData.refresh_token),
+    accessTokenFingerprint: fingerprintTokenForDebug(tokenData.access_token),
+    expiresIn: tokenData.expires_in || null,
+    apiServer: tokenData.api_server || null,
+    refreshRotated,
   });
+
+  if (DEBUG_QUESTRADE_REFRESH) {
+    console.log('[Questrade][refresh] Completed refresh for login', resolveLoginDisplay(login), {
+      expiresIn: tokenData.expires_in,
+      apiServer: tokenData.api_server,
+      refreshTokenRotated: refreshRotated ? maskTokenForLog(tokenData.refresh_token) : false,
+      refreshOperationId,
+      requestId,
+      trigger,
+    });
+  }
 
   return tokenContext;
 }
 
-async function getTokenContext(login) {
+async function refreshAccessTokenSingleFlight(login, context = {}) {
+  const requestId =
+    typeof context.requestId === 'string' && context.requestId.trim() ? context.requestId.trim() : null;
+  const trigger =
+    typeof context.trigger === 'string' && context.trigger.trim() ? context.trigger.trim() : 'unspecified';
+  const pathSegment =
+    typeof context.pathSegment === 'string' && context.pathSegment.trim() ? context.pathSegment.trim() : null;
+
+  if (!ENABLE_QUESTRADE_REFRESH_SINGLE_FLIGHT || context.disableSingleFlight === true) {
+    if (DEBUG_QUESTRADE_TOKEN_FLOW_VERBOSE) {
+      logQuestradeTokenDebug('refresh.single-flight.disabled', {
+        requestId,
+        trigger,
+        pathSegment,
+        reason: context.disableSingleFlight === true ? 'context' : 'env',
+        login: buildLoginTokenDebugSnapshot(login),
+      });
+    }
+    return refreshAccessToken(login, context);
+  }
+
+  const singleFlightKey = getRefreshSingleFlightKey(login);
+  const existing = inFlightRefreshByLoginId.get(singleFlightKey);
+  if (existing && existing.promise) {
+    existing.joinCount += 1;
+    logQuestradeTokenDebug('refresh.single-flight.join', {
+      requestId,
+      trigger,
+      pathSegment,
+      singleFlightKey,
+      singleFlightId: existing.singleFlightId,
+      ownerRequestId: existing.ownerRequestId,
+      ownerTrigger: existing.ownerTrigger,
+      joinCount: existing.joinCount,
+      ageMs: Math.max(0, Date.now() - existing.startedAt),
+      login: buildLoginTokenDebugSnapshot(login),
+      refreshTokenFingerprintAtJoin: fingerprintTokenForDebug(login && login.refreshToken),
+      refreshTokenFingerprintAtOwnerStart: existing.refreshTokenFingerprintAtStart,
+    });
+    try {
+      return await existing.promise;
+    } catch (error) {
+      logQuestradeTokenDebug('refresh.single-flight.join.failed', {
+        requestId,
+        trigger,
+        pathSegment,
+        singleFlightKey,
+        singleFlightId: existing.singleFlightId,
+        ownerRequestId: existing.ownerRequestId,
+        ownerTrigger: existing.ownerTrigger,
+        login: buildLoginTokenDebugSnapshot(login),
+        message: error && error.message ? error.message : String(error),
+        code: error && error.code ? error.code : null,
+        status: error && error.status ? error.status : null,
+      });
+      throw error;
+    }
+  }
+
+  const singleFlightId = createQuestradeDebugId('refresh-sf');
+  const singleFlightState = {
+    singleFlightId,
+    startedAt: Date.now(),
+    ownerRequestId: requestId,
+    ownerTrigger: trigger,
+    joinCount: 0,
+    refreshTokenFingerprintAtStart: fingerprintTokenForDebug(login && login.refreshToken),
+    promise: null,
+  };
+
+  const ownerContext = {
+    ...context,
+    singleFlightId,
+    singleFlightRole: 'owner',
+  };
+  const ownerPromise = (async () => {
+    logQuestradeTokenDebug('refresh.single-flight.owner-start', {
+      requestId,
+      trigger,
+      pathSegment,
+      singleFlightKey,
+      singleFlightId,
+      login: buildLoginTokenDebugSnapshot(login),
+      refreshTokenFingerprintAtStart: singleFlightState.refreshTokenFingerprintAtStart,
+    });
+    try {
+      const result = await refreshAccessToken(login, ownerContext);
+      logQuestradeTokenDebug('refresh.single-flight.owner-success', {
+        requestId,
+        trigger,
+        pathSegment,
+        singleFlightKey,
+        singleFlightId,
+        joinCount: singleFlightState.joinCount,
+        durationMs: Math.max(0, Date.now() - singleFlightState.startedAt),
+        login: buildLoginTokenDebugSnapshot(login),
+      });
+      return result;
+    } catch (error) {
+      logQuestradeTokenDebug('refresh.single-flight.owner-failed', {
+        requestId,
+        trigger,
+        pathSegment,
+        singleFlightKey,
+        singleFlightId,
+        joinCount: singleFlightState.joinCount,
+        durationMs: Math.max(0, Date.now() - singleFlightState.startedAt),
+        login: buildLoginTokenDebugSnapshot(login),
+        message: error && error.message ? error.message : String(error),
+        code: error && error.code ? error.code : null,
+        status: error && error.status ? error.status : null,
+      });
+      throw error;
+    }
+  })();
+
+  singleFlightState.promise = ownerPromise;
+  inFlightRefreshByLoginId.set(singleFlightKey, singleFlightState);
+
+  try {
+    return await ownerPromise;
+  } finally {
+    const current = inFlightRefreshByLoginId.get(singleFlightKey);
+    if (current && current.promise === ownerPromise) {
+      inFlightRefreshByLoginId.delete(singleFlightKey);
+    }
+    logQuestradeTokenDebug('refresh.single-flight.released', {
+      requestId,
+      trigger,
+      pathSegment,
+      singleFlightKey,
+      singleFlightId,
+      joinCount: singleFlightState.joinCount,
+      durationMs: Math.max(0, Date.now() - singleFlightState.startedAt),
+      remainingInFlightForLogin: inFlightRefreshByLoginId.has(singleFlightKey),
+      login: buildLoginTokenDebugSnapshot(login),
+    });
+  }
+}
+
+async function getTokenContext(login, context = {}) {
+  const requestId =
+    typeof context.requestId === 'string' && context.requestId.trim() ? context.requestId.trim() : null;
+  const trigger =
+    typeof context.trigger === 'string' && context.trigger.trim() ? context.trigger.trim() : 'unspecified';
+  const pathSegment =
+    typeof context.pathSegment === 'string' && context.pathSegment.trim() ? context.pathSegment.trim() : null;
   const cacheKey = getTokenCacheKey(login.id);
   const cached = tokenCache.get(cacheKey);
   if (cached) {
@@ -6750,12 +7311,36 @@ async function getTokenContext(login) {
         apiServer: cached.apiServer,
       });
     }
+    if (DEBUG_QUESTRADE_TOKEN_FLOW_VERBOSE) {
+      logQuestradeTokenDebug('token-cache.hit', {
+        requestId,
+        trigger,
+        pathSegment,
+        cacheKey,
+        login: buildLoginTokenDebugSnapshot(login),
+        acquiredAt: cached.acquiredAt || null,
+        expiresIn: cached.expiresIn || null,
+        accessTokenFingerprint: fingerprintTokenForDebug(cached.accessToken),
+      });
+    }
     return cached;
   }
   if (DEBUG_QUESTRADE_API) {
     if (DEBUG_QUESTRADE_REFRESH) console.log('[Questrade][token-cache] Cache miss for login', resolveLoginDisplay(login));
   }
-  return refreshAccessToken(login);
+  logQuestradeTokenDebug('token-cache.miss', {
+    requestId,
+    trigger,
+    pathSegment,
+    cacheKey,
+    login: buildLoginTokenDebugSnapshot(login),
+  });
+  return refreshAccessTokenSingleFlight(login, {
+    ...context,
+    requestId,
+    trigger: trigger === 'unspecified' ? 'token-cache-miss' : trigger,
+    pathSegment,
+  });
 }
 
 function isRetryableStatus(status) {
@@ -6985,8 +7570,14 @@ async function questradeRequest(login, pathSegment, options = {}) {
   }
   const { method = 'GET', params, data, headers = {}, maxAttempts } = options;
   const attemptsLimit = Math.max(1, Number.isFinite(maxAttempts) ? maxAttempts : QUESTRADE_API_MAX_ATTEMPTS);
+  const requestId = createQuestradeDebugId('qt-api');
 
-  let tokenContext = await getTokenContext(login);
+  let tokenContext = await getTokenContext(login, {
+    requestId,
+    trigger: 'api-request',
+    pathSegment,
+    method,
+  });
   let attempt = 0;
   let lastError = null;
 
@@ -7008,6 +7599,15 @@ async function questradeRequest(login, pathSegment, options = {}) {
 
     try {
       const response = await enqueueRequest(() => performUndiciApiRequest(requestConfig));
+      if (attempt > 1) {
+        logQuestradeTokenDebug('api.request.recovered', {
+          requestId,
+          login: buildLoginTokenDebugSnapshot(login),
+          method,
+          pathSegment,
+          attempt,
+        });
+      }
       return response.data;
     } catch (error) {
       lastError = error;
@@ -7022,13 +7622,36 @@ async function questradeRequest(login, pathSegment, options = {}) {
             : responseData;
 
       if (status === 401) {
+        logQuestradeTokenDebug('api.request.401', {
+          requestId,
+          login: buildLoginTokenDebugSnapshot(login),
+          method,
+          pathSegment,
+          attempt,
+          requestUrl: sanitizeTokenDebugUrl(requestUrl),
+          accessTokenFingerprint: fingerprintTokenForDebug(tokenContext && tokenContext.accessToken),
+          loginRefreshTokenFingerprintAt401: fingerprintTokenForDebug(login.refreshToken),
+        });
         console.warn('[Questrade][api] Received 401, refreshing token before retry', {
           login: resolveLoginDisplay(login),
           path: pathSegment,
           attempt,
         });
         tokenCache.del(getTokenCacheKey(login.id));
-        tokenContext = await refreshAccessToken(login);
+        logQuestradeTokenDebug('token-cache.invalidated', {
+          requestId,
+          reason: 'api-401',
+          cacheKey: getTokenCacheKey(login.id),
+          login: buildLoginTokenDebugSnapshot(login),
+        });
+        tokenContext = await refreshAccessTokenSingleFlight(login, {
+          requestId,
+          trigger: 'api-401',
+          pathSegment,
+          method,
+          attempt,
+          previousAccessTokenFingerprint: fingerprintTokenForDebug(tokenContext && tokenContext.accessToken),
+        });
         attempt -= 1; // Do not count the auth retry against the attempt budget.
         continue;
       }
@@ -7036,6 +7659,18 @@ async function questradeRequest(login, pathSegment, options = {}) {
       const retryable = isRetryableError(error);
       if (retryable && attempt < attemptsLimit) {
         const delayMs = computeRetryDelayMs(attempt);
+        logQuestradeTokenDebug('api.request.retryable-error', {
+          requestId,
+          login: buildLoginTokenDebugSnapshot(login),
+          method,
+          pathSegment,
+          requestUrl: sanitizeTokenDebugUrl(requestUrl),
+          status,
+          code: error.code || null,
+          attempt,
+          remainingAttempts: attemptsLimit - attempt,
+          delayMs,
+        });
         console.warn('[Questrade][api] Retrying request after recoverable error', {
           login: resolveLoginDisplay(login),
           method,
@@ -7050,6 +7685,19 @@ async function questradeRequest(login, pathSegment, options = {}) {
         continue;
       }
 
+      logQuestradeTokenDebug('api.request.failed', {
+        requestId,
+        login: buildLoginTokenDebugSnapshot(login),
+        method,
+        pathSegment,
+        requestUrl: sanitizeTokenDebugUrl(requestUrl),
+        status,
+        code: error.code || null,
+        headers: sanitizeTokenDebugValue(responseHeaders),
+        bodyPreview: sanitizeTokenDebugValue(bodyPreview),
+        attempt,
+        attemptsLimit,
+      });
       console.error('[Questrade][api] Request failed', {
         login: resolveLoginDisplay(login),
         method,
@@ -16824,6 +17472,7 @@ app.post('/api/logins', async function (req, res) {
   const payload = req.body && typeof req.body === 'object' ? req.body : {};
   const email = normalizeEmailInput(payload.email);
   const refreshToken = typeof payload.refreshToken === 'string' ? payload.refreshToken.trim() : '';
+  const verificationRequestId = createQuestradeDebugId('login-verify');
 
   if (!email) {
     return res.status(400).json({ message: 'Email is required.' });
@@ -16840,8 +17489,25 @@ app.post('/api/logins', async function (req, res) {
     refreshToken,
   };
   try {
-    await refreshAccessToken(verificationLogin);
+    await refreshAccessToken(verificationLogin, {
+      requestId: verificationRequestId,
+      trigger: 'api-logins-verification',
+      pathSegment: '/api/logins',
+      method: 'POST',
+      source: 'api.logins',
+    });
+    logQuestradeTokenDebug('api.logins.verify.success', {
+      requestId: verificationRequestId,
+      login: buildLoginTokenDebugSnapshot(verificationLogin),
+    });
   } catch (error) {
+    logQuestradeTokenDebug('api.logins.verify.failed', {
+      requestId: verificationRequestId,
+      login: buildLoginTokenDebugSnapshot(verificationLogin),
+      message: error && error.message ? error.message : String(error),
+      code: error && error.code ? error.code : null,
+      status: error && error.status ? error.status : null,
+    });
     const message = error && error.message ? error.message : 'Failed to verify refresh token';
     return res.status(400).json({ message: 'Failed to verify refresh token', details: message });
   }
@@ -16869,6 +17535,11 @@ app.post('/api/logins', async function (req, res) {
   loginsById[loginId] = targetLogin;
   tokenStoreState.logins = allLogins;
   persistTokenStore(tokenStoreState);
+  logQuestradeTokenDebug('api.logins.persisted', {
+    requestId: verificationRequestId,
+    login: buildLoginTokenDebugSnapshot(targetLogin),
+    totalLogins: allLogins.length,
+  });
 
   const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
   return res.status(201).json({
@@ -19045,6 +19716,14 @@ app.get('/api/summary', async function (req, res) {
     res.json(responsePayload);
   } catch (error) {
     if (error && error.code === 'INVALID_REFRESH_TOKEN') {
+      logQuestradeTokenDebug('api.summary.invalid-refresh-token', {
+        requestId: createQuestradeDebugId('summary-invalid-refresh'),
+        requestedAccountId,
+        refreshKey: manualRefreshKey || null,
+        login: error.login || null,
+        message: error.message || null,
+        status: error.status || null,
+      });
       return res.status(401).json({
         message:
           'Your Questrade refresh token expired. Generate a new token and update your login to continue.',
@@ -19103,6 +19782,8 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       ? req.query.symbolGroupKey.trim()
       : null;
   const symbolListParam = symbolParam ? normalizeSymbolList(req.query.symbols) : [];
+  const includeSyntheticPositionsParam =
+    req.query.includeSyntheticPositions === '1' || req.query.includeSyntheticPositions === 'true';
   const startDateParam =
     typeof req.query.startDate === 'string' && req.query.startDate.trim() ? req.query.startDate.trim() : null;
   const endDateParam =
@@ -19122,6 +19803,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     symbol: symbolParam,
     symbolGroupKey: symbolGroupKeyParam,
     symbols: symbolListParam && symbolListParam.length ? symbolListParam : undefined,
+    includeSyntheticPositions: includeSyntheticPositionsParam,
     refreshKey: refreshKeyParam,
   };
   const cacheKey = buildTotalPnlSeriesCacheKey(normalizedKey, queryOptions);
@@ -19398,6 +20080,9 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     }
     if (Array.isArray(queryOptions.symbols) && queryOptions.symbols.length) {
       options.symbols = queryOptions.symbols;
+    }
+    if (queryOptions.includeSyntheticPositions === true) {
+      options.includeSyntheticPositions = true;
     }
 
     let series = null;
