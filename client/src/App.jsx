@@ -77,6 +77,7 @@ import {
   listAccountsForPosition,
 } from './utils/positions';
 import { buildQuoteUrl, openQuote } from './utils/quotes';
+import { applySeriesAnnualizedToFundingSummary } from './utils/annualizedReturn';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 import {
@@ -12643,7 +12644,10 @@ export default function App() {
         nextSummary.totalEquityCad =
           fundingSummaryForDisplay.totalEquityCad - excludedPositionTotalsCad.marketValue;
       }
-      return nextSummary;
+      return applySeriesAnnualizedToFundingSummary(
+        nextSummary,
+        filteredSelectedAccountTotalPnlSeries?.points
+      );
     }
 
     const mode = selectedTotalPnlMode === 'all' ? 'all' : 'cagr';
@@ -12711,7 +12715,10 @@ export default function App() {
     ) {
       baseSummary.periodEndDate = filteredSelectedAccountTotalPnlSeries.periodEndDate;
     }
-    return baseSummary;
+    return applySeriesAnnualizedToFundingSummary(
+      baseSummary,
+      filteredSelectedAccountTotalPnlSeries?.points
+    );
   }, [
     symbolExclusionActive,
     fundingSummaryForDisplay,
@@ -12883,6 +12890,7 @@ export default function App() {
     return {
       status: earningsState?.status || 'idle',
       todayCad: Number.isFinite(payload?.todayCad) ? payload.todayCad : null,
+      weekCad: Number.isFinite(payload?.weekCad) ? payload.weekCad : null,
       yearlyCad: Number.isFinite(payload?.yearlyCad) ? payload.yearlyCad : null,
       unbilledCad: Number.isFinite(payload?.unbilledCad) ? payload.unbilledCad : null,
       error: earningsState?.error || null,

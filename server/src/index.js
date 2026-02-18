@@ -120,6 +120,7 @@ function parseBooleanEnv(value, defaultValue = false) {
 
 const DEFAULT_UNBILLED_EARNINGS_ENDPOINT = 'http://localhost:3840/lui';
 const DEFAULT_UNBILLED_EARNINGS_TODAY_QUERY = 'amount earned today';
+const DEFAULT_UNBILLED_EARNINGS_WEEK_QUERY = 'amount earned this week';
 const DEFAULT_UNBILLED_EARNINGS_YEARLY_QUERY = 'amount earned this year';
 const DEFAULT_UNBILLED_EARNINGS_UNBILLED_QUERY = 'get unbilled revenue';
 
@@ -139,6 +140,10 @@ function resolveUnbilledEarningsConfig(appSettings) {
     typeof settings.todayQuery === 'string' && settings.todayQuery.trim()
       ? settings.todayQuery.trim()
       : DEFAULT_UNBILLED_EARNINGS_TODAY_QUERY;
+  const weekQuery =
+    typeof settings.weekQuery === 'string' && settings.weekQuery.trim()
+      ? settings.weekQuery.trim()
+      : DEFAULT_UNBILLED_EARNINGS_WEEK_QUERY;
   const yearlyQuery =
     typeof settings.yearlyQuery === 'string' && settings.yearlyQuery.trim()
       ? settings.yearlyQuery.trim()
@@ -147,7 +152,7 @@ function resolveUnbilledEarningsConfig(appSettings) {
     typeof settings.unbilledQuery === 'string' && settings.unbilledQuery.trim()
       ? settings.unbilledQuery.trim()
       : DEFAULT_UNBILLED_EARNINGS_UNBILLED_QUERY;
-  return { endpoint, todayQuery, yearlyQuery, unbilledQuery };
+  return { endpoint, todayQuery, weekQuery, yearlyQuery, unbilledQuery };
 }
 
 function coerceLuiNumericResult(value) {
@@ -6765,6 +6770,107 @@ function updateLoginRefreshToken(login, nextRefreshToken, context = {}) {
   });
 }
 
+function reloadLoginRefreshTokenFromDisk(login, context = {}) {
+  if (!login || typeof login !== 'object') {
+    return { loaded: false, matched: false, changed: false };
+  }
+
+  const beforeFingerprint = fingerprintTokenForDebug(login.refreshToken);
+  const loginId = login.id != null ? String(login.id).trim() : '';
+  const loginEmail = normalizeEmailInput(login.email).toLowerCase();
+
+  logQuestradeTokenDebug('refresh.recovery.disk-reload.start', {
+    context,
+    login: buildLoginTokenDebugSnapshot(login),
+    loginId: loginId || null,
+    beforeRefreshTokenFingerprint: beforeFingerprint,
+  });
+
+  const diskStore = loadTokenStore();
+  const diskLogins = Array.isArray(diskStore && diskStore.logins) ? diskStore.logins : [];
+  let diskLogin = null;
+
+  if (loginId) {
+    diskLogin = diskLogins.find((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return false;
+      }
+      const entryId = entry.id != null ? String(entry.id).trim() : '';
+      return entryId && entryId === loginId;
+    });
+  }
+
+  if (!diskLogin && loginEmail) {
+    diskLogin = diskLogins.find((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return false;
+      }
+      const entryEmail = normalizeEmailInput(entry.email).toLowerCase();
+      return Boolean(entryEmail && entryEmail === loginEmail);
+    });
+  }
+
+  if (!diskLogin || !diskLogin.refreshToken) {
+    logQuestradeTokenDebug('refresh.recovery.disk-reload.complete', {
+      context,
+      login: buildLoginTokenDebugSnapshot(login),
+      loaded: true,
+      matched: false,
+      changed: false,
+      beforeRefreshTokenFingerprint: beforeFingerprint,
+      afterRefreshTokenFingerprint: fingerprintTokenForDebug(login.refreshToken),
+    });
+    return {
+      loaded: true,
+      matched: false,
+      changed: false,
+      beforeRefreshTokenFingerprint: beforeFingerprint,
+      afterRefreshTokenFingerprint: fingerprintTokenForDebug(login.refreshToken),
+    };
+  }
+
+  const diskRefreshToken = diskLogin.refreshToken;
+  const changed = diskRefreshToken !== login.refreshToken;
+
+  if (changed) {
+    login.refreshToken = diskRefreshToken;
+    if (typeof diskLogin.updatedAt === 'string' && diskLogin.updatedAt.trim()) {
+      login.updatedAt = diskLogin.updatedAt;
+    } else {
+      login.updatedAt = new Date().toISOString();
+    }
+    if (!login.label && typeof diskLogin.label === 'string' && diskLogin.label.trim()) {
+      login.label = diskLogin.label.trim();
+    }
+    if (!login.email && typeof diskLogin.email === 'string' && diskLogin.email.trim()) {
+      login.email = diskLogin.email.trim();
+    }
+  }
+
+  const afterFingerprint = fingerprintTokenForDebug(login.refreshToken);
+  const diskFingerprint = fingerprintTokenForDebug(diskRefreshToken);
+
+  logQuestradeTokenDebug('refresh.recovery.disk-reload.complete', {
+    context,
+    login: buildLoginTokenDebugSnapshot(login),
+    loaded: true,
+    matched: true,
+    changed,
+    beforeRefreshTokenFingerprint: beforeFingerprint,
+    diskRefreshTokenFingerprint: diskFingerprint,
+    afterRefreshTokenFingerprint: afterFingerprint,
+  });
+
+  return {
+    loaded: true,
+    matched: true,
+    changed,
+    beforeRefreshTokenFingerprint: beforeFingerprint,
+    diskRefreshTokenFingerprint: diskFingerprint,
+    afterRefreshTokenFingerprint: afterFingerprint,
+  };
+}
+
 function isInvalidRefreshTokenResponse(status, payload) {
   const numericStatus = Number(status);
   if (numericStatus !== 400 && numericStatus !== 401) {
@@ -7079,6 +7185,61 @@ async function refreshAccessToken(login, context = {}) {
         loginRefreshTokenFingerprintAtFailure: fingerprintTokenForDebug(login.refreshToken),
         refreshTokenChangedDuringRequest,
       });
+      const recoveryAttempted = context && context.invalidRefreshRecoveryAttempted === true;
+      if (!recoveryAttempted) {
+        const recoveryContext = {
+          requestId,
+          trigger,
+          pathSegment,
+          refreshOperationId,
+          method: context && context.method ? context.method : null,
+          reason: 'invalid-refresh-token',
+          refreshTokenToUseFingerprint,
+        };
+        const recoveryResult = reloadLoginRefreshTokenFromDisk(login, recoveryContext);
+        tokenCache.del(getTokenCacheKey(login.id));
+        logQuestradeTokenDebug('token-cache.invalidated', {
+          requestId,
+          reason: 'invalid-refresh-recovery',
+          cacheKey: getTokenCacheKey(login.id),
+          login: buildLoginTokenDebugSnapshot(login),
+        });
+        logQuestradeTokenDebug('refresh.recovery.retry.start', {
+          context: recoveryContext,
+          login: buildLoginTokenDebugSnapshot(login),
+          recovery: recoveryResult,
+        });
+        try {
+          const recoveredTokenContext = await refreshAccessToken(login, {
+            ...context,
+            invalidRefreshRecoveryAttempted: true,
+            requestId,
+            trigger,
+            pathSegment,
+          });
+          logQuestradeTokenDebug('refresh.recovery.retry.success', {
+            context: recoveryContext,
+            login: buildLoginTokenDebugSnapshot(login),
+            recovery: recoveryResult,
+            accessTokenFingerprint: fingerprintTokenForDebug(
+              recoveredTokenContext && recoveredTokenContext.accessToken
+            ),
+          });
+          return recoveredTokenContext;
+        } catch (retryError) {
+          logQuestradeTokenDebug('refresh.recovery.retry.failed', {
+            context: recoveryContext,
+            login: buildLoginTokenDebugSnapshot(login),
+            recovery: recoveryResult,
+            message: retryError && retryError.message ? retryError.message : String(retryError),
+            code: retryError && retryError.code ? retryError.code : null,
+            status: retryError && retryError.status ? retryError.status : null,
+          });
+          if (!retryError || retryError.code !== 'INVALID_REFRESH_TOKEN') {
+            throw retryError;
+          }
+        }
+      }
       const error = new Error(
         'Questrade refresh token is no longer valid for login ' + resolveLoginDisplay(login)
       );
@@ -13210,7 +13371,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const closingHoldings = new Map();
   const closingCashByCurrency = new Map();
-  let summaryDayPnlCad = null;
+  const closingMarketValueByCurrency = new Map();
+  const summaryDayPnlByCurrency = new Map();
 
   if (perAccountCombinedBalances && perAccountCombinedBalances[accountKey]) {
     const balanceSummary = perAccountCombinedBalances[accountKey];
@@ -13218,23 +13380,36 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       balanceSummary && balanceSummary.combined && typeof balanceSummary.combined === 'object'
         ? balanceSummary.combined
         : balanceSummary;
-    if (combinedBalances && typeof combinedBalances === 'object') {
-      Object.keys(combinedBalances).forEach((key) => {
-        const entry = combinedBalances[key];
+    const perCurrencyBalances =
+      balanceSummary && balanceSummary.perCurrency && typeof balanceSummary.perCurrency === 'object'
+        ? balanceSummary.perCurrency
+        : combinedBalances;
+    if (perCurrencyBalances && typeof perCurrencyBalances === 'object') {
+      Object.keys(perCurrencyBalances).forEach((key) => {
+        const entry = perCurrencyBalances[key];
         if (!entry || typeof entry !== 'object') {
           return;
         }
         const currency = normalizeCurrency(entry.currency || key);
         const dayPnlValue = Number(entry.dayPnl ?? entry.dayPnL);
-        if (currency === 'CAD' && Number.isFinite(dayPnlValue)) {
-          summaryDayPnlCad = dayPnlValue;
+        if (currency && Number.isFinite(dayPnlValue)) {
+          const currentDayPnl = summaryDayPnlByCurrency.has(currency)
+            ? summaryDayPnlByCurrency.get(currency)
+            : 0;
+          summaryDayPnlByCurrency.set(currency, currentDayPnl + dayPnlValue);
         }
         const cashValue = Number(entry.cash);
-        if (!currency || !Number.isFinite(cashValue) || Math.abs(cashValue) < 0.00001) {
-          return;
+        if (currency && Number.isFinite(cashValue) && Math.abs(cashValue) >= 0.00001) {
+          const currentCash = closingCashByCurrency.has(currency) ? closingCashByCurrency.get(currency) : 0;
+          closingCashByCurrency.set(currency, currentCash + cashValue);
         }
-        const current = closingCashByCurrency.has(currency) ? closingCashByCurrency.get(currency) : 0;
-        closingCashByCurrency.set(currency, current + cashValue);
+        const marketValue = Number(entry.marketValue);
+        if (currency && Number.isFinite(marketValue) && Math.abs(marketValue) >= 0.00001) {
+          const currentMarketValue = closingMarketValueByCurrency.has(currency)
+            ? closingMarketValueByCurrency.get(currency)
+            : 0;
+          closingMarketValueByCurrency.set(currency, currentMarketValue + marketValue);
+        }
       });
     }
   }
@@ -13757,6 +13932,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     ? netDepositsSummary.totalEquityCad
     : null;
 
+  const todayDateKey = nowIso || formatDateOnly(new Date());
   let pendingDepositCad = null;
   if (points.length && Number.isFinite(summaryEquity)) {
     const lastPoint = points[points.length - 1];
@@ -13766,14 +13942,176 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       lastPointDate &&
       dailyNetDepositsMap.has(lastPointDate) &&
       Math.abs(dailyNetDepositsMap.get(lastPointDate)) >= CASH_FLOW_EPSILON / 10;
-    if (!hasFundingToday && Number.isFinite(lastPointEquity)) {
+    const isLatestPointToday = Boolean(lastPointDate && todayDateKey && lastPointDate === todayDateKey);
+    const canTrustSnapshotComparison =
+      !conversionIncomplete &&
+      missingPriceSymbols.size === 0;
+    if (!hasFundingToday && isLatestPointToday && canTrustSnapshotComparison && Number.isFinite(lastPointEquity)) {
       const equityDelta = summaryEquity - lastPointEquity;
-      const dayPnlCad = Number.isFinite(summaryDayPnlCad) ? summaryDayPnlCad : null;
-      const nearDayPnl =
-        dayPnlCad !== null &&
-        Math.abs(equityDelta - dayPnlCad) < AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD;
-      if (!nearDayPnl && equityDelta >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD) {
-        pendingDepositCad = equityDelta;
+      const lastPointDateObject = parseDateOnlyString(lastPointDate) || null;
+      let snapshotUsdRate = Number(lastPoint?.usdToCadRate);
+      if (
+        (!Number.isFinite(snapshotUsdRate) || snapshotUsdRate <= 0) &&
+        lastPointDateObject instanceof Date &&
+        !Number.isNaN(lastPointDateObject.getTime())
+      ) {
+        const resolvedRate = await resolveUsdToCadRate(lastPointDateObject, accountKey);
+        if (Number.isFinite(resolvedRate) && resolvedRate > 0) {
+          snapshotUsdRate = resolvedRate;
+        }
+      }
+
+      const convertAmountToCadUsingSnapshotRate = (amount, currency) => {
+        if (!Number.isFinite(amount)) {
+          return null;
+        }
+        if (!currency || currency === 'CAD') {
+          return amount;
+        }
+        if (currency === 'USD') {
+          if (!Number.isFinite(snapshotUsdRate) || snapshotUsdRate <= 0) {
+            return null;
+          }
+          return amount * snapshotUsdRate;
+        }
+        return null;
+      };
+
+      const sumCurrencyMapInCad = (map) => {
+        if (!(map instanceof Map)) {
+          return { hasValues: false, complete: false, total: null };
+        }
+        let total = 0;
+        let hasValues = false;
+        let complete = true;
+        map.forEach((amount, currency) => {
+          if (!Number.isFinite(amount)) {
+            return;
+          }
+          hasValues = true;
+          const converted = convertAmountToCadUsingSnapshotRate(amount, currency);
+          if (!Number.isFinite(converted)) {
+            complete = false;
+            return;
+          }
+          total += converted;
+        });
+        if (!hasValues || !complete) {
+          return { hasValues, complete, total: null };
+        }
+        return { hasValues, complete, total };
+      };
+
+      const snapshotCashTotals = sumCurrencyMapInCad(closingCashByCurrency);
+      const snapshotMarketValueTotals = sumCurrencyMapInCad(closingMarketValueByCurrency);
+      const summaryDayPnlTotals = sumCurrencyMapInCad(summaryDayPnlByCurrency);
+
+      const reconstructedCadCash = Number.isFinite(lastPoint?.cadCash) ? Number(lastPoint.cadCash) : 0;
+      const reconstructedUsdCash = Number.isFinite(lastPoint?.usdCash) ? Number(lastPoint.usdCash) : 0;
+      const reconstructedCashCad = Number.isFinite(snapshotUsdRate) && snapshotUsdRate > 0
+        ? reconstructedCadCash + reconstructedUsdCash * snapshotUsdRate
+        : Math.abs(reconstructedUsdCash) < CASH_FLOW_EPSILON
+          ? reconstructedCadCash
+          : null;
+
+      const reconstructedCadMarketValue = Number.isFinite(lastPoint?.cadSecurityValue)
+        ? Number(lastPoint.cadSecurityValue)
+        : 0;
+      const reconstructedUsdMarketValue = Number.isFinite(lastPoint?.usdSecurityValue)
+        ? Number(lastPoint.usdSecurityValue)
+        : 0;
+      const reconstructedMarketValueCad = Number.isFinite(snapshotUsdRate) && snapshotUsdRate > 0
+        ? reconstructedCadMarketValue + reconstructedUsdMarketValue * snapshotUsdRate
+        : Math.abs(reconstructedUsdMarketValue) < CASH_FLOW_EPSILON
+          ? reconstructedCadMarketValue
+          : null;
+
+      let positionsDayPnlCad = 0;
+      let positionsDayPnlCount = 0;
+      let positionsDayPnlIncomplete = false;
+      if (Array.isArray(closingPositions)) {
+        closingPositions.forEach((position) => {
+          if (!position || typeof position !== 'object') {
+            return;
+          }
+          const dayPnlValue = Number(position.dayPnl ?? position.dayPnL);
+          if (!Number.isFinite(dayPnlValue)) {
+            return;
+          }
+          const positionSymbol = normalizeSymbol(position.symbol);
+          const positionCurrency =
+            normalizeCurrency(position.currency) ||
+            (positionSymbol && symbolMeta.get(positionSymbol)
+              ? symbolMeta.get(positionSymbol).currency
+              : null) ||
+            (positionSymbol ? inferSymbolCurrency(positionSymbol) : null) ||
+            'CAD';
+          const converted = convertAmountToCadUsingSnapshotRate(dayPnlValue, positionCurrency);
+          if (!Number.isFinite(converted)) {
+            positionsDayPnlIncomplete = true;
+            return;
+          }
+          positionsDayPnlCad += converted;
+          positionsDayPnlCount += 1;
+        });
+      }
+      if (positionsDayPnlIncomplete || positionsDayPnlCount === 0) {
+        positionsDayPnlCad = null;
+      }
+
+      const estimatedMarketMoveCad = Number.isFinite(positionsDayPnlCad)
+        ? positionsDayPnlCad
+        : summaryDayPnlTotals.hasValues && summaryDayPnlTotals.complete && Number.isFinite(summaryDayPnlTotals.total)
+          ? summaryDayPnlTotals.total
+          : null;
+
+      const unexplainedEquityDeltaCad = Number.isFinite(estimatedMarketMoveCad)
+        ? equityDelta - estimatedMarketMoveCad
+        : null;
+      const cashDeltaCad = snapshotCashTotals.hasValues && snapshotCashTotals.complete && Number.isFinite(snapshotCashTotals.total) && Number.isFinite(reconstructedCashCad)
+        ? snapshotCashTotals.total - reconstructedCashCad
+        : null;
+      const securitiesDeltaCad =
+        snapshotMarketValueTotals.hasValues &&
+        snapshotMarketValueTotals.complete &&
+        Number.isFinite(snapshotMarketValueTotals.total) &&
+        Number.isFinite(reconstructedMarketValueCad)
+          ? snapshotMarketValueTotals.total - reconstructedMarketValueCad
+          : null;
+
+      let candidateDepositCad = null;
+      if (Number.isFinite(cashDeltaCad) && cashDeltaCad >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD) {
+        // Primary signal: live cash exceeds reconstructed cash despite no detected funding activity.
+        candidateDepositCad = cashDeltaCad;
+      } else if (
+        !Number.isFinite(cashDeltaCad) &&
+        Number.isFinite(unexplainedEquityDeltaCad) &&
+        unexplainedEquityDeltaCad >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD
+      ) {
+        // Fallback when cash fields are unavailable: use unexplained equity change.
+        candidateDepositCad = unexplainedEquityDeltaCad;
+      }
+
+      const likelyPureSecurityMove =
+        Number.isFinite(securitiesDeltaCad) &&
+        securitiesDeltaCad > AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD &&
+        (!Number.isFinite(cashDeltaCad) || Math.abs(cashDeltaCad) < AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD / 2) &&
+        (!Number.isFinite(unexplainedEquityDeltaCad) ||
+          unexplainedEquityDeltaCad < AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD);
+      const cashAndEquitySignalsAlign =
+        Number.isFinite(cashDeltaCad) && Number.isFinite(unexplainedEquityDeltaCad)
+          ? Math.abs(cashDeltaCad - unexplainedEquityDeltaCad) <=
+            Math.max(AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD, Math.abs(cashDeltaCad) * 0.5)
+          : true;
+
+      if (
+        Number.isFinite(candidateDepositCad) &&
+        candidateDepositCad >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD &&
+        equityDelta >= AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD &&
+        cashAndEquitySignalsAlign &&
+        !likelyPureSecurityMove
+      ) {
+        pendingDepositCad = candidateDepositCad;
         if (Number.isFinite(lastPoint.cumulativeNetDepositsCad)) {
           lastPoint.cumulativeNetDepositsCad += pendingDepositCad;
           lastPoint.totalPnlCad = summaryEquity - lastPoint.cumulativeNetDepositsCad;
@@ -17556,23 +17894,29 @@ app.get('/api/earnings', async function (req, res) {
     return res.json({ enabled: false });
   }
 
-  const { endpoint, todayQuery, yearlyQuery, unbilledQuery } = unbilledConfig;
+  const { endpoint, todayQuery, weekQuery, yearlyQuery, unbilledQuery } = unbilledConfig;
   const settledResults = await Promise.allSettled([
     fetchLuiMetric(endpoint, todayQuery),
+    fetchLuiMetric(endpoint, weekQuery),
     fetchLuiMetric(endpoint, yearlyQuery),
     fetchLuiMetric(endpoint, unbilledQuery),
   ]);
 
   const todayResult = settledResults[0];
-  const yearlyResult = settledResults[1];
-  const unbilledResult = settledResults[2];
+  const weekResult = settledResults[1];
+  const yearlyResult = settledResults[2];
+  const unbilledResult = settledResults[3];
   const todayCad = todayResult.status === 'fulfilled' ? todayResult.value : null;
+  const weekCad = weekResult.status === 'fulfilled' ? weekResult.value : null;
   const yearlyCad = yearlyResult.status === 'fulfilled' ? yearlyResult.value : null;
   const unbilledCad = unbilledResult.status === 'fulfilled' ? unbilledResult.value : null;
 
   const errors = {};
   if (todayResult.status === 'rejected') {
     errors.today = todayResult.reason?.message || 'Failed to load today earnings';
+  }
+  if (weekResult.status === 'rejected') {
+    errors.week = weekResult.reason?.message || 'Failed to load weekly earnings';
   }
   if (yearlyResult.status === 'rejected') {
     errors.yearly = yearlyResult.reason?.message || 'Failed to load yearly earnings';
@@ -17582,12 +17926,13 @@ app.get('/api/earnings', async function (req, res) {
   }
 
   const hasToday = Number.isFinite(todayCad);
+  const hasWeek = Number.isFinite(weekCad);
   const hasYearly = Number.isFinite(yearlyCad);
   const hasUnbilled = Number.isFinite(unbilledCad);
   const status =
-    hasToday && hasYearly && hasUnbilled
+    hasToday && hasWeek && hasYearly && hasUnbilled
       ? 'ok'
-      : hasToday || hasYearly || hasUnbilled
+      : hasToday || hasWeek || hasYearly || hasUnbilled
         ? 'partial'
         : 'error';
 
@@ -17602,6 +17947,7 @@ app.get('/api/earnings', async function (req, res) {
     enabled: true,
     currency: 'CAD',
     todayCad,
+    weekCad,
     yearlyCad,
     unbilledCad,
     status,

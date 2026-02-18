@@ -148,6 +148,12 @@ function normalizeUnbilledEarningsSettings(entry) {
     normalized.todayQuery = todayQuery;
   }
 
+  const weekQuery =
+    typeof entry.weekQuery === 'string' && entry.weekQuery.trim() ? entry.weekQuery.trim() : '';
+  if (weekQuery) {
+    normalized.weekQuery = weekQuery;
+  }
+
   const yearlyQuery =
     typeof entry.yearlyQuery === 'string' && entry.yearlyQuery.trim() ? entry.yearlyQuery.trim() : '';
   if (yearlyQuery) {

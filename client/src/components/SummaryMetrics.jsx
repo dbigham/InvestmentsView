@@ -1660,6 +1660,9 @@ export default function SummaryMetrics({
   const formattedTodayEarnings = earningsLoading
     ? 'Loading...'
     : formatMoney(earningsSummary?.todayCad ?? null);
+  const formattedWeekEarnings = earningsLoading
+    ? 'Loading...'
+    : formatMoney(earningsSummary?.weekCad ?? null);
   const formattedYearlyEarnings = earningsLoading
     ? 'Loading...'
     : formatMoney(earningsSummary?.yearlyCad ?? null);
@@ -1670,6 +1673,7 @@ export default function SummaryMetrics({
     ? 'Loading...'
     : formatMoney(earningsSummary?.unbilledCad ?? null);
   const todayEarningsTone = classifyPnL(earningsSummary?.todayCad);
+  const weekEarningsTone = classifyPnL(earningsSummary?.weekCad);
   const yearlyEarningsTone = classifyPnL(earningsSummary?.yearlyCad);
   const projectedYearlyEarningsTone = classifyPnL(projectedYearlyEarningsCad);
   const unbilledEarningsTone = classifyPnL(earningsSummary?.unbilledCad);
@@ -4597,6 +4601,15 @@ export default function SummaryMetrics({
           )}
           {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
             <MetricRow
+              label="Week's Earnings"
+              value={formattedWeekEarnings}
+              tone={weekEarningsTone}
+              onActivate={refreshEarningsAction}
+              valueClassName={earningsValueClassName}
+            />
+          )}
+          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+            <MetricRow
               label={yearlyEarningsLabelNode}
               value={yearlyEarningsValueNode}
               tone={yearlyEarningsTone}
@@ -4788,6 +4801,7 @@ SummaryMetrics.propTypes = {
   earningsSummary: PropTypes.shape({
     status: PropTypes.oneOf(['idle', 'loading', 'refreshing', 'ready', 'error']),
     todayCad: PropTypes.number,
+    weekCad: PropTypes.number,
     yearlyCad: PropTypes.number,
     unbilledCad: PropTypes.number,
     updatedAt: PropTypes.string,
