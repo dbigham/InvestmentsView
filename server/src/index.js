@@ -14,6 +14,7 @@ const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
 const { resolveCachePath, resolveDataPath } = require('./dataPaths');
+const { buildYahooFinanceFetchOptions } = require('./yahooFinanceFetchOptions');
 dotenv.config();
 
 const serverEnvPath = path.join(__dirname, '..', '.env');
@@ -3061,7 +3062,7 @@ async function fetchYahooHistorical(symbol, queryOptions) {
   }
   const { dispatcher } = getDispatcherForUrl(YAHOO_CHART_BASE_URL, { reuse: true });
   return finance.historical(yahooSymbol, queryOptions, {
-    fetchOptions: { dispatcher },
+    fetchOptions: buildYahooFinanceFetchOptions({ dispatcher }),
   });
 }
 
@@ -3078,7 +3079,7 @@ async function fetchYahooQuote(symbol) {
   }
   const { dispatcher } = getDispatcherForUrl(YAHOO_QUOTE_BASE_URL, { reuse: true });
   return finance.quote(yahooSymbol, undefined, {
-    fetchOptions: { dispatcher },
+    fetchOptions: buildYahooFinanceFetchOptions({ dispatcher }),
   });
 }
 
@@ -3101,7 +3102,7 @@ async function fetchYahooQuoteSummary(symbol, modules = YAHOO_QUOTE_SUMMARY_MODU
     yahooSymbol,
     { modules: requestedModules },
     {
-      fetchOptions: { dispatcher },
+      fetchOptions: buildYahooFinanceFetchOptions({ dispatcher }),
     }
   );
 }
@@ -3952,6 +3953,9 @@ const interestRateCache = new Map();
 const priceHistoryCache = new Map();
 const questradeSymbolSearchCache = new Map();
 const QUESTRADE_SYMBOL_SEARCH_TTL_MS = 12 * 60 * 60 * 1000;
+const questradePositionQuoteCache = new Map();
+const QUESTRADE_POSITION_QUOTE_TTL_MS = 15 * 1000;
+const QUESTRADE_POSITION_QUOTE_MISS = Symbol('questrade-position-quote-miss');
 const PRICE_HISTORY_CACHE_MAX_ENTRIES = 200;
 const PRICE_SERIES_CACHE_DIR = resolveCachePath('prices');
 const PRICE_SERIES_DEFAULT_START = '1990-01-01';
@@ -4204,6 +4208,101 @@ async function fetchQuestradeHistoryForSymbol(symbolOrOptions, startDateKey, end
   }
 }
 
+function getCachedQuestradePositionQuote(symbol) {
+  const normalizedSymbol = normalizeSymbol(symbol) || String(symbol || '').trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return undefined;
+  }
+  const cached = questradePositionQuoteCache.get(normalizedSymbol);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    if (cached) {
+      questradePositionQuoteCache.delete(normalizedSymbol);
+    }
+    return undefined;
+  }
+  return cached.value;
+}
+
+function setCachedQuestradePositionQuote(symbol, value) {
+  const normalizedSymbol = normalizeSymbol(symbol) || String(symbol || '').trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return;
+  }
+  questradePositionQuoteCache.set(normalizedSymbol, {
+    value: value || QUESTRADE_POSITION_QUOTE_MISS,
+    expiresAt: Date.now() + QUESTRADE_POSITION_QUOTE_TTL_MS,
+  });
+}
+
+async function fetchQuestradePositionQuoteForSymbol(symbol) {
+  const normalizedSymbol = normalizeSymbol(symbol) || String(symbol || '').trim().toUpperCase();
+  if (!normalizedSymbol || !Array.isArray(allLogins) || allLogins.length === 0) {
+    return null;
+  }
+
+  const cached = getCachedQuestradePositionQuote(normalizedSymbol);
+  if (cached !== undefined) {
+    return cached === QUESTRADE_POSITION_QUOTE_MISS ? null : cached;
+  }
+
+  const candidates = [];
+  for (const login of allLogins) {
+    let accounts = [];
+    try {
+      accounts = await fetchAccounts(login);
+    } catch (_) {
+      continue;
+    }
+    for (const account of accounts) {
+      const accountNumber = account && (account.number || account.accountNumber || account.id);
+      if (!accountNumber) {
+        continue;
+      }
+      let positions = [];
+      try {
+        positions = await fetchPositions(login, accountNumber);
+      } catch (_) {
+        continue;
+      }
+      positions.forEach((position) => {
+        const positionSymbol =
+          normalizeSymbol(position && position.symbol) ||
+          String((position && position.symbol) || '').trim().toUpperCase();
+        if (positionSymbol !== normalizedSymbol) {
+          return;
+        }
+        const price = Number(position && position.currentPrice);
+        if (!Number.isFinite(price) || price <= 0) {
+          return;
+        }
+        const marketValue = Math.abs(Number(position && position.currentMarketValue) || 0);
+        candidates.push({
+          price,
+          marketValue,
+          isRealTime: position && position.isRealTime === true,
+        });
+      });
+    }
+  }
+
+  candidates.sort((a, b) => {
+    if (a.isRealTime !== b.isRealTime) {
+      return a.isRealTime ? -1 : 1;
+    }
+    return b.marketValue - a.marketValue;
+  });
+
+  const best = candidates[0]
+    ? {
+        price: candidates[0].price,
+        asOf: new Date().toISOString(),
+        source: candidates[0].isRealTime ? 'questrade-position-realtime' : 'questrade-position',
+      }
+    : null;
+  setCachedQuestradePositionQuote(normalizedSymbol, best);
+  return best;
+}
+
 function extractQuestradeQuotePrice(quote) {
   if (!quote || typeof quote !== 'object') {
     return null;
@@ -4262,11 +4361,11 @@ async function fetchQuestradeQuoteForSymbol(symbol) {
   try {
     detail = await fetchQuestradeSymbolSearch(login, symbol);
   } catch (error) {
-    return null;
+    return fetchQuestradePositionQuoteForSymbol(symbol);
   }
   const symbolId = Number(detail && detail.symbolId);
   if (!Number.isFinite(symbolId) || symbolId <= 0) {
-    return null;
+    return fetchQuestradePositionQuoteForSymbol(symbol);
   }
   let data = null;
   try {
@@ -4277,27 +4376,29 @@ async function fetchQuestradeQuoteForSymbol(symbol) {
     try {
       data = await questradeRequest(login, `/v1/markets/quotes/${symbolId}`);
     } catch (_) {
-      return null;
+      return fetchQuestradePositionQuoteForSymbol(symbol);
     }
   }
   const quotes = data && Array.isArray(data.quotes) ? data.quotes : Array.isArray(data) ? data : [];
   if (!quotes.length) {
-    return null;
+    return fetchQuestradePositionQuoteForSymbol(symbol);
   }
   const quote =
     quotes.find((entry) => Number(entry && entry.symbolId) === symbolId) || quotes[0] || null;
   if (!quote) {
-    return null;
+    return fetchQuestradePositionQuoteForSymbol(symbol);
   }
   const price = extractQuestradeQuotePrice(quote);
   if (!Number.isFinite(price) || price <= 0) {
-    return null;
+    return fetchQuestradePositionQuoteForSymbol(symbol);
   }
-  return {
+  const marketQuote = {
     price,
     asOf: extractQuestradeQuoteTimestamp(quote),
     source: 'questrade',
   };
+  const positionQuote = await fetchQuestradePositionQuoteForSymbol(symbol);
+  return positionQuote || marketQuote;
 }
 
 const app = express();
@@ -5870,6 +5971,13 @@ function extractQuotePrice(quote) {
     }
   }
   return null;
+}
+
+function resolveQuoteChangePercent(quote, price, previousClose) {
+  if (Number.isFinite(price) && price > 0 && Number.isFinite(previousClose) && previousClose > 0) {
+    return ((price - previousClose) / previousClose) * 100;
+  }
+  return coerceQuoteNumber(quote && quote.regularMarketChangePercent);
 }
 
 function normalizeLogin(login, fallbackId) {
@@ -17150,13 +17258,17 @@ app.get('/api/quote', async function (req, res) {
   const rawSymbol = typeof req.query.symbol === 'string' ? req.query.symbol : '';
   const trimmedSymbol = rawSymbol ? rawSymbol.trim() : '';
   const normalizedSymbol = normalizeSymbol(trimmedSymbol);
+  const forceRefresh = parseBooleanEnv(req.query.force, false);
 
   if (!normalizedSymbol) {
     return res.status(400).json({ message: 'Query parameter "symbol" is required' });
   }
 
   const cacheKey = normalizedSymbol;
-  const cached = quoteCache.get(cacheKey);
+  if (forceRefresh) {
+    quoteCache.del(cacheKey);
+  }
+  const cached = forceRefresh ? null : quoteCache.get(cacheKey);
   if (cached) {
     if (!cached || typeof cached !== 'object' || cached.pegDiagnostics === undefined) {
       quoteCache.delete(cacheKey);
@@ -17194,12 +17306,12 @@ app.get('/api/quote', async function (req, res) {
       (quote &&
         (quote.longName || quote.shortName || quote.displayName || quote.symbol || normalizedSymbol)) ||
       normalizedSymbol;
-    const changePercent = coerceQuoteNumber(quote.regularMarketChangePercent);
     const previousClose = coerceQuoteNumber(
       quote.regularMarketPreviousClose !== undefined && quote.regularMarketPreviousClose !== null
         ? quote.regularMarketPreviousClose
         : quote.previousClose
     );
+    const changePercent = resolveQuoteChangePercent(quote, price, previousClose);
     const trailingPe = coerceQuoteNumber(quote.trailingPE);
     const forwardPe = coerceQuoteNumber(quote.forwardPE);
     const peRatio = Number.isFinite(trailingPe) && trailingPe > 0

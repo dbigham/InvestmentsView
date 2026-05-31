@@ -91,7 +91,16 @@ export function toPlainDateString(date) {
   return date.toISOString().slice(0, 10);
 }
 
-export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeStartDate, rangeEndDate } = {}) {
+export function buildChartMetrics(
+  series,
+  {
+    useDisplayStartDelta = false,
+    rangeStartDate,
+    rangeEndDate,
+    extraDomainValues = [],
+    minimumValuePadding = 10,
+  } = {}
+) {
   if (!Array.isArray(series) || series.length === 0) {
     return null;
   }
@@ -105,7 +114,10 @@ export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeS
     return entry.totalPnl;
   };
 
-  const rawValues = series.map((entry) => resolveValue(entry));
+  const rawValues = [
+    ...series.map((entry) => resolveValue(entry)),
+    ...(Array.isArray(extraDomainValues) ? extraDomainValues : []),
+  ];
   const finiteValues = rawValues.filter((value) => Number.isFinite(value));
   if (!finiteValues.length) {
     return null;
@@ -146,7 +158,11 @@ export function buildChartMetrics(series, { useDisplayStartDelta = false, rangeS
   const minValue = Math.min(...finiteValues);
   const maxValue = Math.max(...finiteValues);
   const range = maxValue - minValue;
-  const padding = range === 0 ? Math.max(10, Math.abs(maxValue) * 0.1 || 10) : Math.max(10, range * 0.1);
+  const normalizedMinimumPadding = Math.max(0, Number(minimumValuePadding) || 0);
+  const padding =
+    range === 0
+      ? Math.max(normalizedMinimumPadding, Math.abs(maxValue) * 0.1 || normalizedMinimumPadding || 1)
+      : Math.max(normalizedMinimumPadding, range * 0.1);
   let rawMinDomain = minValue - padding;
   let rawMaxDomain = maxValue + padding;
   if (minValue >= 0 && rawMinDomain < 0) {

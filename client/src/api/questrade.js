@@ -144,11 +144,14 @@ function buildBenchmarkReturnsUrl(params) {
   return url.toString();
 }
 
-function buildQuoteUrl(symbol) {
+function buildQuoteUrl(symbol, options = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const url = new URL('/api/quote', base);
   if (symbol) {
     url.searchParams.set('symbol', symbol);
+  }
+  if (options && options.force === true) {
+    url.searchParams.set('force', 'true');
   }
   return url.toString();
 }
@@ -472,13 +475,13 @@ export async function getRangeTotalPnlBreakdown(params) {
   return response.json();
 }
 
-export async function getQuote(symbol) {
+export async function getQuote(symbol, options = {}) {
   const normalizedSymbol = typeof symbol === 'string' ? symbol.trim() : '';
   if (!normalizedSymbol) {
     throw new Error('Symbol is required');
   }
 
-  const response = await fetchWithDemo(buildQuoteUrl(normalizedSymbol));
+  const response = await fetchWithDemo(buildQuoteUrl(normalizedSymbol, options));
   if (!response.ok) {
     let message = 'Failed to load quote data';
     try {

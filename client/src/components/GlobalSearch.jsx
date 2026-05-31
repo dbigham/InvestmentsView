@@ -1,5 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import { getQuote } from '../api/questrade';
+import { formatMoney, formatSignedPercent } from '../utils/formatters';
 import { buildSymbolViewUrl, buildAccountViewUrl } from '../utils/navigation';
 
 function normalize(value) {
@@ -9,6 +11,51 @@ function normalize(value) {
 
 function normalizeKey(value) {
   return normalize(value).toLowerCase();
+}
+
+function normalizeSymbolKey(value) {
+  return normalize(value).toUpperCase();
+}
+
+function normalizeTypedSymbolCandidate(value) {
+  const candidate = normalize(value).toUpperCase();
+  if (!candidate || /\s/.test(candidate)) return null;
+  if (!/^[A-Z][A-Z0-9.-]{0,14}$/.test(candidate)) return null;
+  return candidate;
+}
+
+function coerceNumber(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+function toneForChange(value) {
+  if (value > 0) return 'positive';
+  if (value < 0) return 'negative';
+  return 'neutral';
+}
+
+function resolveChangePercent(quote, price) {
+  const previousClose = coerceNumber(quote?.previousClose);
+  if (price !== null && previousClose !== null && previousClose > 0) {
+    return ((price - previousClose) / previousClose) * 100;
+  }
+  const directChangePercent = coerceNumber(quote?.changePercent);
+  if (directChangePercent !== null) {
+    return directChangePercent;
+  }
+  return null;
+}
+
+function getQuoteSymbolForResult(item) {
+  if (!item) return null;
+  if (item.kind === 'symbol') {
+    return normalizeSymbolKey(item.key);
+  }
+  if (item.kind === 'symbol-action') {
+    return normalizeSymbolKey(item.symbol || item.key);
+  }
+  return null;
 }
 
 function useOutsideDismiss(ref, onDismiss) {
@@ -68,6 +115,9 @@ export default function GlobalSearch({
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [quoteRows, setQuoteRows] = useState({});
+  const quoteRequestRef = useRef(0);
+  const enterQuoteLookupRef = useRef(0);
 
   useOutsideDismiss(containerRef, () => setOpen(false));
 
@@ -194,7 +244,7 @@ export default function GlobalSearch({
           templateText: 'retirement at ',
         });
       }
-    } catch (e) {
+    } catch {
       // no-op
     }
 
@@ -369,6 +419,52 @@ export default function GlobalSearch({
     matchSymbolLeadingIntent('orders', ['orders', 'order']);
     matchSymbolLeadingIntent('dividends', ['dividends', 'dividend']);
 
+    const parseGrowthCurveSymbolList = (fragment) => {
+      const normalizedFragment = normalize(fragment);
+      if (!normalizedFragment) return [];
+      const withCommaSeparators = normalizedFragment
+        .replace(/\s+(?:and)\s+/gi, ',')
+        .replace(/[+&]/g, ',');
+      const parts = withCommaSeparators.includes(',')
+        ? withCommaSeparators.split(',')
+        : withCommaSeparators.split(/\s+/);
+      const seen = new Set();
+      const parsed = [];
+      parts.forEach((part) => {
+        const symbol = normalizeTypedSymbolCandidate(part);
+        if (!symbol || seen.has(symbol)) return;
+        seen.add(symbol);
+        parsed.push(symbol);
+      });
+      return parsed;
+    };
+
+    const buildGrowthCurvesResult = () => {
+      const match = rawQuery.match(/^\s*growth\s+curves?\s+for\s+(.+?)\s*$/i);
+      if (!match) {
+        return null;
+      }
+      const symbols = parseGrowthCurveSymbolList(match[1]);
+      if (!symbols.length) {
+        return null;
+      }
+      const descriptions = {};
+      symbols.forEach((symbol) => {
+        const indexed = symbolIndex.get(symbol);
+        if (indexed?.sublabel) {
+          descriptions[symbol] = indexed.sublabel;
+        }
+      });
+      return {
+        kind: 'growth-curves',
+        key: symbols.join('|'),
+        label: `Growth curve${symbols.length === 1 ? '' : 's'} for ${symbols.join(' + ')}`,
+        sublabel: 'Compare price history fits by stock',
+        symbols,
+        descriptions,
+      };
+    };
+
     const buildMultiSymbolResult = () => {
       const separatorPattern = /(?:\s*\+\s*|\s*,\s*|\s+and\s+|\s*&\s*)/i;
       if (!separatorPattern.test(rawQuery)) {
@@ -447,15 +543,19 @@ export default function GlobalSearch({
         boost += 35;
       } else if (item.kind === 'symbol-list') {
         boost += 30;
+      } else if (item.kind === 'growth-curves') {
+        boost += 45;
       } else if (item.kind === 'template') {
         // Template suggestions also prominent while composing
         boost += 20;
       }
       return base + boost;
     };
+    const growthCurvesResult = buildGrowthCurvesResult();
     const multiSymbolResult = buildMultiSymbolResult();
-    const poolBase = multiSymbolResult
-      ? [multiSymbolResult, ...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized]
+    const specialResults = [growthCurvesResult, multiSymbolResult].filter(Boolean);
+    const poolBase = specialResults.length
+      ? [...specialResults, ...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized]
       : [...symbolItems, ...accountItems, ...groupItems, ...navItemsNormalized];
     const pool = retireAction
       ? [retireAction, ...templateActions, ...symbolActions, ...poolBase]
@@ -485,6 +585,9 @@ export default function GlobalSearch({
       if (item.kind === 'symbol-list') {
         return `symbol-list:${baseKey}`;
       }
+      if (item.kind === 'growth-curves') {
+        return `growth-curves:${baseKey}`;
+      }
       if (item.kind === 'account' || item.kind === 'group') {
         return `${item.kind}:${baseKey}`;
       }
@@ -512,6 +615,81 @@ export default function GlobalSearch({
     return deduped;
   }, [query, symbolItems, accountItems, groupItems, navItemsNormalized]);
 
+  const visibleQuoteSymbols = useMemo(() => {
+    if (!open || !results.length) {
+      return [];
+    }
+    const seen = new Set();
+    const list = [];
+    results.forEach((item) => {
+      const symbol = getQuoteSymbolForResult(item);
+      if (!symbol || seen.has(symbol)) return;
+      seen.add(symbol);
+      list.push(symbol);
+    });
+    return list;
+  }, [open, results]);
+
+  useEffect(() => {
+    quoteRequestRef.current += 1;
+    const requestId = quoteRequestRef.current;
+
+    if (!visibleQuoteSymbols.length) {
+      setQuoteRows({});
+      return undefined;
+    }
+
+    setQuoteRows({});
+
+    const timer = setTimeout(() => {
+      setQuoteRows((prev) => {
+        const next = {};
+        visibleQuoteSymbols.forEach((symbol) => {
+          next[symbol] = prev[symbol]?.status === 'success'
+            ? { ...prev[symbol], status: 'loading' }
+            : { status: 'loading', data: null, error: null };
+        });
+        return next;
+      });
+
+      visibleQuoteSymbols.forEach((symbol) => {
+        getQuote(symbol, { force: true })
+          .then((quote) => {
+            if (quoteRequestRef.current !== requestId) return;
+            const price = coerceNumber(quote?.price);
+            const normalizedPrice = price !== null && price > 0 ? price : null;
+            const changePercent = resolveChangePercent(quote, normalizedPrice);
+            setQuoteRows((prev) => ({
+              ...prev,
+              [symbol]: {
+                status: 'success',
+                data: {
+                  price: normalizedPrice,
+                  currency:
+                    typeof quote?.currency === 'string' && quote.currency.trim()
+                      ? quote.currency.trim().toUpperCase()
+                      : null,
+                  changePercent,
+                },
+                error: null,
+              },
+            }));
+          })
+          .catch((error) => {
+            if (quoteRequestRef.current !== requestId) return;
+            setQuoteRows((prev) => ({
+              ...prev,
+              [symbol]: { status: 'error', data: null, error },
+            }));
+          });
+      });
+    }, 500);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [visibleQuoteSymbols]);
+
   // Ensure we reset the highlighted option to the first item whenever
   // the list opens (after having been closed), so pressing Enter
   // acts on the first visible result by default.
@@ -532,6 +710,27 @@ export default function GlobalSearch({
 
   const listboxId = `${baseId}-list`;
 
+  const findExactQueryMatch = (rawValue) => {
+    const exact = normalize(rawValue);
+    if (!exact) return null;
+    const exactLower = exact.toLowerCase();
+    const exactSymbol = exact.toUpperCase();
+    return results.find((item) => {
+      if (!item) return false;
+      if (item.kind === 'symbol') {
+        return normalizeSymbolKey(item.key) === exactSymbol;
+      }
+      if (item.kind === 'account' || item.kind === 'group' || item.kind === 'nav') {
+        return (
+          normalizeKey(item.label) === exactLower ||
+          normalizeKey(item.key) === exactLower ||
+          normalizeKey(item.targetKey) === exactLower
+        );
+      }
+      return false;
+    }) || null;
+  };
+
   const handleSelect = (item) => {
     if (!item) return;
     // Handle templates by inserting placeholder text and keeping focus
@@ -546,15 +745,15 @@ export default function GlobalSearch({
           const len = next.length;
           if (typeof requestAnimationFrame === 'function') {
             requestAnimationFrame(() => {
-              try { inputRef.current.setSelectionRange(len, len); } catch (e) { /* ignore */ }
+              try { inputRef.current.setSelectionRange(len, len); } catch { /* ignore */ }
             });
           } else {
             setTimeout(() => {
-              try { inputRef.current.setSelectionRange(len, len); } catch (e) { /* ignore */ }
+              try { inputRef.current.setSelectionRange(len, len); } catch { /* ignore */ }
             }, 0);
           }
         }
-      } catch (e) {
+      } catch {
         // ignore caret errors
       }
       return;
@@ -583,6 +782,16 @@ export default function GlobalSearch({
         symbols,
         label: item.displayLabel || item.label || null,
       });
+    } else if (item.kind === 'growth-curves' && typeof onSelectSymbol === 'function') {
+      const symbols = Array.isArray(item.symbols) ? item.symbols : [];
+      const primary = symbols[0] || item.key;
+      onSelectSymbol(primary, {
+        symbols,
+        descriptions: item.descriptions || {},
+        label: item.label || null,
+        growthCurves: true,
+        intent: 'growth-curves',
+      });
     } else if (item.kind === 'symbol' && typeof onSelectSymbol === 'function') {
       onSelectSymbol(item.key, { description: item.sublabel || null });
     } else if (item.kind === 'account' && typeof onSelectAccount === 'function') {
@@ -595,6 +804,44 @@ export default function GlobalSearch({
       // Route intent-like actions through onNavigate with a distinct key
       onNavigate(item.key);
     }
+  };
+
+  const handleEnter = async () => {
+    const exactMatch = findExactQueryMatch(query);
+    if (exactMatch) {
+      handleSelect(exactMatch);
+      return;
+    }
+
+    const typedSymbol = normalizeTypedSymbolCandidate(query);
+    if (typedSymbol && typeof onSelectSymbol === 'function') {
+      const lookupId = enterQuoteLookupRef.current + 1;
+      enterQuoteLookupRef.current = lookupId;
+      try {
+        const quote = await getQuote(typedSymbol, { force: true });
+        if (enterQuoteLookupRef.current !== lookupId) {
+          return;
+        }
+        const price = coerceNumber(quote?.price);
+        const quoteSymbol =
+          normalizeSymbolKey(quote?.symbol || quote?.requestedSymbol || typedSymbol) || typedSymbol;
+        if (price !== null && price > 0 && quoteSymbol === typedSymbol) {
+          setOpen(false);
+          setQuery('');
+          onSelectSymbol(typedSymbol, {
+            description: normalize(quote?.name || quote?.shortName || quote?.longName) || null,
+            externalSymbol: true,
+            priceOnly: true,
+          });
+          return;
+        }
+      } catch {
+        // Fall through to the best visible result below.
+      }
+    }
+
+    const item = results[highlightedIndex] || results[0];
+    handleSelect(item);
   };
 
   const handleOptionMouseDown = (event, item) => {
@@ -655,8 +902,7 @@ export default function GlobalSearch({
       setHighlightedIndex((i) => (results.length ? Math.max(0, i - 1) : -1));
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      const item = results[highlightedIndex] || results[0];
-      handleSelect(item);
+      handleEnter();
     } else if (event.key === 'Escape') {
       setOpen(false);
     }
@@ -699,6 +945,10 @@ export default function GlobalSearch({
             results.map((item, index) => {
               const id = `${baseId}-opt-${index}`;
               const classes = ['global-search__option'];
+              const quoteSymbol = getQuoteSymbolForResult(item);
+              const quoteRow = quoteSymbol ? quoteRows[quoteSymbol] : null;
+              const quoteData = quoteRow?.data || null;
+              const quoteChangeTone = quoteData ? toneForChange(quoteData.changePercent) : 'neutral';
               if (index === highlightedIndex) classes.push('global-search__option--active');
               return (
                 <li
@@ -711,21 +961,51 @@ export default function GlobalSearch({
                   onMouseDown={(e) => handleOptionMouseDown(e, item)}
                   onClick={(e) => handleOptionClick(e, item)}
                 >
-                  <div className="global-search__label">
-                    {item.label}
-                    {item.kind === 'symbol' ? <span className="global-search__badge">SYM</span> : null}
-                    {item.kind === 'nav' ? <span className="global-search__badge">NAV</span> : null}
-                    {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
-                    {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
-                    {item.kind === 'action' ? <span className="global-search__badge">ACTION</span> : null}
-                    {item.kind === 'symbol-action' ? (
-                      <span className="global-search__badge">ACTION</span>
+                  <div className="global-search__row">
+                    <div className="global-search__main">
+                      <div className="global-search__label">
+                        {item.label}
+                        {item.kind === 'symbol' ? <span className="global-search__badge">SYM</span> : null}
+                        {item.kind === 'nav' ? <span className="global-search__badge">NAV</span> : null}
+                        {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
+                        {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
+                        {item.kind === 'action' ? <span className="global-search__badge">ACTION</span> : null}
+                        {item.kind === 'symbol-action' ? (
+                          <span className="global-search__badge">ACTION</span>
+                        ) : null}
+                        {item.kind === 'growth-curves' ? (
+                          <span className="global-search__badge">CURVE</span>
+                        ) : null}
+                        {item.kind === 'template' ? <span className="global-search__badge">TPL</span> : null}
+                      </div>
+                      {item.sublabel ? (
+                        <div className="global-search__sublabel">{item.sublabel}</div>
+                      ) : null}
+                    </div>
+                    {quoteSymbol ? (
+                      <div className="global-search__quote" aria-live="polite">
+                        {quoteRow?.status === 'loading' ? (
+                          <span className="global-search__quote-loading">Loading...</span>
+                        ) : quoteRow?.status === 'success' && quoteData?.price ? (
+                          <>
+                            <span className="global-search__quote-price">
+                              {formatMoney(quoteData.price)}
+                              {quoteData.currency ? (
+                                <span className="global-search__quote-currency"> {quoteData.currency}</span>
+                              ) : null}
+                            </span>
+                            <span
+                              className={`global-search__quote-change global-search__quote-change--${quoteChangeTone}`}
+                            >
+                              {formatSignedPercent(quoteData.changePercent)}
+                            </span>
+                          </>
+                        ) : quoteRow?.status === 'error' ? (
+                          <span className="global-search__quote-loading">Unavailable</span>
+                        ) : null}
+                      </div>
                     ) : null}
-                    {item.kind === 'template' ? <span className="global-search__badge">TPL</span> : null}
                   </div>
-                  {item.sublabel ? (
-                    <div className="global-search__sublabel">{item.sublabel}</div>
-                  ) : null}
                 </li>
               );
             })

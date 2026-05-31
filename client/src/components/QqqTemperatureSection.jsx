@@ -13,6 +13,7 @@ const EXTENDED_REFERENCE_TEMPERATURES = [1.6, 1.7, 1.8, 1.9, 2];
 const TIMEFRAME_OPTIONS = [
   { value: '1M', label: '1 month' },
   { value: '1Y', label: '1 year' },
+  { value: '3Y', label: '3 years' },
   { value: '5Y', label: '5 years' },
   { value: '10Y', label: '10 years' },
   { value: '15Y', label: '15 years' },
@@ -107,6 +108,9 @@ function subtractInterval(date, option) {
       break;
     case '1Y':
       result.setFullYear(result.getFullYear() - 1);
+      break;
+    case '3Y':
+      result.setFullYear(result.getFullYear() - 3);
       break;
     case '5Y':
       result.setFullYear(result.getFullYear() - 5);
@@ -285,7 +289,7 @@ export default function QqqTemperatureSection({
     [filteredSeries, domainReferenceTemperatures],
   );
   const latestLabel = Number.isFinite(latestTemperature)
-    ? `T = ${formatNumber(latestTemperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    ? `T = ${formatNumber(latestTemperature, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`
     : null;
 
   const hasChart = chartMetrics && chartMetrics.points.length >= 1;
@@ -406,7 +410,7 @@ export default function QqqTemperatureSection({
     if (!activePoint || !Number.isFinite(activePoint.temperature)) {
       return null;
     }
-    return `T = ${formatNumber(activePoint.temperature, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `T = ${formatNumber(activePoint.temperature, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
   }, [activePoint]);
 
   const hoverDateLabel = useMemo(() => {

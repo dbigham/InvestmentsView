@@ -58,7 +58,7 @@ function buildDonutPath(centerX, centerY, outerRadius, innerRadius, startAngle, 
   ].join(' ');
 }
 
-function buildHoldingsPieSlices(positions) {
+function buildHoldingsPieSlices(positions, cashValue) {
   const merged = aggregatePositionsByMergedSymbol(positions);
   const holdings = merged
     .map((entry) => {
@@ -77,6 +77,18 @@ function buildHoldingsPieSlices(positions) {
       };
     })
     .filter((entry) => entry.marketValue > 0);
+  const normalizedCashValue = isFiniteNumber(cashValue) && cashValue > 0 ? cashValue : 0;
+  if (normalizedCashValue > 0) {
+    holdings.push({
+      id: 'cash',
+      symbol: 'CASH',
+      label: 'Cash',
+      description: 'Cash balance',
+      marketValue: normalizedCashValue,
+      rawSymbols: [],
+      isCash: true,
+    });
+  }
 
   if (!holdings.length) {
     return { slices: [], totalMarketValue: 0 };
@@ -96,12 +108,12 @@ function buildHoldingsPieSlices(positions) {
 
   holdings.forEach((entry) => {
     const share = (entry.marketValue / totalMarketValue) * 100;
-    const mustInclude = slices.length < MIN_VISIBLE_HOLDINGS;
+    const mustInclude = entry.isCash || slices.length < MIN_VISIBLE_HOLDINGS;
     const hasRoom = slices.length < MAX_VISIBLE_HOLDINGS;
     const meetsShareThreshold = share >= MIN_HOLDING_SHARE_PERCENT;
     const needsCoverage = coverage < TARGET_COVERAGE_PERCENT;
 
-    if (hasRoom && (mustInclude || meetsShareThreshold || needsCoverage)) {
+    if (entry.isCash || (hasRoom && (mustInclude || meetsShareThreshold || needsCoverage))) {
       slices.push({ ...entry, share });
       coverage += share;
     } else {
@@ -129,6 +141,7 @@ function buildHoldingsPieSlices(positions) {
 
 export default function HoldingsPieChartDialog({
   positions,
+  cashValue,
   accountLabel,
   asOf,
   baseCurrency,
@@ -155,8 +168,8 @@ export default function HoldingsPieChartDialog({
   };
 
   const { slices, totalMarketValue } = useMemo(
-    () => buildHoldingsPieSlices(positions),
-    [positions]
+    () => buildHoldingsPieSlices(positions, cashValue),
+    [positions, cashValue]
   );
 
   const chartSlices = useMemo(() => {
@@ -292,7 +305,7 @@ export default function HoldingsPieChartDialog({
         </div>
 
         <footer className="holdings-pie-dialog__footer">
-          <span className="holdings-pie-dialog__total-label">Total market value</span>
+          <span className="holdings-pie-dialog__total-label">Total value</span>
           <span className="holdings-pie-dialog__total-value">{formatMoney(totalMarketValue)}</span>
         </footer>
       </div>
@@ -302,6 +315,7 @@ export default function HoldingsPieChartDialog({
 
 HoldingsPieChartDialog.propTypes = {
   positions: PropTypes.arrayOf(PropTypes.object).isRequired,
+  cashValue: PropTypes.number,
   accountLabel: PropTypes.string,
   asOf: PropTypes.string,
   baseCurrency: PropTypes.string,
@@ -310,6 +324,7 @@ HoldingsPieChartDialog.propTypes = {
 
 HoldingsPieChartDialog.defaultProps = {
   accountLabel: null,
+  cashValue: null,
   asOf: null,
   baseCurrency: 'CAD',
 };

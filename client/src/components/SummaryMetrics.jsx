@@ -17,6 +17,7 @@ import {
   CHART_WIDTH,
   PADDING, clampChartX, buildChartMetrics, buildHoverLabel,
 } from './TotalPnlChartUtils';
+import { buildExponentialGrowthFit } from '../utils/growthFit';
 import canadianFiftyBillImage from '../assets/canadian-50-bill.jpg';
 import canadianHundredBillImage from '../assets/canadian-100-bill.jpg';
 
@@ -54,6 +55,12 @@ const CHART_METRIC_OPTIONS = [
     useDisplayStartDelta: false,
     valueFormatter: (value) => formatMoney(value),
   },
+];
+const PRICE_CHART_DISPLAY_MODE_STANDARD = 'standard';
+const PRICE_CHART_DISPLAY_MODE_TEMPERATURE = 'temperature';
+const PRICE_CHART_DISPLAY_MODE_OPTIONS = [
+  { value: PRICE_CHART_DISPLAY_MODE_STANDARD, label: 'Standard' },
+  { value: PRICE_CHART_DISPLAY_MODE_TEMPERATURE, label: 'Temperature' },
 ];
 
 function clampNumber(value, minimum, maximum) {
@@ -378,6 +385,20 @@ function computeElapsedYears(startDate, endDate) {
     return null;
   }
   return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
+}
+
+function buildChartFloatingLabelStyle(point) {
+  if (!point) {
+    return null;
+  }
+  const leftPercent = Math.min(94, Math.max(0, (point.x / CHART_WIDTH) * 100));
+  const offset = 40;
+  let anchorY = point.y - offset;
+  const minAnchor = PADDING.top + 8;
+  const maxAnchor = CHART_HEIGHT - PADDING.bottom - 8;
+  anchorY = Math.min(maxAnchor, Math.max(minAnchor, anchorY));
+  const topPercent = Math.max(4, Math.min(96, (anchorY / CHART_HEIGHT) * 100));
+  return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
 }
 
 function isValidDate(value) {
@@ -1434,6 +1455,7 @@ export default function SummaryMetrics({
   onSymbolPriceSymbolChange,
   onAdjustDeployment,
   symbolMode = false,
+  symbolPriceOnly = false,
   childAccounts,
   parentGroups,
   onSelectAccount,
@@ -1453,39 +1475,71 @@ export default function SummaryMetrics({
       { value: '3M', label: '3M' },
       { value: '6M', label: '6M' },
       { value: '1Y', label: '1Y' },
+      { value: '3Y', label: '3Y' },
       { value: '5Y', label: '5Y' },
       { value: '10Y', label: '10Y' },
       { value: 'ALL', label: 'Since inception' },
     ],
     []
   );
-  const availableChartMetricOptions = useMemo(
-    () => CHART_METRIC_OPTIONS.filter((option) => !option.symbolOnly || symbolMode),
-    [symbolMode]
-  );
+  const availableChartMetricOptions = useMemo(() => {
+    if (symbolMode && symbolPriceOnly) {
+      return CHART_METRIC_OPTIONS.filter((option) => option.value === 'price');
+    }
+    return CHART_METRIC_OPTIONS.filter((option) => !option.symbolOnly || symbolMode);
+  }, [symbolMode, symbolPriceOnly]);
   const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
   const [chartMetric, setChartMetric] = usePersistentState('total-pnl-chart-metric', DEFAULT_CHART_METRIC);
   const [includeFxInTotalPnlChart, setIncludeFxInTotalPnlChart] = usePersistentState(
     'total-pnl-chart-include-fx',
     true
   );
+  const fallbackChartMetric = availableChartMetricOptions[0]?.value || DEFAULT_CHART_METRIC;
   const normalizedChartMetric = availableChartMetricOptions.some((option) => option.value === chartMetric)
     ? chartMetric
-    : DEFAULT_CHART_METRIC;
+    : fallbackChartMetric;
   const chartMetricConfig =
     availableChartMetricOptions.find((option) => option.value === normalizedChartMetric) ||
     availableChartMetricOptions[0] ||
     CHART_METRIC_OPTIONS[0];
   const isPriceMetric = chartMetricConfig.value === 'price';
+  const [priceChartDisplayMode, setPriceChartDisplayMode] = usePersistentState(
+    'price-chart-display-mode',
+    PRICE_CHART_DISPLAY_MODE_STANDARD
+  );
+  const normalizedPriceChartDisplayMode = PRICE_CHART_DISPLAY_MODE_OPTIONS.some(
+    (option) => option.value === priceChartDisplayMode
+  )
+    ? priceChartDisplayMode
+    : PRICE_CHART_DISPLAY_MODE_STANDARD;
   const chartMetricBaseLabel = chartMetricConfig.label;
+  const isTemperaturePriceChartMode =
+    isPriceMetric &&
+    symbolMode &&
+    normalizedPriceChartDisplayMode === PRICE_CHART_DISPLAY_MODE_TEMPERATURE;
   const chartMetricLabel = useMemo(() => {
+    if (isTemperaturePriceChartMode) {
+      return 'Temperature';
+    }
     if (isPriceMetric && symbolMode && symbolPriceSeries?.currency) {
       return `${chartMetricBaseLabel} (${symbolPriceSeries.currency})`;
     }
     return chartMetricBaseLabel;
-  }, [chartMetricBaseLabel, isPriceMetric, symbolMode, symbolPriceSeries?.currency]);
+  }, [
+    chartMetricBaseLabel,
+    isPriceMetric,
+    isTemperaturePriceChartMode,
+    symbolMode,
+    symbolPriceSeries?.currency,
+  ]);
   const chartMetricAriaLabel = `${chartMetricLabel} history`;
   const chartMetricValueFormatter = useMemo(() => {
+    if (isTemperaturePriceChartMode) {
+      return (value) =>
+        Number.isFinite(value)
+          ? `T = ${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : 'T = --';
+    }
     if (isPriceMetric && symbolMode) {
       const currency = typeof symbolPriceSeries?.currency === 'string' ? symbolPriceSeries.currency : null;
       if (currency) {
@@ -1502,7 +1556,33 @@ export default function SummaryMetrics({
       }
     }
     return chartMetricConfig.valueFormatter;
-  }, [chartMetricConfig.valueFormatter, isPriceMetric, symbolMode, symbolPriceSeries?.currency]);
+  }, [
+    chartMetricConfig.valueFormatter,
+    isPriceMetric,
+    isTemperaturePriceChartMode,
+    symbolMode,
+    symbolPriceSeries?.currency,
+  ]);
+  const priceTooltipValueFormatter = useMemo(() => {
+    const currency = typeof symbolPriceSeries?.currency === 'string' ? symbolPriceSeries.currency : null;
+    if (currency) {
+      try {
+        const formatter = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency,
+          maximumFractionDigits: 2,
+        });
+        return (value) => (Number.isFinite(value) ? formatter.format(value) : formatMoney(value));
+      } catch {
+        // ignore formatter errors and fall back below
+      }
+    }
+    return (value) =>
+      formatMoney(value, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2,
+      });
+  }, [symbolPriceSeries?.currency]);
   const effectiveChartSeriesStatus =
     isPriceMetric && symbolMode ? symbolPriceSeriesStatus : totalPnlSeriesStatus;
   const effectiveChartSeriesError =
@@ -1516,12 +1596,14 @@ export default function SummaryMetrics({
   const canToggleIncludeFx = isTotalPnlMetric;
   const totalPnlRangeId = useId();
   const chartMetricSelectId = useId();
+  const priceChartDisplayModeSelectId = useId();
   const priceSymbolSelectId = useId();
   useEffect(() => {
-    if (!availableChartMetricOptions.some((option) => option.value === chartMetric)) {
-      setChartMetric(DEFAULT_CHART_METRIC);
+    const isKnownChartMetric = CHART_METRIC_OPTIONS.some((option) => option.value === chartMetric);
+    if (!isKnownChartMetric) {
+      setChartMetric(fallbackChartMetric);
     }
-  }, [availableChartMetricOptions, chartMetric, setChartMetric]);
+  }, [chartMetric, fallbackChartMetric, setChartMetric]);
   const title = 'Total equity (Combined in CAD)';
   const totalEquity = balances?.totalEquity ?? null;
   const marketValue = balances?.marketValue ?? null;
@@ -1995,8 +2077,8 @@ export default function SummaryMetrics({
   let qqqLabel = 'QQQ temperature: Loading…';
   if ((qqqStatus === 'ready' || qqqStatus === 'refreshing') && hasQqqTemperature) {
     const formattedTemp = formatNumber(qqqSummary.temperature, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3,
     });
     qqqLabel = `QQQ temperature: ${formattedTemp}`;
   } else if (qqqStatus === 'error') {
@@ -2187,6 +2269,14 @@ export default function SummaryMetrics({
       return;
     }
     setChartMetric(DEFAULT_CHART_METRIC);
+  };
+  const handlePriceChartDisplayModeChange = (event) => {
+    const nextValue = event.target.value;
+    if (PRICE_CHART_DISPLAY_MODE_OPTIONS.some((option) => option.value === nextValue)) {
+      setPriceChartDisplayMode(nextValue);
+      return;
+    }
+    setPriceChartDisplayMode(PRICE_CHART_DISPLAY_MODE_STANDARD);
   };
   let totalPnlRangeSelector = null;
   if (normalizedRangeOptions.length > 0) {
@@ -2442,6 +2532,30 @@ export default function SummaryMetrics({
       .filter(Boolean);
   }, [symbolMode, symbolPriceSeries?.points, chartTimeframe]);
 
+  const standardPriceGrowthFit = useMemo(() => {
+    if (!isPriceMetric || !symbolMode) {
+      return null;
+    }
+    return buildExponentialGrowthFit(priceChartSeries);
+  }, [isPriceMetric, symbolMode, priceChartSeries]);
+
+  const standardPriceGrowthFitByDate = useMemo(() => {
+    if (!standardPriceGrowthFit?.fittedPoints?.length) {
+      return new Map();
+    }
+    return new Map(
+      standardPriceGrowthFit.fittedPoints
+        .filter((point) => point?.date && Number.isFinite(point.value) && point.value > 0)
+        .map((point) => [point.date, point.value])
+    );
+  }, [standardPriceGrowthFit]);
+
+  const isTemperaturePriceChart =
+    isPriceMetric &&
+    symbolMode &&
+    normalizedPriceChartDisplayMode === PRICE_CHART_DISPLAY_MODE_TEMPERATURE &&
+    standardPriceGrowthFitByDate.size > 0;
+
   const baseChartSeries = useMemo(() => {
     if (isPriceMetric && symbolMode) {
       return priceChartSeries;
@@ -2453,7 +2567,35 @@ export default function SummaryMetrics({
     if (!baseChartSeries.length) {
       return [];
     }
-    if ((isPriceMetric && symbolMode) || isTotalPnlMetric) {
+    if (isPriceMetric && symbolMode) {
+      return baseChartSeries
+        .map((entry) => {
+          const fairPrice = standardPriceGrowthFitByDate.get(entry.date);
+          const price = Number(entry.totalPnl);
+          if (!Number.isFinite(fairPrice) || fairPrice <= 0 || !Number.isFinite(price) || price <= 0) {
+            return isTemperaturePriceChart ? null : entry;
+          }
+          const temperature = price / fairPrice;
+          if (!isTemperaturePriceChart) {
+            return {
+              ...entry,
+              priceTemperature: temperature,
+              priceFairValue: fairPrice,
+              priceActualValue: price,
+            };
+          }
+          return {
+            ...entry,
+            totalPnl: temperature,
+            totalPnlDelta: null,
+            priceTemperature: temperature,
+            priceFairValue: fairPrice,
+            priceActualValue: price,
+          };
+        })
+        .filter(Boolean);
+    }
+    if (isTotalPnlMetric) {
       return baseChartSeries;
     }
     const metricUsesPrice = chartMetricConfig.valueKey === 'price';
@@ -2501,7 +2643,15 @@ export default function SummaryMetrics({
         totalPnlDelta: hasNextDelta ? nextDelta : entry.totalPnlDelta ?? null,
       };
     });
-  }, [baseChartSeries, chartMetricConfig, isPriceMetric, isTotalPnlMetric, symbolMode]);
+  }, [
+    baseChartSeries,
+    chartMetricConfig,
+    isPriceMetric,
+    isTemperaturePriceChart,
+    isTotalPnlMetric,
+    standardPriceGrowthFitByDate,
+    symbolMode,
+  ]);
 
   const { start: timeframeRangeStart, end: timeframeRangeEnd } = useMemo(() => {
     const endCandidates = [];
@@ -2532,14 +2682,17 @@ export default function SummaryMetrics({
     if (!chartSeries.length) {
       return null;
     }
+    const extraDomainValues = isTemperaturePriceChart ? [0.5, 1, 1.5] : [];
     // When the series carries a displayStartDate, interpret values as deltas
     // from that baseline so the chart starts at 0 for CAGR views.
     return buildChartMetrics(chartSeries, {
       useDisplayStartDelta: applyDisplayStartDelta,
       rangeStartDate: timeframeRangeStart,
       rangeEndDate: timeframeRangeEnd,
+      extraDomainValues,
+      minimumValuePadding: isTemperaturePriceChart ? 0.1 : 10,
     });
-  }, [applyDisplayStartDelta, chartSeries, timeframeRangeStart, timeframeRangeEnd]);
+  }, [applyDisplayStartDelta, chartSeries, isTemperaturePriceChart, timeframeRangeStart, timeframeRangeEnd]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -2555,12 +2708,141 @@ export default function SummaryMetrics({
       .join(' ');
   }, [totalPnlChartHasSeries, totalPnlChartMetrics]);
 
+  const priceGrowthCurve = useMemo(() => {
+    if (!isPriceMetric || !symbolMode || !totalPnlChartHasSeries || !totalPnlChartMetrics) {
+      return null;
+    }
+    const fit = standardPriceGrowthFit;
+    if (!fit) {
+      return null;
+    }
+    const xByDate = new Map(
+      totalPnlChartMetrics.points
+        .filter((point) => point?.date && Number.isFinite(point.x))
+        .map((point) => [point.date, point.x])
+    );
+    const plottedPoints = fit.fittedPoints
+      .map((point) => {
+        const x = xByDate.get(point.date);
+        if (!Number.isFinite(x) || !Number.isFinite(point.value)) {
+          return null;
+        }
+        const chartValue = isTemperaturePriceChart ? 1 : point.value;
+        return {
+          x,
+          y: totalPnlChartMetrics.yFor(chartValue),
+          value: chartValue,
+          fairPrice: point.value,
+          date: point.date,
+        };
+      })
+      .filter((point) => point && Number.isFinite(point.y));
+    if (plottedPoints.length < 2) {
+      return null;
+    }
+    const path = plottedPoints
+      .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ');
+    const buildTemperatureReferenceCurve = (temperatureValue) => {
+      const referencePoints = plottedPoints
+        .map((point) => {
+          const referenceValue = isTemperaturePriceChart
+            ? temperatureValue
+            : point.fairPrice * temperatureValue;
+          const y = totalPnlChartMetrics.yFor(referenceValue);
+          if (!Number.isFinite(point.x) || !Number.isFinite(y)) {
+            return null;
+          }
+          return {
+            x: point.x,
+            y,
+            value: referenceValue,
+            date: point.date,
+          };
+        })
+        .filter(Boolean);
+      if (referencePoints.length < 2) {
+        return null;
+      }
+      const referencePath = referencePoints
+        .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+        .join(' ');
+      return {
+        path: referencePath,
+        temperature: temperatureValue,
+      };
+    };
+    const referenceCurves = [1.5, 0.5]
+      .map((temperatureValue) => buildTemperatureReferenceCurve(temperatureValue))
+      .filter(Boolean);
+    const labelPoint = plottedPoints[plottedPoints.length - 1];
+    const actualLabelPoint = totalPnlChartMetrics.points.find((point) => point?.date === labelPoint.date);
+    const actualValue = Number.isFinite(actualLabelPoint?.chartValue)
+      ? actualLabelPoint.chartValue
+      : Number.isFinite(actualLabelPoint?.totalPnl)
+        ? actualLabelPoint.totalPnl
+        : null;
+    const temperature =
+      Number.isFinite(actualValue) && Number.isFinite(labelPoint.value) && labelPoint.value > 0
+        ? actualValue / labelPoint.value
+        : null;
+    const leftPercent = Math.max(10, Math.min(90, (labelPoint.x / CHART_WIDTH) * 100));
+    const topPercent = Math.max(12, Math.min(86, ((labelPoint.y - 12) / CHART_HEIGHT) * 100));
+    const transform =
+      leftPercent > 74
+        ? 'translate(-100%, -50%)'
+        : leftPercent < 26
+          ? 'translate(0, -50%)'
+          : 'translate(-50%, -115%)';
+    return {
+      path,
+      annualGrowthRate: fit.annualGrowthRate,
+      temperature,
+      referenceCurves,
+      labelStyle: {
+        left: `${leftPercent}%`,
+        top: `${topPercent}%`,
+        transform,
+      },
+    };
+  }, [
+    isPriceMetric,
+    isTemperaturePriceChart,
+    standardPriceGrowthFit,
+    symbolMode,
+    totalPnlChartHasSeries,
+    totalPnlChartMetrics,
+  ]);
+
+  const priceGrowthCurveLabel = priceGrowthCurve
+    ? `${formatSignedPercent(priceGrowthCurve.annualGrowthRate * 100, {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })}/yr`
+    : null;
+  const priceGrowthCurveTemperatureLabel =
+    priceGrowthCurve && Number.isFinite(priceGrowthCurve.temperature)
+      ? `T = ${formatNumber(priceGrowthCurve.temperature, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      : null;
+
   const totalPnlChartAxis = useMemo(() => {
     if (!totalPnlChartMetrics) {
       return [];
     }
     return totalPnlChartMetrics.axisTicks.map((value) => ({ value, y: totalPnlChartMetrics.yFor(value) }));
   }, [totalPnlChartMetrics]);
+  const formatChartAxisValue = useCallback(
+    (value) => {
+      if (isTemperaturePriceChart) {
+        return `T=${formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}`;
+      }
+      return formatMoney(value, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    },
+    [isTemperaturePriceChart]
+  );
 
   const totalPnlChartZeroLine = useMemo(() => {
     if (!totalPnlChartMetrics) {
@@ -2695,6 +2977,9 @@ export default function SummaryMetrics({
       const resolvedX = clampChartX(lowerX + (upperX - lowerX) * t);
       const interpolatedChartValue = interpolate(lower.chartValue, upper.chartValue);
       const interpolatedTotalPnl = interpolate(lower.totalPnl, upper.totalPnl);
+      const interpolatedPriceActualValue = interpolate(lower.priceActualValue, upper.priceActualValue);
+      const interpolatedPriceFairValue = interpolate(lower.priceFairValue, upper.priceFairValue);
+      const interpolatedPriceTemperature = interpolate(lower.priceTemperature, upper.priceTemperature);
       const resolvedY =
         Number.isFinite(lower.y) && Number.isFinite(upper.y)
           ? lower.y + (upper.y - lower.y) * t
@@ -2705,6 +2990,9 @@ export default function SummaryMetrics({
         date: t < 0.5 ? lower.date : upper.date,
         totalPnl: interpolatedTotalPnl,
         chartValue: Number.isFinite(interpolatedChartValue) ? interpolatedChartValue : interpolatedTotalPnl,
+        priceActualValue: interpolatedPriceActualValue,
+        priceFairValue: interpolatedPriceFairValue,
+        priceTemperature: interpolatedPriceTemperature,
         x: resolvedX,
         y: resolvedY,
       };
@@ -3172,6 +3460,27 @@ export default function SummaryMetrics({
     if (!label) {
       return null;
     }
+    if (isTemperaturePriceChart && Number.isFinite(hoverPoint?.priceActualValue)) {
+      return {
+        ...label,
+        amount: priceTooltipValueFormatter(hoverPoint.priceActualValue),
+        detail: chartMetricValueFormatter(hoverPoint.chartValue),
+        tone: 'neutral',
+      };
+    }
+    if (isPriceMetric && symbolMode && Number.isFinite(hoverPoint?.totalPnl)) {
+      return {
+        ...label,
+        amount: priceTooltipValueFormatter(hoverPoint.totalPnl),
+        detail: Number.isFinite(hoverPoint.priceTemperature)
+          ? `T = ${formatNumber(hoverPoint.priceTemperature, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}`
+          : null,
+        tone: 'neutral',
+      };
+    }
     const resolved = !isTotalPnlMetric ? { ...label, tone: 'neutral' } : label;
     if (typeof chartMetricValueFormatter === 'function') {
       const rawValue = applyDisplayStartDelta && Number.isFinite(hoverPoint?.chartValue)
@@ -3190,8 +3499,12 @@ export default function SummaryMetrics({
     hoverPoint,
     applyDisplayStartDelta,
     chartMetricValueFormatter,
+    isPriceMetric,
+    isTemperaturePriceChart,
     isTotalPnlMetric,
     hoverRangeSummary,
+    priceTooltipValueFormatter,
+    symbolMode,
   ]);
 
   const markerHoverLabel = useMemo(() => {
@@ -3201,6 +3514,25 @@ export default function SummaryMetrics({
     const label = buildHoverLabel(totalPnlChartMarker, { useDisplayStartDelta: applyDisplayStartDelta });
     if (!label) {
       return null;
+    }
+    if (isTemperaturePriceChart && Number.isFinite(totalPnlChartMarker?.priceActualValue)) {
+      return {
+        ...label,
+        amount: priceTooltipValueFormatter(totalPnlChartMarker.priceActualValue),
+        detail: chartMetricValueFormatter(totalPnlChartMarker.chartValue),
+        tone: 'neutral',
+      };
+    }
+    if (
+      isPriceMetric &&
+      symbolMode &&
+      Number.isFinite(totalPnlChartMarker?.totalPnl)
+    ) {
+      return {
+        ...label,
+        amount: priceTooltipValueFormatter(totalPnlChartMarker.totalPnl),
+        tone: 'neutral',
+      };
     }
     const resolved = !isTotalPnlMetric ? { ...label, tone: 'neutral' } : label;
     if (typeof chartMetricValueFormatter === 'function') {
@@ -3216,7 +3548,16 @@ export default function SummaryMetrics({
       }
     }
     return resolved;
-  }, [applyDisplayStartDelta, chartMetricValueFormatter, isTotalPnlMetric, totalPnlChartMarker]);
+  }, [
+    applyDisplayStartDelta,
+    chartMetricValueFormatter,
+    isPriceMetric,
+    isTemperaturePriceChart,
+    isTotalPnlMetric,
+    priceTooltipValueFormatter,
+    symbolMode,
+    totalPnlChartMarker,
+  ]);
 
   // Default action: open Total P&L breakdown when the chart is activated.
   const chartSupportsBreakdown = isTotalPnlMetric && !symbolMode;
@@ -3236,19 +3577,16 @@ export default function SummaryMetrics({
   }, [chartSupportsBreakdown, onShowPnlBreakdown, onShowTotalPnl]);
   const markerLabel = markerHoverLabel?.amount || null;
   const labelPosition = useMemo(() => {
-    const point = hoverPoint || totalPnlChartMarker;
-    if (!point) {
-      return null;
-    }
-    const leftPercent = Math.min(94, Math.max(0, (point.x / CHART_WIDTH) * 100));
-    const offset = 40;
-    let anchorY = point.y - offset;
-    const minAnchor = PADDING.top + 8;
-    const maxAnchor = CHART_HEIGHT - PADDING.bottom - 8;
-    anchorY = Math.min(maxAnchor, Math.max(minAnchor, anchorY));
-    const topPercent = Math.max(4, Math.min(96, (anchorY / CHART_HEIGHT) * 100));
-    return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
+    return buildChartFloatingLabelStyle(hoverPoint || totalPnlChartMarker);
   }, [hoverPoint, totalPnlChartMarker]);
+  const markerLabelPosition = useMemo(
+    () => buildChartFloatingLabelStyle(totalPnlChartMarker),
+    [totalPnlChartMarker]
+  );
+  const growthCurveLabelStyle =
+    isTemperaturePriceChart && hoverPoint && markerLabelPosition
+      ? markerLabelPosition
+      : priceGrowthCurve?.labelStyle;
 
   const handleMouseMove = useCallback((event) => {
     const point = getRelativePoint(event.clientX, event.clientY);
@@ -3385,6 +3723,7 @@ export default function SummaryMetrics({
 
   // Always allow the Total P&L chart to render; caller controls series and status.
   const showTotalPnlChart = true;
+  const showPriceChartDisplayModeSelector = symbolMode && isPriceMetric;
   const showPriceSymbolSelector =
     symbolMode &&
     isPriceMetric &&
@@ -4304,6 +4643,27 @@ export default function SummaryMetrics({
               ))}
             </select>
           </div>
+          {showPriceChartDisplayModeSelector && (
+            <div className="equity-card__total-pnl-chart-selector">
+              <label className="visually-hidden" htmlFor={priceChartDisplayModeSelectId}>
+                Select price chart display
+              </label>
+              <select
+                id={priceChartDisplayModeSelectId}
+                className="equity-card__total-pnl-chart-select"
+                aria-label="Select price chart display"
+                title="Select price chart display"
+                value={normalizedPriceChartDisplayMode}
+                onChange={handlePriceChartDisplayModeChange}
+              >
+                {PRICE_CHART_DISPLAY_MODE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {showPriceSymbolSelector && (
             <div className="equity-card__total-pnl-chart-selector">
               <label className="visually-hidden" htmlFor={priceSymbolSelectId}>
@@ -4406,7 +4766,7 @@ export default function SummaryMetrics({
                         className="pnl-dialog__axis-label"
                         textAnchor="start"
                       >
-                        {formatMoney(tick.value, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                        {formatChartAxisValue(tick.value)}
                       </text>
                       <line
                         className="qqq-section__line qqq-section__line--guide"
@@ -4432,8 +4792,16 @@ export default function SummaryMetrics({
                       pointerEvents="none"
                     />
                   )}
+                  {priceGrowthCurve?.referenceCurves?.map((referenceCurve) => (
+                    <g key={referenceCurve.temperature}>
+                      <path className="qqq-section__temperature-reference-path" d={referenceCurve.path} />
+                    </g>
+                  ))}
                   {totalPnlChartPath && (
                     <path className="qqq-section__series-path" d={totalPnlChartPath} />
+                  )}
+                  {priceGrowthCurve?.path && (
+                    <path className="qqq-section__growth-curve-path" d={priceGrowthCurve.path} />
                   )}
                   {hoverPoint && !selectionRange && (
                     <>
@@ -4523,9 +4891,37 @@ export default function SummaryMetrics({
                     })()}>
                       {hoverLabel ? hoverLabel.amount : markerLabel}
                     </span>
+                    {(() => {
+                      const activeLabel = hoverLabel || markerHoverLabel;
+                      return activeLabel?.detail ? (
+                        <span className="pnl-dialog__label-amount">{activeLabel.detail}</span>
+                      ) : null;
+                    })()}
                     <span className="pnl-dialog__label-date">
                       {hoverLabel ? hoverLabel.date : (markerHoverLabel?.date || (totalPnlChartMarker?.date ? formatDate(totalPnlChartMarker.date) : null))}
                     </span>
+                  </div>
+                )}
+                {priceGrowthCurveLabel && growthCurveLabelStyle && !selectionSummary && (
+                  <div
+                    className={[
+                      'qqq-section__chart-label',
+                      'qqq-section__growth-curve-label',
+                      hoverPoint ? 'qqq-section__growth-curve-label--muted' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    style={growthCurveLabelStyle}
+                  >
+                    <span className="pnl-dialog__label-amount qqq-section__growth-curve-rate">
+                      {priceGrowthCurveLabel}
+                    </span>
+                    <span className="pnl-dialog__label-amount qqq-section__growth-curve-temperature">
+                      {priceGrowthCurveTemperatureLabel || 'Growth curve'}
+                    </span>
+                    {priceGrowthCurveTemperatureLabel && (
+                      <span className="pnl-dialog__label-date">Growth curve</span>
+                    )}
                   </div>
                 )}
               </>
@@ -4959,6 +5355,7 @@ SummaryMetrics.propTypes = {
   onTotalPnlRangeChange: PropTypes.func,
   onAdjustDeployment: PropTypes.func,
   symbolMode: PropTypes.bool,
+  symbolPriceOnly: PropTypes.bool,
   childAccounts: PropTypes.arrayOf(
     PropTypes.shape({
       id: PropTypes.string.isRequired,
@@ -5048,6 +5445,7 @@ SummaryMetrics.defaultProps = {
   onTotalPnlRangeChange: null,
   onAdjustDeployment: null,
   symbolMode: false,
+  symbolPriceOnly: false,
   childAccounts: [],
   parentGroups: [],
   onSelectAccount: null,

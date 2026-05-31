@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import AccountSelector from './components/AccountSelector';
 import SummaryMetrics from './components/SummaryMetrics';
 import GlobalSearch from './components/GlobalSearch';
+import GrowthCurvesPanel from './components/GrowthCurvesPanel';
 import TodoSummary from './components/TodoSummary';
 import PositionsTable from './components/PositionsTable';
 import OrdersTable from './components/OrdersTable';
@@ -7156,6 +7157,8 @@ export default function App() {
   const [focusedSymbol, setFocusedSymbol] = useState(null);
   const [focusedSymbolDescription, setFocusedSymbolDescription] = useState(null);
   const [focusedSymbolPriceSymbol, setFocusedSymbolPriceSymbol] = useState(null);
+  const [focusedSymbolPriceOnly, setFocusedSymbolPriceOnly] = useState(false);
+  const [growthCurvesRequest, setGrowthCurvesRequest] = useState(null);
   const [adHocSymbolGroup, setAdHocSymbolGroup] = useState(null);
   const [dynamicSymbolGroups, setDynamicSymbolGroups] = useState(new Map());
   const [pendingSymbolAction, setPendingSymbolAction] = useState(null);
@@ -7176,7 +7179,11 @@ export default function App() {
     setFocusedSymbol(null);
     setFocusedSymbolDescription(null);
     setFocusedSymbolPriceSymbol(null);
+    setFocusedSymbolPriceOnly(false);
     setAdHocSymbolGroup(null);
+  }, []);
+  const clearGrowthCurves = useCallback(() => {
+    setGrowthCurvesRequest(null);
   }, []);
   const positionsCardRef = useRef(null);
 
@@ -7284,6 +7291,7 @@ export default function App() {
     setFocusedSymbol(resolution.canonical);
     setFocusedSymbolDescription(initialSymbolFromUrl?.description || null);
     setFocusedSymbolPriceSymbol(resolution.priceSymbol);
+    setFocusedSymbolPriceOnly(false);
     setOrdersFilter(resolution.canonical);
     setPortfolioViewTab('positions');
   }, [initialSymbolFromUrl, resolveSymbolFocus, setOrdersFilter]);
@@ -9643,6 +9651,30 @@ export default function App() {
         return;
       }
 
+      if (meta?.growthCurves === true) {
+        const rawDescriptions =
+          meta?.descriptions && typeof meta.descriptions === 'object' ? meta.descriptions : {};
+        const descriptions = symbolList.reduce((acc, symbolKey) => {
+          const description = rawDescriptions[symbolKey] || rawDescriptions[symbolKey.toUpperCase()] || null;
+          if (typeof description === 'string' && description.trim()) {
+            acc[symbolKey] = description.trim();
+          }
+          return acc;
+        }, {});
+        setGrowthCurvesRequest({
+          symbols: symbolList,
+          descriptions,
+          label: typeof meta?.label === 'string' && meta.label.trim() ? meta.label.trim() : symbolList.join(' + '),
+        });
+        clearFocusedSymbol();
+        setOrdersFilter('');
+        setPortfolioViewTab('positions');
+        setPendingSymbolAction(null);
+        return;
+      }
+
+      setGrowthCurvesRequest(null);
+
       const adHocGroup = (() => {
         if (symbolList.length <= 1) {
           return null;
@@ -9676,11 +9708,13 @@ export default function App() {
       const priceSymbol = adHocGroup
         ? adHocGroup.defaultPriceSymbol || resolution.priceSymbol
         : resolution.priceSymbol;
+      const priceOnly = !adHocGroup && meta?.priceOnly === true;
 
       setAdHocSymbolGroup(adHocGroup || null);
       setFocusedSymbol(canonical);
       setFocusedSymbolDescription(meta?.description || null);
       setFocusedSymbolPriceSymbol(priceSymbol);
+      setFocusedSymbolPriceOnly(priceOnly);
       const normalizedCanonical = normalizeSymbolGroupKey(canonical);
       const matchedTheme =
         !adHocGroup &&
@@ -9750,8 +9784,10 @@ export default function App() {
     },
     [
       handleShowDividendsPanel,
+      clearFocusedSymbol,
       dynamicSymbolGroups,
       resolveSymbolFocus,
+      setGrowthCurvesRequest,
       setOrdersFilter,
       setPendingSymbolAction,
       setPortfolioViewTab,
@@ -12030,6 +12066,32 @@ export default function App() {
     currencyRates,
     baseCurrency,
   ]);
+  const holdingsPieChartCashValue = useMemo(() => {
+    if (focusedSymbol || !activeBalancesForDisplay) {
+      return 0;
+    }
+    const cashValue = coerceNumber(activeBalancesForDisplay.cash);
+    if (cashValue === null || cashValue <= 0) {
+      return 0;
+    }
+    const cashCurrency =
+      activeCurrency && typeof activeCurrency.currency === 'string'
+        ? activeCurrency.currency
+        : baseCurrency;
+    return convertAmountToCurrency(
+      cashValue,
+      cashCurrency,
+      baseCurrency,
+      currencyRates,
+      baseCurrency
+    );
+  }, [
+    focusedSymbol,
+    activeBalancesForDisplay,
+    activeCurrency,
+    currencyRates,
+    baseCurrency,
+  ]);
   const activeAccountIdsForDeployment = useMemo(() => {
     if (isAggregateSelection) {
       if (!accountsInView.length) {
@@ -13858,7 +13920,7 @@ export default function App() {
     if (qqqData || qqqLoading || qqqError) {
       return;
     }
-    fetchQqqTemperature();
+    fetchQqqTemperature({ includeLivePrice: true });
   }, [
     shouldShowQqqDetails,
     showingAggregateAccounts,
@@ -13992,6 +14054,9 @@ export default function App() {
     if (!focusedSymbol) {
       return;
     }
+    if (focusedSymbolPriceOnly) {
+      return;
+    }
     const targetKey = selectedAccountKey;
     if (!targetKey) {
       return;
@@ -14017,6 +14082,7 @@ export default function App() {
     });
   }, [
     focusedSymbol,
+    focusedSymbolPriceOnly,
     focusedSymbolGroupKey,
     selectedAccountKey,
     totalPnlSeriesState.accountKey,
@@ -14288,7 +14354,7 @@ export default function App() {
 
   const handleShowInvestmentModelDialog = useCallback(() => {
     if (!qqqData && !qqqLoading && !qqqError) {
-      fetchQqqTemperature();
+      fetchQqqTemperature({ includeLivePrice: true });
     }
     setActiveInvestmentModelDialog({ type: 'global' });
   }, [qqqData, qqqLoading, qqqError, fetchQqqTemperature]);
@@ -16253,7 +16319,7 @@ export default function App() {
     }
     setRefreshKey((value) => value + 1);
     if (showingAggregateAccounts || shouldShowQqqDetails) {
-      fetchQqqTemperature();
+      fetchQqqTemperature({ includeLivePrice: true });
     }
   };
 
@@ -16311,7 +16377,7 @@ export default function App() {
     investmentModelDialogData = qqqData;
     investmentModelDialogLoading = qqqLoading;
     investmentModelDialogError = qqqError;
-    investmentModelDialogOnRetry = fetchQqqTemperature;
+    investmentModelDialogOnRetry = handleRetryQqqDetails;
     investmentModelDialogModelName = 'A1';
     investmentModelDialogLastRebalance = a1LastRebalance;
     investmentModelDialogEvaluation = a1Evaluation;
@@ -17581,6 +17647,14 @@ export default function App() {
           </section>
         ) : null}
 
+        {growthCurvesRequest?.symbols?.length ? (
+          <GrowthCurvesPanel
+            symbols={growthCurvesRequest.symbols}
+            descriptions={growthCurvesRequest.descriptions}
+            onClear={clearGrowthCurves}
+          />
+        ) : null}
+
         {rebalanceTodos.length > 0 && (
           <section className="todo-panel" aria-label="Account reminders">
             <h2 className="todo-panel__title">TODOs</h2>
@@ -17785,6 +17859,7 @@ export default function App() {
             onSymbolPriceSymbolChange={handleSymbolPriceSymbolChange}
             onAdjustDeployment={focusedSymbol ? null : handleOpenDeploymentAdjustment}
             symbolMode={Boolean(focusedSymbol)}
+            symbolPriceOnly={focusedSymbolPriceOnly}
             childAccounts={focusedSymbol ? [] : childAccountSummaries}
             parentGroups={focusedSymbol ? [] : parentAccountSummaries}
             childAccountParentTotal={focusedSymbol ? null : childAccountParentTotal}
@@ -18143,6 +18218,7 @@ export default function App() {
       {showHoldingsPieChart && (
         <HoldingsPieChartDialog
           positions={orderedPositions}
+          cashValue={holdingsPieChartCashValue}
           accountLabel={holdingsPieChartAccountLabel}
           asOf={asOf}
           baseCurrency={baseCurrency}

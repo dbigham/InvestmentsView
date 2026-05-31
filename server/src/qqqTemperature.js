@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolveDataPath } = require('./dataPaths');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
+const { buildYahooFinanceFetchOptions } = require('./yahooFinanceFetchOptions');
 const {
   MARKET_DATA_PROVIDER_PREFERENCE,
   buildProviderOrder,
@@ -50,12 +51,22 @@ const SERIES_COVERAGE_TOLERANCE_DAYS = 10;
 const DAYS_PER_YEAR = 365.25;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const FIT_THRESHOLDS = [0.35, 0.15];
+const MARKET_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 const TICKERS = {
   qqq: 'QQQ',
   ndx: '^NDX',
   ixic: '^IXIC',
 };
+
+const QQQ_TEMPERATURE_FIT_SOURCE = TICKERS.qqq;
+const QQQ_TEMPERATURE_LONG_SERIES_SOURCE = 'IXIC_NDX_QQQ';
+const QQQ_TEMPERATURE_FIT_END_DATE = '2025-01-01';
 
 const TICKER_PROVIDER_OVERRIDES = {
   '^NDX': 'yahoo',
@@ -134,7 +145,8 @@ function parseDate(value) {
   if (!str) {
     return null;
   }
-  const parsed = new Date(`${str}T00:00:00Z`);
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(str);
+  const parsed = new Date(dateOnly ? `${str}T00:00:00Z` : str);
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
@@ -147,6 +159,23 @@ function formatDate(date) {
     return null;
   }
   return parsed.toISOString().slice(0, 10);
+}
+
+function formatMarketDate(value) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return value.trim();
+  }
+  const parsed = parseDate(value);
+  if (!parsed) {
+    return null;
+  }
+  const parts = MARKET_DATE_FORMATTER.formatToParts(parsed).reduce((acc, part) => {
+    if (part.type !== 'literal') {
+      acc[part.type] = part.value;
+    }
+    return acc;
+  }, {});
+  return parts.year && parts.month && parts.day ? `${parts.year}-${parts.month}-${parts.day}` : null;
 }
 
 function addDays(date, days) {
@@ -321,7 +350,9 @@ async function downloadYahooTickerSlice(ticker, fetchStart, today) {
   }
 
   try {
-    const result = await finance.chart(ticker, options);
+    const result = await finance.chart(ticker, options, {
+      fetchOptions: buildYahooFinanceFetchOptions(),
+    });
     const container = Array.isArray(result) ? result[0] : result;
     const quotes = container && Array.isArray(container.quotes) ? container.quotes : [];
     const sanitized = sanitizeChartQuotes(quotes);
@@ -692,6 +723,115 @@ function iterativeConstantGrowth(tYears, prices) {
   return { A, r };
 }
 
+function normalizeTemperatureInputSeries(series) {
+  return Array.isArray(series)
+    ? series
+        .map((entry) => {
+          const date = formatDate(entry && entry.date);
+          const close = Number(entry && entry.close);
+          if (!date || !Number.isFinite(close) || close <= 0) {
+            return null;
+          }
+          return { date, close };
+        })
+        .filter(Boolean)
+        .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    : [];
+}
+
+function resolveFitEndDate(series, requestedFitEndDate = QQQ_TEMPERATURE_FIT_END_DATE) {
+  const requested = formatDate(requestedFitEndDate);
+  if (!requested || !Array.isArray(series) || !series.length) {
+    return null;
+  }
+  let resolved = null;
+  for (const entry of series) {
+    if (entry.date <= requested) {
+      resolved = entry.date;
+    } else {
+      break;
+    }
+  }
+  return resolved;
+}
+
+function buildTemperatureSummaryFromSeries(displaySeries, fitInputSeries, options = {}) {
+  const seriesInput = normalizeTemperatureInputSeries(displaySeries);
+  const fitInput = normalizeTemperatureInputSeries(fitInputSeries || displaySeries);
+  if (!seriesInput.length || !fitInput.length) {
+    return null;
+  }
+
+  const fitEndDate = resolveFitEndDate(fitInput, options.fitEndDate);
+  if (!fitEndDate) {
+    return null;
+  }
+
+  const fitSeries = fitInput.filter((entry) => entry.date <= fitEndDate);
+  const tYears = computeTimeOffsets(fitSeries);
+  if (!tYears.length || tYears.length !== fitSeries.length) {
+    return null;
+  }
+
+  let growth;
+  try {
+    growth = iterativeConstantGrowth(tYears, fitSeries.map((entry) => entry.close));
+  } catch (error) {
+    logErrorOnce('Failed to fit constant growth curve', error);
+    return null;
+  }
+
+  const fitStartDate = fitSeries[0].date;
+  const fitStart = parseDate(fitStartDate);
+  if (!fitStart) {
+    return null;
+  }
+
+  const temperatureSeries = [];
+  for (const entry of seriesInput) {
+    const entryDate = parseDate(entry.date);
+    if (!entryDate) {
+      continue;
+    }
+    const t = (entryDate.getTime() - fitStart.getTime()) / MS_PER_DAY / DAYS_PER_YEAR;
+    const predicted = growth.A * Math.pow(1 + growth.r, t);
+    const temperature = roundTemperature(entry.close / predicted);
+    if (temperature === null) {
+      continue;
+    }
+    temperatureSeries.push({ date: entry.date, temperature });
+  }
+
+  if (!temperatureSeries.length) {
+    return null;
+  }
+
+  const latest = temperatureSeries[temperatureSeries.length - 1];
+  return {
+    updated: options.updated || new Date().toISOString(),
+    rangeStart: temperatureSeries[0].date,
+    rangeEnd: latest.date,
+    series: temperatureSeries,
+    latest,
+    growthCurve: {
+      A: growth.A,
+      r: growth.r,
+      fitStartDate,
+      fitEndDate,
+      fitSource: options.fitSource || QQQ_TEMPERATURE_FIT_SOURCE,
+      displaySource: options.displaySource || null,
+    },
+  };
+}
+
+function buildTemperatureSummaryFromQqqSeries(qqqSeries, options = {}) {
+  return buildTemperatureSummaryFromSeries(qqqSeries, qqqSeries, {
+    ...options,
+    fitSource: QQQ_TEMPERATURE_FIT_SOURCE,
+    displaySource: QQQ_TEMPERATURE_FIT_SOURCE,
+  });
+}
+
 function logErrorOnce(message, error) {
   if (!error) {
     return;
@@ -718,6 +858,20 @@ function normalizeQuoteTimestamp(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value;
   }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const numericString = Number(trimmed);
+    if (Number.isFinite(numericString)) {
+      const millis = numericString > 2_000_000_000 ? numericString : numericString * 1000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return null;
@@ -730,8 +884,81 @@ function normalizeQuoteTimestamp(value) {
   return parsed;
 }
 
+function selectFreshestLiveQuote(quotes) {
+  const validQuotes = Array.isArray(quotes)
+    ? quotes.filter((quote) => quote && Number.isFinite(quote.price) && quote.price > 0)
+    : [];
+  if (!validQuotes.length) {
+    return null;
+  }
+  const timestamped = validQuotes
+    .map((quote, index) => ({
+      quote,
+      index,
+      timestamp: normalizeQuoteTimestamp(quote.asOf),
+    }))
+    .filter((entry) => entry.timestamp);
+  if (!timestamped.length) {
+    return validQuotes[0];
+  }
+  timestamped.sort((a, b) => {
+    const diff = b.timestamp.getTime() - a.timestamp.getTime();
+    return diff || a.index - b.index;
+  });
+  return timestamped[0].quote;
+}
+
+function resolveYahooLiveQuote(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return null;
+  }
+  const candidates = [
+    { value: quote.regularMarketPrice, source: 'regular', time: quote.regularMarketTime },
+    { value: quote.postMarketPrice, source: 'post', time: quote.postMarketTime },
+    { value: quote.preMarketPrice, source: 'pre', time: quote.preMarketTime },
+  ]
+    .map((entry) => ({
+      value: Number(entry.value),
+      source: entry.source,
+      timestamp: normalizeQuoteTimestamp(entry.time),
+    }))
+    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0);
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  const timestamped = candidates.filter((entry) => entry.timestamp);
+  let resolved = null;
+  if (timestamped.length) {
+    timestamped.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    resolved = timestamped[0];
+  } else {
+    const marketState = String(quote.marketState || '').trim().toUpperCase();
+    const fallbackOrder = marketState.includes('POST')
+      ? ['post', 'regular', 'pre']
+      : marketState.includes('PRE')
+        ? ['pre', 'regular', 'post']
+        : ['regular', 'post', 'pre'];
+    resolved = fallbackOrder
+      .map((source) => candidates.find((entry) => entry.source === source))
+      .find(Boolean);
+  }
+
+  if (!resolved) {
+    return null;
+  }
+
+  return {
+    price: Number(resolved.value),
+    asOf: resolved.timestamp ? resolved.timestamp.toISOString() : null,
+    source: `yahoo-${resolved.source}`,
+  };
+}
+
 async function fetchLiveQqqPrice(marketData) {
   const providerOrder = resolveProviderOrderForTicker(TICKERS.qqq, marketData);
+  const quotes = [];
   for (const provider of providerOrder) {
     const normalizedProvider = normalizeMarketDataProvider(provider) || provider;
     if (normalizedProvider === 'questrade') {
@@ -739,11 +966,11 @@ async function fetchLiveQqqPrice(marketData) {
         try {
           const quote = await marketData.fetchQuestradeQuote(TICKERS.qqq);
           if (quote && Number.isFinite(quote.price) && quote.price > 0) {
-            return {
+            quotes.push({
               price: Number(quote.price),
               asOf: quote.asOf || null,
               source: quote.source || 'questrade',
-            };
+            });
           }
         } catch (error) {
           logErrorOnce('Failed to fetch Questrade live QQQ price', error);
@@ -754,39 +981,78 @@ async function fetchLiveQqqPrice(marketData) {
     if (normalizedProvider === 'yahoo') {
       try {
         const finance = ensureYahooFinance();
-        const quote = await finance.quote(TICKERS.qqq);
-        if (!quote || typeof quote !== 'object') {
-          return null;
-        }
-        const priceCandidates = [
-          { value: quote.regularMarketPrice, source: 'regular' },
-          { value: quote.postMarketPrice, source: 'post' },
-          { value: quote.preMarketPrice, source: 'pre' },
-        ];
-        const resolved = priceCandidates.find((entry) => Number.isFinite(entry.value) && entry.value > 0);
+        const quote = await finance.quote(TICKERS.qqq, undefined, {
+          fetchOptions: buildYahooFinanceFetchOptions(),
+        });
+        const resolved = resolveYahooLiveQuote(quote);
         if (!resolved) {
-          return null;
+          continue;
         }
-        const timeCandidates = [
-          { value: quote.regularMarketTime, source: 'regular' },
-          { value: quote.postMarketTime, source: 'post' },
-          { value: quote.preMarketTime, source: 'pre' },
-        ];
-        const match = timeCandidates.find((entry) => entry.source === resolved.source && entry.value);
-        const fallback = timeCandidates.find((entry) => entry.value);
-        const timestamp = normalizeQuoteTimestamp((match && match.value) || (fallback && fallback.value));
-        return {
-          price: Number(resolved.value),
-          asOf: timestamp ? timestamp.toISOString() : null,
-          source: resolved.source,
-        };
+        quotes.push(resolved);
       } catch (error) {
         logErrorOnce('Failed to fetch live QQQ price', error);
-        return null;
       }
     }
   }
-  return null;
+  return selectFreshestLiveQuote(quotes);
+}
+
+function applyLiveQuoteToSummary(summary, liveQuote) {
+  if (!summary || !liveQuote || !Number.isFinite(liveQuote.price) || liveQuote.price <= 0) {
+    return summary;
+  }
+  const growth = summary.growthCurve || {};
+  if (!Number.isFinite(growth.A) || !Number.isFinite(growth.r)) {
+    return summary;
+  }
+
+  const series = Array.isArray(summary.series) ? summary.series.filter(Boolean) : [];
+  const firstSeriesDate = series[0] && series[0].date;
+  const startDate = parseDate(growth.fitStartDate || summary.rangeStart || firstSeriesDate);
+  const liveDate = formatMarketDate(liveQuote.asOf) || formatMarketDate(new Date());
+  const liveDateObj = parseDate(liveDate);
+  if (!startDate || !liveDateObj || !liveDate) {
+    return summary;
+  }
+
+  const elapsedDays = (liveDateObj.getTime() - startDate.getTime()) / MS_PER_DAY;
+  const tLive = elapsedDays / DAYS_PER_YEAR;
+  const predicted = Number.isFinite(tLive) ? growth.A * Math.pow(1 + growth.r, tLive) : null;
+  if (!Number.isFinite(predicted) || predicted <= 0) {
+    return summary;
+  }
+
+  const liveTemperature = roundTemperature(liveQuote.price / predicted);
+  if (liveTemperature === null) {
+    return summary;
+  }
+
+  const augmentedSeries = [...series];
+  const liveEntry = { date: liveDate, temperature: liveTemperature, source: 'live' };
+  const existingIndex = augmentedSeries.findIndex((entry) => entry && entry.date === liveDate);
+  if (existingIndex >= 0) {
+    augmentedSeries[existingIndex] = { ...augmentedSeries[existingIndex], ...liveEntry };
+  } else {
+    augmentedSeries.push(liveEntry);
+  }
+  augmentedSeries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  return {
+    ...summary,
+    series: augmentedSeries,
+    rangeEnd: augmentedSeries[augmentedSeries.length - 1].date,
+    latest: augmentedSeries[augmentedSeries.length - 1],
+    livePrice: {
+      value: liveQuote.price,
+      asOf: liveQuote.asOf || null,
+      source: liveQuote.source || 'live',
+    },
+  };
+}
+
+async function augmentSummaryWithLivePrice(summary, marketData) {
+  const liveQuote = await fetchLiveQqqPrice(marketData);
+  return applyLiveQuoteToSummary(summary, liveQuote);
 }
 
 async function refreshSummary(options = {}) {
@@ -803,92 +1069,14 @@ async function refreshSummary(options = {}) {
     loadTickerSeries(TICKERS.ndx, marketData),
     loadTickerSeries(TICKERS.ixic, marketData),
   ]);
-
-  const unified = buildUnifiedSeries(qqqSeries, ndxSeries, ixicSeries);
-  if (!unified.length) {
-    return null;
-  }
-
-  const tYears = computeTimeOffsets(unified);
-  if (!tYears.length || tYears.length !== unified.length) {
-    return null;
-  }
-
-  let growth;
-  try {
-    growth = iterativeConstantGrowth(tYears, unified.map((entry) => entry.close));
-  } catch (error) {
-    logErrorOnce('Failed to fit constant growth curve', error);
-    return null;
-  }
-
-  const series = [];
-  for (let i = 0; i < unified.length; i += 1) {
-    const entry = unified[i];
-    const t = tYears[i];
-    const predicted = growth.A * Math.pow(1 + growth.r, t);
-    const temperature = roundTemperature(entry.close / predicted);
-    if (temperature === null) {
-      continue;
-    }
-    series.push({ date: entry.date, temperature });
-  }
-
-  if (!series.length) {
-    return null;
-  }
-
-  const latest = series[series.length - 1];
-
-  let summary = {
-    updated: new Date().toISOString(),
-    rangeStart: series[0].date,
-    rangeEnd: latest.date,
-    series,
-    latest,
-    growthCurve: {
-      A: growth.A,
-      r: growth.r,
-    },
-  };
+  const displaySeries = buildUnifiedSeries(qqqSeries, ndxSeries, ixicSeries);
+  let summary = buildTemperatureSummaryFromSeries(displaySeries, displaySeries, {
+    fitSource: QQQ_TEMPERATURE_LONG_SERIES_SOURCE,
+    displaySource: QQQ_TEMPERATURE_LONG_SERIES_SOURCE,
+  });
 
   if (includeLivePrice) {
-    const liveQuote = await fetchLiveQqqPrice(marketData);
-    if (liveQuote && Number.isFinite(liveQuote.price) && liveQuote.price > 0) {
-      const liveDate = formatDate(liveQuote.asOf || new Date());
-      const startDate = parseDate(series[0].date);
-      const liveDateObj = parseDate(liveDate);
-      if (startDate && liveDateObj) {
-        const elapsedDays = (liveDateObj.getTime() - startDate.getTime()) / MS_PER_DAY;
-        const tLive = elapsedDays / DAYS_PER_YEAR;
-        const predicted = Number.isFinite(tLive) ? growth.A * Math.pow(1 + growth.r, tLive) : null;
-        if (Number.isFinite(predicted) && predicted > 0) {
-          const liveTemperature = roundTemperature(liveQuote.price / predicted);
-          if (liveTemperature !== null) {
-            const augmentedSeries = Array.isArray(summary.series) ? [...summary.series] : [];
-            const liveEntry = { date: liveDate, temperature: liveTemperature, source: 'live' };
-            const existingIndex = augmentedSeries.findIndex((entry) => entry && entry.date === liveDate);
-            if (existingIndex >= 0) {
-              augmentedSeries[existingIndex] = { ...augmentedSeries[existingIndex], ...liveEntry };
-            } else {
-              augmentedSeries.push(liveEntry);
-            }
-            augmentedSeries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-            summary = {
-              ...summary,
-              series: augmentedSeries,
-              rangeEnd: augmentedSeries[augmentedSeries.length - 1].date,
-              latest: augmentedSeries[augmentedSeries.length - 1],
-              livePrice: {
-                value: liveQuote.price,
-                asOf: liveQuote.asOf || null,
-                source: liveQuote.source || 'live',
-              },
-            };
-          }
-        }
-      }
-    }
+    summary = await augmentSummaryWithLivePrice(summary, marketData);
   }
 
   return summary;
@@ -901,7 +1089,7 @@ async function getQqqTemperatureSummary(options = {}) {
   const now = Date.now();
   // If the cached summary predates today by at least one full day,
   // bypass TTL so we always pull in yesterday's close first thing.
-  const todayStr = formatDate(new Date());
+  const todayStr = formatMarketDate(new Date()) || formatDate(new Date());
   const isCacheStaleByDate = !!(
     cachedSummary &&
     cachedSummary.rangeEnd &&
@@ -909,12 +1097,16 @@ async function getQqqTemperatureSummary(options = {}) {
     daysBetweenUTC(cachedSummary.rangeEnd, todayStr) >= 1
   );
 
-  const bypassCache = forceRefresh || includeLivePrice;
+  const canUseCachedSummary = !!(cachedSummary && now < summaryExpiresAt && !isCacheStaleByDate);
 
-  if (!bypassCache && cachedSummary && now < summaryExpiresAt && !isCacheStaleByDate) {
-    return cachedSummary;
+  if (!forceRefresh && canUseCachedSummary) {
+    return includeLivePrice ? augmentSummaryWithLivePrice(cachedSummary, marketData) : cachedSummary;
   }
-  if (!bypassCache && pendingRefresh) {
+  if (!forceRefresh && pendingRefresh) {
+    if (includeLivePrice) {
+      const summary = await pendingRefresh;
+      return augmentSummaryWithLivePrice(summary, marketData);
+    }
     return pendingRefresh;
   }
 
@@ -943,4 +1135,11 @@ async function getQqqTemperatureSummary(options = {}) {
 
 module.exports = {
   getQqqTemperatureSummary,
+  __test__: {
+    QQQ_TEMPERATURE_FIT_END_DATE,
+    buildUnifiedSeries,
+    buildTemperatureSummaryFromSeries,
+    buildTemperatureSummaryFromQqqSeries,
+    applyLiveQuoteToSummary,
+  },
 };
