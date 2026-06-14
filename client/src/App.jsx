@@ -24,6 +24,7 @@ import {
   getRangeTotalPnlBreakdown,
   getLogins,
   addLogin,
+  createSnapTradeConnectionPortal,
   getAccountOverrides,
   setAccountOverrides,
   getAccounts,
@@ -1221,6 +1222,13 @@ function buildAccountHierarchySummary({
       .trim();
   };
 
+  const normalizeDisplayName = (value) => {
+    if (!value) {
+      return '';
+    }
+    return String(value).replace(/\s+/g, ' ').trim();
+  };
+
   const toFriendlyLabel = (value) => {
     const normalized = normalizeLabel(value);
     if (!normalized) {
@@ -1247,7 +1255,7 @@ function buildAccountHierarchySummary({
     if (!account) {
       return 'Account';
     }
-    const displayName = normalizeLabel(account.displayName);
+    const displayName = normalizeDisplayName(account.displayName);
     if (displayName) {
       return displayName;
     }
@@ -7634,10 +7642,11 @@ export default function App() {
   }, [loadAccountStructureData]);
 
   const handleSaveLogin = useCallback(
-    async ({ email, refreshToken }) => {
-      await addLogin({ email, refreshToken });
+    async (payload) => {
+      const result = await addLogin(payload);
       await refreshLoginSetup();
       setLoginSetupNeedsRefresh(true);
+      return result;
     },
     [refreshLoginSetup]
   );
@@ -7666,15 +7675,20 @@ export default function App() {
   }, []);
 
   const handleReconnectLogin = useCallback(
-    async ({ email, refreshToken }) => {
-      await addLogin({ email, refreshToken });
+    async (payload) => {
+      const result = await addLogin(payload);
       await refreshLoginSetup();
       setShowLoginSetupDialog(false);
       setLoginSetupNeedsRefresh(false);
       triggerRefreshNotice('Refreshing account data...');
+      return result;
     },
     [refreshLoginSetup, triggerRefreshNotice]
   );
+
+  const handleCreateSnapTradeConnectionPortal = useCallback(async (loginId, payload = {}) => {
+    return createSnapTradeConnectionPortal(loginId, payload);
+  }, []);
 
   const handleCloseAccountStructureDialog = useCallback(() => {
     setShowAccountStructureDialog(false);
@@ -14457,7 +14471,7 @@ export default function App() {
     Boolean(
       error &&
         (error.code === 'NO_LOGINS' ||
-          (typeof error.message === 'string' && /no questrade logins configured yet/i.test(error.message)))
+          (typeof error.message === 'string' && /no (?:questrade|brokerage) logins configured yet/i.test(error.message)))
     );
   const isInvalidRefreshTokenError =
     !demoModeActive && Boolean(error && error.code === 'INVALID_REFRESH_TOKEN');
@@ -17333,6 +17347,7 @@ export default function App() {
         <header className="page-header">
           <GlobalSearch
             symbols={searchSymbols}
+            currentSymbols={positions}
             accounts={accounts}
             accountGroups={accountGroups}
             navItems={(() => {
@@ -18474,6 +18489,7 @@ export default function App() {
           mode={loginDialogMode}
           onClose={handleCloseLoginSetupDialog}
           onSave={isInvalidRefreshTokenError ? handleReconnectLogin : handleSaveLogin}
+          onCreateSnapTradeConnectionPortal={handleCreateSnapTradeConnectionPortal}
           onShowInstructions={handleShowRefreshTokenHelpDialog}
           onStartAccountStructure={handleStartAccountStructureFromLogin}
           onStartDemoMode={handleStartDemoMode}

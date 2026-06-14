@@ -1343,6 +1343,19 @@ function applyAccountGroupSetting(target, key, value) {
   container.accountGroup = normalized;
 }
 
+function applyHiddenSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = coerceBoolean(value);
+  if (normalized === true) {
+    container.hidden = true;
+  } else if (normalized === false) {
+    delete container.hidden;
+  }
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -1446,6 +1459,7 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'chatURL',
   'chatUrl',
   'showQQQDetails',
+  'hidden',
 ]);
 
 const PORTAL_ID_KEYS = [
@@ -1708,6 +1722,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'planningContext')) {
       applyPlanningContextSetting(settingsTarget, resolvedKey, entry.planningContext);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'hidden')) {
+      applyHiddenSetting(settingsTarget, resolvedKey, entry.hidden);
     }
     if (hasExplicitAccountGroup) {
       const normalizedKey = String(resolvedKey).trim();

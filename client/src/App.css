@@ -7601,6 +7601,40 @@ button.time-pill:hover .time-pill__icon {
   background: var(--color-surface);
 }
 
+.login-setup-dialog__provider-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-input);
+  background: var(--color-surface-alt);
+}
+
+.login-setup-dialog__provider-tab {
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-input) - 2px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 8px 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.login-setup-dialog__provider-tab:hover,
+.login-setup-dialog__provider-tab:focus-visible {
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.login-setup-dialog__provider-tab--active {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
 .login-setup-dialog__field {
   display: flex;
   flex-direction: column;
@@ -7691,6 +7725,29 @@ button.time-pill:hover .time-pill__icon {
 .login-setup-dialog__list-meta {
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.login-setup-dialog__list-action {
+  align-self: flex-start;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-setup-dialog__list-action:hover:not(:disabled),
+.login-setup-dialog__list-action:focus-visible:not(:disabled) {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.login-setup-dialog__list-action:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .login-setup-dialog__empty {

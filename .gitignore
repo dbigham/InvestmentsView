@@ -28,6 +28,7 @@ Plan.md
 
 # Local run artifacts
 server-run-*.log
+.codex-logs/
 temp_block.txt
 symbols/
 symbol_data/

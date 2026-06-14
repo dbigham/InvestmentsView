@@ -100,6 +100,7 @@ function scoreMatch(haystack, needle) {
 
 export default function GlobalSearch({
   symbols,
+  currentSymbols,
   accounts,
   accountGroups,
   navItems,
@@ -145,6 +146,25 @@ export default function GlobalSearch({
     items.sort((a, b) => a.label.localeCompare(b.label));
     return items;
   }, [symbols]);
+
+  const currentSymbolItems = useMemo(() => {
+    const seen = new Set();
+    const list = Array.isArray(currentSymbols) ? currentSymbols : [];
+    const items = [];
+    list.forEach((entry) => {
+      if (!entry) return;
+      const sym = normalize(entry.symbol).toUpperCase();
+      if (!sym || seen.has(sym)) return;
+      seen.add(sym);
+      const desc = normalize(entry.description);
+      items.push({
+        key: sym,
+        label: normalize(entry.label) || sym,
+        sublabel: desc || null,
+      });
+    });
+    return items;
+  }, [currentSymbols]);
 
   const accountItems = useMemo(() => {
     const list = Array.isArray(accounts) ? accounts : [];
@@ -439,27 +459,52 @@ export default function GlobalSearch({
       return parsed;
     };
 
+    const resolveContextualGrowthCurveSymbols = (fragment) => {
+      const normalizedFragment = normalize(fragment).toLowerCase();
+      if (!normalizedFragment) return null;
+      const contextPattern =
+        /^(?:(?:the|my)\s+)?(?:(?:this|current|selected)\s+)?(?:account|portfolio|holdings|positions|stocks|symbols|securities)$|^(?:these|those)\s+(?:stocks|symbols|holdings|positions|securities)$/i;
+      if (!contextPattern.test(normalizedFragment)) {
+        return null;
+      }
+      const seen = new Set();
+      return currentSymbolItems.reduce((acc, item) => {
+        const symbol = normalizeTypedSymbolCandidate(item?.key);
+        if (!symbol || seen.has(symbol)) return acc;
+        seen.add(symbol);
+        acc.push(symbol);
+        return acc;
+      }, []);
+    };
+
     const buildGrowthCurvesResult = () => {
       const match = rawQuery.match(/^\s*growth\s+curves?\s+for\s+(.+?)\s*$/i);
       if (!match) {
         return null;
       }
-      const symbols = parseGrowthCurveSymbolList(match[1]);
+      const contextualSymbols = resolveContextualGrowthCurveSymbols(match[1]);
+      const symbols = contextualSymbols || parseGrowthCurveSymbolList(match[1]);
       if (!symbols.length) {
         return null;
       }
       const descriptions = {};
       symbols.forEach((symbol) => {
-        const indexed = symbolIndex.get(symbol);
+        const contextual = currentSymbolItems.find((item) => item.key === symbol);
+        const indexed = contextual || symbolIndex.get(symbol);
         if (indexed?.sublabel) {
           descriptions[symbol] = indexed.sublabel;
         }
       });
+      const contextual = Array.isArray(contextualSymbols);
       return {
         kind: 'growth-curves',
         key: symbols.join('|'),
-        label: `Growth curve${symbols.length === 1 ? '' : 's'} for ${symbols.join(' + ')}`,
-        sublabel: 'Compare price history fits by stock',
+        label: contextual
+          ? `Growth curve${symbols.length === 1 ? '' : 's'} for current account`
+          : `Growth curve${symbols.length === 1 ? '' : 's'} for ${symbols.join(' + ')}`,
+        sublabel: contextual
+          ? `Compare price history fits for ${symbols.length} current holding${symbols.length === 1 ? '' : 's'}`
+          : 'Compare price history fits by stock',
         symbols,
         descriptions,
       };
@@ -613,7 +658,7 @@ export default function GlobalSearch({
       }
     }
     return deduped;
-  }, [query, symbolItems, accountItems, groupItems, navItemsNormalized]);
+  }, [query, symbolItems, currentSymbolItems, accountItems, groupItems, navItemsNormalized]);
 
   const visibleQuoteSymbols = useMemo(() => {
     if (!open || !results.length) {
@@ -1025,6 +1070,12 @@ GlobalSearch.propTypes = {
       description: PropTypes.string,
     })
   ),
+  currentSymbols: PropTypes.arrayOf(
+    PropTypes.shape({
+      symbol: PropTypes.string,
+      description: PropTypes.string,
+    })
+  ),
   accounts: PropTypes.arrayOf(
     PropTypes.shape({
       id: PropTypes.string.isRequired,
@@ -1059,6 +1110,7 @@ GlobalSearch.propTypes = {
 
 GlobalSearch.defaultProps = {
   symbols: [],
+  currentSymbols: [],
   accounts: [],
   accountGroups: [],
   navItems: undefined,

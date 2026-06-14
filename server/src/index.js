@@ -284,6 +284,20 @@ const AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD = 250;
 const tokenCache = new NodeCache();
 const portfolioNewsCache = new NodeCache({ stdTTL: 5 * 60, checkperiod: 120 });
 const tokenFilePath = resolveDataPath('token-store.json');
+const BROKER_PROVIDER_QUESTRADE = 'questrade';
+const BROKER_PROVIDER_SNAPTRADE = 'snaptrade';
+const SNAPTRADE_BASE_URL =
+  typeof process.env.SNAPTRADE_BASE_URL === 'string' && process.env.SNAPTRADE_BASE_URL.trim()
+    ? process.env.SNAPTRADE_BASE_URL.trim().replace(/\/+$/, '')
+    : 'https://api.snaptrade.com';
+const SNAPTRADE_CLIENT_ID =
+  typeof process.env.SNAPTRADE_CLIENT_ID === 'string' ? process.env.SNAPTRADE_CLIENT_ID.trim() : '';
+const SNAPTRADE_CONSUMER_KEY =
+  typeof process.env.SNAPTRADE_CONSUMER_KEY === 'string' ? process.env.SNAPTRADE_CONSUMER_KEY.trim() : '';
+const SNAPTRADE_DEFAULT_BROKER =
+  typeof process.env.SNAPTRADE_DEFAULT_BROKER === 'string' && process.env.SNAPTRADE_DEFAULT_BROKER.trim()
+    ? process.env.SNAPTRADE_DEFAULT_BROKER.trim()
+    : 'WEALTHSIMPLETRADE';
 const QUESTRADE_MARKET_DATA_LOGIN_ID =
   typeof process.env.QUESTRADE_MARKET_DATA_LOGIN_ID === 'string'
     ? process.env.QUESTRADE_MARKET_DATA_LOGIN_ID.trim()
@@ -2296,6 +2310,9 @@ function buildContextFromSupersetAccount(superset, accountId) {
   const accountWithOverrides = applyAccountSettingsOverrides
     ? applyAccountSettingsOverrides(normalizedAccount, login)
     : normalizedAccount;
+  if (isHiddenAccount(accountWithOverrides)) {
+    return null;
+  }
   const effectiveAccount = Object.assign({}, accountWithOverrides, {
     id: normalizedId,
     number: accountWithOverrides.number || normalizedAccount.number,
@@ -4068,11 +4085,48 @@ const INTEREST_RATE_SERIES = {
   },
 };
 
+function normalizeBrokerProvider(value) {
+  if (typeof value !== 'string') {
+    return BROKER_PROVIDER_QUESTRADE;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return BROKER_PROVIDER_QUESTRADE;
+  }
+  if (normalized === 'snaptrade' || normalized === 'snap_trade') {
+    return BROKER_PROVIDER_SNAPTRADE;
+  }
+  if (normalized === 'wealthsimple') {
+    return BROKER_PROVIDER_SNAPTRADE;
+  }
+  return BROKER_PROVIDER_QUESTRADE;
+}
+
+function getLoginProvider(login) {
+  return normalizeBrokerProvider(login && login.provider);
+}
+
+function isSnapTradeLogin(login) {
+  return getLoginProvider(login) === BROKER_PROVIDER_SNAPTRADE;
+}
+
+function isQuestradeLogin(login) {
+  return getLoginProvider(login) === BROKER_PROVIDER_QUESTRADE;
+}
+
+function getBrokerProviderLabel(provider) {
+  const normalized = normalizeBrokerProvider(provider);
+  if (normalized === BROKER_PROVIDER_SNAPTRADE) {
+    return 'SnapTrade';
+  }
+  return 'Questrade';
+}
+
 function resolveLoginDisplay(login) {
   if (!login) {
     return null;
   }
-  return login.label || login.email || login.id;
+  return login.label || login.email || login.userId || login.id;
 }
 
 function resolveQuestradeMarketDataLogin() {
@@ -4091,7 +4145,7 @@ function resolveQuestradeMarketDataLogin() {
       return match;
     }
   }
-  return allLogins[0] || null;
+  return allLogins.find((login) => isQuestradeLogin(login)) || null;
 }
 
 function getQuestradeSymbolSearchCacheKey(login, symbol) {
@@ -4254,13 +4308,12 @@ async function fetchQuestradePositionQuoteForSymbol(symbol) {
       continue;
     }
     for (const account of accounts) {
-      const accountNumber = account && (account.number || account.accountNumber || account.id);
-      if (!accountNumber) {
+      if (!account) {
         continue;
       }
       let positions = [];
       try {
-        positions = await fetchPositions(login, accountNumber);
+        positions = await fetchPositions(login, account);
       } catch (_) {
         continue;
       }
@@ -5985,8 +6038,27 @@ function normalizeLogin(login, fallbackId) {
     return null;
   }
   const normalized = Object.assign({}, login);
+  normalized.provider = normalizeBrokerProvider(normalized.provider || normalized.platform || normalized.broker);
   if (normalized.refresh_token && !normalized.refreshToken) {
     normalized.refreshToken = normalized.refresh_token;
+  }
+  if (normalized.user_id && !normalized.userId) {
+    normalized.userId = normalized.user_id;
+  }
+  if (normalized.user_secret && !normalized.userSecret) {
+    normalized.userSecret = normalized.user_secret;
+  }
+  if (normalized.client_id && !normalized.clientId) {
+    normalized.clientId = normalized.client_id;
+  }
+  if (normalized.consumer_key && !normalized.consumerKey) {
+    normalized.consumerKey = normalized.consumer_key;
+  }
+  if (normalized.snapTradeClientId && !normalized.clientId) {
+    normalized.clientId = normalized.snapTradeClientId;
+  }
+  if (normalized.snapTradeConsumerKey && !normalized.consumerKey) {
+    normalized.consumerKey = normalized.snapTradeConsumerKey;
   }
   if (normalized.ownerLabel && !normalized.label) {
     normalized.label = normalized.ownerLabel;
@@ -5994,15 +6066,39 @@ function normalizeLogin(login, fallbackId) {
   if (normalized.ownerEmail && !normalized.email) {
     normalized.email = normalized.ownerEmail;
   }
-  const resolvedId = normalized.id || fallbackId;
+  const resolvedId =
+    normalized.id ||
+    (normalized.provider === BROKER_PROVIDER_SNAPTRADE ? normalized.userId : null) ||
+    fallbackId;
   if (!resolvedId) {
     return null;
   }
   normalized.id = String(resolvedId);
-  if (!normalized.refreshToken) {
-    return null;
+  if (normalized.provider === BROKER_PROVIDER_SNAPTRADE) {
+    if (!normalized.userId || !normalized.userSecret) {
+      return null;
+    }
+    normalized.userId = String(normalized.userId);
+    normalized.userSecret = String(normalized.userSecret);
+    if (normalized.clientId) {
+      normalized.clientId = String(normalized.clientId);
+    }
+    if (normalized.consumerKey) {
+      normalized.consumerKey = String(normalized.consumerKey);
+    }
+  } else {
+    normalized.provider = BROKER_PROVIDER_QUESTRADE;
+    if (!normalized.refreshToken) {
+      return null;
+    }
   }
   delete normalized.refresh_token;
+  delete normalized.user_id;
+  delete normalized.user_secret;
+  delete normalized.client_id;
+  delete normalized.consumer_key;
+  delete normalized.snapTradeClientId;
+  delete normalized.snapTradeConsumerKey;
   delete normalized.ownerLabel;
   delete normalized.ownerEmail;
   return normalized;
@@ -6049,13 +6145,42 @@ function persistTokenStore(store) {
     const sanitizedLogins = (store.logins || []).map((login) => {
       const base = {
         id: login.id,
+        provider: getLoginProvider(login),
         label: login.label || null,
         email: login.email || null,
-        refreshToken: login.refreshToken,
         updatedAt: login.updatedAt || null,
       };
+      if (isSnapTradeLogin(login)) {
+        base.userId = login.userId;
+        base.userSecret = login.userSecret;
+        if (login.clientId) {
+          base.clientId = login.clientId;
+        }
+        if (login.consumerKey) {
+          base.consumerKey = login.consumerKey;
+        }
+        if (login.defaultBroker) {
+          base.defaultBroker = login.defaultBroker;
+        }
+      } else {
+        base.refreshToken = login.refreshToken;
+      }
       Object.keys(login).forEach((key) => {
-        if (['id', 'label', 'email', 'refreshToken', 'updatedAt'].includes(key)) {
+        if (
+          [
+            'id',
+            'provider',
+            'label',
+            'email',
+            'refreshToken',
+            'userId',
+            'userSecret',
+            'clientId',
+            'consumerKey',
+            'defaultBroker',
+            'updatedAt',
+          ].includes(key)
+        ) {
           return;
         }
         base[key] = login[key];
@@ -6083,7 +6208,10 @@ allLogins.forEach((login) => {
 });
 
 if (!allLogins.length) {
-  console.warn('Missing Questrade refresh token(s). Seed token-store.json with at least one login.');
+  console.warn('Missing brokerage credentials. Seed token-store.json or add a login from the app.');
+}
+if (allLogins.some((login) => isSnapTradeLogin(login) && !hasSnapTradeCredentials(login))) {
+  console.warn('SnapTrade login(s) are configured, but SnapTrade API credentials are missing.');
 }
 if (DEBUG_QUESTRADE_TOKEN_FLOW) {
   console.log(
@@ -6107,10 +6235,17 @@ function sanitizeLoginForClient(login) {
   if (!login || typeof login !== 'object') {
     return null;
   }
+  const provider = getLoginProvider(login);
   return {
     id: login.id || null,
+    provider,
+    providerLabel: getBrokerProviderLabel(provider),
     label: login.label || null,
     email: login.email || null,
+    userId: provider === BROKER_PROVIDER_SNAPTRADE ? login.userId || null : null,
+    defaultBroker: provider === BROKER_PROVIDER_SNAPTRADE ? login.defaultBroker || SNAPTRADE_DEFAULT_BROKER : null,
+    hasCustomCredentials:
+      provider === BROKER_PROVIDER_SNAPTRADE ? Boolean(login.clientId && login.consumerKey) : null,
     updatedAt: login.updatedAt || null,
   };
 }
@@ -6120,6 +6255,90 @@ function normalizeEmailInput(value) {
     return '';
   }
   return value.trim();
+}
+
+function normalizeUserIdInput(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim();
+}
+
+function normalizeSnapTradeCredentialInput(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim();
+}
+
+function resolveSnapTradeClientId(login) {
+  return (
+    normalizeSnapTradeCredentialInput(login && login.clientId) ||
+    normalizeSnapTradeCredentialInput(SNAPTRADE_CLIENT_ID)
+  );
+}
+
+function resolveSnapTradeConsumerKey(login) {
+  return (
+    normalizeSnapTradeCredentialInput(login && login.consumerKey) ||
+    normalizeSnapTradeCredentialInput(SNAPTRADE_CONSUMER_KEY)
+  );
+}
+
+function resolveSnapTradeBaseUrl(login) {
+  return (
+    normalizeSnapTradeCredentialInput(login && login.baseUrl).replace(/\/+$/, '') ||
+    SNAPTRADE_BASE_URL
+  );
+}
+
+function hasSnapTradeCredentials(login) {
+  return Boolean(resolveSnapTradeClientId(login) && resolveSnapTradeConsumerKey(login));
+}
+
+function buildDefaultSnapTradeUserId(emailOrLabel) {
+  const base = typeof emailOrLabel === 'string' ? emailOrLabel.trim().toLowerCase() : '';
+  const normalized = base
+    .replace(/@/g, '-at-')
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized ? `investments-view-${normalized}` : `investments-view-${Date.now()}`;
+}
+
+async function registerSnapTradeUser(userId, credentials) {
+  const data = await snapTradeRequest(null, '/snapTrade/registerUser', {
+    method: 'POST',
+    data: { userId },
+    credentials,
+  });
+  if (!data || !data.userId || !data.userSecret) {
+    throw new Error('SnapTrade did not return a user secret.');
+  }
+  return data;
+}
+
+async function createSnapTradeConnectionPortal(login, options = {}) {
+  const broker =
+    typeof options.broker === 'string' && options.broker.trim()
+      ? options.broker.trim()
+      : login.defaultBroker || SNAPTRADE_DEFAULT_BROKER;
+  const payload = {
+    broker,
+    immediateRedirect: false,
+    showCloseButton: true,
+    connectionType: 'read',
+    connectionPortalVersion: 'v4',
+  };
+  const data = await snapTradeRequest(login, '/snapTrade/login', {
+    method: 'POST',
+    data: payload,
+  });
+  return {
+    redirectURI: data && data.redirectURI ? data.redirectURI : null,
+    sessionId: data && data.sessionId ? data.sessionId : null,
+    broker,
+  };
 }
 
 const EARLIEST_FUNDING_CACHE_PATH = resolveDataPath('earliest-funding-cache.json');
@@ -6198,6 +6417,93 @@ function setCachedEarliestFunding(cacheKey, value) {
   persistEarliestFundingCache(earliestFundingCacheState);
 }
 
+function normalizeAccountIdentifier(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+}
+
+function resolveProviderAccountId(accountOrId) {
+  if (accountOrId && typeof accountOrId === 'object') {
+    return (
+      normalizeAccountIdentifier(accountOrId.providerAccountId) ||
+      normalizeAccountIdentifier(accountOrId.snapTradeAccountId) ||
+      normalizeAccountIdentifier(accountOrId.snaptradeAccountId) ||
+      normalizeAccountIdentifier(accountOrId.id) ||
+      normalizeAccountIdentifier(accountOrId.number) ||
+      normalizeAccountIdentifier(accountOrId.accountNumber)
+    );
+  }
+  return normalizeAccountIdentifier(accountOrId);
+}
+
+function resolveAccountApiId(login, accountOrId) {
+  if (accountOrId && typeof accountOrId === 'object') {
+    if (isSnapTradeLogin(login)) {
+      return resolveProviderAccountId(accountOrId);
+    }
+    return (
+      normalizeAccountIdentifier(accountOrId.number) ||
+      normalizeAccountIdentifier(accountOrId.accountNumber) ||
+      normalizeAccountIdentifier(accountOrId.providerAccountId) ||
+      normalizeAccountIdentifier(accountOrId.id)
+    );
+  }
+  return normalizeAccountIdentifier(accountOrId);
+}
+
+function resolveAccountDisplayNumber(account, fallbackIndex) {
+  const direct =
+    normalizeAccountIdentifier(account && account.number) ||
+    normalizeAccountIdentifier(account && account.accountNumber) ||
+    normalizeAccountIdentifier(account && account.institutionAccountId) ||
+    normalizeAccountIdentifier(account && account.providerAccountNumber);
+  if (direct) {
+    return direct;
+  }
+  const providerId = resolveProviderAccountId(account);
+  if (providerId) {
+    return providerId;
+  }
+  return fallbackIndex !== undefined && fallbackIndex !== null ? String(fallbackIndex) : '';
+}
+
+function buildCompositeAccountId(login, account, fallbackIndex) {
+  const loginId = normalizeAccountIdentifier(login && login.id) || 'login';
+  const providerAccountId =
+    normalizeAccountIdentifier(account && account.providerAccountId) ||
+    normalizeAccountIdentifier(account && account.snapTradeAccountId) ||
+    normalizeAccountIdentifier(account && account.snaptradeAccountId) ||
+    normalizeAccountIdentifier(account && account.number) ||
+    normalizeAccountIdentifier(account && account.accountNumber) ||
+    normalizeAccountIdentifier(account && account.id) ||
+    (fallbackIndex !== undefined && fallbackIndex !== null ? String(fallbackIndex) : '');
+  return `${loginId}:${providerAccountId || 'account'}`;
+}
+
+function buildNormalizedAccountBase(login, account, index) {
+  const provider = getLoginProvider(login);
+  const providerAccountId = resolveProviderAccountId(account) || resolveAccountDisplayNumber(account, index);
+  const number = resolveAccountDisplayNumber(account, index) || providerAccountId || String(index || 0);
+  const compositeId = buildCompositeAccountId(login, account, index);
+  const ownerLabel = resolveLoginDisplay(login);
+  return Object.assign({}, account, {
+    id: compositeId,
+    provider,
+    providerLabel: getBrokerProviderLabel(provider),
+    providerAccountId,
+    number,
+    accountNumber: number,
+    loginId: login.id,
+    ownerId: login.id,
+    ownerLabel,
+    ownerEmail: login.email || null,
+    loginLabel: ownerLabel,
+    loginEmail: login.email || null,
+  });
+}
+
 
 function buildAccountOverrideKeys(account, login) {
   if (!account) {
@@ -6208,6 +6514,8 @@ function buildAccountOverrideKeys(account, login) {
   const accountId = account.id ? String(account.id).trim() : null;
   const accountNumber = account.number ? String(account.number).trim() : null;
   const alternateNumber = account.accountNumber ? String(account.accountNumber).trim() : null;
+  const providerAccountId = account.providerAccountId ? String(account.providerAccountId).trim() : null;
+  const institutionAccountId = account.institutionAccountId ? String(account.institutionAccountId).trim() : null;
 
   if (login) {
     const loginId = login.id ? String(login.id).trim() : null;
@@ -6220,6 +6528,9 @@ function buildAccountOverrideKeys(account, login) {
     }
     if (loginId && accountId && accountId !== accountNumber) {
       candidates.push(`${loginId}:${accountId}`);
+    }
+    if (loginId && providerAccountId && providerAccountId !== accountId && providerAccountId !== accountNumber) {
+      candidates.push(`${loginId}:${providerAccountId}`);
     }
     if (loginLabelTrimmed && accountNumber) {
       candidates.push(`${loginLabelTrimmed}:${accountNumber}`);
@@ -6240,6 +6551,12 @@ function buildAccountOverrideKeys(account, login) {
   }
   if (alternateNumber && alternateNumber !== accountNumber) {
     candidates.push(alternateNumber);
+  }
+  if (providerAccountId && providerAccountId !== accountId && providerAccountId !== accountNumber) {
+    candidates.push(providerAccountId);
+  }
+  if (institutionAccountId && institutionAccountId !== accountNumber) {
+    candidates.push(institutionAccountId);
   }
 
   return candidates;
@@ -6510,6 +6827,15 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     return;
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'hidden')) {
+    const hidden = parseBooleanEnv(override.hidden, null);
+    if (hidden === true) {
+      target.hidden = true;
+    } else if (hidden === false && Object.prototype.hasOwnProperty.call(target, 'hidden')) {
+      delete target.hidden;
+    }
+  }
+
   if (typeof override.showQQQDetails === 'boolean') {
     target.showQQQDetails = override.showQQQDetails;
   }
@@ -6719,6 +7045,10 @@ function applyAccountSettingsOverrides(account, login) {
   const normalizedAccount = Object.assign({}, account);
   applyAccountSettingsOverrideToAccount(normalizedAccount, override);
   return normalizedAccount;
+}
+
+function isHiddenAccount(account) {
+  return !!(account && account.hidden === true);
 }
 
 function resolveAccountDisplayName(overrides, account, login) {
@@ -7991,17 +8321,539 @@ async function questradeRequest(login, pathSegment, options = {}) {
   throw new Error('Questrade request failed without capturing an error');
 }
 
+function sortJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortJsonValue(entry));
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = sortJsonValue(value[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+function buildSnapTradeSignature(pathWithQuery, body, consumerKey) {
+  const queryIndex = pathWithQuery.indexOf('?');
+  const pathOnly = queryIndex >= 0 ? pathWithQuery.slice(0, queryIndex) : pathWithQuery;
+  const query = queryIndex >= 0 ? pathWithQuery.slice(queryIndex + 1) : '';
+  const content =
+    body === undefined ||
+    body === null ||
+    (typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 0)
+      ? null
+      : body;
+  const payload = {
+    content,
+    path: `/api/v1${pathOnly.startsWith('/') ? pathOnly : '/' + pathOnly}`,
+    query,
+  };
+  const canonical = JSON.stringify(sortJsonValue(payload));
+  return crypto.createHmac('sha256', consumerKey).update(canonical).digest('base64');
+}
+
+function resolveSnapTradeCredentials(login) {
+  return {
+    baseUrl: resolveSnapTradeBaseUrl(login),
+    clientId: resolveSnapTradeClientId(login),
+    consumerKey: resolveSnapTradeConsumerKey(login),
+  };
+}
+
+function ensureSnapTradeConfigured(login) {
+  const credentials = resolveSnapTradeCredentials(login);
+  if (!credentials.clientId || !credentials.consumerKey) {
+    const error = new Error('SnapTrade API credentials are not configured.');
+    error.code = 'SNAPTRADE_NOT_CONFIGURED';
+    throw error;
+  }
+  return credentials;
+}
+
+async function snapTradeRequest(login, pathSegment, options = {}) {
+  const credentials = ensureSnapTradeConfigured(options.credentials || login);
+  const method = options.method || 'GET';
+  const params = Object.assign({}, options.params || {});
+  if (login) {
+    if (!login.userId || !login.userSecret) {
+      throw new Error('SnapTrade end-user ID and secret are required.');
+    }
+    params.userId = login.userId;
+    params.userSecret = login.userSecret;
+  }
+  params.clientId = credentials.clientId;
+  params.timestamp = String(Math.floor(Date.now() / 1000));
+
+  const normalizedPath = pathSegment.startsWith('/') ? pathSegment : '/' + pathSegment;
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry) => {
+        if (entry !== undefined && entry !== null) {
+          searchParams.append(key, String(entry));
+        }
+      });
+      return;
+    }
+    searchParams.append(key, String(value));
+  });
+  const query = searchParams.toString();
+  const pathWithQuery = `${normalizedPath}${query ? '?' + query : ''}`;
+  const apiPath = `/api/v1${pathWithQuery}`;
+  const url = `${credentials.baseUrl}${apiPath}`;
+  const data = options.data === undefined ? undefined : options.data;
+  const signature = buildSnapTradeSignature(pathWithQuery, data, credentials.consumerKey);
+  const headers = Object.assign({ Signature: signature }, options.headers || {});
+  if (data !== undefined && data !== null) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  try {
+    const response = await enqueueRequest(() =>
+      performUndiciApiRequest({
+        method,
+        url,
+        data,
+        headers,
+      })
+    );
+    return response.data;
+  } catch (error) {
+    const status = error?.response?.status || null;
+    const details = error?.response?.data;
+    const message = status
+      ? `SnapTrade API request failed with status ${status} for ${normalizedPath}`
+      : error?.message || 'SnapTrade API request failed';
+    const wrapped = new Error(message);
+    wrapped.response = error?.response;
+    wrapped.request = error?.request;
+    wrapped.status = status;
+    wrapped.details = details;
+    throw wrapped;
+  }
+}
+
+function readCurrencyCode(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    return normalizeCurrency(value);
+  }
+  if (typeof value === 'object') {
+    return normalizeCurrency(value.code || value.currency || value.name);
+  }
+  return null;
+}
+
+function readFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeSnapTradeBrokerageName(connection, account) {
+  const brokerage = connection && connection.brokerage && typeof connection.brokerage === 'object'
+    ? connection.brokerage
+    : null;
+  return (
+    (account && typeof account.institution_name === 'string' && account.institution_name.trim()) ||
+    (account && account.meta && typeof account.meta.institution_name === 'string' && account.meta.institution_name.trim()) ||
+    (brokerage && typeof brokerage.display_name === 'string' && brokerage.display_name.trim()) ||
+    (brokerage && typeof brokerage.name === 'string' && brokerage.name.trim()) ||
+    'SnapTrade'
+  );
+}
+
+function normalizeSnapTradeAccount(account, login, connection, index) {
+  if (!account || typeof account !== 'object') {
+    return null;
+  }
+  const providerAccountId = normalizeAccountIdentifier(account.id);
+  if (!providerAccountId) {
+    return null;
+  }
+  const institutionAccountId = normalizeAccountIdentifier(account.institution_account_id);
+  const number =
+    normalizeAccountIdentifier(account.number) ||
+    institutionAccountId ||
+    providerAccountId;
+  const brokerageAuthorization =
+    normalizeAccountIdentifier(account.brokerage_authorization) ||
+    normalizeAccountIdentifier(connection && connection.id);
+  const institutionName = normalizeSnapTradeBrokerageName(connection, account);
+  const type =
+    (typeof account.raw_type === 'string' && account.raw_type.trim()) ||
+    (typeof account.type === 'string' && account.type.trim()) ||
+    (account.meta && typeof account.meta.type === 'string' && account.meta.type.trim()) ||
+    null;
+  return {
+    id: providerAccountId,
+    provider: BROKER_PROVIDER_SNAPTRADE,
+    providerLabel: getBrokerProviderLabel(BROKER_PROVIDER_SNAPTRADE),
+    providerAccountId,
+    snapTradeAccountId: providerAccountId,
+    number,
+    accountNumber: number,
+    institutionAccountId: institutionAccountId || null,
+    brokerageAuthorizationId: brokerageAuthorization || null,
+    institutionName,
+    brokerageName: institutionName,
+    platformLabel: institutionName,
+    name:
+      (typeof account.name === 'string' && account.name.trim()) ||
+      (type ? `${institutionName} ${type}` : institutionName),
+    type,
+    clientAccountType: type,
+    status: account.status || null,
+    accountCategory: account.account_category || null,
+    openingDate: account.opening_date || null,
+    fundingDate: account.funding_date || null,
+    createdDate: account.created_date || null,
+    syncStatus: account.sync_status || null,
+    balance: account.balance || null,
+    _snapTradeIndex: index,
+  };
+}
+
+function normalizeSnapTradeSymbol(symbol) {
+  if (!symbol || typeof symbol !== 'object') {
+    return { symbol: null, symbolId: null, description: null, currency: null };
+  }
+  const symbolSource = symbol && typeof symbol.symbol === 'object' ? symbol.symbol : symbol;
+  return {
+    symbol: normalizeSymbol(symbolSource.symbol || symbolSource.ticker || symbolSource.raw_symbol) || null,
+    symbolId: symbolSource.id || null,
+    description:
+      (typeof symbolSource.description === 'string' && symbolSource.description.trim()) ||
+      (typeof symbolSource.raw_symbol === 'string' && symbolSource.raw_symbol.trim()) ||
+      null,
+    currency: readCurrencyCode(symbolSource.currency),
+  };
+}
+
+function normalizeSnapTradePosition(position) {
+  if (!position || typeof position !== 'object') {
+    return null;
+  }
+  const instrument = position.instrument && typeof position.instrument === 'object' ? position.instrument : null;
+  const symbolInfo = normalizeSnapTradeSymbol(instrument || position.symbol);
+  const quantity = readFiniteNumber(position.units ?? position.fractional_units);
+  if (!symbolInfo.symbol || !Number.isFinite(quantity) || Math.abs(quantity) < 1e-12) {
+    return null;
+  }
+  const currentPrice = readFiniteNumber(position.price);
+  const averageEntryPrice = readFiniteNumber(position.average_purchase_price ?? position.cost_basis);
+  const currentMarketValue =
+    Number.isFinite(currentPrice) && Number.isFinite(quantity) ? currentPrice * quantity : null;
+  const totalCost =
+    Number.isFinite(averageEntryPrice) && Number.isFinite(quantity)
+      ? averageEntryPrice * quantity
+      : null;
+  return {
+    symbol: symbolInfo.symbol,
+    symbolId: symbolInfo.symbolId,
+    description: symbolInfo.description,
+    currency:
+      readCurrencyCode(position.currency) ||
+      readCurrencyCode(instrument && instrument.currency) ||
+      symbolInfo.currency ||
+      inferSymbolCurrency(symbolInfo.symbol),
+    openQuantity: quantity,
+    currentPrice,
+    currentMarketValue,
+    averageEntryPrice,
+    dayPnl: null,
+    openPnl: readFiniteNumber(position.open_pnl),
+    totalCost,
+    isRealTime: false,
+    cashEquivalent: position.cash_equivalent === true,
+  };
+}
+
+function normalizeSnapTradeBalanceEntry(balance) {
+  if (!balance || typeof balance !== 'object') {
+    return null;
+  }
+  const currency = readCurrencyCode(balance.currency);
+  if (!currency) {
+    return null;
+  }
+  const entry = { currency, isRealTime: false };
+  const cash = readFiniteNumber(balance.cash);
+  const buyingPower = readFiniteNumber(balance.buying_power);
+  if (Number.isFinite(cash)) {
+    entry.cash = cash;
+  }
+  if (Number.isFinite(buyingPower)) {
+    entry.buyingPower = buyingPower;
+  }
+  return entry;
+}
+
+function normalizeSnapTradeBalancesPayload(balances, detail) {
+  const perCurrencyBalances = Array.isArray(balances)
+    ? balances.map(normalizeSnapTradeBalanceEntry).filter(Boolean)
+    : [];
+  const combinedBalances = [];
+  const total = detail && detail.balance && detail.balance.total ? detail.balance.total : null;
+  const totalAmount = readFiniteNumber(total && total.amount);
+  const totalCurrency = readCurrencyCode(total && total.currency);
+  if (Number.isFinite(totalAmount) && totalCurrency) {
+    const sameCurrencyCash = perCurrencyBalances
+      .filter((entry) => entry.currency === totalCurrency && Number.isFinite(entry.cash))
+      .reduce((sum, entry) => sum + entry.cash, 0);
+    const combined = {
+      currency: totalCurrency,
+      totalEquity: totalAmount,
+      isRealTime: false,
+    };
+    if (Number.isFinite(sameCurrencyCash)) {
+      combined.cash = sameCurrencyCash;
+      combined.marketValue = totalAmount - sameCurrencyCash;
+    }
+    combinedBalances.push(combined);
+  }
+  return { combinedBalances, perCurrencyBalances };
+}
+
+function normalizeSnapTradeOrder(order) {
+  if (!order || typeof order !== 'object') {
+    return null;
+  }
+  const symbolInfo = normalizeSnapTradeSymbol(order.symbol || order.universal_symbol || order.option_symbol);
+  return {
+    id: order.id || order.brokerage_order_id || null,
+    orderId: order.id || order.brokerage_order_id || null,
+    symbol: symbolInfo.symbol,
+    symbolId: symbolInfo.symbolId,
+    description: symbolInfo.description,
+    currency: readCurrencyCode(order.currency) || symbolInfo.currency,
+    state: order.status || order.state || null,
+    side: order.action || order.side || null,
+    action: order.action || order.side || null,
+    type: order.order_type || order.type || null,
+    timeInForce: order.time_in_force || order.timeInForce || null,
+    totalQuantity: readFiniteNumber(order.total_quantity ?? order.quantity ?? order.units),
+    openQuantity: readFiniteNumber(order.open_quantity),
+    filledQuantity: readFiniteNumber(order.filled_quantity ?? order.filledQuantity ?? order.units),
+    limitPrice: readFiniteNumber(order.limit_price),
+    stopPrice: readFiniteNumber(order.stop_price),
+    avgExecPrice: readFiniteNumber(order.average_execution_price ?? order.avg_exec_price ?? order.price),
+    lastExecPrice: readFiniteNumber(order.last_execution_price),
+    commission: readFiniteNumber(order.commission ?? order.fee),
+    commissionCharged: readFiniteNumber(order.commission ?? order.fee),
+    creationTime: order.created_date || order.time_placed || order.trade_date || null,
+    updateTime: order.updated_date || order.time_updated || null,
+    source: 'snaptrade',
+  };
+}
+
+function inferSnapTradeActivityQuantity(activity) {
+  const units = readFiniteNumber(activity && activity.units);
+  if (!Number.isFinite(units)) {
+    return null;
+  }
+  const type = String(activity.type || '').trim().toUpperCase();
+  if (['SELL', 'WITHDRAWAL', 'EXTERNAL_ASSET_TRANSFER_OUT'].includes(type)) {
+    return -Math.abs(units);
+  }
+  return Math.abs(units);
+}
+
+function normalizeSnapTradeActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const symbolInfo = normalizeSnapTradeSymbol(activity.symbol || activity.option_symbol);
+  const tradeDate = activity.trade_date || activity.date || activity.created_date || null;
+  const amount = readFiniteNumber(activity.amount);
+  const fee = readFiniteNumber(activity.fee);
+  const netAmount = Number.isFinite(amount) && Number.isFinite(fee) ? amount - Math.abs(fee) : amount;
+  return {
+    id: activity.id || activity.external_reference_id || null,
+    activityId: activity.id || null,
+    transactionId: activity.external_reference_id || activity.id || null,
+    symbol: symbolInfo.symbol,
+    symbolId: symbolInfo.symbolId,
+    quantity: inferSnapTradeActivityQuantity(activity),
+    price: readFiniteNumber(activity.price),
+    grossAmount: amount,
+    netAmount,
+    currency: readCurrencyCode(activity.currency) || symbolInfo.currency,
+    type: activity.type || null,
+    action: activity.type || activity.option_type || null,
+    description: activity.description || null,
+    tradeDate,
+    transactionDate: tradeDate,
+    settlementDate: activity.settlement_date || null,
+    date: tradeDate,
+    commission: fee,
+    fxRate: readFiniteNumber(activity.fx_rate),
+    institution: activity.institution || null,
+    source: 'snaptrade',
+  };
+}
+
+async function fetchSnapTradeConnections(login) {
+  const data = await snapTradeRequest(login, '/authorizations');
+  return Array.isArray(data) ? data : [];
+}
+
+async function fetchSnapTradeAccounts(login) {
+  const connections = await fetchSnapTradeConnections(login);
+  const accounts = [];
+  for (const connection of connections) {
+    if (!connection || !connection.id || connection.disabled === true) {
+      continue;
+    }
+    const data = await snapTradeRequest(
+      login,
+      `/authorizations/${encodeURIComponent(connection.id)}/accounts`
+    );
+    const connectionAccounts = Array.isArray(data) ? data : [];
+    connectionAccounts.forEach((account, index) => {
+      const normalized = normalizeSnapTradeAccount(account, login, connection, index);
+      if (normalized) {
+        accounts.push(normalized);
+      }
+    });
+  }
+  return accounts;
+}
+
+async function fetchSnapTradeAccountDetail(login, accountRef) {
+  const accountId = resolveAccountApiId(login, accountRef);
+  if (!accountId) {
+    return null;
+  }
+  return snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}`);
+}
+
+async function fetchSnapTradePositions(login, accountRef) {
+  const accountId = resolveAccountApiId(login, accountRef);
+  if (!accountId) {
+    return [];
+  }
+  const data = await snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/positions/all`);
+  const rawPositions = Array.isArray(data)
+    ? data
+    : Array.isArray(data && data.results)
+      ? data.results
+      : [];
+  return rawPositions.map(normalizeSnapTradePosition).filter(Boolean);
+}
+
+async function fetchSnapTradeBalances(login, accountRef) {
+  const accountId = resolveAccountApiId(login, accountRef);
+  if (!accountId) {
+    return {};
+  }
+  const [balances, detail] = await Promise.all([
+    snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/balances`).catch(() => []),
+    fetchSnapTradeAccountDetail(login, accountRef).catch(() => null),
+  ]);
+  return normalizeSnapTradeBalancesPayload(balances, detail);
+}
+
+async function fetchSnapTradeOrders(login, accountRef, options = {}) {
+  const accountId = resolveAccountApiId(login, accountRef);
+  if (!accountId) {
+    return [];
+  }
+  const params = {};
+  const stateFilter =
+    typeof options.stateFilter === 'string' && options.stateFilter.trim()
+      ? options.stateFilter.trim()
+      : 'all';
+  if (stateFilter && stateFilter.toLowerCase() !== 'all') {
+    params.state = stateFilter;
+  }
+  const startDate =
+    typeof options.startTime === 'string' && options.startTime
+      ? normalizeDateOnly(options.startTime)
+      : options.startDate instanceof Date && !Number.isNaN(options.startDate.getTime())
+        ? formatDateOnly(options.startDate)
+        : null;
+  const endDate =
+    typeof options.endTime === 'string' && options.endTime
+      ? normalizeDateOnly(options.endTime)
+      : options.endDate instanceof Date && !Number.isNaN(options.endDate.getTime())
+        ? formatDateOnly(options.endDate)
+        : null;
+  if (startDate) {
+    const startTime = new Date(`${startDate}T00:00:00Z`).getTime();
+    const endTime = endDate ? new Date(`${endDate}T23:59:59Z`).getTime() : Date.now();
+    if (Number.isFinite(startTime) && Number.isFinite(endTime) && endTime >= startTime) {
+      const days = Math.max(1, Math.ceil((endTime - startTime) / DAY_IN_MS));
+      params.days = Math.min(90, days);
+    }
+  }
+  const data = await snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/orders`, { params });
+  const rawOrders = Array.isArray(data) ? data : Array.isArray(data && data.data) ? data.data : [];
+  return rawOrders.map(normalizeSnapTradeOrder).filter(Boolean);
+}
+
+async function fetchSnapTradeActivities(login, accountRef, startDate, endDate) {
+  const accountId = resolveAccountApiId(login, accountRef);
+  if (!accountId) {
+    return [];
+  }
+  const startParam = normalizeDateOnly(startDate);
+  const endParam = normalizeDateOnly(endDate);
+  const limit = 1000;
+  let offset = 0;
+  const activities = [];
+  while (true) {
+    const params = { limit, offset };
+    if (startParam) {
+      params.startDate = startParam;
+    }
+    if (endParam) {
+      params.endDate = endParam;
+    }
+    const data = await snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/activities`, {
+      params,
+    });
+    const batch = Array.isArray(data && data.data) ? data.data : Array.isArray(data) ? data : [];
+    activities.push(...batch.map(normalizeSnapTradeActivity).filter(Boolean));
+    const total = readFiniteNumber(data && data.pagination && data.pagination.total);
+    const returned = batch.length;
+    offset += returned;
+    if (!returned || !Number.isFinite(total) || offset >= total) {
+      break;
+    }
+  }
+  return activities;
+}
+
 async function fetchAccounts(login) {
+  if (isSnapTradeLogin(login)) {
+    return fetchSnapTradeAccounts(login);
+  }
   const data = await questradeRequest(login, '/v1/accounts');
   return data.accounts || [];
 }
 
 async function fetchPositions(login, accountId) {
+  if (isSnapTradeLogin(login)) {
+    return fetchSnapTradePositions(login, accountId);
+  }
+  accountId = resolveAccountApiId(login, accountId);
   const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/positions');
   return data.positions || [];
 }
 
 async function fetchBalances(login, accountId) {
+  if (isSnapTradeLogin(login)) {
+    return fetchSnapTradeBalances(login, accountId);
+  }
+  accountId = resolveAccountApiId(login, accountId);
   const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/balances');
   return data || {};
 }
@@ -8011,6 +8863,10 @@ const MAX_ORDER_HISTORY_PAGES = 20;
 const DEFAULT_ORDER_HISTORY_MONTHS = 12;
 
 async function fetchOrders(login, accountId, options = {}) {
+  if (isSnapTradeLogin(login)) {
+    return fetchSnapTradeOrders(login, accountId, options);
+  }
+  accountId = resolveAccountApiId(login, accountId);
   const now = new Date();
   const startTime =
     typeof options.startTime === 'string' && options.startTime
@@ -10544,6 +11400,9 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate, accou
   if (!startParam || !endParam) {
     return [];
   }
+  if (isSnapTradeLogin(login)) {
+    return fetchSnapTradeActivities(login, accountId, startDate, endDate);
+  }
   const nowMs = Date.now();
   const isHistorical = endDate instanceof Date && !Number.isNaN(endDate.getTime()) && endDate.getTime() < nowMs;
   const cacheKey =
@@ -10932,6 +11791,66 @@ function setNetDepositsCacheEntry(cacheKey, value) {
   pruneNetDepositsCache();
 }
 
+function normalizeCashFlowDateKey(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return formatDateOnly(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const trimmed = value.trim();
+    const dateOnly = normalizeDateOnly(trimmed);
+    if (dateOnly) {
+      return dateOnly;
+    }
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : formatDateOnly(parsed);
+  }
+  return null;
+}
+
+function applyPendingDepositToFundingSummary(fundingSummary, amountCad, dateValue) {
+  if (!fundingSummary || typeof fundingSummary !== 'object') {
+    return false;
+  }
+  const amount = Number(amountCad);
+  if (!Number.isFinite(amount) || amount < CASH_FLOW_EPSILON) {
+    return false;
+  }
+  const dateKey = normalizeCashFlowDateKey(dateValue);
+  if (!dateKey) {
+    return false;
+  }
+
+  if (!fundingSummary.netDeposits || typeof fundingSummary.netDeposits !== 'object') {
+    fundingSummary.netDeposits = {};
+  }
+  const combined = Number(fundingSummary.netDeposits.combinedCad);
+  fundingSummary.netDeposits.combinedCad = (Number.isFinite(combined) ? combined : 0) + amount;
+  const allTime = Number(fundingSummary.netDeposits.allTimeCad);
+  fundingSummary.netDeposits.allTimeCad = (Number.isFinite(allTime) ? allTime : 0) + amount;
+
+  if (!Array.isArray(fundingSummary.cashFlowsCad)) {
+    fundingSummary.cashFlowsCad = [];
+  }
+  const cashFlowAmount = -amount;
+  const hasDuplicate = fundingSummary.cashFlowsCad.some((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    const entryAmount = Number(entry.amount);
+    if (!Number.isFinite(entryAmount) || Math.abs(entryAmount - cashFlowAmount) >= CASH_FLOW_EPSILON) {
+      return false;
+    }
+    return normalizeCashFlowDateKey(entry.date || entry.timestamp) === dateKey;
+  });
+  if (!hasDuplicate) {
+    fundingSummary.cashFlowsCad.push({ amount: cashFlowAmount, date: `${dateKey}T00:00:00Z` });
+  }
+  return true;
+}
+
 async function buildAccountActivityContext(login, account, options = {}) {
   if (!login || !account) {
     return null;
@@ -10939,12 +11858,13 @@ async function buildAccountActivityContext(login, account, options = {}) {
 
   const accountKey = account.id;
   const accountNumber = account.number || account.accountNumber || account.id;
-  if (!accountKey || !accountNumber) {
+  const accountApiId = resolveAccountApiId(login, account);
+  if (!accountKey || !accountApiId) {
     return null;
   }
 
   const { fallbackMonths = 12 } = options;
-  const earliestFunding = await discoverEarliestFundingDate(login, accountNumber, accountKey);
+  const earliestFunding = await discoverEarliestFundingDate(login, accountApiId, accountKey);
   const now = new Date();
   const nowIsoString = now.toISOString();
 
@@ -10953,13 +11873,14 @@ async function buildAccountActivityContext(login, account, options = {}) {
     : addMonths(now, -Math.max(1, fallbackMonths));
   const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
 
-  const activitiesRaw = await fetchActivitiesRange(login, accountNumber, crawlStart, now, accountKey);
+  const activitiesRaw = await fetchActivitiesRange(login, accountApiId, crawlStart, now, accountKey);
   const activities = dedupeActivities(activitiesRaw);
   const fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(login, accountKey);
 
   return {
     accountId: accountKey,
     accountNumber,
+    accountApiId,
     accountKey,
     earliestFunding,
     crawlStart,
@@ -11572,43 +12493,63 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   const preFixTotalPnlCad = totalPnlCad;
 
   const todayKey = formatDateOnly(now);
-  const hasWithdrawToday =
-    todayKey &&
-    fundingActivityDetails.some((entry) => {
-      if (!entry || typeof entry !== 'object') {
-        return false;
-      }
-      const amount = Number(entry.amount);
-      if (!Number.isFinite(amount) || amount >= 0) {
-        return false;
-      }
-      const timestamp =
-        entry.timestamp instanceof Date
-          ? entry.timestamp
-          : typeof entry.timestamp === 'string' && entry.timestamp
-            ? new Date(entry.timestamp)
-            : null;
-      if (!timestamp || Number.isNaN(timestamp.getTime())) {
-        return false;
-      }
-      return formatDateOnly(timestamp) === todayKey;
-    });
+  const requestedEndKey =
+    requestedPeriodEndDate instanceof Date && !Number.isNaN(requestedPeriodEndDate.getTime())
+      ? formatDateOnly(requestedPeriodEndDate)
+      : null;
+  const canApplyPendingFundingAutoFix = !requestedEndKey || requestedEndKey === todayKey;
+  const hasFundingTodayMatching = (predicate) =>
+    Boolean(
+      todayKey &&
+      fundingActivityDetails.some((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return false;
+        }
+        const amount = Number(entry.amount);
+        if (!Number.isFinite(amount) || !predicate(amount)) {
+          return false;
+        }
+        const timestamp =
+          entry.timestamp instanceof Date
+            ? entry.timestamp
+            : typeof entry.timestamp === 'string' && entry.timestamp
+              ? new Date(entry.timestamp)
+              : null;
+        if (!timestamp || Number.isNaN(timestamp.getTime())) {
+          return false;
+        }
+        return formatDateOnly(timestamp) === todayKey;
+      })
+    );
+  const hasWithdrawToday = hasFundingTodayMatching((amount) => amount < 0);
+  const hasDepositToday = hasFundingTodayMatching((amount) => amount > 0);
   const autoFixFlag =
     account &&
     (account.autoFixPendingWithdrawls === true ||
       account.autoFixPendingWithdrawls === 'true' ||
       account.autoFixPendingWithdrawls === 1);
-  let autoFixPendingWithdrawls = null;
-  if (
+  const autoFixKind =
     autoFixFlag &&
+    canApplyPendingFundingAutoFix &&
     !conversionIncomplete &&
     Number.isFinite(preFixTotalPnlCad) &&
     preFixTotalPnlCad < -AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD &&
     todayKey &&
     !hasWithdrawToday
-  ) {
+      ? 'withdrawal'
+      : autoFixFlag &&
+          canApplyPendingFundingAutoFix &&
+          !conversionIncomplete &&
+          Number.isFinite(preFixTotalPnlCad) &&
+          preFixTotalPnlCad > AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD &&
+          todayKey &&
+          !hasDepositToday
+        ? 'deposit'
+        : null;
+  let autoFixPendingWithdrawls = null;
+  if (autoFixKind) {
     const adjustmentCad = preFixTotalPnlCad;
-    console.log('[autoFix] triggered for account', account.id, adjustmentCad);
+    console.log('[autoFix] triggered for account', account.id, autoFixKind, adjustmentCad);
     const existingCad = perCurrencyTotals.has('CAD') ? perCurrencyTotals.get('CAD') : 0;
     perCurrencyTotals.set('CAD', existingCad + adjustmentCad);
     combinedCad += adjustmentCad;
@@ -11616,34 +12557,42 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
       combinedCadValue += adjustmentCad;
     }
     cashFlowEntries.push({ amount: -adjustmentCad, date: nowIsoString });
+    const isDeposit = autoFixKind === 'deposit';
     breakdown.push({
       amount: adjustmentCad,
       currency: 'CAD',
       cadAmount: adjustmentCad,
       usdAmount: null,
       fxRate: 1,
-      resolvedAmountSource: 'autoFixPendingWithdrawls',
+      resolvedAmountSource: isDeposit ? 'autoFixPendingDeposit' : 'autoFixPendingWithdrawls',
       resolvedAmountField: 'adjustmentCad',
       descriptionExtracted: false,
-      description: 'Automated fix for suspected missing withdrawal.',
+      description: isDeposit
+        ? 'Automated fix for suspected missing deposit.'
+        : 'Automated fix for suspected missing withdrawal.',
       type: 'Adjustment',
-      action: 'autoFixPendingWithdrawls',
+      action: isDeposit ? 'autoFixPendingDeposit' : 'autoFixPendingWithdrawls',
       timestamp: todayKey,
     });
     autoFixPendingWithdrawls = {
       applied: true,
+      kind: autoFixKind,
       adjustmentCad,
       appliedAt: nowIsoString,
-      note:
-        'Detected a large negative Total P&L without any recorded withdrawal today; net deposits were adjusted to compensate.',
+      note: isDeposit
+        ? 'Detected a large positive Total P&L without any recorded deposit today; net deposits were adjusted to compensate.'
+        : 'Detected a large negative Total P&L without any recorded withdrawal today; net deposits were adjusted to compensate.',
       originalTotalPnlCad: preFixTotalPnlCad,
-      thresholdCad: AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD,
+      thresholdCad: isDeposit ? AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD : AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD,
     };
-    debugTotalPnl(accountKey, 'Applied auto fix for suspected missing withdrawal', {
+    debugTotalPnl(accountKey, isDeposit
+      ? 'Applied auto fix for suspected missing deposit'
+      : 'Applied auto fix for suspected missing withdrawal', {
       adjustmentCad,
       previousTotalPnlCad: preFixTotalPnlCad,
-      thresholdCad: AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD,
+      thresholdCad: isDeposit ? AUTO_FIX_DEPOSIT_PNL_THRESHOLD_CAD : AUTO_FIX_WITHDRAWAL_PNL_THRESHOLD_CAD,
       todayKey,
+      hasDepositToday,
       hasWithdrawToday,
     });
     totalPnlCad =
@@ -13524,13 +14473,15 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   let closingPositions = [];
   const canFetchPositions =
-    login && typeof login === 'object' && (login.refreshToken || login.accessToken || login.sessionToken);
+    login &&
+    typeof login === 'object' &&
+    (login.refreshToken || login.accessToken || login.sessionToken || (login.userId && login.userSecret));
   // Prefer caller-provided positions to avoid duplicate provider requests within the same flow
   if (Array.isArray(options.providedPositions)) {
     closingPositions = options.providedPositions;
   } else if (canFetchPositions && accountNumber) {
     try {
-      closingPositions = await fetchPositions(login, accountNumber);
+      closingPositions = await fetchPositions(login, account);
     } catch (positionError) {
       closingPositions = [];
     }
@@ -14238,6 +15189,25 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const adjustedPnl = summaryEquity - summaryNetDeposits;
       summaryTotalPnl = adjustedPnl;
       summaryTotalPnlAllTime = adjustedPnl;
+    }
+  }
+
+  const pendingFundingAutoFixInfo = netDepositsSummary?.autoFixPendingWithdrawls;
+  if (
+    pendingFundingAutoFixInfo &&
+    pendingFundingAutoFixInfo.applied === true &&
+    Number.isFinite(pendingFundingAutoFixInfo.adjustmentCad) &&
+    points.length
+  ) {
+    const lastPoint = points[points.length - 1];
+    const adjustedNetDeposits = Number.isFinite(summaryNetDepositsAllTime)
+      ? summaryNetDepositsAllTime
+      : summaryNetDeposits;
+    if (lastPoint && Number.isFinite(summaryEquity) && Number.isFinite(adjustedNetDeposits)) {
+      lastPoint.equityCad = summaryEquity;
+      lastPoint.cumulativeNetDepositsCad = adjustedNetDeposits;
+      const adjustedPnl = summaryEquity - adjustedNetDeposits;
+      lastPoint.totalPnlCad = Math.abs(adjustedPnl) < CASH_FLOW_EPSILON ? 0 : adjustedPnl;
     }
   }
 
@@ -16403,11 +17373,19 @@ async function resolveAccountContextByKey(accountKey) {
     if (!Array.isArray(accounts)) {
       continue;
     }
-    for (const rawAccount of accounts) {
+    for (let accountIndex = 0; accountIndex < accounts.length; accountIndex += 1) {
+      const rawAccount = accounts[accountIndex];
       if (!rawAccount) {
         continue;
       }
+      const normalizedBase = buildNormalizedAccountBase(login, rawAccount, accountIndex);
       const candidates = [];
+      if (normalizedBase.id != null) {
+        candidates.push(String(normalizedBase.id).trim().toLowerCase());
+      }
+      if (normalizedBase.providerAccountId != null) {
+        candidates.push(String(normalizedBase.providerAccountId).trim().toLowerCase());
+      }
       if (rawAccount.id != null) {
         candidates.push(String(rawAccount.id).trim().toLowerCase());
       }
@@ -16421,20 +17399,7 @@ async function resolveAccountContextByKey(accountKey) {
         candidates.push(String(rawAccount.name).trim().toLowerCase());
       }
       if (targetKeys.some((key) => candidates.includes(key))) {
-        const normalizedAccount = Object.assign({}, rawAccount);
-        const derivedId =
-          (rawAccount.id != null && String(rawAccount.id).trim()) ||
-          (rawAccount.number != null && String(rawAccount.number).trim()) ||
-          (rawAccount.accountNumber != null && String(rawAccount.accountNumber).trim()) ||
-          normalizedKey;
-        const derivedNumber =
-          (rawAccount.number != null && String(rawAccount.number).trim()) ||
-          (rawAccount.accountNumber != null && String(rawAccount.accountNumber).trim()) ||
-          (rawAccount.id != null && String(rawAccount.id).trim()) ||
-          normalizedKey;
-        normalizedAccount.id = derivedId;
-        normalizedAccount.number = derivedNumber;
-        return { login, account: normalizedAccount };
+        return { login, account: normalizedBase };
       }
     }
   }
@@ -16839,7 +17804,9 @@ function decoratePositions(positions, symbolsMap, accountsMap, dividendYieldMap,
       loginId: position.loginId || (accountInfo ? accountInfo.loginId : null),
       symbol: position.symbol,
       symbolId: position.symbolId,
-      description: symbolInfo ? symbolInfo.description : null,
+      description:
+        (symbolInfo && symbolInfo.description) ||
+        (typeof position.description === 'string' && position.description.trim() ? position.description.trim() : null),
       currency: resolvedCurrency,
       openQuantity: position.openQuantity,
       currentPrice: position.currentPrice,
@@ -16894,7 +17861,7 @@ function decorateOrders(orders, symbolsMap, accountsMap) {
       loginId: order?.loginId || (accountInfo ? accountInfo.loginId : null),
       symbol: normalizeString(order?.symbol) || normalizeString(symbolInfo?.symbol) || null,
       symbolId: order?.symbolId ?? symbolInfo?.symbolId ?? null,
-      description: normalizeString(symbolInfo?.description),
+      description: normalizeString(symbolInfo?.description) || normalizeString(order?.description),
       currency: normalizeString(order?.currency) || normalizeString(symbolInfo?.currency) || null,
       status: normalizeString(order?.state) || normalizeString(order?.status) || null,
       action: normalizeString(order?.side) || normalizeString(order?.action) || null,
@@ -17852,7 +18819,7 @@ app.post('/api/app-settings/other-assets', function (req, res) {
 app.get('/api/accounts', async function (req, res) {
   if (!allLogins.length) {
     return res.status(409).json({
-      message: 'No Questrade logins configured yet. Use Actions > Manage logins to add one.',
+      message: 'No brokerage logins configured yet. Use Actions > Manage logins to add one.',
       code: 'NO_LOGINS',
     });
   }
@@ -17865,28 +18832,25 @@ app.get('/api/accounts', async function (req, res) {
     let allAccounts = [];
     for (const login of allLogins) {
       const fetchedAccounts = await fetchAccounts(login);
-      const normalized = fetchedAccounts.map((account, index) => {
-        const rawNumber = account.number || account.accountNumber || account.id || index;
-        const number = String(rawNumber);
-        const compositeId = login.id + ':' + number;
-        const ownerLabel = resolveLoginDisplay(login);
-        const normalizedAccount = Object.assign({}, account, {
-          id: compositeId,
-          number,
-          accountNumber: number,
-          loginId: login.id,
-          ownerLabel,
-          loginLabel: ownerLabel,
-        });
-        const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
-        return Object.assign({}, accountWithOverrides, {
-          id: compositeId,
-          number: accountWithOverrides.number || number,
-          accountNumber: accountWithOverrides.accountNumber || number,
-          displayName: resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login),
-          accountGroup: accountWithOverrides.accountGroup || null,
-        });
-      });
+      const normalized = fetchedAccounts
+        .map((account, index) => {
+          const normalizedAccount = buildNormalizedAccountBase(login, account, index);
+          const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
+          if (isHiddenAccount(accountWithOverrides)) {
+            return null;
+          }
+          return Object.assign({}, accountWithOverrides, {
+            id: normalizedAccount.id,
+            provider: normalizedAccount.provider,
+            providerLabel: normalizedAccount.providerLabel,
+            providerAccountId: normalizedAccount.providerAccountId,
+            number: accountWithOverrides.number || normalizedAccount.number,
+            accountNumber: accountWithOverrides.accountNumber || normalizedAccount.accountNumber,
+            displayName: resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login),
+            accountGroup: accountWithOverrides.accountGroup || null,
+          });
+        })
+        .filter(Boolean);
       allAccounts = allAccounts.concat(normalized);
     }
 
@@ -17920,9 +18884,118 @@ app.get('/api/logins', function (req, res) {
 
 app.post('/api/logins', async function (req, res) {
   const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const provider = normalizeBrokerProvider(payload.provider);
   const email = normalizeEmailInput(payload.email);
   const refreshToken = typeof payload.refreshToken === 'string' ? payload.refreshToken.trim() : '';
-  const verificationRequestId = createQuestradeDebugId('login-verify');
+  const userIdInput = normalizeUserIdInput(payload.userId);
+  const userSecretInput = typeof payload.userSecret === 'string' ? payload.userSecret.trim() : '';
+  const clientIdInput = normalizeSnapTradeCredentialInput(payload.clientId || payload.snapTradeClientId);
+  const consumerKeyInput = normalizeSnapTradeCredentialInput(
+    payload.consumerKey || payload.snapTradeConsumerKey
+  );
+  const broker =
+    typeof payload.broker === 'string' && payload.broker.trim()
+      ? payload.broker.trim()
+      : SNAPTRADE_DEFAULT_BROKER;
+  const verificationRequestId = createQuestradeDebugId(
+    provider === BROKER_PROVIDER_SNAPTRADE ? 'snap-login-verify' : 'login-verify'
+  );
+
+  if (provider === BROKER_PROVIDER_SNAPTRADE) {
+    if (!email && !userIdInput) {
+      return res.status(400).json({ message: 'Email or SnapTrade end-user ID is required.' });
+    }
+    let userId = userIdInput || buildDefaultSnapTradeUserId(email);
+    let userSecret = userSecretInput;
+    let registered = false;
+    const snapTradeCredentials =
+      clientIdInput || consumerKeyInput
+        ? { clientId: clientIdInput, consumerKey: consumerKeyInput }
+        : null;
+
+    try {
+      if (!userSecret) {
+        const registration = await registerSnapTradeUser(userId, snapTradeCredentials);
+        userId = registration.userId;
+        userSecret = registration.userSecret;
+        registered = true;
+      } else {
+        await snapTradeRequest(
+          {
+            id: userId,
+            userId,
+            userSecret,
+            provider,
+            clientId: clientIdInput || undefined,
+            consumerKey: consumerKeyInput || undefined,
+          },
+          '/authorizations'
+        );
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : 'Failed to verify SnapTrade end-user';
+      return res.status(400).json({ message: 'Failed to verify SnapTrade end-user', details: message });
+    }
+
+    const nowIso = new Date().toISOString();
+    const loginId = userId;
+    let targetLogin = loginsById[loginId] || null;
+    if (!targetLogin) {
+      targetLogin = {
+        id: loginId,
+        provider,
+        label: email || userId,
+        email: email || null,
+        userId,
+        userSecret,
+        clientId: clientIdInput || undefined,
+        consumerKey: consumerKeyInput || undefined,
+        defaultBroker: broker,
+        updatedAt: nowIso,
+      };
+      allLogins.push(targetLogin);
+    } else {
+      targetLogin.provider = provider;
+      targetLogin.label = email || userId;
+      targetLogin.email = email || null;
+      targetLogin.userId = userId;
+      targetLogin.userSecret = userSecret;
+      if (clientIdInput) {
+        targetLogin.clientId = clientIdInput;
+      }
+      if (consumerKeyInput) {
+        targetLogin.consumerKey = consumerKeyInput;
+      }
+      targetLogin.defaultBroker = broker;
+      targetLogin.updatedAt = nowIso;
+    }
+
+    loginsById[loginId] = targetLogin;
+    tokenStoreState.logins = allLogins;
+    persistTokenStore(tokenStoreState);
+
+    let connectionPortal = null;
+    try {
+      connectionPortal = await createSnapTradeConnectionPortal(targetLogin, { broker });
+    } catch (portalError) {
+      connectionPortal = {
+        redirectURI: null,
+        broker,
+        error: portalError && portalError.message ? portalError.message : String(portalError),
+      };
+    }
+
+    const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
+    return res.status(201).json({
+      login: sanitizeLoginForClient(targetLogin),
+      logins,
+      updatedAt: tokenStoreState.updatedAt || null,
+      snapTrade: {
+        registered,
+        connectionPortal,
+      },
+    });
+  }
 
   if (!email) {
     return res.status(400).json({ message: 'Email is required.' });
@@ -17934,6 +19007,7 @@ app.post('/api/logins', async function (req, res) {
   const loginId = email;
   const verificationLogin = {
     id: loginId,
+    provider,
     label: email,
     email,
     refreshToken,
@@ -17969,6 +19043,7 @@ app.post('/api/logins', async function (req, res) {
   if (!targetLogin) {
     targetLogin = {
       id: loginId,
+      provider,
       label: email,
       email,
       refreshToken: verifiedRefreshToken,
@@ -17976,6 +19051,7 @@ app.post('/api/logins', async function (req, res) {
     };
     allLogins.push(targetLogin);
   } else {
+    targetLogin.provider = provider;
     targetLogin.label = email;
     targetLogin.email = email;
     targetLogin.refreshToken = verifiedRefreshToken;
@@ -17997,6 +19073,24 @@ app.post('/api/logins', async function (req, res) {
     logins,
     updatedAt: tokenStoreState.updatedAt || null,
   });
+});
+
+app.post('/api/logins/:loginId/snaptrade-connection-portal', async function (req, res) {
+  const loginId = typeof req.params.loginId === 'string' ? req.params.loginId.trim() : '';
+  const login = loginId ? loginsById[loginId] : null;
+  if (!login || !isSnapTradeLogin(login)) {
+    return res.status(404).json({ message: 'SnapTrade login not found.' });
+  }
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  try {
+    const connectionPortal = await createSnapTradeConnectionPortal(login, {
+      broker: payload.broker,
+    });
+    return res.json({ login: sanitizeLoginForClient(login), connectionPortal });
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Failed to create SnapTrade connection link';
+    return res.status(400).json({ message, details: message });
+  }
 });
 
 app.get('/api/earnings', async function (req, res) {
@@ -18071,7 +19165,7 @@ app.get('/api/earnings', async function (req, res) {
 app.get('/api/summary', async function (req, res) {
   if (!allLogins.length) {
     return res.status(409).json({
-      message: 'No Questrade logins configured yet. Use Actions > Manage logins to add one.',
+      message: 'No brokerage logins configured yet. Use Actions > Manage logins to add one.',
       code: 'NO_LOGINS',
     });
   }
@@ -18117,7 +19211,7 @@ app.get('/api/summary', async function (req, res) {
         return res.json(cached.payload);
       }
 
-    if (normalizedSelection.cacheKey !== 'all') {
+    if (normalizedSelection.type !== 'all') {
       supersetEntry = getSupersetCacheEntry();
       if (supersetEntry) {
         const reinterpretedSelection = reinterpretSelectionWithSuperset(normalizedSelection, supersetEntry);
@@ -18186,48 +19280,39 @@ app.get('/api/summary', async function (req, res) {
     const accountCollections = await Promise.all(
       allLogins.map(async function (login) {
         const fetchedAccounts = await fetchAccounts(login);
-        const normalized = fetchedAccounts.map(function (account, index) {
-          const rawNumber = account.number || account.accountNumber || account.id || index;
-          const number = String(rawNumber);
-          const compositeId = login.id + ':' + number;
-          const ownerLabel = resolveLoginDisplay(login);
-          const normalizedAccount = Object.assign({}, account, {
-            id: compositeId,
-            number,
-            accountNumber: number,
-            loginId: login.id,
-            ownerId: login.id,
-            ownerLabel,
-            ownerEmail: login.email || null,
-            loginLabel: ownerLabel,
-            loginEmail: login.email || null,
-          });
-          const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
-          if (displayName) {
-            normalizedAccount.displayName = displayName;
-          }
-          const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
-          if (overridePortalId) {
-            normalizedAccount.portalAccountId = overridePortalId;
-          }
-          const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
-          if (overrideChatUrl) {
-            normalizedAccount.chatURL = overrideChatUrl;
-          } else if (normalizedAccount.chatURL === undefined) {
-            normalizedAccount.chatURL = null;
-          }
-          const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
-          applyAccountSettingsOverrideToAccount(normalizedAccount, accountSettingsOverride);
-          const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
-          if (defaultBeneficiary) {
-            normalizedAccount.beneficiary = defaultBeneficiary;
-          }
-          const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
-          if (resolvedBeneficiary) {
-            normalizedAccount.beneficiary = resolvedBeneficiary;
-          }
-          return normalizedAccount;
-        });
+        const normalized = fetchedAccounts
+          .map(function (account, index) {
+            const normalizedAccount = buildNormalizedAccountBase(login, account, index);
+            const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
+            if (displayName) {
+              normalizedAccount.displayName = displayName;
+            }
+            const overridePortalId = resolveAccountPortalId(accountPortalOverrides, normalizedAccount, login);
+            if (overridePortalId) {
+              normalizedAccount.portalAccountId = overridePortalId;
+            }
+            const overrideChatUrl = resolveAccountChatUrl(accountChatOverrides, normalizedAccount, login);
+            if (overrideChatUrl) {
+              normalizedAccount.chatURL = overrideChatUrl;
+            } else if (normalizedAccount.chatURL === undefined) {
+              normalizedAccount.chatURL = null;
+            }
+            const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, normalizedAccount, login);
+            applyAccountSettingsOverrideToAccount(normalizedAccount, accountSettingsOverride);
+            if (isHiddenAccount(normalizedAccount)) {
+              return null;
+            }
+            const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
+            if (defaultBeneficiary) {
+              normalizedAccount.beneficiary = defaultBeneficiary;
+            }
+            const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, normalizedAccount, login);
+            if (resolvedBeneficiary) {
+              normalizedAccount.beneficiary = resolvedBeneficiary;
+            }
+            return normalizedAccount;
+          })
+          .filter(Boolean);
         return { login, accounts: normalized };
       })
     );
@@ -18378,12 +19463,12 @@ app.get('/api/summary', async function (req, res) {
 
     const positionsPromise = Promise.all(
       selectedContexts.map(function (context) {
-        return fetchPositions(context.login, context.account.number);
+        return fetchPositions(context.login, context.account);
       })
     );
     const balancesPromise = Promise.all(
       selectedContexts.map(function (context) {
-        return fetchBalances(context.login, context.account.number);
+        return fetchBalances(context.login, context.account);
       })
     );
 
@@ -18414,12 +19499,45 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const accountActivityContextCache = new Map();
+    const skipProviderActivityHistoryAccountIds = new Set();
+    if (viewingAggregateAccounts && selectedContexts.length > 1) {
+      selectedContexts.forEach(function (context) {
+        if (context && context.account && context.account.id && isSnapTradeLogin(context.login)) {
+          skipProviderActivityHistoryAccountIds.add(context.account.id);
+        }
+      });
+    }
+
+    function buildSkippedActivityContext(context) {
+      if (!context || !context.account || !context.account.id) {
+        return null;
+      }
+      const now = new Date();
+      return {
+        accountId: context.account.id,
+        accountNumber: context.account.number || context.account.accountNumber || context.account.id,
+        accountApiId: resolveAccountApiId(context.login, context.account),
+        accountKey: context.account.id,
+        earliestFunding: null,
+        crawlStart: clampDate(addDays(now, -365) || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE,
+        now,
+        nowIsoString: now.toISOString(),
+        activities: [],
+        fingerprint: 'provider-history-skipped',
+        fetchBookValueTransferPrice: async function () {
+          return null;
+        },
+      };
+    }
 
     async function ensureAccountActivityContext(context) {
       if (!context || !context.account || !context.account.id) {
         return null;
       }
       const accountId = context.account.id;
+      if (skipProviderActivityHistoryAccountIds.has(accountId)) {
+        return buildSkippedActivityContext(context);
+      }
       if (!accountActivityContextCache.has(accountId)) {
         const contextPromise = buildAccountActivityContext(context.login, context.account).catch(
           (error) => {
@@ -18449,6 +19567,21 @@ app.get('/api/summary', async function (req, res) {
           selectedContexts,
           Math.min(MAX_ORDER_HISTORY_CONCURRENCY, selectedContexts.length),
           async function (context) {
+            if (
+              context &&
+              context.account &&
+              context.account.id &&
+              skipProviderActivityHistoryAccountIds.has(context.account.id)
+            ) {
+              const now = new Date();
+              return {
+                context,
+                orders: [],
+                activityOrders: [],
+                start: now.toISOString(),
+                end: now.toISOString(),
+              };
+            }
             let activityContext = null;
             try {
               activityContext = await ensureAccountActivityContext(context);
@@ -18468,7 +19601,7 @@ app.get('/api/summary', async function (req, res) {
 
             let orders = [];
             try {
-              orders = await fetchOrdersHistory(context.login, context.account.number, {
+              orders = await fetchOrdersHistory(context.login, context.account, {
                 startDate: normalizedRecentStart,
                 endDate: now,
                 stateFilter: 'All',
@@ -19767,6 +20900,14 @@ app.get('/api/summary', async function (req, res) {
       return {
         id: account.id,
         number: account.number,
+        accountNumber: account.accountNumber || account.number || null,
+        provider: account.provider || null,
+        providerLabel: account.providerLabel || null,
+        providerAccountId: account.providerAccountId || null,
+        platformLabel: account.platformLabel || null,
+        brokerageName: account.brokerageName || null,
+        institutionName: account.institutionName || null,
+        name: account.name || null,
         type: account.type,
         status: account.status,
         isPrimary: account.isPrimary,
@@ -20313,28 +21454,18 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             if (!account) {
               return;
             }
-            const rawNumber =
-              account.number != null
-                ? account.number
-                : account.accountNumber != null
-                  ? account.accountNumber
-                  : account.id != null
-                    ? account.id
-                    : index;
-            const normalizedNumber = rawNumber != null ? String(rawNumber).trim() : String(index);
-            const number = normalizedNumber || String(index);
-            const compositeId = `${login.id}:${number}`;
-            const normalizedAccount = Object.assign({}, account, {
-              id: compositeId,
-              number,
-              accountNumber: number,
-              loginId: login.id,
-            });
+            const normalizedAccount = buildNormalizedAccountBase(login, account, index);
             const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
             const effectiveAccount = Object.assign({}, accountWithOverrides, {
-              id: compositeId,
-              number: accountWithOverrides.number || number,
+              id: normalizedAccount.id,
+              number: accountWithOverrides.number || normalizedAccount.number,
+              accountNumber: accountWithOverrides.accountNumber || normalizedAccount.accountNumber,
+              provider: normalizedAccount.provider,
+              providerAccountId: normalizedAccount.providerAccountId,
             });
+            if (isHiddenAccount(effectiveAccount)) {
+              return;
+            }
             contexts.push({ login, account: effectiveAccount });
           });
         }
@@ -20377,7 +21508,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         const missing = cacheStatuses.filter((e) => !e.hit).map((e) => e.context);
         if (missing.length > 0) {
           const balancesResults = await Promise.all(
-            missing.map((context) => fetchBalances(context.login, context.account.number))
+            missing.map((context) => fetchBalances(context.login, context.account))
           );
           balancesResults.forEach((balancesRaw, index) => {
             const context = missing[index];
@@ -20432,7 +21563,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       if (!positionsByAccountIdForAgg && symbolParam) {
         try {
           const results = await Promise.all(
-            targetContexts.map((context) => fetchPositions(context.login, context.account.number))
+            targetContexts.map((context) => fetchPositions(context.login, context.account))
           );
           const map = {};
           results.forEach((arr, index) => {
@@ -20511,13 +21642,13 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       }
     }
     if (!symbolParam || !perAccountCombinedBalances || !perAccountCombinedBalances[accountId]) {
-      const balancesRaw = await fetchBalances(login, effectiveAccount.number);
+      const balancesRaw = await fetchBalances(login, effectiveAccount);
       const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
       perAccountCombinedBalances = { [accountId]: balanceSummary };
     }
     if (symbolParam && !providedPositions) {
       try {
-        providedPositions = await fetchPositions(login, effectiveAccount.number);
+        providedPositions = await fetchPositions(login, effectiveAccount);
       } catch (_) {
         providedPositions = null;
       }
@@ -20940,5 +22071,6 @@ module.exports = {
   applyAccountSettingsOverrides,
   __test__: {
     filterCashFlowsAfterDisplayStart,
+    applyPendingDepositToFundingSummary,
   },
 };

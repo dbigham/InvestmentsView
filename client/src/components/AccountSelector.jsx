@@ -13,6 +13,13 @@ function normalizeLabel(value) {
     .trim();
 }
 
+function normalizeDisplayName(value) {
+  if (!value) {
+    return '';
+  }
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
 function toFriendlyLabel(value) {
   const normalized = normalizeLabel(value);
   if (!normalized) {
@@ -57,7 +64,7 @@ function buildPrimaryLabel(account) {
   if (!account) {
     return 'Account';
   }
-  const displayName = normalizeLabel(account.displayName);
+  const displayName = normalizeDisplayName(account.displayName);
   if (displayName) {
     return displayName;
   }
@@ -111,6 +118,10 @@ function buildSecondaryLabel(account, totalAccounts) {
   const typeLabel = formatAccountType(account);
   if (typeLabel) {
     parts.push(typeLabel);
+  }
+  const platformLabel = normalizeLabel(account.platformLabel || account.brokerageName || account.institutionName);
+  if (platformLabel) {
+    parts.push(platformLabel);
   }
   const number = account.number ? String(account.number).trim() : '';
   if (number) {
@@ -917,6 +928,9 @@ AccountSelector.propTypes = {
       ownerEmail: PropTypes.string,
       loginId: PropTypes.string,
       displayName: PropTypes.string,
+      platformLabel: PropTypes.string,
+      brokerageName: PropTypes.string,
+      institutionName: PropTypes.string,
       beneficiary: PropTypes.string,
       portalAccountId: PropTypes.string,
       showQQQDetails: PropTypes.bool,

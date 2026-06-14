@@ -187,6 +187,55 @@ test('computeTotalPnlSeries treats unexplained equity jumps as pending deposits'
   assert.ok(Math.abs(result.summary.totalPnlAllTimeCad - 0) < 1e-6);
 });
 
+test('computeTotalPnlSeries applies opted-in pending deposit fix to the final point', async () => {
+  const account = {
+    id: 'PENDING-DEPOSIT-AUTO-FIX-ACCOUNT',
+    autoFixPendingWithdrawls: true,
+  };
+
+  const now = new Date('2025-01-03T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: null,
+    crawlStart: now,
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [],
+    fingerprint: 'pending-deposit-auto-fix-fingerprint',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 1500,
+        },
+      },
+    },
+  };
+
+  const result = await computeTotalPnlSeries(
+    { id: 'login-1' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false }
+  );
+
+  assert.ok(result, 'Expected series result');
+  const lastPoint = result.points[result.points.length - 1];
+  assert.equal(lastPoint.date, '2025-01-03');
+  assert.ok(Math.abs(lastPoint.cumulativeNetDepositsCad - 1500) < 1e-6);
+  assert.ok(Math.abs(lastPoint.totalPnlCad - 0) < 1e-6);
+  assert.ok(Math.abs(lastPoint.equityCad - 1500) < 1e-6);
+
+  assert.ok(Math.abs(result.summary.netDepositsCad - 1500) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlCad - 0) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlSinceDisplayStartCad || 0) < 1e-6);
+});
+
 test('computeTotalPnlSeries skips pending-deposit auto-fix for historical end dates', async () => {
   const account = {
     id: 'PENDING-DEPOSIT-HISTORICAL-END',

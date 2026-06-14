@@ -347,6 +347,16 @@ function buildLoginsUrl() {
   return url.toString();
 }
 
+function buildSnapTradeConnectionPortalUrl(loginId) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedId = typeof loginId === 'string' ? loginId.trim() : '';
+  if (!trimmedId) {
+    throw new Error('loginId is required');
+  }
+  const url = new URL(`/api/logins/${encodeURIComponent(trimmedId)}/snaptrade-connection-portal`, base);
+  return url.toString();
+}
+
 export async function getSummary(accountId, options = {}) {
   const response = await fetchWithDemo(buildUrl(accountId, options));
   if (!response.ok) {
@@ -385,6 +395,32 @@ export async function addLogin(payload = {}) {
   });
   if (!response.ok) {
     let message = 'Failed to save login';
+    try {
+      const data = await response.json();
+      message = data?.message || data?.details || message;
+    } catch {
+      try {
+        const text = await response.text();
+        if (text && text.trim()) {
+          message = text.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function createSnapTradeConnectionPortal(loginId, payload = {}) {
+  const response = await fetchWithDemo(buildSnapTradeConnectionPortalUrl(loginId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  if (!response.ok) {
+    let message = 'Failed to create SnapTrade connection link';
     try {
       const data = await response.json();
       message = data?.message || data?.details || message;

@@ -205,6 +205,7 @@ export default function AccountStructureDialog({
             id,
             number: account?.number != null ? String(account.number).trim() : '',
             ownerLabel: account?.ownerLabel || account?.loginLabel || '',
+            platformLabel: account?.platformLabel || account?.brokerageName || account?.institutionName || '',
             name: displayName,
             parentKey: normalizeGroupKey(parentGroup),
           };
@@ -479,6 +480,11 @@ export default function AccountStructureDialog({
               {account.ownerLabel}
             </span>
           ) : null}
+          {account.platformLabel ? (
+            <span className="account-structure-dialog__meta account-structure-dialog__meta--muted">
+              {account.platformLabel}
+            </span>
+          ) : null}
         </div>
         <div className="account-structure-dialog__cell">
           <input
@@ -692,6 +698,9 @@ AccountStructureDialog.propTypes = {
     name: PropTypes.string,
     ownerLabel: PropTypes.string,
     loginLabel: PropTypes.string,
+    platformLabel: PropTypes.string,
+    brokerageName: PropTypes.string,
+    institutionName: PropTypes.string,
     accountGroup: PropTypes.string,
   })),
   accountGroups: PropTypes.arrayOf(
