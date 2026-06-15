@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { resolveActivityAmountDetails } = require('../src/index.js');
+const { resolveActivityAmountDetails, __test__ } = require('../src/index.js');
 
 test('book value transfer without USD hint uses inferred symbol currency', () => {
   const activity = {
@@ -118,3 +118,46 @@ test('book value transfer respects explicit CAD hints in description', () => {
   assert.equal(details.amount, 37537.5);
 });
 
+test('Questrade U.S. dollars cash trades resolve target cash instead of a pseudo-symbol', () => {
+  const trade = {
+    tradeDate: '2026-06-12T00:00:00.000000-04:00',
+    type: 'Trades',
+    action: 'Buy',
+    symbol: '8200010.16',
+    symbolId: 1729,
+    quantity: 12017,
+    netAmount: -17055.43,
+    grossAmount: -12017,
+    currency: 'CAD',
+    description: 'U.S.DOLLARS (RSP TRUSTEE)  EXCHANGE RATE       1.41927500',
+  };
+
+  const details = __test__.resolveCashCurrencyTrade(trade);
+
+  assert.deepEqual(details, {
+    currency: 'USD',
+    amount: 12017,
+  });
+});
+
+test('Questrade U.S. dollars contribution rows resolve as USD cash', () => {
+  const contribution = {
+    tradeDate: '2026-05-20T00:00:00.000000-04:00',
+    type: 'Deposits',
+    action: 'CON',
+    symbol: '8200010.16',
+    symbolId: 1729,
+    quantity: 120.9879,
+    netAmount: 0,
+    grossAmount: 0,
+    currency: 'CAD',
+    description: 'U.S.DOLLARS (RSP TRUSTEE) BENE: 01 RESP CONTRIBUTION BOOK VALUE             $166.24',
+  };
+
+  const details = __test__.resolveCashCurrencyTrade(contribution);
+
+  assert.deepEqual(details, {
+    currency: 'USD',
+    amount: 120.9879,
+  });
+});

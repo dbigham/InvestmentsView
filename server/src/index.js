@@ -4553,6 +4553,14 @@ function normalizeSymbol(symbol) {
   return trimmed.toUpperCase();
 }
 
+function isNumericPseudoSymbol(symbol) {
+  if (typeof symbol !== 'string') {
+    return false;
+  }
+  const trimmed = symbol.trim();
+  return !!trimmed && /^[+-]?\d+(?:\.\d+)?$/.test(trimmed);
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -10742,6 +10750,10 @@ const EMBEDDED_DECIMAL_PATTERN = '\\d+(?:,\\d{3})*\\.\\d+';
 
 const USD_DESCRIPTION_HINTS = [
   'USD',
+  'U.S.DOLLAR',
+  'U.S.DOLLARS',
+  'U.S. DOLLAR',
+  'U.S. DOLLARS',
   'US DOLLAR',
   'US DOLLARS',
   'US FUNDS',
@@ -10774,6 +10786,56 @@ function hasCadHintInDescription(description) {
   }
   const normalized = description.toUpperCase();
   return CAD_DESCRIPTION_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function resolveCashCurrencyTrade(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return null;
+  }
+  const rawSymbol = typeof activity.symbol === 'string' ? activity.symbol.trim() : '';
+  if (rawSymbol && !isNumericPseudoSymbol(rawSymbol)) {
+    return null;
+  }
+  const description = typeof activity.description === 'string' ? activity.description : '';
+  if (!description) {
+    return null;
+  }
+  const sourceCurrency = normalizeCurrency(activity.currency);
+  if (!sourceCurrency) {
+    return null;
+  }
+  const normalizedDescription = description.replace(/\s+/g, ' ').trim().toUpperCase();
+  const targetCurrency = hasUsdHintInDescription(normalizedDescription)
+    ? 'USD'
+    : hasCadHintInDescription(normalizedDescription)
+      ? 'CAD'
+      : null;
+  if (!targetCurrency || targetCurrency === sourceCurrency) {
+    return null;
+  }
+  const action = typeof activity.action === 'string' ? activity.action.trim().toLowerCase() : '';
+  const quantity = Number(activity.quantity);
+  const grossAmount = Number(activity.grossAmount);
+  const targetMagnitude = Number.isFinite(quantity) && Math.abs(quantity) > CASH_FLOW_EPSILON / 10
+    ? Math.abs(quantity)
+    : Number.isFinite(grossAmount) && Math.abs(grossAmount) > CASH_FLOW_EPSILON / 10
+      ? Math.abs(grossAmount)
+      : null;
+  if (!Number.isFinite(targetMagnitude) || targetMagnitude <= 0) {
+    return null;
+  }
+  const targetDelta =
+    action === 'sell'
+      ? -targetMagnitude
+      : action === 'buy'
+        ? targetMagnitude
+        : Number.isFinite(quantity) && Math.abs(quantity) > CASH_FLOW_EPSILON / 10
+          ? quantity
+          : grossAmount;
+  return {
+    currency: targetCurrency,
+    amount: targetDelta,
+  };
 }
 
 function parseNumericString(value) {
@@ -14380,10 +14442,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     if (!dateKey) {
       return;
     }
-    const directSymbol = normalizeSymbol(activity.symbol);
-    const fallbackSymbol = resolveActivitySymbol(activity);
+    const cashCurrencyTrade = resolveCashCurrencyTrade(activity);
+    const directSymbol = cashCurrencyTrade ? null : normalizeSymbol(activity.symbol);
+    const fallbackSymbol = cashCurrencyTrade ? null : resolveActivitySymbol(activity);
     const resolvedSymbol = directSymbol || fallbackSymbol || null;
-    processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol });
+    processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol, cashCurrencyTrade });
 
     const symbolId = Number(activity.symbolId);
     const symbolIdTimestamp = timestamp.getTime();
@@ -14398,7 +14461,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         ? preferredFromActivity
         : inferredCurrency || preferredFromActivity;
 
-    if (Number.isFinite(symbolId) && symbolId > 0) {
+    if (!cashCurrencyTrade && Number.isFinite(symbolId) && symbolId > 0) {
       symbolIds.add(symbolId);
     }
 
@@ -14445,7 +14508,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
   if (processedActivities.length && symbolDetails && typeof symbolDetails === 'object') {
     for (const entry of processedActivities) {
-      if (!entry || entry.symbol) {
+      if (!entry || entry.symbol || entry.cashCurrencyTrade) {
         continue;
       }
       const id = Number(entry.activity && entry.activity.symbolId);
@@ -14626,7 +14689,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           continue;
         }
         const activity = entry.activity;
-        const symbol = entry.symbol || resolveActivitySymbol(activity) || null;
+        const symbol = entry && entry.cashCurrencyTrade
+          ? null
+          : entry.symbol || resolveActivitySymbol(activity) || null;
         const quantity = Number(activity.quantity);
         if (
           symbol &&
@@ -14645,6 +14710,16 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
         ) {
           adjustCash(seededCash, currency, -netAmount);
+        }
+        if (
+          seededCash &&
+          entry &&
+          entry.cashCurrencyTrade &&
+          entry.cashCurrencyTrade.currency &&
+          Number.isFinite(entry.cashCurrencyTrade.amount) &&
+          Math.abs(entry.cashCurrencyTrade.amount) >= CASH_FLOW_EPSILON / 10
+        ) {
+          adjustCash(seededCash, entry.cashCurrencyTrade.currency, -entry.cashCurrencyTrade.amount);
         }
       }
     }
@@ -14852,7 +14927,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const currency = normalizeCurrency(activity.currency);
       const netAmount = Number(activity.netAmount);
       const quantity = Number(activity.quantity);
-      const symbol = entry && entry.symbol ? entry.symbol : resolveActivitySymbol(activity) || null;
+      const symbol = entry && entry.cashCurrencyTrade
+        ? null
+        : entry && entry.symbol
+          ? entry.symbol
+          : resolveActivitySymbol(activity) || null;
 
       if (symbol && Number.isFinite(quantity) && Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON) {
         adjustHolding(holdings, symbol, quantity);
@@ -14860,6 +14939,16 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
       if (currency && Number.isFinite(netAmount) && Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10) {
         adjustCash(cashByCurrency, currency, netAmount);
+      }
+
+      if (
+        entry &&
+        entry.cashCurrencyTrade &&
+        entry.cashCurrencyTrade.currency &&
+        Number.isFinite(entry.cashCurrencyTrade.amount) &&
+        Math.abs(entry.cashCurrencyTrade.amount) >= CASH_FLOW_EPSILON / 10
+      ) {
+        adjustCash(cashByCurrency, entry.cashCurrencyTrade.currency, entry.cashCurrencyTrade.amount);
       }
 
       activityIndex += 1;
@@ -22200,5 +22289,6 @@ module.exports = {
   __test__: {
     filterCashFlowsAfterDisplayStart,
     applyPendingDepositToFundingSummary,
+    resolveCashCurrencyTrade,
   },
 };
