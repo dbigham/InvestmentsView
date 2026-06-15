@@ -1,0 +1,215 @@
+{
+  "gifts": [
+    {
+      "id": "3316fb8b-5bb2-4a1b-b598-2241e52d5738",
+      "date": "2026-06-15",
+      "organization": "One4Another",
+      "amountCad": 2500,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:36:56.296Z",
+      "updatedAt": "2026-06-15T12:36:56.296Z"
+    },
+    {
+      "id": "08bc5152-748c-4674-81c5-251c40212c87",
+      "date": "2026-06-07",
+      "organization": "One4Another",
+      "amountCad": 2750,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:26:45.905Z",
+      "updatedAt": "2026-06-15T12:26:45.905Z"
+    },
+    {
+      "id": "a27d427b-4212-4792-b61d-c86731d5cec6",
+      "date": "2026-05-31",
+      "organization": "One4Another",
+      "amountCad": 2500,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:36:39.011Z",
+      "updatedAt": "2026-06-15T12:36:39.011Z"
+    },
+    {
+      "id": "d421d8e0-68c9-416c-ad4d-ad93c599582b",
+      "date": "2026-05-30",
+      "organization": "MCC",
+      "amountCad": 7500,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:16:30.262Z",
+      "updatedAt": "2026-06-15T12:16:30.262Z"
+    },
+    {
+      "id": "21c79546-5f11-427d-b3f4-8bb92ae2978e",
+      "date": "2026-05-30",
+      "organization": "One4Another",
+      "amountCad": 3000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:26:30.257Z",
+      "updatedAt": "2026-06-15T12:26:30.257Z"
+    },
+    {
+      "id": "f9fd0224-3b24-4e03-870b-f6d5231d2e3e",
+      "date": "2026-05-28",
+      "organization": "One4Another",
+      "amountCad": 2500,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:26:10.562Z",
+      "updatedAt": "2026-06-15T12:26:10.562Z"
+    },
+    {
+      "id": "83cee352-f1ad-4e35-ac03-33e9f47db36f",
+      "date": "2026-05-23",
+      "organization": "One4Another",
+      "amountCad": 3000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:25:58.867Z",
+      "updatedAt": "2026-06-15T12:25:58.867Z"
+    },
+    {
+      "id": "6a9b23d0-c0ac-4ee7-b7a7-54542b78529e",
+      "date": "2026-05-19",
+      "organization": "MCC",
+      "amountCad": 2600,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:16:15.388Z",
+      "updatedAt": "2026-06-15T12:16:15.388Z"
+    },
+    {
+      "id": "be540c2b-12e9-4fb3-a5bc-f947a2b2c312",
+      "date": "2026-05-18",
+      "organization": "MCC",
+      "amountCad": 5000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:15:59.067Z",
+      "updatedAt": "2026-06-15T12:15:59.067Z"
+    },
+    {
+      "id": "3fa38053-327a-4c61-8133-65a2a7b21655",
+      "date": "2026-05-18",
+      "organization": "One4Another",
+      "amountCad": 3000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:25:45.721Z",
+      "updatedAt": "2026-06-15T12:25:45.721Z"
+    },
+    {
+      "id": "17d8a54a-e92d-41d9-8dbc-09f431daa231",
+      "date": "2026-04-10",
+      "organization": "Emily de Bueger",
+      "amountCad": 4000,
+      "taxClaimable": false,
+      "note": "",
+      "createdAt": "2026-06-15T12:39:59.311Z",
+      "updatedAt": "2026-06-15T12:41:04.422Z"
+    },
+    {
+      "id": "f5ada0e4-093c-45b4-8f96-af98ba2d7a15",
+      "date": "2026-03-15",
+      "organization": "Phil and Merilee Henderson",
+      "amountCad": 500,
+      "taxClaimable": false,
+      "note": "Swahili Bibles",
+      "createdAt": "2026-06-15T13:21:33.944Z",
+      "updatedAt": "2026-06-15T13:22:12.719Z"
+    },
+    {
+      "id": "da8d3c33-0e7c-4290-b2d0-b8bf2e1e25c7",
+      "date": "2026-02-22",
+      "organization": "Coldest Night of the Year",
+      "amountCad": 300,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T22:04:23.631Z",
+      "updatedAt": "2026-06-15T22:04:23.631Z"
+    },
+    {
+      "id": "1d4a3d1a-a6db-4fb7-aba6-e0029c38947a",
+      "date": "2026-01-18",
+      "organization": "Lens Ciceron",
+      "amountCad": 250,
+      "taxClaimable": false,
+      "note": "Birthday gift for Nov 2025 birthday",
+      "createdAt": "2026-06-15T12:39:09.720Z",
+      "updatedAt": "2026-06-15T12:41:25.757Z"
+    },
+    {
+      "id": "14ddb90a-a819-45b8-aece-3c60c1b42068",
+      "date": "2026-01-01",
+      "organization": "ARPA Canada",
+      "amountCad": 600,
+      "taxClaimable": false,
+      "note": "",
+      "createdAt": "2026-06-15T22:01:40.133Z",
+      "updatedAt": "2026-06-15T22:01:40.133Z"
+    },
+    {
+      "id": "39b3338f-ca51-4af7-82d2-9097dc1d3922",
+      "date": "2026-01-01",
+      "organization": "Compassion Canada",
+      "amountCad": 1356,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:18:33.560Z",
+      "updatedAt": "2026-06-15T12:18:33.560Z"
+    },
+    {
+      "id": "179a3980-63d4-49db-b0a5-3beca4594930",
+      "date": "2026-01-01",
+      "organization": "John and Elaine Winter",
+      "amountCad": 1200,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:19:28.047Z",
+      "updatedAt": "2026-06-15T17:20:49.553Z"
+    },
+    {
+      "id": "2b3f1d12-c6b7-4212-80ce-916f5fdb6c6c",
+      "date": "2026-01-01",
+      "organization": "One4Another",
+      "amountCad": 1200,
+      "taxClaimable": true,
+      "note": "Monthly",
+      "createdAt": "2026-06-15T12:27:37.203Z",
+      "updatedAt": "2026-06-15T12:27:37.203Z"
+    },
+    {
+      "id": "5bfe848f-20fc-4e4e-bb61-57126ddbf1eb",
+      "date": "2026-01-01",
+      "organization": "Phil and Merilee Henderson",
+      "amountCad": 1200,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T13:21:54.049Z",
+      "updatedAt": "2026-06-15T13:21:54.049Z"
+    },
+    {
+      "id": "a8e392d1-771a-4070-8ebd-b2f977bd6a5d",
+      "date": "2026-01-01",
+      "organization": "Rebekah and Charles de Bueger",
+      "amountCad": 11200,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:21:31.200Z",
+      "updatedAt": "2026-06-15T17:21:02.953Z"
+    },
+    {
+      "id": "825492b4-37d8-4150-91e1-a443dd5312ce",
+      "date": "2026-01-01",
+      "organization": "World Vision",
+      "amountCad": 588,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T12:17:29.027Z",
+      "updatedAt": "2026-06-15T12:17:29.027Z"
+    }
+  ],
+  "updatedAt": "2026-06-15T22:04:23.631Z"
+}

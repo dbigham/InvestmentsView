@@ -24,6 +24,11 @@ function resolveProviderLabel(login) {
   return login?.providerLabel || 'Questrade';
 }
 
+function resolveDisabledSnapTradeConnection(login) {
+  const connections = Array.isArray(login?.connections) ? login.connections : [];
+  return connections.find((connection) => connection && connection.disabled && connection.id) || null;
+}
+
 function openConnectionPortal(url) {
   if (typeof window === 'undefined' || !url) {
     return;
@@ -241,14 +246,20 @@ export default function QuestradeLoginDialog({
       setStatus({ saving: true, error: null, success: null });
       setConnectionPortal(null);
       try {
+        const disabledConnection = resolveDisabledSnapTradeConnection(login);
         const payload = await onCreateSnapTradeConnectionPortal(login.id, {
           broker: login.defaultBroker || DEFAULT_SNAPTRADE_BROKER,
+          reconnect: disabledConnection?.id || undefined,
         });
         const portal = payload?.connectionPortal || null;
         if (portal?.redirectURI) {
           setConnectionPortal(portal);
           openConnectionPortal(portal.redirectURI);
-          setStatus({ saving: false, error: null, success: 'Connection portal opened.' });
+          setStatus({
+            saving: false,
+            error: null,
+            success: disabledConnection ? 'Reconnect portal opened.' : 'Connection portal opened.',
+          });
         } else {
           setStatus({ saving: false, error: 'SnapTrade did not return a connection link.', success: null });
         }
@@ -478,6 +489,7 @@ export default function QuestradeLoginDialog({
                 <ul className="login-setup-dialog__list" role="list">
                   {loginList.map((login) => {
                     const loginProvider = normalizeProvider(login?.provider);
+                    const disabledConnection = resolveDisabledSnapTradeConnection(login);
                     return (
                       <li key={login.id || login.email || login.label} className="login-setup-dialog__list-item">
                         <span className="login-setup-dialog__list-label">{resolveLoginDisplay(login)}</span>
@@ -488,6 +500,12 @@ export default function QuestradeLoginDialog({
                         {loginProvider === PROVIDER_SNAPTRADE && login.hasCustomCredentials ? (
                           <span className="login-setup-dialog__list-meta">Custom SnapTrade credentials</span>
                         ) : null}
+                        {disabledConnection ? (
+                          <span className="login-setup-dialog__list-meta">Wealthsimple disabled</span>
+                        ) : null}
+                        {login.connectionStatusError ? (
+                          <span className="login-setup-dialog__list-meta">Connection status unavailable</span>
+                        ) : null}
                         {loginProvider === PROVIDER_SNAPTRADE && typeof onCreateSnapTradeConnectionPortal === 'function' ? (
                           <button
                             type="button"
@@ -495,7 +513,7 @@ export default function QuestradeLoginDialog({
                             onClick={() => handleCreatePortal(login)}
                             disabled={status.saving}
                           >
-                            Connect Wealthsimple
+                            {disabledConnection ? 'Reconnect Wealthsimple' : 'Connect Wealthsimple'}
                           </button>
                         ) : null}
                       </li>
@@ -534,6 +552,15 @@ QuestradeLoginDialog.propTypes = {
       userId: PropTypes.string,
       defaultBroker: PropTypes.string,
       hasCustomCredentials: PropTypes.bool,
+      connectionStatusError: PropTypes.string,
+      connections: PropTypes.arrayOf(
+        PropTypes.shape({
+          id: PropTypes.string,
+          brokerage: PropTypes.string,
+          disabled: PropTypes.bool,
+          disabledDate: PropTypes.string,
+        })
+      ),
       updatedAt: PropTypes.string,
     })
   ),

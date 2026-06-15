@@ -29,6 +29,10 @@ import {
   setAccountOverrides,
   getAccounts,
   getEarnings,
+  getGifts,
+  addGift,
+  updateGift,
+  deleteGift,
   setOtherAssets,
 } from './api/questrade';
 import usePersistentState from './hooks/usePersistentState';
@@ -54,6 +58,7 @@ import AccountActionDialog from './components/AccountActionDialog';
 import QuestradeLoginDialog from './components/QuestradeLoginDialog';
 import QuestradeRefreshTokenDialog from './components/QuestradeRefreshTokenDialog';
 import AccountStructureDialog from './components/AccountStructureDialog';
+import GivingDialog from './components/GivingDialog';
 import {
   formatMoney,
   formatNumber,
@@ -6998,7 +7003,9 @@ export default function App() {
   const [activeAccountId, setActiveAccountId] = useState(() => initialAccountIdFromUrl || 'default');
   const [currencyView, setCurrencyView] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [givingYear] = useState(() => new Date().getFullYear());
   const [earningsState, setEarningsState] = useState({ status: 'idle', data: null, error: null });
+  const [givingState, setGivingState] = useState({ status: 'idle', data: null, error: null });
   const [symbolPriceSnapshots, setSymbolPriceSnapshots] = useState(() => new Map());
   const [priceRefreshState, setPriceRefreshState] = useState({
     status: 'idle',
@@ -7084,6 +7091,7 @@ export default function App() {
   const [showReturnBreakdown, setShowReturnBreakdown] = useState(false);
   const [showProjectionDialog, setShowProjectionDialog] = useState(false);
   const [showHoldingsPieChart, setShowHoldingsPieChart] = useState(false);
+  const [showGivingDialog, setShowGivingDialog] = useState(false);
   const [projectionContext, setProjectionContext] = useState({
     accountKey: null,
     label: null,
@@ -7500,6 +7508,45 @@ export default function App() {
       cancelled = true;
     };
   }, [refreshKey, refreshEarnings]);
+
+  const refreshGifts = useCallback(
+    (options = {}) => {
+      const { isCancelled } = options;
+      setGivingState((prev) => {
+        const nextStatus = prev.data ? 'refreshing' : 'loading';
+        if (prev.status === nextStatus && prev.error === null) {
+          return prev;
+        }
+        return { status: nextStatus, data: prev.data, error: null };
+      });
+
+      return getGifts({ year: givingYear })
+        .then((payload) => {
+          if (typeof isCancelled === 'function' && isCancelled()) {
+            return null;
+          }
+          setGivingState({ status: 'ready', data: payload, error: null });
+          return payload;
+        })
+        .catch((err) => {
+          if (typeof isCancelled === 'function' && isCancelled()) {
+            return null;
+          }
+          const normalizedError = err instanceof Error ? err : new Error('Failed to load gifts');
+          setGivingState((prev) => ({ status: 'error', data: prev.data, error: normalizedError }));
+          return null;
+        });
+    },
+    [givingYear]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    refreshGifts({ isCancelled: () => cancelled });
+    return () => {
+      cancelled = true;
+    };
+  }, [demoModeActive, givingYear, refreshGifts]);
   const refreshLoginSetup = useCallback(async () => {
     setLoginSetupState((prev) => ({
       status: 'loading',
@@ -13006,6 +13053,22 @@ export default function App() {
     };
   }, [data?.otherAssets, showingAllAccounts]);
 
+  const givingSummary = useMemo(() => {
+    if (!showingAllAccounts) {
+      return null;
+    }
+    const payload = givingState?.data?.summary;
+    return {
+      ...(payload && typeof payload === 'object' ? payload : {}),
+      status: givingState?.status || 'idle',
+      year: Number.isFinite(payload?.year) ? payload.year : givingYear,
+      totalCad: Number.isFinite(payload?.totalCad) ? payload.totalCad : null,
+      giftCount: Number.isFinite(payload?.giftCount) ? payload.giftCount : 0,
+      organizationCount: Number.isFinite(payload?.organizationCount) ? payload.organizationCount : 0,
+      error: givingState?.error || null,
+    };
+  }, [givingState, givingYear, showingAllAccounts]);
+
   const baseDisplayTotalEquity = useMemo(() => {
     if (symbolExclusionActive) {
       const filteredTotal = coerceNumber(activeBalancesForDisplay?.totalEquity);
@@ -16146,6 +16209,48 @@ export default function App() {
     setShowHoldingsPieChart(false);
   }, []);
 
+  const handleShowGiving = useCallback(() => {
+    setShowGivingDialog(true);
+    if (givingState.status === 'idle' || givingState.status === 'error') {
+      refreshGifts();
+    }
+  }, [givingState.status, refreshGifts]);
+
+  const handleCloseGiving = useCallback(() => {
+    setShowGivingDialog(false);
+  }, []);
+
+  const handleRetryGifts = useCallback(() => {
+    refreshGifts();
+  }, [refreshGifts]);
+
+  const handleAddGift = useCallback(
+    async (payload) => {
+      const result = await addGift({ ...payload, year: givingYear });
+      setGivingState({ status: 'ready', data: result, error: null });
+      return result;
+    },
+    [givingYear]
+  );
+
+  const handleUpdateGift = useCallback(
+    async (giftId, payload) => {
+      const result = await updateGift(giftId, { ...payload, year: givingYear });
+      setGivingState({ status: 'ready', data: result, error: null });
+      return result;
+    },
+    [givingYear]
+  );
+
+  const handleDeleteGift = useCallback(
+    async (giftId, params = {}) => {
+      const result = await deleteGift(giftId, { ...params, year: givingYear });
+      setGivingState({ status: 'ready', data: result, error: null });
+      return result;
+    },
+    [givingYear]
+  );
+
   const skipCadToggle = investEvenlyPlan?.skipCadPurchases ?? false;
   const skipUsdToggle = investEvenlyPlan?.skipUsdPurchases ?? false;
 
@@ -17817,6 +17922,8 @@ export default function App() {
             onToggleOtherAssetsInTotalEquity={handleToggleOtherAssetsInTotalEquity}
             onEditOtherAsset={handleEditOtherAsset}
             onRefreshEarnings={handleRefreshEarnings}
+            givingSummary={showingAllAccounts ? givingSummary : null}
+            onShowGiving={showingAllAccounts ? handleShowGiving : null}
             usdToCadRate={usdToCadRate}
             onShowPeople={handleOpenPeople}
             peopleDisabled={peopleDisabled}
@@ -18238,6 +18345,20 @@ export default function App() {
           asOf={asOf}
           baseCurrency={baseCurrency}
           onClose={handleCloseHoldingsPieChart}
+        />
+      )}
+      {showGivingDialog && (
+        <GivingDialog
+          year={givingYear}
+          gifts={Array.isArray(givingState?.data?.gifts) ? givingState.data.gifts : []}
+          summary={givingState?.data?.summary || null}
+          status={givingState?.status || 'idle'}
+          error={givingState?.error || null}
+          onClose={handleCloseGiving}
+          onRetry={handleRetryGifts}
+          onAddGift={handleAddGift}
+          onUpdateGift={handleUpdateGift}
+          onDeleteGift={handleDeleteGift}
         />
       )}
       {showInvestmentModelDialog && (

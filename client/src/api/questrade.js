@@ -237,6 +237,28 @@ function buildOtherAssetsUrl() {
   return url.toString();
 }
 
+function buildGiftsUrl(params = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const url = new URL('/api/gifts', base);
+  if (params && params.year !== undefined && params.year !== null && params.year !== '') {
+    url.searchParams.set('year', String(params.year));
+  }
+  return url.toString();
+}
+
+function buildGiftUrl(giftId, params = {}) {
+  const base = API_BASE_URL.replace(/\/$/, '');
+  const trimmedId = typeof giftId === 'string' ? giftId.trim() : '';
+  if (!trimmedId) {
+    throw new Error('giftId is required');
+  }
+  const url = new URL(`/api/gifts/${encodeURIComponent(trimmedId)}`, base);
+  if (params && params.year !== undefined && params.year !== null && params.year !== '') {
+    url.searchParams.set('year', String(params.year));
+  }
+  return url.toString();
+}
+
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -933,6 +955,48 @@ export async function setOtherAssets(values) {
     throw new Error(message);
   }
 
+  return response.json();
+}
+
+export async function getGifts(params = {}) {
+  const response = await fetchWithDemo(buildGiftsUrl(params));
+  if (!response.ok) {
+    throw await buildApiError(response, 'Failed to load gifts');
+  }
+  return response.json();
+}
+
+export async function addGift(payload = {}) {
+  const response = await fetchWithDemo(buildGiftsUrl({ year: payload.year }), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  if (!response.ok) {
+    throw await buildApiError(response, 'Failed to save gift');
+  }
+  return response.json();
+}
+
+export async function updateGift(giftId, payload = {}) {
+  const response = await fetchWithDemo(buildGiftUrl(giftId, { year: payload.year }), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  if (!response.ok) {
+    throw await buildApiError(response, 'Failed to update gift');
+  }
+  return response.json();
+}
+
+export async function deleteGift(giftId, params = {}) {
+  const response = await fetchWithDemo(buildGiftUrl(giftId, params), {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw await buildApiError(response, 'Failed to delete gift');
+  }
   return response.json();
 }
 

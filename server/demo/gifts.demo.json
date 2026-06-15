@@ -1,0 +1,45 @@
+{
+  "updatedAt": "2026-06-14T12:00:00.000Z",
+  "gifts": [
+    {
+      "id": "demo-gift-1",
+      "date": "2026-01-12",
+      "organization": "MCC",
+      "amountCad": 1200,
+      "taxClaimable": true,
+      "note": "Monthly support"
+    },
+    {
+      "id": "demo-gift-2",
+      "date": "2026-02-18",
+      "organization": "One4Another",
+      "amountCad": 800,
+      "taxClaimable": true,
+      "note": "Project support"
+    },
+    {
+      "id": "demo-gift-3",
+      "date": "2026-03-09",
+      "organization": "Local Care Fund",
+      "amountCad": 350,
+      "taxClaimable": false,
+      "note": "Neighbor support"
+    },
+    {
+      "id": "demo-gift-4",
+      "date": "2026-05-21",
+      "organization": "MCC",
+      "amountCad": 1200,
+      "taxClaimable": true,
+      "note": "Monthly support"
+    },
+    {
+      "id": "demo-gift-5",
+      "date": "2025-12-20",
+      "organization": "MCC",
+      "amountCad": 900,
+      "taxClaimable": true,
+      "note": "Prior year"
+    }
+  ]
+}

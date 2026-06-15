@@ -1414,6 +1414,8 @@ export default function SummaryMetrics({
   onToggleOtherAssetsInTotalEquity,
   onEditOtherAsset,
   onRefreshEarnings,
+  givingSummary,
+  onShowGiving,
   usdToCadRate,
   onShowPeople,
   peopleDisabled,
@@ -1754,6 +1756,11 @@ export default function SummaryMetrics({
   const formattedUnbilledEarnings = earningsLoading
     ? 'Loading...'
     : formatMoney(earningsSummary?.unbilledCad ?? null);
+  const givingStatus = givingSummary?.status || 'idle';
+  const givingLoading = givingStatus === 'loading' || givingStatus === 'refreshing';
+  const givingYear = Number.isFinite(givingSummary?.year) ? givingSummary.year : earningsLabelYear;
+  const formattedGiving = givingLoading ? 'Loading...' : formatMoney(givingSummary?.totalCad ?? null);
+  const givingValueClassName = givingLoading ? 'equity-card__metric-value--loading' : '';
   const todayEarningsTone = classifyPnL(earningsSummary?.todayCad);
   const weekEarningsTone = classifyPnL(earningsSummary?.weekCad);
   const yearlyEarningsTone = classifyPnL(earningsSummary?.yearlyCad);
@@ -5013,6 +5020,15 @@ export default function SummaryMetrics({
               valueClassName={earningsValueClassName}
             />
           )}
+          {!hasActiveRangeSummary && !symbolMode && givingSummary && (
+            <MetricRow
+              label={`${givingYear} Giving`}
+              value={formattedGiving}
+              tone="neutral"
+              onActivate={onShowGiving || null}
+              valueClassName={givingValueClassName}
+            />
+          )}
           {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
             <MetricRow
               label={projectedEarningsLabel}
@@ -5217,6 +5233,15 @@ SummaryMetrics.propTypes = {
   onToggleOtherAssetsInTotalEquity: PropTypes.func,
   onEditOtherAsset: PropTypes.func,
   onRefreshEarnings: PropTypes.func,
+  givingSummary: PropTypes.shape({
+    status: PropTypes.oneOf(['idle', 'loading', 'refreshing', 'ready', 'error']),
+    year: PropTypes.number,
+    totalCad: PropTypes.number,
+    giftCount: PropTypes.number,
+    organizationCount: PropTypes.number,
+    error: PropTypes.instanceOf(Error),
+  }),
+  onShowGiving: PropTypes.func,
   usdToCadRate: PropTypes.number,
   onShowPeople: PropTypes.func,
   peopleDisabled: PropTypes.bool,
@@ -5402,6 +5427,8 @@ SummaryMetrics.defaultProps = {
   onToggleOtherAssetsInTotalEquity: null,
   onEditOtherAsset: null,
   onRefreshEarnings: null,
+  givingSummary: null,
+  onShowGiving: null,
   usdToCadRate: null,
   onShowPeople: null,
   peopleDisabled: false,

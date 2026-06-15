@@ -78,6 +78,12 @@ const { getAccountBeneficiaries } = require('./accountBeneficiaries');
 const { getQqqTemperatureSummary } = require('./qqqTemperature');
 const { evaluateInvestmentModel, evaluateInvestmentModelTemperatureChart } = require('./investmentModel');
 const { demoMiddleware } = require('./demoMode');
+const {
+  createGift,
+  deleteGift,
+  listGifts,
+  updateGift,
+} = require('./gifts');
 const deploymentDisplay = require('../../shared/deploymentDisplay.cjs');
 const {
   SYMBOL_GROUPS,
@@ -6250,6 +6256,58 @@ function sanitizeLoginForClient(login) {
   };
 }
 
+function sanitizeSnapTradeConnectionForClient(connection) {
+  if (!connection || typeof connection !== 'object') {
+    return null;
+  }
+  const brokerage =
+    connection.brokerage && typeof connection.brokerage === 'object'
+      ? connection.brokerage.display_name || connection.brokerage.name || null
+      : null;
+  return {
+    id: typeof connection.id === 'string' ? connection.id : null,
+    name: typeof connection.name === 'string' ? connection.name : null,
+    brokerage:
+      brokerage ||
+      (typeof connection.brokerageName === 'string' ? connection.brokerageName : null),
+    disabled: connection.disabled === true,
+    disabledDate:
+      typeof connection.disabled_date === 'string'
+        ? connection.disabled_date
+        : typeof connection.disabledDate === 'string'
+          ? connection.disabledDate
+          : null,
+    createdDate:
+      typeof connection.created_date === 'string'
+        ? connection.created_date
+        : typeof connection.createdDate === 'string'
+          ? connection.createdDate
+          : null,
+    updatedDate:
+      typeof connection.updated_date === 'string'
+        ? connection.updated_date
+        : typeof connection.updatedDate === 'string'
+          ? connection.updatedDate
+          : null,
+  };
+}
+
+async function sanitizeLoginForClientWithConnections(login) {
+  const sanitized = sanitizeLoginForClient(login);
+  if (!sanitized || !isSnapTradeLogin(login)) {
+    return sanitized;
+  }
+  try {
+    const connections = await fetchSnapTradeConnections(login);
+    sanitized.connections = connections.map(sanitizeSnapTradeConnectionForClient).filter(Boolean);
+  } catch (error) {
+    sanitized.connections = [];
+    sanitized.connectionStatusError =
+      error && error.message ? error.message : 'Failed to load SnapTrade connections';
+  }
+  return sanitized;
+}
+
 function normalizeEmailInput(value) {
   if (typeof value !== 'string') {
     return '';
@@ -6323,13 +6381,21 @@ async function createSnapTradeConnectionPortal(login, options = {}) {
     typeof options.broker === 'string' && options.broker.trim()
       ? options.broker.trim()
       : login.defaultBroker || SNAPTRADE_DEFAULT_BROKER;
+  const reconnect =
+    typeof options.reconnect === 'string' && options.reconnect.trim()
+      ? options.reconnect.trim()
+      : null;
   const payload = {
-    broker,
     immediateRedirect: false,
     showCloseButton: true,
     connectionType: 'read',
     connectionPortalVersion: 'v4',
   };
+  if (reconnect) {
+    payload.reconnect = reconnect;
+  } else {
+    payload.broker = broker;
+  }
   const data = await snapTradeRequest(login, '/snapTrade/login', {
     method: 'POST',
     data: payload,
@@ -6338,6 +6404,7 @@ async function createSnapTradeConnectionPortal(login, options = {}) {
     redirectURI: data && data.redirectURI ? data.redirectURI : null,
     sessionId: data && data.sessionId ? data.sessionId : null,
     broker,
+    reconnect,
   };
 }
 
@@ -18816,6 +18883,66 @@ app.post('/api/app-settings/other-assets', function (req, res) {
   }
 });
 
+function handleGiftRouteError(res, error, fallbackMessage) {
+  if (error && ['INVALID_GIFT', 'INVALID_DATE', 'INVALID_ORGANIZATION', 'INVALID_AMOUNT', 'INVALID_YEAR', 'INVALID_ID'].includes(error.code)) {
+    return res.status(400).json({ message: error.message });
+  }
+  if (error && error.code === 'NOT_FOUND') {
+    return res.status(404).json({ message: error.message || 'Gift not found' });
+  }
+  if (error && error.code === 'PARSE_ERROR') {
+    return res.status(500).json({ message: 'Failed to parse gifts file', details: error.message });
+  }
+  console.error(fallbackMessage + ':', error);
+  return res.status(500).json({ message: fallbackMessage });
+}
+
+app.get('/api/gifts', function (req, res) {
+  try {
+    const result = listGifts({ year: req.query.year });
+    return res.json(result);
+  } catch (error) {
+    return handleGiftRouteError(res, error, 'Failed to load gifts');
+  }
+});
+
+app.post('/api/gifts', function (req, res) {
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  try {
+    const result = createGift(payload);
+    const year = payload.year || (result.gift.date ? result.gift.date.slice(0, 4) : undefined);
+    const current = listGifts({ year });
+    return res.status(201).json({ gift: result.gift, ...current });
+  } catch (error) {
+    return handleGiftRouteError(res, error, 'Failed to save gift');
+  }
+});
+
+app.put('/api/gifts/:giftId', function (req, res) {
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const giftId = typeof req.params.giftId === 'string' ? req.params.giftId.trim() : '';
+  try {
+    const result = updateGift(giftId, payload);
+    const year = payload.year || (result.gift.date ? result.gift.date.slice(0, 4) : undefined);
+    const current = listGifts({ year });
+    return res.json({ gift: result.gift, ...current });
+  } catch (error) {
+    return handleGiftRouteError(res, error, 'Failed to update gift');
+  }
+});
+
+app.delete('/api/gifts/:giftId', function (req, res) {
+  const giftId = typeof req.params.giftId === 'string' ? req.params.giftId.trim() : '';
+  try {
+    const result = deleteGift(giftId);
+    const year = req.query.year || (result.gift.date ? result.gift.date.slice(0, 4) : undefined);
+    const current = listGifts({ year });
+    return res.json({ deleted: true, gift: result.gift, ...current });
+  } catch (error) {
+    return handleGiftRouteError(res, error, 'Failed to delete gift');
+  }
+});
+
 app.get('/api/accounts', async function (req, res) {
   if (!allLogins.length) {
     return res.status(409).json({
@@ -18873,8 +19000,8 @@ app.get('/api/accounts', async function (req, res) {
   }
 });
 
-app.get('/api/logins', function (req, res) {
-  const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
+app.get('/api/logins', async function (req, res) {
+  const logins = (await Promise.all(allLogins.map(sanitizeLoginForClientWithConnections))).filter(Boolean);
   res.json({
     logins,
     updatedAt: tokenStoreState.updatedAt || null,
@@ -18985,9 +19112,9 @@ app.post('/api/logins', async function (req, res) {
       };
     }
 
-    const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
+    const logins = (await Promise.all(allLogins.map(sanitizeLoginForClientWithConnections))).filter(Boolean);
     return res.status(201).json({
-      login: sanitizeLoginForClient(targetLogin),
+      login: await sanitizeLoginForClientWithConnections(targetLogin),
       logins,
       updatedAt: tokenStoreState.updatedAt || null,
       snapTrade: {
@@ -19067,9 +19194,9 @@ app.post('/api/logins', async function (req, res) {
     totalLogins: allLogins.length,
   });
 
-  const logins = allLogins.map(sanitizeLoginForClient).filter(Boolean);
+  const logins = (await Promise.all(allLogins.map(sanitizeLoginForClientWithConnections))).filter(Boolean);
   return res.status(201).json({
-    login: sanitizeLoginForClient(targetLogin),
+    login: await sanitizeLoginForClientWithConnections(targetLogin),
     logins,
     updatedAt: tokenStoreState.updatedAt || null,
   });
@@ -19085,8 +19212,9 @@ app.post('/api/logins/:loginId/snaptrade-connection-portal', async function (req
   try {
     const connectionPortal = await createSnapTradeConnectionPortal(login, {
       broker: payload.broker,
+      reconnect: payload.reconnect,
     });
-    return res.json({ login: sanitizeLoginForClient(login), connectionPortal });
+    return res.json({ login: await sanitizeLoginForClientWithConnections(login), connectionPortal });
   } catch (error) {
     const message = error && error.message ? error.message : 'Failed to create SnapTrade connection link';
     return res.status(400).json({ message, details: message });

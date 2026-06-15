@@ -134,6 +134,76 @@ function getTotalPnlSeriesPayload(accountKey, applyCagr) {
   return clone(entry);
 }
 
+function getGiftsPayload(yearValue) {
+  const payload = clone(readFixture('gifts.demo.json'));
+  const year = Number(yearValue) || new Date().getFullYear();
+  const yearPrefix = `${year}-`;
+  const gifts = Array.isArray(payload.gifts)
+    ? payload.gifts.filter((gift) => typeof gift.date === 'string' && gift.date.startsWith(yearPrefix))
+    : [];
+  const summary = gifts.reduce(
+    (acc, gift) => {
+      const amountCad = Number(gift.amountCad);
+      if (!Number.isFinite(amountCad) || amountCad <= 0) {
+        return acc;
+      }
+      acc.totalCad += amountCad;
+      acc.giftCount += 1;
+      if (gift.taxClaimable) {
+        acc.taxClaimableCad += amountCad;
+      } else {
+        acc.nonTaxClaimableCad += amountCad;
+      }
+      const key = String(gift.organization || '').trim().toLowerCase();
+      if (key) {
+        const entry = acc.organizationMap.get(key) || {
+          organization: gift.organization,
+          totalCad: 0,
+          taxClaimableCad: 0,
+          nonTaxClaimableCad: 0,
+          count: 0,
+        };
+        entry.totalCad += amountCad;
+        if (gift.taxClaimable) {
+          entry.taxClaimableCad += amountCad;
+        } else {
+          entry.nonTaxClaimableCad += amountCad;
+        }
+        entry.count += 1;
+        acc.organizationMap.set(key, entry);
+      }
+      return acc;
+    },
+    {
+      year,
+      totalCad: 0,
+      taxClaimableCad: 0,
+      nonTaxClaimableCad: 0,
+      giftCount: 0,
+      organizationMap: new Map(),
+    }
+  );
+  const organizations = Array.from(summary.organizationMap.values())
+    .map((entry) => ({
+      ...entry,
+      share: summary.totalCad > 0 ? entry.totalCad / summary.totalCad : 0,
+    }))
+    .sort((a, b) => b.totalCad - a.totalCad || a.organization.localeCompare(b.organization));
+  return {
+    gifts,
+    summary: {
+      year,
+      totalCad: Math.round(summary.totalCad * 100) / 100,
+      taxClaimableCad: Math.round(summary.taxClaimableCad * 100) / 100,
+      nonTaxClaimableCad: Math.round(summary.nonTaxClaimableCad * 100) / 100,
+      giftCount: summary.giftCount,
+      organizationCount: organizations.length,
+      organizations,
+    },
+    updatedAt: payload.updatedAt || null,
+  };
+}
+
 function demoMiddleware(req, res, next) {
   if (!isDemoRequest(req)) {
     return next();
@@ -204,6 +274,31 @@ function demoMiddleware(req, res, next) {
   }
   if (method === 'POST' && pathName === '/app-settings/other-assets') {
     return respondDemo(res, { ok: true, message: 'Demo mode: changes not persisted.' });
+  }
+  if (pathName === '/gifts' && method === 'GET') {
+    return respondDemo(res, getGiftsPayload(req.query.year));
+  }
+  if (pathName === '/gifts' && method === 'POST') {
+    const payload = getGiftsPayload(req.body && req.body.date ? String(req.body.date).slice(0, 4) : req.query.year);
+    return respondDemo(res, {
+      ...payload,
+      gift: {
+        id: 'demo-gift-new',
+        date: req.body?.date || new Date().toISOString().slice(0, 10),
+        organization: req.body?.organization || 'Demo Organization',
+        amountCad: Number(req.body?.amountCad) || 0,
+        taxClaimable: req.body?.taxClaimable === true,
+        note: req.body?.note || '',
+      },
+      message: 'Demo mode: gift not persisted.',
+    });
+  }
+  if (segments[0] === 'gifts' && segments[1] && (method === 'PUT' || method === 'DELETE')) {
+    return respondDemo(res, {
+      ...getGiftsPayload(req.query.year),
+      deleted: method === 'DELETE',
+      message: 'Demo mode: gift changes not persisted.',
+    });
   }
   if (method === 'POST' && segments[0] === 'accounts') {
     return respondDemo(res, { ok: true, message: 'Demo mode: changes not persisted.' });
