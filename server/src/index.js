@@ -721,11 +721,14 @@ async function computeAggregateTotalPnlSeriesForContexts(
   let aggregatedEnd = null;
   let aggregatedPriceCad = null;
   let aggregatedPriceNative = null;
+  const seriesCoverage = [];
 
   successfulSeries.forEach(({ series }) => {
     if (!series) {
       return;
     }
+    let firstMeaningfulDate = null;
+    const pointDates = new Set();
     if (typeof series.periodStartDate === 'string' && series.periodStartDate) {
       if (!aggregatedStart || series.periodStartDate < aggregatedStart) {
         aggregatedStart = series.periodStartDate;
@@ -758,10 +761,24 @@ async function computeAggregateTotalPnlSeriesForContexts(
         if (!dateKey) {
           return;
         }
+        pointDates.add(dateKey);
+        if (!firstMeaningfulDate) {
+          const pointEquity = Number(point.equityCad);
+          const pointDeposits = Number(point.cumulativeNetDepositsCad);
+          const pointPnl = Number(point.totalPnlCad);
+          if (
+            (Number.isFinite(pointEquity) && Math.abs(pointEquity) > CASH_FLOW_EPSILON) ||
+            (Number.isFinite(pointDeposits) && Math.abs(pointDeposits) > CASH_FLOW_EPSILON) ||
+            (Number.isFinite(pointPnl) && Math.abs(pointPnl) > CASH_FLOW_EPSILON)
+          ) {
+            firstMeaningfulDate = dateKey;
+          }
+        }
         let bucket = totalsByDate.get(dateKey);
         if (!bucket) {
           bucket = {
             date: dateKey,
+            pointCount: 0,
             equity: 0,
             equityCount: 0,
             deposits: 0,
@@ -786,6 +803,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
           };
           totalsByDate.set(dateKey, bucket);
         }
+        bucket.pointCount += 1;
         const equity = Number(point.equityCad);
         if (Number.isFinite(equity)) {
           bucket.equity += equity;
@@ -847,6 +865,12 @@ async function computeAggregateTotalPnlSeriesForContexts(
         }
       });
     }
+    if (pointDates.size > 0) {
+      seriesCoverage.push({
+        firstMeaningfulDate: firstMeaningfulDate || series.periodStartDate || Array.from(pointDates).sort()[0],
+        pointDates,
+      });
+    }
 
     const { summary } = series;
     if (summary && typeof summary === 'object') {
@@ -892,9 +916,26 @@ async function computeAggregateTotalPnlSeriesForContexts(
   }
 
   const sortedDates = Array.from(totalsByDate.keys()).sort();
+  const expectedPointCountForDate = (dateKey) => {
+    if (!dateKey || !seriesCoverage.length) {
+      return 0;
+    }
+    return seriesCoverage.reduce((count, coverage) => {
+      if (!coverage || !coverage.firstMeaningfulDate) {
+        return count;
+      }
+      return coverage.firstMeaningfulDate <= dateKey ? count + 1 : count;
+    }, 0);
+  };
+  let droppedPartialDate = false;
   let combinedPoints = sortedDates
     .map((dateKey) => {
       const bucket = totalsByDate.get(dateKey);
+      const expectedPointCount = expectedPointCountForDate(dateKey);
+      if (expectedPointCount > 0 && (!bucket || bucket.pointCount < expectedPointCount)) {
+        droppedPartialDate = true;
+        return null;
+      }
       return {
         date: dateKey,
         equityCad: bucket && bucket.equityCount > 0 ? bucket.equity : undefined,
@@ -930,6 +971,9 @@ async function computeAggregateTotalPnlSeriesForContexts(
       };
     })
     .filter((point) => point && Number.isFinite(point.totalPnlCad));
+  if (droppedPartialDate) {
+    aggregatedIssues.add('aggregate-partial-date-coverage');
+  }
 
   if (!combinedPoints.length) {
     return null;
@@ -940,9 +984,23 @@ async function computeAggregateTotalPnlSeriesForContexts(
   const lastPointIndex = combinedPoints.length - 1;
   const lastPoint = combinedPoints[lastPointIndex];
   if (lastPoint && typeof lastPoint === 'object') {
-    const summaryEquity = Number.isFinite(summaryTotals.totalEquityCad) ? summaryTotals.totalEquityCad : null;
-    const summaryDeposits = Number.isFinite(summaryTotals.netDepositsCad) ? summaryTotals.netDepositsCad : null;
-    const summaryPnl = Number.isFinite(summaryTotals.totalPnlCad) ? summaryTotals.totalPnlCad : null;
+    const summaryCoverageCount = successfulSeries.length;
+    const lastPointIsCurrent = !aggregatedEnd || lastPoint.date === aggregatedEnd;
+    const hasCompleteSummaryCoverage =
+      lastPointIsCurrent &&
+      summaryCoverageCount > 0 &&
+      summaryCounts.totalEquityCad === summaryCoverageCount &&
+      summaryCounts.netDepositsCad === summaryCoverageCount &&
+      summaryCounts.totalPnlCad === summaryCoverageCount;
+    if (!hasCompleteSummaryCoverage) {
+      aggregatedIssues.add('aggregate-partial-summary-coverage');
+    }
+    const summaryEquity =
+      hasCompleteSummaryCoverage && Number.isFinite(summaryTotals.totalEquityCad) ? summaryTotals.totalEquityCad : null;
+    const summaryDeposits =
+      hasCompleteSummaryCoverage && Number.isFinite(summaryTotals.netDepositsCad) ? summaryTotals.netDepositsCad : null;
+    const summaryPnl =
+      hasCompleteSummaryCoverage && Number.isFinite(summaryTotals.totalPnlCad) ? summaryTotals.totalPnlCad : null;
     if (summaryEquity !== null) {
       lastPoint.equityCad = summaryEquity;
     }
@@ -1007,24 +1065,59 @@ async function computeAggregateTotalPnlSeriesForContexts(
     }
   }
 
+  const lastCombinedPoint = combinedPoints[combinedPoints.length - 1] || null;
+  const summaryCoverageCount = successfulSeries.length;
+  const lastCombinedPointIsCurrent = !aggregatedEnd || lastCombinedPoint?.date === aggregatedEnd;
+  const hasCompleteSummaryCoverage =
+    lastCombinedPointIsCurrent &&
+    summaryCoverageCount > 0 &&
+    summaryCounts.totalEquityCad === summaryCoverageCount &&
+    summaryCounts.netDepositsCad === summaryCoverageCount &&
+    summaryCounts.totalPnlCad === summaryCoverageCount;
   const summaryPayload = {
-    totalPnlCad: summaryCounts.totalPnlCad > 0 ? summaryTotals.totalPnlCad : null,
+    totalPnlCad: hasCompleteSummaryCoverage
+      ? summaryTotals.totalPnlCad
+      : Number.isFinite(lastCombinedPoint?.totalPnlCad)
+        ? lastCombinedPoint.totalPnlCad
+        : null,
     totalPnlAllTimeCad:
-      summaryCounts.totalPnlAllTimeCad > 0
+      hasCompleteSummaryCoverage && summaryCounts.totalPnlAllTimeCad > 0
         ? summaryTotals.totalPnlAllTimeCad
-        : summaryCounts.totalPnlCad > 0
+        : hasCompleteSummaryCoverage && summaryCounts.totalPnlCad > 0
           ? summaryTotals.totalPnlCad
-          : null,
-    netDepositsCad: summaryCounts.netDepositsCad > 0 ? summaryTotals.netDepositsCad : null,
+          : Number.isFinite(lastCombinedPoint?.totalPnlCad)
+            ? lastCombinedPoint.totalPnlCad
+            : null,
+    netDepositsCad: hasCompleteSummaryCoverage
+      ? summaryTotals.netDepositsCad
+      : Number.isFinite(lastCombinedPoint?.cumulativeNetDepositsCad)
+        ? lastCombinedPoint.cumulativeNetDepositsCad
+        : null,
     netDepositsAllTimeCad:
-      summaryCounts.netDepositsAllTimeCad > 0
+      hasCompleteSummaryCoverage && summaryCounts.netDepositsAllTimeCad > 0
         ? summaryTotals.netDepositsAllTimeCad
-        : summaryCounts.netDepositsCad > 0
+        : hasCompleteSummaryCoverage && summaryCounts.netDepositsCad > 0
           ? summaryTotals.netDepositsCad
+          : Number.isFinite(lastCombinedPoint?.cumulativeNetDepositsCad)
+            ? lastCombinedPoint.cumulativeNetDepositsCad
+            : null,
+    totalEquityCad: hasCompleteSummaryCoverage
+      ? summaryTotals.totalEquityCad
+      : Number.isFinite(lastCombinedPoint?.equityCad)
+        ? lastCombinedPoint.equityCad
+        : null,
+    reserveValueCad:
+      summaryCounts.reserveValueCad > 0
+        ? summaryTotals.reserveValueCad
+        : Number.isFinite(lastCombinedPoint?.reserveValueCad)
+          ? lastCombinedPoint.reserveValueCad
           : null,
-    totalEquityCad: summaryCounts.totalEquityCad > 0 ? summaryTotals.totalEquityCad : null,
-    reserveValueCad: summaryCounts.reserveValueCad > 0 ? summaryTotals.reserveValueCad : null,
-    deployedValueCad: summaryCounts.deployedValueCad > 0 ? summaryTotals.deployedValueCad : null,
+    deployedValueCad:
+      summaryCounts.deployedValueCad > 0
+        ? summaryTotals.deployedValueCad
+        : Number.isFinite(lastCombinedPoint?.deployedValueCad)
+          ? lastCombinedPoint.deployedValueCad
+          : null,
   };
 
   if (
@@ -15189,9 +15282,33 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     netDepositsSummary.netDeposits && Number.isFinite(netDepositsSummary.netDeposits.allTimeCad)
       ? netDepositsSummary.netDeposits.allTimeCad
       : summaryNetDeposits;
-  const summaryEquity = Number.isFinite(netDepositsSummary.totalEquityCad)
+  let summaryEquity = Number.isFinite(netDepositsSummary.totalEquityCad)
     ? netDepositsSummary.totalEquityCad
     : null;
+  const lastReconstructedPoint = points.length ? points[points.length - 1] : null;
+  const lastReconstructedEquity =
+    lastReconstructedPoint && Number.isFinite(lastReconstructedPoint.equityCad)
+      ? lastReconstructedPoint.equityCad
+      : null;
+  const hasCurrentSnapshotValues =
+    closingCashByCurrency.size > 0 ||
+    closingMarketValueByCurrency.size > 0 ||
+    closingHoldings.size > 0;
+  if (
+    summaryEquity !== null &&
+    Math.abs(summaryEquity) < CASH_FLOW_EPSILON &&
+    !hasCurrentSnapshotValues &&
+    Number.isFinite(lastReconstructedEquity) &&
+    Math.abs(lastReconstructedEquity) >= CASH_FLOW_EPSILON
+  ) {
+    summaryEquity = lastReconstructedEquity;
+    if (Number.isFinite(summaryNetDeposits)) {
+      const reconstructedPnl = summaryEquity - summaryNetDeposits;
+      summaryTotalPnl = Math.abs(reconstructedPnl) < CASH_FLOW_EPSILON ? 0 : reconstructedPnl;
+      summaryTotalPnlAllTime = summaryTotalPnl;
+    }
+    issues.add('current-balance-snapshot-missing');
+  }
 
   const todayDateKey = nowIso || formatDateOnly(new Date());
   let pendingDepositCad = null;
@@ -22321,6 +22438,7 @@ module.exports = {
   computeTotalPnlBySymbol,
   computeNetDeposits,
   computeNetDepositsCore,
+  computeAggregateTotalPnlSeriesForContexts,
   buildAccountActivityContext,
   resolveAccountActivityContext,
   detectNorbertJournalCompletion,

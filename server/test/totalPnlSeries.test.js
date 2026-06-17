@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   computeTotalPnlSeries,
   computeTotalPnlSeriesForSymbol,
+  computeAggregateTotalPnlSeriesForContexts,
   buildDailyPriceSeries,
 } = require('../src/index.js');
 
@@ -123,6 +124,152 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
   assert.ok(Math.abs(result.summary.displayStartTotals.totalPnlCad || 0) < 1e-6);
 
   assert.ok(!result.issues, 'Expected no issues for cash-only scenario');
+});
+
+test('aggregate Total P&L drops dates missing a post-start account point', async () => {
+  const makeActivityContext = ({ accountId, now, amount }) => ({
+    accountId,
+    accountKey: accountId,
+    accountNumber: accountId,
+    earliestFunding: new Date('2026-06-15T00:00:00Z'),
+    crawlStart: new Date('2026-06-15T00:00:00Z'),
+    now: new Date(now),
+    nowIsoString: new Date(now).toISOString(),
+    activities: [
+      {
+        tradeDate: '2026-06-16T00:00:00Z',
+        transactionDate: '2026-06-16T00:00:00Z',
+        settlementDate: '2026-06-16T00:00:00Z',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: amount,
+        grossAmount: amount,
+        symbol: '',
+        symbolId: 0,
+      },
+    ],
+    fingerprint: `${accountId}-coverage-test`,
+  });
+
+  const contexts = [
+    {
+      login: { id: 'login-1' },
+      account: { id: 'A', number: 'A' },
+    },
+    {
+      login: { id: 'login-1' },
+      account: { id: 'B', number: 'B' },
+    },
+  ];
+  const activityContexts = {
+    A: makeActivityContext({
+      accountId: 'A',
+      now: '2026-06-17T00:00:00Z',
+      amount: 100,
+    }),
+    B: makeActivityContext({
+      accountId: 'B',
+      now: '2026-06-16T00:00:00Z',
+      amount: 500,
+    }),
+  };
+
+  const balances = {
+    A: {
+      combined: {
+        CAD: {
+          totalEquity: 110,
+        },
+      },
+    },
+    B: {
+      combined: {
+        CAD: {
+          totalEquity: 500,
+        },
+      },
+    },
+  };
+
+  const result = await computeAggregateTotalPnlSeriesForContexts(
+    contexts,
+    balances,
+    { applyAccountCagrStartDate: false },
+    'all',
+    false,
+    (context) => activityContexts[context.account.id]
+  );
+
+  assert.ok(result, 'Expected aggregate series');
+  const lastPoint = result.points[result.points.length - 1];
+  assert.equal(lastPoint.date, '2026-06-16');
+  assert.equal(lastPoint.equityCad, 600);
+  assert.equal(lastPoint.cumulativeNetDepositsCad, 600);
+  assert.equal(lastPoint.totalPnlCad, 0);
+  assert.equal(result.summary.totalEquityCad, 600);
+  assert.equal(result.summary.netDepositsCad, 600);
+  assert.equal(result.summary.totalPnlCad, 0);
+  assert.ok(result.issues.includes('aggregate-partial-date-coverage'));
+  assert.ok(result.issues.includes('aggregate-partial-summary-coverage'));
+});
+
+test('computeTotalPnlSeries keeps reconstructed equity when current snapshot is empty', async () => {
+  const account = {
+    id: 'MISSING-SNAPSHOT-ACCOUNT',
+  };
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2026-06-16T00:00:00Z'),
+    crawlStart: new Date('2026-06-16T00:00:00Z'),
+    now: new Date('2026-06-17T00:00:00Z'),
+    nowIsoString: '2026-06-17T00:00:00.000Z',
+    activities: [
+      {
+        tradeDate: '2026-06-16T00:00:00Z',
+        transactionDate: '2026-06-16T00:00:00Z',
+        settlementDate: '2026-06-16T00:00:00Z',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: 500,
+        grossAmount: 500,
+        symbol: '',
+        symbolId: 0,
+      },
+    ],
+    fingerprint: 'missing-current-snapshot-test',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 0,
+        },
+      },
+    },
+  };
+
+  const result = await computeTotalPnlSeries(
+    { id: 'login-1' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false, providedPositions: [] }
+  );
+
+  assert.ok(result, 'Expected account series');
+  const lastPoint = result.points[result.points.length - 1];
+  assert.equal(lastPoint.date, '2026-06-17');
+  assert.equal(lastPoint.equityCad, 500);
+  assert.equal(lastPoint.cumulativeNetDepositsCad, 500);
+  assert.equal(lastPoint.totalPnlCad, 0);
+  assert.equal(result.summary.totalEquityCad, 500);
+  assert.equal(result.summary.totalPnlCad, 0);
+  assert.ok(result.issues.includes('current-balance-snapshot-missing'));
 });
 
 test('computeTotalPnlSeries treats unexplained equity jumps as pending deposits', async () => {
