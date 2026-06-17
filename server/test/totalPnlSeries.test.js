@@ -236,6 +236,75 @@ test('computeTotalPnlSeries applies opted-in pending deposit fix to the final po
   assert.ok(Math.abs(result.summary.totalPnlSinceDisplayStartCad || 0) < 1e-6);
 });
 
+test('computeTotalPnlSeries ignores internal share journal cash amounts', async () => {
+  const account = {
+    id: 'INTERNAL-JOURNAL-ACCOUNT',
+  };
+
+  const now = new Date('2026-06-16T00:00:00Z');
+
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2026-06-15T00:00:00Z'),
+    crawlStart: new Date('2026-06-15T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2026-06-15T10:00:00Z',
+        transactionDate: '2026-06-15T10:00:00Z',
+        settlementDate: '2026-06-15T10:00:00Z',
+        type: 'CONTRIBUTION',
+        action: 'CONTRIBUTION',
+        description: 'Deposit of $1000.00',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+      },
+      {
+        tradeDate: '2026-06-15T11:00:00Z',
+        transactionDate: '2026-06-15T11:00:00Z',
+        settlementDate: '2026-06-15T11:00:00Z',
+        type: 'JOURNAL_SHARES',
+        action: 'JOURNAL_SHARES',
+        description: 'JOURNAL_SHARES',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+      },
+    ],
+    fingerprint: 'internal-journal-fingerprint',
+  };
+
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 1000,
+        },
+      },
+    },
+  };
+
+  const result = await computeTotalPnlSeries(
+    { id: 'login-1' },
+    account,
+    balances,
+    { activityContext, applyAccountCagrStartDate: false }
+  );
+
+  assert.ok(result, 'Expected series result');
+  const journalDay = result.points.find((point) => point.date === '2026-06-15');
+  assert.ok(journalDay, 'Expected journal date point');
+  assert.ok(Math.abs(journalDay.equityCad - 1000) < 1e-6);
+  assert.ok(Math.abs(journalDay.cumulativeNetDepositsCad - 1000) < 1e-6);
+  assert.ok(Math.abs(journalDay.totalPnlCad) < 1e-6);
+  assert.ok(Math.abs(result.summary.netDepositsCad - 1000) < 1e-6);
+  assert.ok(Math.abs(result.summary.totalPnlCad) < 1e-6);
+});
+
 test('computeTotalPnlSeries skips pending-deposit auto-fix for historical end dates', async () => {
   const account = {
     id: 'PENDING-DEPOSIT-HISTORICAL-END',

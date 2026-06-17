@@ -1,6 +1,26 @@
 {
   "gifts": [
     {
+      "id": "15b4329d-7d33-4152-9b59-1a90668268cb",
+      "date": "2026-06-15",
+      "organization": "Against Malaria Foundation",
+      "amountCad": 20000,
+      "taxClaimable": true,
+      "note": "TODO",
+      "createdAt": "2026-06-15T23:18:14.967Z",
+      "updatedAt": "2026-06-15T23:18:14.967Z"
+    },
+    {
+      "id": "c17dce4f-9172-4a5e-beaa-f646f8949936",
+      "date": "2026-06-15",
+      "organization": "MCC",
+      "amountCad": 10000,
+      "taxClaimable": true,
+      "note": "TODO",
+      "createdAt": "2026-06-15T23:17:17.560Z",
+      "updatedAt": "2026-06-15T23:17:17.560Z"
+    },
+    {
       "id": "3316fb8b-5bb2-4a1b-b598-2241e52d5738",
       "date": "2026-06-15",
       "organization": "One4Another",
@@ -11,6 +31,16 @@
       "updatedAt": "2026-06-15T12:36:56.296Z"
     },
     {
+      "id": "50a531c6-725a-4784-b03d-9dcf8c067c3b",
+      "date": "2026-06-15",
+      "organization": "WMB",
+      "amountCad": 20000,
+      "taxClaimable": true,
+      "note": "TODO",
+      "createdAt": "2026-06-15T23:17:52.689Z",
+      "updatedAt": "2026-06-15T23:17:52.689Z"
+    },
+    {
       "id": "08bc5152-748c-4674-81c5-251c40212c87",
       "date": "2026-06-07",
       "organization": "One4Another",
@@ -19,6 +49,16 @@
       "note": "",
       "createdAt": "2026-06-15T12:26:45.905Z",
       "updatedAt": "2026-06-15T12:26:45.905Z"
+    },
+    {
+      "id": "19001a6d-0930-4929-bd95-62f936c0b4f6",
+      "date": "2026-06-01",
+      "organization": "WMB",
+      "amountCad": 50,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T23:17:38.479Z",
+      "updatedAt": "2026-06-15T23:17:38.479Z"
     },
     {
       "id": "a27d427b-4212-4792-b61d-c86731d5cec6",
@@ -201,6 +241,16 @@
       "updatedAt": "2026-06-15T17:21:02.953Z"
     },
     {
+      "id": "a0cbce6d-5ab8-479a-9273-062105d5b3c4",
+      "date": "2026-01-01",
+      "organization": "The Gathering Church",
+      "amountCad": 3750,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-15T23:16:32.322Z",
+      "updatedAt": "2026-06-15T23:16:32.322Z"
+    },
+    {
       "id": "825492b4-37d8-4150-91e1-a443dd5312ce",
       "date": "2026-01-01",
       "organization": "World Vision",
@@ -211,5 +261,5 @@
       "updatedAt": "2026-06-15T12:17:29.027Z"
     }
   ],
-  "updatedAt": "2026-06-15T22:04:23.631Z"
+  "updatedAt": "2026-06-15T23:18:14.967Z"
 }

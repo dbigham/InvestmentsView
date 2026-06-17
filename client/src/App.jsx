@@ -3526,6 +3526,102 @@ function loadSummary(fetchKey, options = {}) {
   return request;
 }
 
+function resolveAccountFromSummary(summary, accountKey) {
+  const normalizedKey = accountKey !== undefined && accountKey !== null ? String(accountKey).trim() : '';
+  if (!normalizedKey || !summary || !Array.isArray(summary.accounts)) {
+    return null;
+  }
+  return summary.accounts.find((account) => {
+    if (!account || typeof account !== 'object') {
+      return false;
+    }
+    const id = account.id !== undefined && account.id !== null ? String(account.id).trim() : '';
+    const number =
+      account.number !== undefined && account.number !== null
+        ? String(account.number).trim()
+        : account.accountNumber !== undefined && account.accountNumber !== null
+          ? String(account.accountNumber).trim()
+          : '';
+    return id === normalizedKey || number === normalizedKey;
+  }) || null;
+}
+
+function resolveFundingNetDepositsCad(funding) {
+  if (!funding || typeof funding !== 'object') {
+    return null;
+  }
+  const combined = Number(funding.netDeposits?.combinedCad);
+  if (Number.isFinite(combined)) {
+    return combined;
+  }
+  const allTime = Number(funding.netDeposits?.allTimeCad);
+  return Number.isFinite(allTime) ? allTime : null;
+}
+
+function resolveSummaryAccountKey(summary, accountKey) {
+  const account = resolveAccountFromSummary(summary, accountKey);
+  const id = account && account.id !== undefined && account.id !== null ? String(account.id).trim() : '';
+  return id || (accountKey !== undefined && accountKey !== null ? String(accountKey).trim() : '');
+}
+
+function resolveSummaryAccountEquityCad(summary, accountKey) {
+  if (!summary || !accountKey) {
+    return null;
+  }
+  const resolvedKey = resolveSummaryAccountKey(summary, accountKey);
+  const funding =
+    summary.accountFunding && typeof summary.accountFunding === 'object'
+      ? summary.accountFunding[resolvedKey] || summary.accountFunding[accountKey]
+      : null;
+  if (isFiniteNumber(funding?.totalEquityCad)) {
+    return funding.totalEquityCad;
+  }
+
+  const balanceSummary = normalizeAccountBalanceSummary(
+    summary.accountBalances && typeof summary.accountBalances === 'object'
+      ? summary.accountBalances[resolvedKey] || summary.accountBalances[accountKey]
+      : null
+  );
+  const cadBalance = balanceSummary?.combined?.CAD;
+  const totalEquity = Number(cadBalance?.totalEquity);
+  if (Number.isFinite(totalEquity)) {
+    return totalEquity;
+  }
+  const marketValue = Number(cadBalance?.marketValue);
+  const cash = Number(cadBalance?.cash);
+  if (Number.isFinite(marketValue) || Number.isFinite(cash)) {
+    return (Number.isFinite(marketValue) ? marketValue : 0) + (Number.isFinite(cash) ? cash : 0);
+  }
+  return null;
+}
+
+function needsDedicatedSnapTradeSummary(summary, accountKey) {
+  const account = resolveAccountFromSummary(summary, accountKey);
+  const provider = account && typeof account.provider === 'string' ? account.provider.toLowerCase() : '';
+  if (provider !== 'snaptrade') {
+    return false;
+  }
+  const resolvedKey = resolveSummaryAccountKey(summary, accountKey);
+
+  const equityCad = resolveSummaryAccountEquityCad(summary, accountKey);
+  if (!Number.isFinite(equityCad) || Math.abs(equityCad) < 0.01) {
+    return false;
+  }
+
+  const funding =
+    summary.accountFunding && typeof summary.accountFunding === 'object'
+      ? summary.accountFunding[resolvedKey] || summary.accountFunding[accountKey]
+      : null;
+  if (!funding || typeof funding !== 'object') {
+    return true;
+  }
+
+  const hasPeriodStart =
+    typeof funding.periodStartDate === 'string' && funding.periodStartDate.trim().length > 0;
+  const netDepositsCad = resolveFundingNetDepositsCad(funding);
+  return !hasPeriodStart || !Number.isFinite(netDepositsCad) || Math.abs(netDepositsCad) < 0.01;
+}
+
 function useSummaryData(accountNumber, refreshKey) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const cacheRef = useRef(new Map());
@@ -3547,10 +3643,25 @@ function useSummaryData(accountNumber, refreshKey) {
         : null;
     const cachedEntry = cacheRef.current.get(normalizedAccount);
     const cachedData = cachedEntry ? cachedEntry.data : null;
-    const initialData = derivedFromSuperset || cachedData || null;
+    const isConcreteAccountSelection =
+      normalizedAccount !== 'default' &&
+      normalizedAccount !== 'all' &&
+      !isAccountGroupSelection(normalizedAccount);
+    const derivedNeedsDedicatedFetch =
+      isConcreteAccountSelection &&
+      derivedFromSuperset &&
+      needsDedicatedSnapTradeSummary(derivedFromSuperset, normalizedAccount);
+    const cachedNeedsDedicatedFetch =
+      isConcreteAccountSelection &&
+      cachedData &&
+      needsDedicatedSnapTradeSummary(cachedData, normalizedAccount);
+    const preferredCachedData =
+      derivedNeedsDedicatedFetch && cachedData && !cachedNeedsDedicatedFetch ? cachedData : null;
+    const initialData = preferredCachedData || derivedFromSuperset || cachedData || null;
 
     if (
       derivedFromSuperset &&
+      !derivedNeedsDedicatedFetch &&
       normalizedAccount !== 'default' &&
       normalizedAccount !== 'all'
     ) {
@@ -3594,6 +3705,12 @@ function useSummaryData(accountNumber, refreshKey) {
     } else if (!initialData && normalizedAccount === 'all') {
       fetchKey = 'all';
     } else if (
+      derivedNeedsDedicatedFetch &&
+      (!cachedData || cachedNeedsDedicatedFetch || refreshChanged)
+    ) {
+      fetchKey = normalizedAccount;
+      forceFetch = true; // superset skips SnapTrade history; hydrate the real funding basis
+    } else if (
       // If viewing a group derived from the superset, fetch the dedicated
       // group summary when key fields are missing (annualized, period dates,
       // or preheated group series). This avoids stale/partial data in the UI.
@@ -3627,7 +3744,7 @@ function useSummaryData(accountNumber, refreshKey) {
 
     let cancelled = false;
     loadSummary(fetchKey, { refreshKey, force: refreshChanged || forceFetch })
-      .then((summary) => {
+      .then(async (summary) => {
         if (cancelled) {
           return;
         }
@@ -3658,6 +3775,23 @@ function useSummaryData(accountNumber, refreshKey) {
 
           const derived = deriveSummaryFromSuperset(summary, normalizedAccount);
           if (derived) {
+            if (
+              isConcreteAccountSelection &&
+              needsDedicatedSnapTradeSummary(derived, normalizedAccount)
+            ) {
+              setState({ loading: true, data: derived, error: null });
+              const dedicatedSummary = await loadSummary(normalizedAccount, {
+                refreshKey,
+                force: true,
+              });
+              if (cancelled) {
+                return;
+              }
+              storeEntry(normalizedAccount, dedicatedSummary);
+              setState({ loading: false, data: dedicatedSummary, error: null });
+              return;
+            }
+
             storeEntry(normalizedAccount, derived);
             setState({ loading: false, data: derived, error: null });
           } else {
@@ -9029,6 +9163,10 @@ export default function App() {
 
     if (!memberAccountIds.length) {
       return null;
+    }
+
+    if (selectedAccount === 'all' && directEntry && typeof directEntry === 'object') {
+      return directEntry;
     }
 
     // Prefer composing group funding from per-account series summaries when available

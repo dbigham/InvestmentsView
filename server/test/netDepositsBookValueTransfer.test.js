@@ -137,3 +137,76 @@ test('book-value transfers prefer activity-context price fetcher', async (t) => 
   assert.equal(result.netDeposits.allTimeCad, 28000);
   assert.equal(result.netDeposits.perCurrency.CAD, 28000);
 });
+
+test('internal share journals do not count as external funding', async () => {
+  const now = new Date('2026-06-16T00:00:00Z');
+  const activityContext = {
+    accountId: 'acct-1',
+    accountNumber: 'acct-1',
+    accountKey: 'acct-1',
+    earliestFunding: new Date('2026-06-08T00:00:00Z'),
+    crawlStart: new Date('2026-06-08T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    fingerprint: 'journal-shares-test',
+    activities: [
+      {
+        tradeDate: '2026-06-08T12:00:00Z',
+        transactionDate: '2026-06-08T12:00:00Z',
+        settlementDate: '2026-06-08T12:00:00Z',
+        type: 'CONTRIBUTION',
+        action: 'CONTRIBUTION',
+        description: 'Deposit of $1000.00',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+      },
+      {
+        tradeDate: '2026-06-15T14:17:00Z',
+        transactionDate: '2026-06-15T14:17:00Z',
+        settlementDate: '2026-06-15T14:17:00Z',
+        type: 'BUY',
+        action: 'BUY',
+        symbol: 'DLR.U.TO',
+        description: 'Bought 70.00000 of DLR.U.TO',
+        currency: 'USD',
+        netAmount: -714,
+        grossAmount: -714,
+        quantity: 70,
+        price: 10.2,
+      },
+      {
+        tradeDate: '2026-06-15T14:18:00Z',
+        transactionDate: '2026-06-15T14:18:00Z',
+        settlementDate: '2026-06-15T14:18:00Z',
+        type: 'JOURNAL_SHARES',
+        action: 'JOURNAL_SHARES',
+        symbol: 'DLR.U.TO',
+        description: 'JOURNAL_SHARES',
+        currency: 'CAD',
+        netAmount: 990,
+        grossAmount: 1000,
+        quantity: 70,
+        price: 14.14,
+      },
+    ],
+  };
+
+  const balances = {
+    'acct-1': {
+      combined: {
+        CAD: {
+          totalEquity: 1000,
+        },
+      },
+    },
+  };
+
+  const result = await computeNetDepositsCore(buildAccount(), balances, {}, activityContext);
+
+  assert.ok(result);
+  assert.equal(result.netDeposits.allTimeCad, 1000);
+  assert.equal(result.netDeposits.combinedCad, 1000);
+  assert.equal(result.netDeposits.perCurrency.CAD, 1000);
+  assert.equal(result.totalPnl.allTimeCad, 0);
+});

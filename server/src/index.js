@@ -406,6 +406,8 @@ if (DEBUG_SUMMARY_CACHE) {
 const summaryCacheStore = new Map();
 let supersetSummaryCache = null;
 const totalPnlSeriesCacheStore = new Map();
+const SUMMARY_CACHE_VERSION = 'funding-v6';
+const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v5';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const rangeBreakdownCache = new Map();
 // Cache for Questrade candle lookups to avoid duplicate provider calls for identical ranges
@@ -484,7 +486,7 @@ function buildTotalPnlSeriesCacheKey(accountKey, params = {}) {
     return null;
   }
   const applyCagr = params.applyAccountCagrStartDate !== false;
-  const parts = [normalizedKey, applyCagr ? 'cagr' : 'all'];
+  const parts = [normalizedKey, applyCagr ? 'cagr' : 'all', `ver:${TOTAL_PNL_SERIES_CACHE_VERSION}`];
   const startDate = typeof params.startDate === 'string' ? params.startDate.trim() : '';
   if (startDate) {
     parts.push(`start:${startDate}`);
@@ -582,11 +584,6 @@ async function computeAggregateTotalPnlSeriesForContexts(
     MAX_AGGREGATE_FUNDING_CONCURRENCY,
     async function (context) {
       try {
-        const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, options);
-        const cached = cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
-        if (cached) {
-          return { context, series: cached };
-        }
         let activityContext = null;
         if (typeof resolveActivityContext === 'function') {
           try {
@@ -595,6 +592,16 @@ async function computeAggregateTotalPnlSeriesForContexts(
             // ignore; fall back to internal resolution
             activityContext = null;
           }
+        }
+        const usesSkippedProviderHistory =
+          activityContext &&
+          typeof activityContext === 'object' &&
+          activityContext.fingerprint === 'provider-history-skipped';
+        const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, options);
+        const cached =
+          !usesSkippedProviderHistory && cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
+        if (cached) {
+          return { context, series: cached };
         }
         const baseOptions = activityContext ? { ...options, activityContext } : { ...options };
         // If caller supplied a positions map, pass per-account positions downward to avoid refetch
@@ -638,7 +645,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
               perAccountCombinedBalances,
               baseOptions
             );
-        if (series && cacheKey) {
+        if (series && cacheKey && !usesSkippedProviderHistory) {
           setTotalPnlSeriesCacheEntry(cacheKey, series);
         }
         return { context, series };
@@ -6911,6 +6918,15 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'ignored')) {
+    const ignored = parseBooleanEnv(override.ignored, null);
+    if (ignored === true) {
+      target.ignored = true;
+    } else if (ignored === false && Object.prototype.hasOwnProperty.call(target, 'ignored')) {
+      delete target.ignored;
+    }
+  }
+
   if (typeof override.showQQQDetails === 'boolean') {
     target.showQQQDetails = override.showQQQDetails;
   }
@@ -7123,7 +7139,7 @@ function applyAccountSettingsOverrides(account, login) {
 }
 
 function isHiddenAccount(account) {
-  return !!(account && account.hidden === true);
+  return !!(account && (account.hidden === true || account.ignored === true));
 }
 
 function resolveAccountDisplayName(overrides, account, login) {
@@ -10568,8 +10584,26 @@ function resolveActivityTimestamp(activity) {
 
 const FUNDING_TYPE_REGEX = /(deposit|withdraw|transfer|journal)/i;
 
+function isInternalShareJournalActivity(activity) {
+  if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+  const type = typeof activity.type === 'string' ? activity.type.trim().toUpperCase() : '';
+  const action = typeof activity.action === 'string' ? activity.action.trim().toUpperCase() : '';
+  const description =
+    typeof activity.description === 'string' ? activity.description.trim().toUpperCase() : '';
+  return (
+    type === 'JOURNAL_SHARES' ||
+    action === 'JOURNAL_SHARES' ||
+    description === 'JOURNAL_SHARES'
+  );
+}
+
 function isFundingActivity(activity) {
   if (!activity || typeof activity !== 'object') {
+    return false;
+  }
+  if (isInternalShareJournalActivity(activity)) {
     return false;
   }
   const type = typeof activity.type === 'string' ? activity.type : '';
@@ -14927,21 +14961,33 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const currency = normalizeCurrency(activity.currency);
       const netAmount = Number(activity.netAmount);
       const quantity = Number(activity.quantity);
+      const internalShareJournal = isInternalShareJournalActivity(activity);
       const symbol = entry && entry.cashCurrencyTrade
         ? null
         : entry && entry.symbol
           ? entry.symbol
           : resolveActivitySymbol(activity) || null;
 
-      if (symbol && Number.isFinite(quantity) && Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON) {
+      if (
+        !internalShareJournal &&
+        symbol &&
+        Number.isFinite(quantity) &&
+        Math.abs(quantity) >= LEDGER_QUANTITY_EPSILON
+      ) {
         adjustHolding(holdings, symbol, quantity);
       }
 
-      if (currency && Number.isFinite(netAmount) && Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10) {
+      if (
+        !internalShareJournal &&
+        currency &&
+        Number.isFinite(netAmount) &&
+        Math.abs(netAmount) >= CASH_FLOW_EPSILON / 10
+      ) {
         adjustCash(cashByCurrency, currency, netAmount);
       }
 
       if (
+        !internalShareJournal &&
         entry &&
         entry.cashCurrencyTrade &&
         entry.cashCurrencyTrade.currency &&
@@ -19415,7 +19461,7 @@ app.get('/api/summary', async function (req, res) {
   }
 
   // Scope cache keys to the provided refreshKey (if any)
-  const cacheKeyPrefix = `rk:${effectiveRefreshKey}::`;
+  const cacheKeyPrefix = `rk:${effectiveRefreshKey}::${SUMMARY_CACHE_VERSION}::`;
   normalizedSelection.cacheKey = `${cacheKeyPrefix}${normalizedSelection.cacheKey}`;
 
   try {
@@ -19747,12 +19793,13 @@ app.get('/api/summary', async function (req, res) {
       };
     }
 
-    async function ensureAccountActivityContext(context) {
+    async function ensureAccountActivityContext(context, options = {}) {
       if (!context || !context.account || !context.account.id) {
         return null;
       }
       const accountId = context.account.id;
-      if (skipProviderActivityHistoryAccountIds.has(accountId)) {
+      const allowSkippedProviderHistory = !(options && options.allowSkippedProviderHistory === false);
+      if (allowSkippedProviderHistory && skipProviderActivityHistoryAccountIds.has(accountId)) {
         return buildSkippedActivityContext(context);
       }
       if (!accountActivityContextCache.has(accountId)) {
@@ -20287,7 +20334,9 @@ app.get('/api/summary', async function (req, res) {
         async function (context) {
           let activityContext = null;
           try {
-            activityContext = await ensureAccountActivityContext(context);
+            activityContext = await ensureAccountActivityContext(context, {
+              allowSkippedProviderHistory: false,
+            });
           } catch (activityError) {
             const activityMessage =
               activityError && activityError.message ? activityError.message : String(activityError);
@@ -20451,7 +20500,9 @@ app.get('/api/summary', async function (req, res) {
           async function (context) {
             let activityContext = null;
             try {
-              activityContext = await ensureAccountActivityContext(context);
+              activityContext = await ensureAccountActivityContext(context, {
+                allowSkippedProviderHistory: false,
+              });
             } catch (activityError) {
               // Non-fatal
             }
@@ -20764,7 +20815,9 @@ app.get('/api/summary', async function (req, res) {
             false,
             async (ctx) => {
               try {
-                return await ensureAccountActivityContext(ctx);
+                return await ensureAccountActivityContext(ctx, {
+                  allowSkippedProviderHistory: false,
+                });
               } catch (e) {
                 return null;
               }
@@ -20847,7 +20900,9 @@ app.get('/api/summary', async function (req, res) {
               false,
               async (ctx) => {
                 try {
-                  return await ensureAccountActivityContext(ctx);
+                  return await ensureAccountActivityContext(ctx, {
+                    allowSkippedProviderHistory: false,
+                  });
                 } catch (e) {
                   return null;
                 }

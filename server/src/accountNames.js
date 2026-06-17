@@ -1356,6 +1356,19 @@ function applyHiddenSetting(target, key, value) {
   }
 }
 
+function applyIgnoredSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = coerceBoolean(value);
+  if (normalized === true) {
+    container.ignored = true;
+  } else if (normalized === false) {
+    delete container.ignored;
+  }
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -1460,6 +1473,7 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'chatUrl',
   'showQQQDetails',
   'hidden',
+  'ignored',
 ]);
 
 const PORTAL_ID_KEYS = [
@@ -1725,6 +1739,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'hidden')) {
       applyHiddenSetting(settingsTarget, resolvedKey, entry.hidden);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'ignored')) {
+      applyIgnoredSetting(settingsTarget, resolvedKey, entry.ignored);
     }
     if (hasExplicitAccountGroup) {
       const normalizedKey = String(resolvedKey).trim();
