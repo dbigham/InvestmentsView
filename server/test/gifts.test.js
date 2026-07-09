@@ -11,6 +11,8 @@ const {
   deleteGift,
   listGifts,
   normalizeAmountCad,
+  parseOne4AnotherPayPalReceipts,
+  reconcileGiftReceipts,
   updateGift,
 } = require('../src/gifts');
 
@@ -117,5 +119,67 @@ test('updateGift and deleteGift rewrite the gift list', () => {
     const afterDelete = listGifts({ year: 2026 }, options);
     assert.equal(afterDelete.gifts.length, 0);
     assert.equal(afterDelete.summary.totalCad, 0);
+  });
+});
+
+test('parseOne4AnotherPayPalReceipts extracts PayPal receipt candidates', () => {
+  const receipts = parseOne4AnotherPayPalReceipts(`
+    You sent a payment of $3,000.00 CAD to One4Another International
+    Transaction ID: 7AB12345CD678901E
+    Date: Jun 21, 2026
+
+    PayPal
+  `);
+
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].date, '2026-06-21');
+  assert.equal(receipts[0].organization, 'One4Another');
+  assert.equal(receipts[0].amountCad, 3000);
+  assert.equal(receipts[0].taxClaimable, true);
+  assert.equal(receipts[0].transactionId, '7AB12345CD678901E');
+});
+
+test('reconcileGiftReceipts previews matches and imports only new receipts', () => {
+  withTempGiftFile((options) => {
+    createGift(
+      {
+        date: '2026-06-18',
+        organization: 'One4Another',
+        amountCad: 3000,
+        taxClaimable: true,
+      },
+      options
+    );
+
+    const text = `
+      PayPal
+      You sent $3,000.00 CAD to One4Another
+      Transaction ID: MATCHED123456
+      Date: June 18, 2026
+
+      PayPal
+      Payment amount: $2,500.00 CAD
+      One4Another International
+      Transaction ID: NEW123456789
+      Date: 2026-06-21
+    `;
+
+    const preview = reconcileGiftReceipts({ text, year: 2026 }, options);
+    assert.equal(preview.candidates.length, 2);
+    assert.equal(preview.matchedCount, 1);
+    assert.equal(preview.newCount, 1);
+    assert.equal(preview.importedCount, 0);
+    assert.equal(preview.gifts.length, 1);
+
+    const imported = reconcileGiftReceipts({ text, year: 2026, import: true }, options);
+    assert.equal(imported.matchedCount, 1);
+    assert.equal(imported.importedCount, 1);
+    assert.equal(imported.gifts.length, 2);
+    assert.equal(imported.summary.totalCad, 5500);
+
+    const importedAgain = reconcileGiftReceipts({ text, year: 2026, import: true }, options);
+    assert.equal(importedAgain.importedCount, 0);
+    assert.equal(importedAgain.matchedCount, 2);
+    assert.equal(importedAgain.gifts.length, 2);
   });
 });

@@ -1369,6 +1369,19 @@ function applyIgnoredSetting(target, key, value) {
   }
 }
 
+function applyInvestmentAccountSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = coerceBoolean(value);
+  if (normalized === false) {
+    container.investmentAccount = false;
+  } else if (normalized === true) {
+    delete container.investmentAccount;
+  }
+}
+
 function normalizeDateOnly(value) {
   if (value == null) {
     return null;
@@ -1474,6 +1487,7 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'showQQQDetails',
   'hidden',
   'ignored',
+  'investmentAccount',
 ]);
 
 const PORTAL_ID_KEYS = [
@@ -1742,6 +1756,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'ignored')) {
       applyIgnoredSetting(settingsTarget, resolvedKey, entry.ignored);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'investmentAccount')) {
+      applyInvestmentAccountSetting(settingsTarget, resolvedKey, entry.investmentAccount);
     }
     if (hasExplicitAccountGroup) {
       const normalizedKey = String(resolvedKey).trim();
@@ -2807,6 +2824,21 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'investmentAccount')) {
+    const normalized = coerceBoolean(updates.investmentAccount);
+    if (normalized === false) {
+      if (entry.investmentAccount !== false) {
+        entry.investmentAccount = false;
+        changed = true;
+      }
+    } else if (normalized === true) {
+      if (Object.prototype.hasOwnProperty.call(entry, 'investmentAccount')) {
+        delete entry.investmentAccount;
+        changed = true;
+      }
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(updates, 'accountGroup')) {
     const normalized = normalizeAccountGroupName(updates.accountGroup);
     if (normalized) {
@@ -3151,6 +3183,10 @@ function updateAccountMetadata(accountKey, updates) {
         if (!Number.isFinite(n)) return null;
         const rounded = Math.round(n * 100) / 100;
         return Number.isFinite(rounded) ? rounded : null;
+      })(),
+      investmentAccount: (function () {
+        const normalized = coerceBoolean(updates?.investmentAccount);
+        return normalized === null ? null : normalized;
       })(),
       accountGroup: normalizeAccountGroupName(updates?.accountGroup) || null,
       mainRetirementAccount: (function () {

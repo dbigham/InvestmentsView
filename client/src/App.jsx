@@ -31,6 +31,7 @@ import {
   getEarnings,
   getGifts,
   addGift,
+  reconcileGiftReceipts,
   updateGift,
   deleteGift,
   setOtherAssets,
@@ -40,6 +41,7 @@ import PeopleDialog from './components/PeopleDialog';
 import PnlHeatmapDialog from './components/PnlHeatmapDialog';
 import HoldingsPieChartDialog from './components/HoldingsPieChartDialog';
 import InvestEvenlyDialog from './components/InvestEvenlyDialog';
+import SellFractionalSharesDialog from './components/SellFractionalSharesDialog';
 import DeploymentAdjustmentDialog from './components/DeploymentAdjustmentDialog';
 import AnnualizedReturnDialog from './components/AnnualizedReturnDialog';
 import QqqTemperatureSection from './components/QqqTemperatureSection';
@@ -59,6 +61,7 @@ import QuestradeLoginDialog from './components/QuestradeLoginDialog';
 import QuestradeRefreshTokenDialog from './components/QuestradeRefreshTokenDialog';
 import AccountStructureDialog from './components/AccountStructureDialog';
 import GivingDialog from './components/GivingDialog';
+import { formatCopyNumber, truncateDescription } from './components/investPlanUtils';
 import {
   formatMoney,
   formatNumber,
@@ -810,6 +813,10 @@ function isAccountGroupSelection(value) {
 
 function isAggregateAccountSelection(value) {
   return value === 'all' || isAccountGroupSelection(value);
+}
+
+function isAggregateSummaryRequestKey(value) {
+  return value === 'default' || isAggregateAccountSelection(value);
 }
 
 function resolveAccountMetadataKey(account) {
@@ -3510,13 +3517,18 @@ function loadSummary(fetchKey, options = {}) {
       ? String(options.refreshKey)
       : '';
   const normalizedForce = options && options.force === true;
-  const requestKey = `${fetchKey}::${normalizedRefreshKey}::${normalizedForce ? 'force' : ''}`;
+  const includeNonInvestmentAccounts = options && options.includeNonInvestmentAccounts === true;
+  const requestKey = `${fetchKey}::${normalizedRefreshKey}::${normalizedForce ? 'force' : ''}::${includeNonInvestmentAccounts ? 'includeNonInvestment' : 'investmentsOnly'}`;
   const existing = inflightSummaryRequests.get(requestKey);
   if (existing) {
     return existing;
   }
 
-  const request = getSummary(fetchKey, { force: normalizedForce, refreshKey: normalizedRefreshKey });
+  const request = getSummary(fetchKey, {
+    force: normalizedForce,
+    refreshKey: normalizedRefreshKey,
+    includeNonInvestmentAccounts,
+  });
   inflightSummaryRequests.set(requestKey, request);
   request.finally(() => {
     if (inflightSummaryRequests.get(requestKey) === request) {
@@ -3622,7 +3634,38 @@ function needsDedicatedSnapTradeSummary(summary, accountKey) {
   return !hasPeriodStart || !Number.isFinite(netDepositsCad) || Math.abs(netDepositsCad) < 0.01;
 }
 
-function useSummaryData(accountNumber, refreshKey) {
+function needsDedicatedArchivedSummary(summary, accountKey) {
+  const account = resolveAccountFromSummary(summary, accountKey);
+  if (!account || account.archived !== true) {
+    return false;
+  }
+  const resolvedKey = resolveSummaryAccountKey(summary, accountKey);
+  const funding =
+    summary.accountFunding && typeof summary.accountFunding === 'object'
+      ? summary.accountFunding[resolvedKey] || summary.accountFunding[accountKey]
+      : null;
+  const seriesEntry =
+    summary.accountTotalPnlSeries && typeof summary.accountTotalPnlSeries === 'object'
+      ? summary.accountTotalPnlSeries[resolvedKey] || summary.accountTotalPnlSeries[accountKey]
+      : null;
+  const hasSeries = Boolean(
+    seriesEntry &&
+      typeof seriesEntry === 'object' &&
+      ((seriesEntry.cagr && Array.isArray(seriesEntry.cagr.points) && seriesEntry.cagr.points.length > 0) ||
+        (seriesEntry.all && Array.isArray(seriesEntry.all.points) && seriesEntry.all.points.length > 0))
+  );
+  const hasFundingTotalPnl = Boolean(
+    funding &&
+      typeof funding === 'object' &&
+      funding.totalPnl &&
+      typeof funding.totalPnl === 'object' &&
+      (Number.isFinite(Number(funding.totalPnl.combinedCad)) ||
+        Number.isFinite(Number(funding.totalPnl.allTimeCad)))
+  );
+  return !hasSeries || !hasFundingTotalPnl;
+}
+
+function useSummaryData(accountNumber, refreshKey, includeNonInvestmentAccounts = false) {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const cacheRef = useRef(new Map());
   const refreshTrackerRef = useRef(refreshKey);
@@ -3634,14 +3677,16 @@ function useSummaryData(accountNumber, refreshKey) {
 
     const normalizedAccount =
       typeof accountNumber === 'string' && accountNumber.trim() ? accountNumber.trim() : 'all';
+    const cacheScope = includeNonInvestmentAccounts ? 'includeNonInvestment' : 'investmentsOnly';
+    const scopedAccountKey = (key) => `${cacheScope}::${key}`;
 
-    const supersetEntry = cacheRef.current.get('all');
+    const supersetEntry = cacheRef.current.get(scopedAccountKey('all'));
     const supersetData = supersetEntry ? supersetEntry.data : null;
     const derivedFromSuperset =
       normalizedAccount !== 'default' && supersetData
         ? deriveSummaryFromSuperset(supersetData, normalizedAccount)
         : null;
-    const cachedEntry = cacheRef.current.get(normalizedAccount);
+    const cachedEntry = cacheRef.current.get(scopedAccountKey(normalizedAccount));
     const cachedData = cachedEntry ? cachedEntry.data : null;
     const isConcreteAccountSelection =
       normalizedAccount !== 'default' &&
@@ -3650,14 +3695,20 @@ function useSummaryData(accountNumber, refreshKey) {
     const derivedNeedsDedicatedFetch =
       isConcreteAccountSelection &&
       derivedFromSuperset &&
-      needsDedicatedSnapTradeSummary(derivedFromSuperset, normalizedAccount);
+      (needsDedicatedSnapTradeSummary(derivedFromSuperset, normalizedAccount) ||
+        needsDedicatedArchivedSummary(derivedFromSuperset, normalizedAccount));
     const cachedNeedsDedicatedFetch =
       isConcreteAccountSelection &&
       cachedData &&
-      needsDedicatedSnapTradeSummary(cachedData, normalizedAccount);
+      (needsDedicatedSnapTradeSummary(cachedData, normalizedAccount) ||
+        needsDedicatedArchivedSummary(cachedData, normalizedAccount));
     const preferredCachedData =
       derivedNeedsDedicatedFetch && cachedData && !cachedNeedsDedicatedFetch ? cachedData : null;
     const initialData = preferredCachedData || derivedFromSuperset || cachedData || null;
+    const initialDataNeedsDedicatedFetch =
+      Boolean(initialData) &&
+      ((initialData === derivedFromSuperset && derivedNeedsDedicatedFetch) ||
+        (initialData === cachedData && cachedNeedsDedicatedFetch));
 
     if (
       derivedFromSuperset &&
@@ -3665,9 +3716,9 @@ function useSummaryData(accountNumber, refreshKey) {
       normalizedAccount !== 'default' &&
       normalizedAccount !== 'all'
     ) {
-      const existing = cacheRef.current.get(normalizedAccount);
+      const existing = cacheRef.current.get(scopedAccountKey(normalizedAccount));
       if (!existing || existing.data !== derivedFromSuperset) {
-        cacheRef.current.set(normalizedAccount, { data: derivedFromSuperset, refreshKey });
+        cacheRef.current.set(scopedAccountKey(normalizedAccount), { data: derivedFromSuperset, refreshKey });
       }
     }
 
@@ -3682,9 +3733,12 @@ function useSummaryData(accountNumber, refreshKey) {
           return { loading: true, data: initialData, error: null };
         }
         if (prev.data === initialData && prev.loading === false && !prev.error) {
+          if (initialDataNeedsDedicatedFetch) {
+            return { loading: true, data: initialData, error: null };
+          }
           return prev;
         }
-        return { loading: false, data: initialData, error: null };
+        return { loading: initialDataNeedsDedicatedFetch, data: initialData, error: null };
       }
       if (!prev.loading || prev.data !== null || prev.error) {
         return { loading: true, data: prev.data, error: null };
@@ -3743,7 +3797,7 @@ function useSummaryData(accountNumber, refreshKey) {
     }
 
     let cancelled = false;
-    loadSummary(fetchKey, { refreshKey, force: refreshChanged || forceFetch })
+    loadSummary(fetchKey, { refreshKey, force: refreshChanged || forceFetch, includeNonInvestmentAccounts })
       .then(async (summary) => {
         if (cancelled) {
           return;
@@ -3752,7 +3806,7 @@ function useSummaryData(accountNumber, refreshKey) {
           if (!key || !data) {
             return;
           }
-          cacheRef.current.set(key, { data, refreshKey });
+          cacheRef.current.set(scopedAccountKey(key), { data, refreshKey });
         };
 
         const representsAllAccounts = summaryRepresentsAllAccounts(summary);
@@ -3777,12 +3831,14 @@ function useSummaryData(accountNumber, refreshKey) {
           if (derived) {
             if (
               isConcreteAccountSelection &&
-              needsDedicatedSnapTradeSummary(derived, normalizedAccount)
+              (needsDedicatedSnapTradeSummary(derived, normalizedAccount) ||
+                needsDedicatedArchivedSummary(derived, normalizedAccount))
             ) {
               setState({ loading: true, data: derived, error: null });
               const dedicatedSummary = await loadSummary(normalizedAccount, {
                 refreshKey,
                 force: true,
+                includeNonInvestmentAccounts,
               });
               if (cancelled) {
                 return;
@@ -3815,7 +3871,7 @@ function useSummaryData(accountNumber, refreshKey) {
     return () => {
       cancelled = true;
     };
-  }, [accountNumber, refreshKey]);
+  }, [accountNumber, refreshKey, includeNonInvestmentAccounts]);
 
   return state;
 }
@@ -5986,6 +6042,371 @@ function buildInvestEvenlyPlan({
   return plan;
 }
 
+const FRACTIONAL_SHARE_EPSILON = 1e-7;
+const FRACTIONAL_SHARE_COPY_PRECISION = 6;
+const FRACTIONAL_SHARE_BUY_THRESHOLD = 0.5;
+
+function resolveAccountLabelForFractionalPlan(account, fallback = 'Account') {
+  if (!account || typeof account !== 'object') {
+    return fallback;
+  }
+  const displayName = typeof account.displayName === 'string' ? account.displayName.trim() : '';
+  if (displayName) {
+    return displayName;
+  }
+  const name = typeof account.name === 'string' ? account.name.trim() : '';
+  if (name) {
+    return name;
+  }
+  const number =
+    account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
+  if (number) {
+    return number;
+  }
+  const id = typeof account.id === 'string' ? account.id.trim() : '';
+  return id || fallback;
+}
+
+function resolveFractionalShareAction(quantity) {
+  const numeric = Number(quantity);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  const wholeShares = Math.floor(numeric + FRACTIONAL_SHARE_EPSILON);
+  const remainder = numeric - wholeShares;
+  if (!Number.isFinite(remainder) || remainder <= FRACTIONAL_SHARE_EPSILON) {
+    return null;
+  }
+  if (remainder > FRACTIONAL_SHARE_BUY_THRESHOLD) {
+    const shares = 1 - remainder;
+    if (!Number.isFinite(shares) || shares <= FRACTIONAL_SHARE_EPSILON) {
+      return null;
+    }
+    return {
+      side: 'BUY',
+      shares,
+      targetQuantity: wholeShares + 1,
+    };
+  }
+  return {
+    side: 'SELL',
+    shares: Math.min(remainder, numeric),
+    targetQuantity: wholeShares,
+  };
+}
+
+function resolveBalanceSummaryForFractionalAccount({ account, accountKey, accountNumber, accountBalances }) {
+  if (!accountBalances || typeof accountBalances !== 'object') {
+    return null;
+  }
+
+  const candidateKeys = [
+    account?.id,
+    accountKey && !accountKey.startsWith('unknown:') && !accountKey.startsWith('number:') ? accountKey : null,
+    accountNumber,
+    accountKey && accountKey.startsWith('number:') ? accountKey.slice('number:'.length) : null,
+  ]
+    .map((value) => (value !== undefined && value !== null ? String(value).trim() : ''))
+    .filter(Boolean);
+
+  const seen = new Set();
+  for (const key of candidateKeys) {
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    if (Object.prototype.hasOwnProperty.call(accountBalances, key)) {
+      return normalizeAccountBalanceSummary(accountBalances[key]);
+    }
+  }
+
+  return null;
+}
+
+function isFractionalReserveSymbol(symbol) {
+  const symbolKey = normalizeSymbolKey(symbol);
+  if (!symbolKey) {
+    return false;
+  }
+  if (RESERVE_SYMBOLS.has(symbolKey)) {
+    return true;
+  }
+  const aliasKey = normalizeSymbolAliasKey(symbolKey);
+  return aliasKey ? RESERVE_SYMBOLS.has(aliasKey) : false;
+}
+
+function buildReserveSalesForFractionalShortfall({ accountKey, currency, reservePositions, shortfall }) {
+  if (!Number.isFinite(shortfall) || shortfall <= FRACTIONAL_SHARE_EPSILON) {
+    return {
+      reserveSales: [],
+      reserveShortfall: 0,
+    };
+  }
+
+  const sortedPositions = Array.isArray(reservePositions)
+    ? reservePositions
+        .filter(
+          (position) =>
+            position &&
+            position.currency === currency &&
+            Number.isFinite(position.openQuantity) &&
+            position.openQuantity > FRACTIONAL_SHARE_EPSILON &&
+            Number.isFinite(position.price) &&
+            position.price > 0
+        )
+        .sort((a, b) => {
+          const symbolComparison = a.symbol.localeCompare(b.symbol, undefined, { sensitivity: 'base' });
+          if (symbolComparison !== 0) {
+            return symbolComparison;
+          }
+          return b.openQuantity * b.price - a.openQuantity * a.price;
+        })
+    : [];
+
+  const reserveSales = [];
+  let remaining = shortfall;
+
+  sortedPositions.forEach((position, index) => {
+    if (remaining <= FRACTIONAL_SHARE_EPSILON) {
+      return;
+    }
+    const preciseSharesNeeded = remaining / position.price;
+    const wholeSharesNeeded = Math.ceil(Math.max(0, preciseSharesNeeded - FRACTIONAL_SHARE_EPSILON));
+    const sharesToSell =
+      position.openQuantity >= 1
+        ? Math.min(position.openQuantity, Math.max(1, wholeSharesNeeded))
+        : Math.min(position.openQuantity, preciseSharesNeeded);
+    if (!Number.isFinite(sharesToSell) || sharesToSell <= FRACTIONAL_SHARE_EPSILON) {
+      return;
+    }
+
+    const sharePrecision = Number.isInteger(sharesToSell) ? 0 : FRACTIONAL_SHARE_COPY_PRECISION;
+    const estimatedProceeds = sharesToSell * position.price;
+    reserveSales.push({
+      tradeKey: `${accountKey}:reserve:${currency}:${position.symbol}:${index}`,
+      side: 'SELL',
+      scope: 'RESERVE',
+      symbol: position.symbol,
+      description: position.description,
+      displayDescription: truncateDescription(position.description),
+      currency,
+      openQuantity: position.openQuantity,
+      shares: sharesToSell,
+      sharesToSell,
+      sharesCopy: formatCopyNumber(sharesToSell, sharePrecision, {
+        trimTrailingZeros: true,
+      }),
+      sharePrecision,
+      price: position.price,
+      estimatedAmount: estimatedProceeds,
+      estimatedProceeds,
+    });
+    remaining -= estimatedProceeds;
+  });
+
+  return {
+    reserveSales,
+    reserveShortfall: Math.max(0, remaining),
+  };
+}
+
+function buildSellFractionalSharesPlan({ positions, accountsById, accountsByNumber, accountBalances }) {
+  if (!Array.isArray(positions) || positions.length === 0) {
+    return null;
+  }
+
+  const accountBuckets = new Map();
+
+  positions.forEach((position, index) => {
+    if (!position || typeof position !== 'object') {
+      return;
+    }
+    const symbol = typeof position.symbol === 'string' ? position.symbol.trim().toUpperCase() : '';
+    if (!symbol) {
+      return;
+    }
+
+    const account =
+      resolveAccountForPosition(position, accountsById) ||
+      (position.accountId && accountsById?.get(String(position.accountId))) ||
+      (position.accountNumber && accountsByNumber?.get(String(position.accountNumber))) ||
+      null;
+    const rawAccountId = account?.id || position.accountId || null;
+    const rawAccountNumber = account?.number || position.accountNumber || null;
+    const accountKey =
+      rawAccountId !== null && rawAccountId !== undefined
+        ? String(rawAccountId)
+        : rawAccountNumber !== null && rawAccountNumber !== undefined
+        ? `number:${String(rawAccountNumber)}`
+        : `unknown:${index}`;
+    const accountNumber =
+      rawAccountNumber !== null && rawAccountNumber !== undefined ? String(rawAccountNumber).trim() : '';
+    const accountLabel =
+      resolveAccountLabelForFractionalPlan(account, position.accountDisplayName || accountNumber || 'Account');
+    const accountUrl = buildAccountSummaryUrl(account);
+
+    if (!accountBuckets.has(accountKey)) {
+      accountBuckets.set(accountKey, {
+        accountKey,
+        account,
+        accountLabel,
+        accountNumber: accountNumber || null,
+        accountUrl: accountUrl || null,
+        reservePositions: [],
+        sells: [],
+        buys: [],
+      });
+    }
+
+    const bucket = accountBuckets.get(accountKey);
+    const currency =
+      typeof position.currency === 'string' && position.currency.trim()
+        ? position.currency.trim().toUpperCase()
+        : 'CAD';
+    const price = coercePositiveNumber(position.currentPrice);
+
+    const openQuantity = Number(position.openQuantity);
+    if (
+      isFractionalReserveSymbol(symbol) &&
+      Number.isFinite(openQuantity) &&
+      openQuantity > FRACTIONAL_SHARE_EPSILON
+    ) {
+      bucket.reservePositions.push({
+        symbol,
+        description: typeof position.description === 'string' ? position.description : null,
+        currency,
+        openQuantity,
+        price: price ?? null,
+      });
+    }
+
+    const fractionalAction = resolveFractionalShareAction(position.openQuantity);
+    if (!fractionalAction) {
+      return;
+    }
+
+    const estimatedAmount = price !== null ? fractionalAction.shares * price : null;
+    const sharesCopy = formatCopyNumber(fractionalAction.shares, FRACTIONAL_SHARE_COPY_PRECISION, {
+      trimTrailingZeros: true,
+    });
+
+    const trade = {
+      tradeKey: `${accountKey}:${symbol}:${index}`,
+      side: fractionalAction.side,
+      scope: 'FRACTIONAL',
+      symbol,
+      description: typeof position.description === 'string' ? position.description : null,
+      displayDescription: truncateDescription(position.description),
+      currency,
+      openQuantity,
+      targetQuantity: fractionalAction.targetQuantity,
+      shares: fractionalAction.shares,
+      sharesCopy,
+      sharePrecision: FRACTIONAL_SHARE_COPY_PRECISION,
+      price: price ?? null,
+      estimatedAmount: Number.isFinite(estimatedAmount) ? estimatedAmount : null,
+    };
+
+    if (fractionalAction.side === 'BUY') {
+      bucket.buys.push({
+        ...trade,
+        sharesToBuy: fractionalAction.shares,
+        estimatedCost: Number.isFinite(estimatedAmount) ? estimatedAmount : null,
+      });
+    } else {
+      bucket.sells.push({
+        ...trade,
+        sharesToSell: fractionalAction.shares,
+        estimatedProceeds: Number.isFinite(estimatedAmount) ? estimatedAmount : null,
+      });
+    }
+  });
+
+  const accounts = Array.from(accountBuckets.values())
+    .map((account) => {
+      const sortTrades = (trades) =>
+        trades.sort((a, b) => a.symbol.localeCompare(b.symbol, undefined, { sensitivity: 'base' }));
+      const sells = sortTrades(account.sells);
+      const buys = sortTrades(account.buys);
+      const balanceSummary = resolveBalanceSummaryForFractionalAccount({
+        account: account.account,
+        accountKey: account.accountKey,
+        accountNumber: account.accountNumber,
+        accountBalances,
+      });
+      const currencies = Array.from(new Set(buys.map((trade) => trade.currency).filter(Boolean))).sort();
+      const cashCoverage = currencies
+        .map((currency) => {
+          const buyCost = buys.reduce(
+            (sum, trade) => sum + (trade.currency === currency && Number.isFinite(trade.estimatedCost) ? trade.estimatedCost : 0),
+            0
+          );
+          if (!Number.isFinite(buyCost) || buyCost <= FRACTIONAL_SHARE_EPSILON) {
+            return null;
+          }
+          const sellProceeds = sells.reduce(
+            (sum, trade) =>
+              sum + (trade.currency === currency && Number.isFinite(trade.estimatedProceeds) ? trade.estimatedProceeds : 0),
+            0
+          );
+          const cash = balanceSummary ? resolveCashForCurrency(balanceSummary, currency) : 0;
+          const available = Math.max(0, cash) + sellProceeds;
+          const shortfall = Math.max(0, buyCost - available);
+          const reservePlan = buildReserveSalesForFractionalShortfall({
+            accountKey: account.accountKey,
+            currency,
+            reservePositions: account.reservePositions,
+            shortfall,
+          });
+          return {
+            currency,
+            cash: Number.isFinite(cash) ? cash : 0,
+            sellProceeds,
+            buyCost,
+            available,
+            shortfall,
+            reserveSales: reservePlan.reserveSales,
+            reserveShortfall: reservePlan.reserveShortfall,
+          };
+        })
+        .filter(Boolean);
+
+      return {
+        ...account,
+        sells,
+        buys,
+        cashCoverage,
+      };
+    })
+    .filter((account) => account.sells.length > 0 || account.buys.length > 0)
+    .sort((a, b) => a.accountLabel.localeCompare(b.accountLabel, undefined, { sensitivity: 'base' }));
+
+  if (!accounts.length) {
+    return null;
+  }
+
+  const sellCount = accounts.reduce((sum, account) => sum + account.sells.length, 0);
+  const buyCount = accounts.reduce((sum, account) => sum + account.buys.length, 0);
+  const reserveTradeCount = accounts.reduce(
+    (sum, account) =>
+      sum +
+      account.cashCoverage.reduce(
+        (coverageSum, coverage) => coverageSum + (Array.isArray(coverage.reserveSales) ? coverage.reserveSales.length : 0),
+        0
+      ),
+    0
+  );
+
+  return {
+    accounts,
+    sellCount,
+    buyCount,
+    reserveTradeCount,
+    tradeCount: sellCount + buyCount + reserveTradeCount,
+    fractionalTradeCount: sellCount + buyCount,
+  };
+}
+
 function buildDeploymentAdjustmentPlan({
   positions,
   balances,
@@ -7157,6 +7578,8 @@ export default function App() {
     usePersistentState('includeUnbilledEarningsInTotalEquity', true);
   const [includeOtherAssetsInTotalEquityPreference, setIncludeOtherAssetsInTotalEquityPreference] =
     usePersistentState('includeOtherAssetsInTotalEquity', true);
+  const [includeNonInvestmentAccountsPreference, setIncludeNonInvestmentAccountsPreference] =
+    usePersistentState('includeNonInvestmentAccountsInTotals', false);
   const [ordersFilter, setOrdersFilter] = useState('');
   const [dividendTimeframe, setDividendTimeframe] = useState(DEFAULT_DIVIDEND_TIMEFRAME);
   const [accountPlanningContexts, setAccountPlanningContexts] = usePersistentState(
@@ -7166,6 +7589,7 @@ export default function App() {
   const [showPeople, setShowPeople] = useState(false);
   const [investEvenlyPlan, setInvestEvenlyPlan] = useState(null);
   const [investEvenlyPlanInputs, setInvestEvenlyPlanInputs] = useState(null);
+  const [sellFractionalSharesPlan, setSellFractionalSharesPlan] = useState(null);
   const [deploymentPlan, setDeploymentPlan] = useState(null);
   const [deploymentPlanInputs, setDeploymentPlanInputs] = useState(null);
   const [targetProportionEditor, setTargetProportionEditor] = useState(null);
@@ -7582,7 +8006,13 @@ export default function App() {
   const [totalPnlSelectionRange, setTotalPnlSelectionRange] = useState(null);
   const lastAccountForRange = useRef(null);
   const lastCagrStartDate = useRef(null);
-  const { loading, data, error } = useSummaryData(activeAccountId, refreshKey);
+  const includeNonInvestmentAccountsInTotals =
+    isAggregateSummaryRequestKey(activeAccountId) && includeNonInvestmentAccountsPreference === true;
+  const { loading, data, error } = useSummaryData(
+    activeAccountId,
+    refreshKey,
+    includeNonInvestmentAccountsInTotals
+  );
   const demoModeFromServer = Boolean(data?.demoMode);
   const demoModeSource =
     typeof data?.demoModeSource === 'string' ? data.demoModeSource.trim() : null;
@@ -10128,6 +10558,8 @@ export default function App() {
       handleEstimateFutureCagr();
     } else if (k === 'invest-evenly') {
       handlePlanInvestEvenly();
+    } else if (k === 'sell-fractional-shares') {
+      handleSellFractionalShares();
     } else if (k === 'mark-rebalanced') {
       if (markRebalanceContext) {
         handleMarkAccountAsRebalanced();
@@ -13270,6 +13702,9 @@ export default function App() {
   const handleToggleOtherAssetsInTotalEquity = useCallback(() => {
     setIncludeOtherAssetsInTotalEquityPreference((value) => !value);
   }, [setIncludeOtherAssetsInTotalEquityPreference]);
+  const handleToggleNonInvestmentAccountsInTotalEquity = useCallback(() => {
+    setIncludeNonInvestmentAccountsPreference((value) => !value);
+  }, [setIncludeNonInvestmentAccountsPreference]);
   const handleEditOtherAsset = useCallback(
     async (assetKey) => {
       if (!showingAllAccounts) {
@@ -14179,6 +14614,11 @@ export default function App() {
       applyAccountCagrStartDate: applyCagr,
       refreshKey,
     };
+    if (isAggregateSummaryRequestKey(accountKey) && includeNonInvestmentAccountsPreference === true) {
+      normalizedOptions.includeNonInvestmentAccounts = true;
+    } else {
+      delete normalizedOptions.includeNonInvestmentAccounts;
+    }
     if (!symbol) {
       delete normalizedOptions.symbolGroupKey;
       delete normalizedOptions.symbols;
@@ -14228,7 +14668,7 @@ export default function App() {
         symbolGroupKey,
       });
     }
-  }, [refreshKey]);
+  }, [refreshKey, includeNonInvestmentAccountsPreference]);
 
   const doesSeriesMatchFocus = useCallback(
     (state) => {
@@ -15233,6 +15673,24 @@ export default function App() {
     enhancePlanWithAccountContext,
     selectedAccountTargetProportions,
   ]);
+
+  const handleSellFractionalShares = useCallback(() => {
+    const plan = buildSellFractionalSharesPlan({
+      positions: rawPositions,
+      accountsById,
+      accountsByNumber,
+      accountBalances,
+    });
+
+    if (!plan) {
+      if (typeof window !== 'undefined') {
+        window.alert('No fractional share positions were found.');
+      }
+      return;
+    }
+
+    setSellFractionalSharesPlan(plan);
+  }, [rawPositions, accountsById, accountsByNumber, accountBalances]);
 
   const handleOpenDeploymentAdjustment = useCallback(async () => {
     if (!orderedPositions.length) {
@@ -16371,6 +16829,17 @@ export default function App() {
     [givingYear]
   );
 
+  const handleReconcileGiftReceipts = useCallback(
+    async (payload) => {
+      const result = await reconcileGiftReceipts({ ...payload, year: givingYear });
+      if (payload?.import === true) {
+        setGivingState({ status: 'ready', data: result, error: null });
+      }
+      return result;
+    },
+    [givingYear]
+  );
+
   const handleUpdateGift = useCallback(
     async (giftId, payload) => {
       const result = await updateGift(giftId, { ...payload, year: givingYear });
@@ -16616,6 +17085,22 @@ export default function App() {
   const handleCloseInvestEvenlyDialog = useCallback(() => {
     setInvestEvenlyPlan(null);
     setInvestEvenlyPlanInputs(null);
+  }, []);
+
+  const handleCloseSellFractionalSharesDialog = useCallback(() => {
+    setSellFractionalSharesPlan(null);
+  }, []);
+
+  const handleOpenSellFractionalSharesAccount = useCallback((accountEntry) => {
+    const account = accountEntry?.account || null;
+    if (account) {
+      openAccountSummary(account);
+      return;
+    }
+    const accountUrl = accountEntry?.accountUrl;
+    if (accountUrl && typeof window !== 'undefined' && typeof window.open === 'function') {
+      window.open(accountUrl, '_blank', 'noopener,noreferrer');
+    }
   }, []);
 
   let showInvestmentModelDialog = Boolean(activeInvestmentModelDialog);
@@ -17666,6 +18151,7 @@ export default function App() {
               items.push({ key: 'copy-summary', label: 'Copy account summary' });
               items.push({ key: 'estimate-cagr', label: 'Estimate future CAGR' });
               items.push({ key: 'invest-evenly', label: 'Invest cash evenly' });
+              items.push({ key: 'sell-fractional-shares', label: 'Sell fractional shares' });
               if (markRebalanceContext) {
                 items.push({ key: 'mark-rebalanced', label: 'Mark as rebalanced' });
               }
@@ -18054,10 +18540,13 @@ export default function App() {
             showUnbilledInTotalEquity={includeUnbilledInTotalEquity}
             otherAssetsSummary={otherAssetsSummary}
             showOtherAssetsInTotalEquity={includeOtherAssetsInTotalEquity}
+            showNonInvestmentAccountsInTotalEquity={includeNonInvestmentAccountsInTotals}
             canToggleUnbilledInTotalEquity={canToggleUnbilledInTotalEquity}
             canToggleOtherAssetsInTotalEquity={canToggleOtherAssetsInTotalEquity}
+            canToggleNonInvestmentAccountsInTotalEquity={showingAggregateAccounts}
             onToggleUnbilledInTotalEquity={handleToggleUnbilledInTotalEquity}
             onToggleOtherAssetsInTotalEquity={handleToggleOtherAssetsInTotalEquity}
+            onToggleNonInvestmentAccountsInTotalEquity={handleToggleNonInvestmentAccountsInTotalEquity}
             onEditOtherAsset={handleEditOtherAsset}
             onRefreshEarnings={handleRefreshEarnings}
             givingSummary={showingAllAccounts ? givingSummary : null}
@@ -18070,6 +18559,7 @@ export default function App() {
             onShowTotalPnl={handleShowTotalPnlDialog}
             onShowAnnualizedReturn={handleShowAnnualizedReturnDetails}
             isRefreshing={isRefreshing}
+            totalEquityLoading={loading && Boolean(data)}
             isAutoRefreshing={autoRefreshEnabled}
             onCopySummary={handleCopySummary}
             onEstimateFutureCagr={handleEstimateFutureCagr}
@@ -18077,6 +18567,7 @@ export default function App() {
             onShowHoldingsPieChart={orderedPositions.length ? handleShowHoldingsPieChart : null}
             onMarkRebalanced={markRebalanceContext ? handleMarkAccountAsRebalanced : null}
             onPlanInvestEvenly={handlePlanInvestEvenly}
+            onSellFractionalShares={handleSellFractionalShares}
             onExplainMovement={focusedSymbol ? handleExplainMovementForSymbol : null}
             onSetPlanningContext={isAggregateSelection ? null : handleSetPlanningContext}
             onEditAccountDetails={canEditAccountDetails ? handleOpenAccountMetadata : null}
@@ -18495,6 +18986,7 @@ export default function App() {
           onClose={handleCloseGiving}
           onRetry={handleRetryGifts}
           onAddGift={handleAddGift}
+          onReconcileReceipts={handleReconcileGiftReceipts}
           onUpdateGift={handleUpdateGift}
           onDeleteGift={handleDeleteGift}
         />
@@ -18694,6 +19186,14 @@ export default function App() {
           onClose={handleCloseInvestEvenlyDialog}
           copyToClipboard={copyTextToClipboard}
           onAdjustPlan={handleAdjustInvestEvenlyPlan}
+        />
+      )}
+      {sellFractionalSharesPlan && (
+        <SellFractionalSharesDialog
+          plan={sellFractionalSharesPlan}
+          onClose={handleCloseSellFractionalSharesDialog}
+          copyToClipboard={copyTextToClipboard}
+          onOpenAccount={handleOpenSellFractionalSharesAccount}
         />
       )}
       {deploymentPlan && (

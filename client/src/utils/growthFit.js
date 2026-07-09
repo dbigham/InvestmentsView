@@ -8,7 +8,7 @@ const PRICE_GROWTH_FIT_TRIM_STAGES = [
   { high: 0.65, low: 1.6 },
 ];
 
-export function buildExponentialGrowthFit(series) {
+export function buildExponentialGrowthFit(series, options = {}) {
   if (!Array.isArray(series) || series.length < 2) {
     return null;
   }
@@ -93,7 +93,8 @@ export function buildExponentialGrowthFit(series) {
   if (!fittedLine) {
     return null;
   }
-  for (const trimStage of PRICE_GROWTH_FIT_TRIM_STAGES) {
+  const trimStages = Array.isArray(options?.trimStages) ? options.trimStages : PRICE_GROWTH_FIT_TRIM_STAGES;
+  for (const trimStage of trimStages) {
     const activePoints = weightedPoints.filter((point) => point.active);
     const residualEntries = activePoints.map((point) => ({
       value: Math.abs(point.logValue - (fittedLine.intercept + fittedLine.slope * point.years)),

@@ -47,6 +47,7 @@ export default function AccountMetadataDialog({
       portalAccountId: normalizeString(initial?.portalAccountId || ''),
       chatURL: normalizeString(initial?.chatURL || ''),
       cagrStartDate: normalizeString(initial?.cagrStartDate || ''),
+      investmentAccount: initial?.investmentAccount === false ? false : true,
       rebalancePeriod:
         initial?.rebalancePeriod !== undefined && initial?.rebalancePeriod !== null
           ? String(initial.rebalancePeriod)
@@ -414,6 +415,22 @@ export default function AccountMetadataDialog({
                 </div>
 
                 <div className="account-metadata-dialog__field">
+                  <label className="account-metadata-dialog__toggle" htmlFor={`${fieldBaseId}-investment-account`}>
+                    <input
+                      id={`${fieldBaseId}-investment-account`}
+                      type="checkbox"
+                      checked={draft.investmentAccount}
+                      onChange={(e) => handleChange('investmentAccount', e.target.checked)}
+                      disabled={busy}
+                    />
+                    <span>Investment account</span>
+                  </label>
+                  <p className="account-metadata-dialog__hint">
+                    Included in all-account investment totals by default.
+                  </p>
+                </div>
+
+                <div className="account-metadata-dialog__field">
                   <label htmlFor={`${fieldBaseId}-rebalance`}>Rebalance period (days)</label>
                   <input
                     id={`${fieldBaseId}-rebalance`}
@@ -771,6 +788,7 @@ AccountMetadataDialog.propTypes = {
     portalAccountId: PropTypes.string,
     chatURL: PropTypes.string,
     cagrStartDate: PropTypes.string,
+    investmentAccount: PropTypes.bool,
     rebalancePeriod: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     ignoreSittingCash: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     mainRetirementAccount: PropTypes.bool,

@@ -293,6 +293,32 @@ function demoMiddleware(req, res, next) {
       message: 'Demo mode: gift not persisted.',
     });
   }
+  if (pathName === '/gifts/reconcile' && method === 'POST') {
+    const shouldImport = req.body?.import === true;
+    const date = new Date().toISOString().slice(0, 10);
+    const payload = getGiftsPayload(req.body?.year || date.slice(0, 4));
+    return respondDemo(res, {
+      ...payload,
+      source: 'one4another-paypal',
+      candidates: [
+        {
+          source: 'one4another-paypal',
+          transactionId: 'DEMO-PAYPAL',
+          date,
+          organization: 'One4Another',
+          amountCad: 3000,
+          taxClaimable: true,
+          note: 'Imported from One4Another PayPal receipt DEMO-PAYPAL',
+          status: shouldImport ? 'imported' : 'new',
+          giftId: shouldImport ? 'demo-gift-imported' : undefined,
+        },
+      ],
+      importedCount: shouldImport ? 1 : 0,
+      matchedCount: 0,
+      newCount: shouldImport ? 0 : 1,
+      message: 'Demo mode: receipts not persisted.',
+    });
+  }
   if (segments[0] === 'gifts' && segments[1] && (method === 'PUT' || method === 'DELETE')) {
     return respondDemo(res, {
       ...getGiftsPayload(req.query.year),

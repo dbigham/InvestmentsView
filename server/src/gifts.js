@@ -5,6 +5,34 @@ const { resolveDataPath } = require('./dataPaths');
 
 const DEFAULT_GIFTS_FILE = 'gifts.json';
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MONTH_INDEX_BY_NAME = new Map(
+  [
+    ['jan', 0],
+    ['january', 0],
+    ['feb', 1],
+    ['february', 1],
+    ['mar', 2],
+    ['march', 2],
+    ['apr', 3],
+    ['april', 3],
+    ['may', 4],
+    ['jun', 5],
+    ['june', 5],
+    ['jul', 6],
+    ['july', 6],
+    ['aug', 7],
+    ['august', 7],
+    ['sep', 8],
+    ['sept', 8],
+    ['september', 8],
+    ['oct', 9],
+    ['october', 9],
+    ['nov', 10],
+    ['november', 10],
+    ['dec', 11],
+    ['december', 11],
+  ]
+);
 
 function resolveGiftsFilePath(options = {}) {
   if (options.filePath) {
@@ -111,6 +139,55 @@ function normalizeNote(value) {
     return '';
   }
   return String(value).trim();
+}
+
+function toDateKey(year, monthIndex, day) {
+  const timestamp = Date.UTC(year, monthIndex, day);
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+  const date = new Date(timestamp);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== monthIndex ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeReceiptDate(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return null;
+  }
+
+  const isoMatch = /\b(20\d{2}|19\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/.exec(text);
+  if (isoMatch) {
+    return toDateKey(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+  }
+
+  const monthFirstMatch = /\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(20\d{2}|19\d{2})\b/.exec(text);
+  if (monthFirstMatch) {
+    const monthIndex = MONTH_INDEX_BY_NAME.get(monthFirstMatch[1].toLowerCase());
+    if (monthIndex !== undefined) {
+      return toDateKey(Number(monthFirstMatch[3]), monthIndex, Number(monthFirstMatch[2]));
+    }
+  }
+
+  const dayFirstMatch = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?[,]?\s+(20\d{2}|19\d{2})\b/.exec(text);
+  if (dayFirstMatch) {
+    const monthIndex = MONTH_INDEX_BY_NAME.get(dayFirstMatch[2].toLowerCase());
+    if (monthIndex !== undefined) {
+      return toDateKey(Number(dayFirstMatch[3]), monthIndex, Number(dayFirstMatch[1]));
+    }
+  }
+
+  return null;
 }
 
 function readGiftContainer(options = {}) {
@@ -225,6 +302,146 @@ function compareGifts(a, b) {
     return byOrganization;
   }
   return String(a.id).localeCompare(String(b.id));
+}
+
+function normalizeReceiptText(value) {
+  return typeof value === 'string' ? value.replace(/\r\n?/g, '\n') : '';
+}
+
+function extractReceiptTransactionId(text) {
+  const match =
+    /\b(?:Transaction|Receipt|Confirmation)\s*(?:ID|Number|#)\s*[:#]?\s*([A-Z0-9-]{8,})\b/i.exec(text);
+  return match ? match[1].trim() : null;
+}
+
+function extractReceiptAmount(text) {
+  const amountPatterns = [
+    /\b(?:total|amount|payment|donation|you\s+sent|sent)\b[^\n$]{0,80}(?:CA\$|C\$|\$)\s*([0-9][0-9,]*(?:\.\d{2})?)\s*(?:CAD)?/gi,
+    /(?:CA\$|C\$|\$)\s*([0-9][0-9,]*(?:\.\d{2})?)\s*CAD\b/gi,
+    /\bCAD\s*(?:CA\$|C\$|\$)?\s*([0-9][0-9,]*(?:\.\d{2})?)\b/gi,
+  ];
+
+  for (const pattern of amountPatterns) {
+    let match = pattern.exec(text);
+    while (match) {
+      const amountCad = normalizeAmountCad(match[1]);
+      if (Number.isFinite(amountCad)) {
+        return amountCad;
+      }
+      match = pattern.exec(text);
+    }
+  }
+
+  return null;
+}
+
+function extractReceiptDate(text) {
+  const datePatterns = [
+    /\b(?:date|transaction\s+date|payment\s+date|sent\s+on)\s*:?\s*([^\n]{6,40})/gi,
+    /\b(?:20\d{2}|19\d{2})[-/]\d{1,2}[-/]\d{1,2}\b/g,
+    /\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+(?:20\d{2}|19\d{2})\b/g,
+    /\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?[,]?\s+(?:20\d{2}|19\d{2})\b/g,
+  ];
+
+  for (const pattern of datePatterns) {
+    let match = pattern.exec(text);
+    while (match) {
+      const date = normalizeReceiptDate(match[1] || match[0]);
+      if (date) {
+        return date;
+      }
+      match = pattern.exec(text);
+    }
+  }
+
+  return null;
+}
+
+function buildReceiptChunks(text) {
+  const normalized = normalizeReceiptText(text);
+  if (!normalized.trim()) {
+    return [];
+  }
+  const lines = normalized.split('\n');
+  const paypalIndexes = [];
+  lines.forEach((line, index) => {
+    if (/^\s*paypal\s*$/i.test(line)) {
+      paypalIndexes.push(index);
+    }
+  });
+  if (paypalIndexes.length > 1) {
+    return paypalIndexes
+      .map((index, offset) => {
+        const end = offset + 1 < paypalIndexes.length ? paypalIndexes[offset + 1] : lines.length;
+        return lines.slice(index, end).join('\n');
+      })
+      .filter((chunk) => /one\s*4\s*another|one4another/i.test(chunk));
+  }
+
+  const indexes = [];
+  lines.forEach((line, index) => {
+    if (/one\s*4\s*another|one4another/i.test(line)) {
+      indexes.push(index);
+    }
+  });
+  if (!indexes.length && /one\s*4\s*another|one4another/i.test(normalized)) {
+    return [normalized];
+  }
+
+  const chunks = [];
+  indexes.forEach((index) => {
+    const start = Math.max(0, index - 18);
+    const end = Math.min(lines.length, index + 24);
+    chunks.push(lines.slice(start, end).join('\n'));
+  });
+  return chunks.length ? chunks : [normalized];
+}
+
+function parseOne4AnotherPayPalReceipts(text) {
+  const chunks = buildReceiptChunks(text);
+  const seen = new Set();
+  const receipts = [];
+
+  chunks.forEach((chunk) => {
+    if (!/paypal/i.test(chunk) || !/one\s*4\s*another|one4another/i.test(chunk)) {
+      return;
+    }
+    const date = extractReceiptDate(chunk);
+    const amountCad = extractReceiptAmount(chunk);
+    if (!date || !Number.isFinite(amountCad)) {
+      return;
+    }
+    const transactionId = extractReceiptTransactionId(chunk);
+    const key = transactionId || `${date}:${amountCad}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    receipts.push({
+      source: 'one4another-paypal',
+      transactionId,
+      date,
+      organization: 'One4Another',
+      amountCad,
+      taxClaimable: true,
+      note: transactionId
+        ? `Imported from One4Another PayPal receipt ${transactionId}`
+        : 'Imported from One4Another PayPal receipt',
+    });
+  });
+
+  return receipts.sort(compareGifts);
+}
+
+function findMatchingGift(gifts, receipt) {
+  return gifts.find(
+    (gift) =>
+      gift &&
+      gift.date === receipt.date &&
+      typeof gift.organization === 'string' &&
+      gift.organization.trim().toLowerCase() === receipt.organization.toLowerCase() &&
+      Math.abs(Number(gift.amountCad) - receipt.amountCad) < 0.01
+  ) || null;
 }
 
 function buildGiftSummary(gifts, year) {
@@ -375,10 +592,94 @@ function deleteGift(id, options = {}) {
   return { gift, gifts, filePath: result.filePath, updatedAt: result.updatedAt };
 }
 
+function reconcileGiftReceipts(input = {}, options = {}) {
+  const source = typeof input.source === 'string' && input.source.trim() ? input.source.trim() : 'one4another-paypal';
+  if (source !== 'one4another-paypal') {
+    const error = new Error('Only One4Another PayPal receipt imports are supported right now');
+    error.code = 'INVALID_RECEIPT_SOURCE';
+    throw error;
+  }
+
+  const text = normalizeReceiptText(input.text);
+  if (!text.trim()) {
+    const error = new Error('Paste at least one receipt email');
+    error.code = 'INVALID_RECEIPT_TEXT';
+    throw error;
+  }
+
+  const shouldImport = input.import === true;
+  const container = readGiftContainer(options);
+  const receipts = parseOne4AnotherPayPalReceipts(text);
+  let gifts = container.gifts.slice();
+  const now = new Date().toISOString();
+
+  const candidates = receipts.map((receipt) => {
+    const existingGift = findMatchingGift(gifts, receipt);
+    if (existingGift) {
+      return {
+        ...receipt,
+        status: 'matched',
+        existingGiftId: existingGift.id,
+      };
+    }
+    if (!shouldImport) {
+      return {
+        ...receipt,
+        status: 'new',
+      };
+    }
+    const gift = {
+      id: crypto.randomUUID(),
+      date: receipt.date,
+      organization: receipt.organization,
+      amountCad: receipt.amountCad,
+      taxClaimable: receipt.taxClaimable,
+      note: receipt.note,
+      createdAt: now,
+      updatedAt: now,
+    };
+    gifts = gifts.concat(gift).sort(compareGifts);
+    return {
+      ...receipt,
+      status: 'imported',
+      giftId: gift.id,
+    };
+  });
+
+  let updatedAt = container.updatedAt || null;
+  if (shouldImport && candidates.some((candidate) => candidate.status === 'imported')) {
+    const result = writeGiftContainer(gifts, options);
+    updatedAt = result.updatedAt;
+  }
+
+  const year = input.year === undefined || input.year === null || input.year === ''
+    ? new Date().getFullYear()
+    : normalizeYear(input.year);
+  if (input.year !== undefined && input.year !== null && input.year !== '' && !year) {
+    const error = new Error('Year must be between 1900 and 3000');
+    error.code = 'INVALID_YEAR';
+    throw error;
+  }
+
+  return {
+    source,
+    candidates,
+    importedCount: candidates.filter((candidate) => candidate.status === 'imported').length,
+    matchedCount: candidates.filter((candidate) => candidate.status === 'matched').length,
+    newCount: candidates.filter((candidate) => candidate.status === 'new').length,
+    gifts: year ? gifts.filter((gift) => gift.date.startsWith(`${year}-`)).sort(compareGifts) : gifts.sort(compareGifts),
+    summary: buildGiftSummary(gifts, year || new Date().getFullYear()),
+    filePath: container.filePath,
+    updatedAt,
+  };
+}
+
 module.exports = {
   buildGiftSummary,
   createGift,
   deleteGift,
+  parseOne4AnotherPayPalReceipts,
+  reconcileGiftReceipts,
   listGifts,
   normalizeAmountCad,
   normalizeDateOnly,

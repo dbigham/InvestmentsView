@@ -1,24 +1,64 @@
 {
   "gifts": [
     {
+      "id": "debe0f01-21a1-4d43-a8dd-dba6cd95b09b",
+      "date": "2026-07-06",
+      "organization": "WMB",
+      "amountCad": 8000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-07-09T12:08:31.194Z",
+      "updatedAt": "2026-07-09T12:08:31.194Z"
+    },
+    {
+      "id": "427794e5-e959-4c1a-ba15-664e593608b8",
+      "date": "2026-06-28",
+      "organization": "WMB",
+      "amountCad": 1700,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-07-09T12:10:16.175Z",
+      "updatedAt": "2026-07-09T12:10:16.175Z"
+    },
+    {
       "id": "15b4329d-7d33-4152-9b59-1a90668268cb",
-      "date": "2026-06-15",
+      "date": "2026-06-25",
       "organization": "Against Malaria Foundation",
       "amountCad": 20000,
       "taxClaimable": true,
-      "note": "TODO",
+      "note": "",
       "createdAt": "2026-06-15T23:18:14.967Z",
-      "updatedAt": "2026-06-15T23:18:14.967Z"
+      "updatedAt": "2026-06-25T11:55:14.675Z"
     },
     {
       "id": "c17dce4f-9172-4a5e-beaa-f646f8949936",
-      "date": "2026-06-15",
+      "date": "2026-06-24",
       "organization": "MCC",
       "amountCad": 10000,
       "taxClaimable": true,
-      "note": "TODO",
+      "note": "",
       "createdAt": "2026-06-15T23:17:17.560Z",
-      "updatedAt": "2026-06-15T23:17:17.560Z"
+      "updatedAt": "2026-06-25T11:55:30.667Z"
+    },
+    {
+      "id": "b0e0e795-7b65-48de-9054-afcb42e88948",
+      "date": "2026-06-21",
+      "organization": "One4Another",
+      "amountCad": 3000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-21T19:06:13.567Z",
+      "updatedAt": "2026-06-21T19:06:13.567Z"
+    },
+    {
+      "id": "4c80417d-3fe5-4ee9-9578-32a0994f3d63",
+      "date": "2026-06-18",
+      "organization": "One4Another",
+      "amountCad": 3000,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-06-21T18:58:59.000Z",
+      "updatedAt": "2026-06-21T18:58:59.000Z"
     },
     {
       "id": "3316fb8b-5bb2-4a1b-b598-2241e52d5738",
@@ -29,16 +69,6 @@
       "note": "",
       "createdAt": "2026-06-15T12:36:56.296Z",
       "updatedAt": "2026-06-15T12:36:56.296Z"
-    },
-    {
-      "id": "50a531c6-725a-4784-b03d-9dcf8c067c3b",
-      "date": "2026-06-15",
-      "organization": "WMB",
-      "amountCad": 20000,
-      "taxClaimable": true,
-      "note": "TODO",
-      "createdAt": "2026-06-15T23:17:52.689Z",
-      "updatedAt": "2026-06-15T23:17:52.689Z"
     },
     {
       "id": "08bc5152-748c-4674-81c5-251c40212c87",
@@ -261,5 +291,5 @@
       "updatedAt": "2026-06-15T12:17:29.027Z"
     }
   ],
-  "updatedAt": "2026-06-15T23:18:14.967Z"
+  "updatedAt": "2026-07-09T12:10:16.176Z"
 }

@@ -97,6 +97,7 @@ export default function GivingDialog({
   onClose,
   onRetry,
   onAddGift,
+  onReconcileReceipts,
   onUpdateGift,
   onDeleteGift,
 }) {
@@ -107,6 +108,10 @@ export default function GivingDialog({
   const [editingGiftId, setEditingGiftId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState(null);
+  const [receiptText, setReceiptText] = useState('');
+  const [receiptResult, setReceiptResult] = useState(null);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [receiptError, setReceiptError] = useState(null);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -170,6 +175,50 @@ export default function GivingDialog({
     setEditingGiftId(null);
     setDraft(emptyDraft(year));
     setFormError(null);
+  };
+
+  const handlePrefillFromReceipt = (candidate) => {
+    if (!candidate) {
+      return;
+    }
+    setEditingGiftId(null);
+    setDraft({
+      date: candidate.date || currentDateKey(),
+      organization: candidate.organization || 'One4Another',
+      amountCad: Number.isFinite(candidate.amountCad) ? String(candidate.amountCad) : '',
+      taxClaimable: candidate.taxClaimable !== false,
+      note: candidate.note || '',
+    });
+    setFormError(null);
+  };
+
+  const handleReconcileReceipts = async (shouldImport) => {
+    if (!onReconcileReceipts) {
+      return;
+    }
+    const text = receiptText.trim();
+    if (!text) {
+      setReceiptError('Paste at least one receipt email.');
+      return;
+    }
+    setReceiptBusy(true);
+    setReceiptError(null);
+    try {
+      const result = await onReconcileReceipts({
+        source: 'one4another-paypal',
+        text,
+        import: shouldImport === true,
+      });
+      setReceiptResult(result);
+    } catch (receiptSaveError) {
+      const message =
+        receiptSaveError instanceof Error && receiptSaveError.message
+          ? receiptSaveError.message
+          : 'Failed to reconcile receipts.';
+      setReceiptError(message);
+    } finally {
+      setReceiptBusy(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -431,6 +480,87 @@ export default function GivingDialog({
               </div>
             </form>
 
+            <section className="giving-import-panel" aria-label="Recurring receipt import">
+              <div className="giving-form__header">
+                <h3>PayPal receipts</h3>
+              </div>
+              <label className="giving-form__field" htmlFor={`${fieldBaseId}-receipt-text`}>
+                <span>One4Another email text</span>
+                <textarea
+                  id={`${fieldBaseId}-receipt-text`}
+                  value={receiptText}
+                  onChange={(event) => {
+                    setReceiptText(event.target.value);
+                    setReceiptError(null);
+                  }}
+                  rows={5}
+                  disabled={receiptBusy}
+                />
+              </label>
+              {receiptError ? <div className="giving-form__error">{receiptError}</div> : null}
+              <div className="giving-import-panel__actions">
+                <button
+                  type="button"
+                  className="giving-dialog__link-button"
+                  onClick={() => handleReconcileReceipts(false)}
+                  disabled={receiptBusy || !onReconcileReceipts}
+                >
+                  {receiptBusy ? 'Checking...' : 'Preview'}
+                </button>
+                <button
+                  type="button"
+                  className="giving-form__submit"
+                  onClick={() => handleReconcileReceipts(true)}
+                  disabled={receiptBusy || !onReconcileReceipts}
+                >
+                  Import new
+                </button>
+              </div>
+              {receiptResult ? (
+                <div className="giving-import-results" aria-live="polite">
+                  <div className="giving-import-results__summary">
+                    <span>{receiptResult.importedCount || 0} imported</span>
+                    <span>{receiptResult.newCount || 0} new</span>
+                    <span>{receiptResult.matchedCount || 0} matched</span>
+                  </div>
+                  {Array.isArray(receiptResult.candidates) && receiptResult.candidates.length ? (
+                    <ul className="giving-import-results__list">
+                      {receiptResult.candidates.map((candidate, index) => (
+                        <li
+                          key={`${candidate.transactionId || candidate.date || 'receipt'}-${index}`}
+                          className="giving-import-results__item"
+                        >
+                          <div>
+                            <strong>{formatMoney(candidate.amountCad)}</strong>
+                            <span>
+                              {candidate.organization} - {formatDate(candidate.date)}
+                            </span>
+                          </div>
+                          <div className="giving-import-results__side">
+                            <span className={`giving-import-results__status giving-import-results__status--${candidate.status || 'new'}`}>
+                              {candidate.status || 'new'}
+                            </span>
+                            {candidate.status !== 'matched' ? (
+                              <button
+                                type="button"
+                                className="giving-dialog__link-button"
+                                onClick={() => handlePrefillFromReceipt(candidate)}
+                                disabled={busy || receiptBusy}
+                              >
+                                Prefill
+                              </button>
+                            ) : null}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="giving-list__empty">No receipts found.</p>
+                  )}
+                </div>
+              ) : null}
+            </section>
+
             <div className="giving-list-panel">
               <h3>Gift history</h3>
               {normalizedGifts.length ? (
@@ -505,6 +635,7 @@ GivingDialog.propTypes = {
   onClose: PropTypes.func.isRequired,
   onRetry: PropTypes.func,
   onAddGift: PropTypes.func.isRequired,
+  onReconcileReceipts: PropTypes.func,
   onUpdateGift: PropTypes.func.isRequired,
   onDeleteGift: PropTypes.func.isRequired,
 };
@@ -515,4 +646,5 @@ GivingDialog.defaultProps = {
   status: 'idle',
   error: null,
   onRetry: null,
+  onReconcileReceipts: null,
 };

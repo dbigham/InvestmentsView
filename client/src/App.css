@@ -2639,10 +2639,14 @@ textarea {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr);
+  grid-template-areas:
+    "form list"
+    "import list";
   gap: 16px;
 }
 
 .giving-form,
+.giving-import-panel,
 .giving-list-panel {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
@@ -2652,6 +2656,14 @@ textarea {
 }
 
 .giving-form {
+  grid-area: form;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.giving-import-panel {
+  grid-area: import;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2747,6 +2759,13 @@ textarea {
   justify-content: flex-end;
 }
 
+.giving-import-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .giving-form__submit,
 .giving-dialog__link-button,
 .giving-list__actions button {
@@ -2805,9 +2824,97 @@ textarea {
 }
 
 .giving-list-panel {
+  grid-area: list;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.giving-import-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.giving-import-results__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.giving-import-results__summary span {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-alt);
+  padding: 4px 8px;
+}
+
+.giving-import-results__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.giving-import-results__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+  padding: 9px 10px;
+}
+
+.giving-import-results__item div {
+  min-width: 0;
+}
+
+.giving-import-results__item strong,
+.giving-import-results__item span {
+  display: block;
+}
+
+.giving-import-results__item strong {
+  color: var(--color-text-primary);
+}
+
+.giving-import-results__item span {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.giving-import-results__side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.giving-import-results__status {
+  border-radius: var(--radius-pill);
+  padding: 3px 7px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  text-transform: capitalize;
+}
+
+.giving-import-results__status--imported {
+  background: var(--color-positive-soft);
+  color: var(--color-positive);
+}
+
+.giving-import-results__status--matched {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
 }
 
 .giving-list {
@@ -2889,6 +2996,10 @@ textarea {
 
   .giving-dialog__work-area {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "form"
+      "import"
+      "list";
   }
 }
 
@@ -3938,6 +4049,139 @@ textarea {
   background: var(--color-surface);
 }
 
+.sell-fractional-dialog {
+  width: min(980px, 100%);
+}
+
+.sell-fractional-account-bar {
+  padding: 12px 16px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-alt);
+}
+
+.sell-fractional-account-bar__label {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  color: var(--color-text-muted);
+}
+
+.sell-fractional-account-bar__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sell-fractional-account-bar__select {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 14px;
+}
+
+.sell-fractional-account-bar__select:focus-visible {
+  outline: 2px solid var(--color-focus-outline);
+  outline-offset: 2px;
+}
+
+.sell-fractional-account-bar__meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sell-fractional-progress {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sell-fractional-overall-progress {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sell-fractional-trade-section {
+  gap: 10px;
+}
+
+.sell-fractional-empty {
+  margin: 0;
+}
+
+.sell-fractional-coverage {
+  padding: 14px 16px 16px;
+  border: 1px solid var(--color-warning-border, #d6a84f);
+  background: var(--color-warning-background, #fff8e6);
+}
+
+.sell-fractional-coverage__list {
+  display: grid;
+  gap: 12px;
+}
+
+.sell-fractional-coverage__item {
+  display: grid;
+  gap: 10px;
+}
+
+.sell-fractional-coverage__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sell-fractional-coverage__reserve {
+  display: grid;
+  gap: 8px;
+}
+
+.sell-fractional-coverage__reserve p,
+.sell-fractional-coverage__warning {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.sell-fractional-coverage__warning {
+  color: var(--color-danger, #a43f2f);
+}
+
+.sell-fractional-reserve-table .sell-fractional-trade-section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.sell-fractional-table-wrapper {
+  overflow-x: auto;
+}
+
+.sell-fractional-table td:nth-child(3),
+.sell-fractional-table td:nth-child(4),
+.sell-fractional-table td:nth-child(5),
+.sell-fractional-table td:nth-child(6) {
+  white-space: nowrap;
+}
+
 .invest-plan-footer__button {
   border: 1px solid var(--color-divider);
   background: var(--color-surface);
@@ -3989,7 +4233,25 @@ textarea {
   font-size: 32px;
   font-weight: 500;
   color: var(--color-text-primary);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+}
+
+.equity-card__value--loading {
+  color: var(--color-text-secondary);
+}
+
+.equity-card__value-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  flex: 0 0 auto;
+  animation: initial-loading-spin 0.9s linear infinite;
 }
 
 .equity-card__subtext {

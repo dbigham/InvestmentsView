@@ -953,6 +953,10 @@ function ActionMenu({
   onShowHoldingsPieChart,
   onEstimateCagr,
   onPlanInvestEvenly,
+  onSellFractionalShares,
+  onToggleGrowthCurveFit,
+  growthCurveFitActive,
+  growthCurveFitDisabled,
   onExplainMovement,
   onMarkRebalanced,
   onSetPlanningContext,
@@ -974,6 +978,8 @@ function ActionMenu({
   const hasHoldingsPieChartAction = typeof onShowHoldingsPieChart === 'function';
   const hasEstimateAction = typeof onEstimateCagr === 'function';
   const hasInvestEvenlyAction = typeof onPlanInvestEvenly === 'function';
+  const hasSellFractionalSharesAction = typeof onSellFractionalShares === 'function';
+  const hasGrowthCurveFitAction = typeof onToggleGrowthCurveFit === 'function';
   const hasExplainMovementAction = typeof onExplainMovement === 'function';
   const hasMarkRebalancedAction = typeof onMarkRebalanced === 'function';
   const hasPlanningContextAction = typeof onSetPlanningContext === 'function';
@@ -1102,6 +1108,29 @@ function ActionMenu({
       setBusy(false);
       setOpen(false);
     }
+  };
+
+  const handleSellFractionalShares = async () => {
+    if (!onSellFractionalShares || disabled || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSellFractionalShares();
+    } catch (error) {
+      console.error('Failed to prepare fractional share sell plan', error);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  const handleToggleGrowthCurveFit = () => {
+    if (!onToggleGrowthCurveFit || disabled || busy || growthCurveFitDisabled) {
+      return;
+    }
+    setOpen(false);
+    onToggleGrowthCurveFit();
   };
 
   const handleExplainMovement = async () => {
@@ -1235,6 +1264,21 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasGrowthCurveFitAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitemcheckbox"
+                aria-checked={growthCurveFitActive}
+                onClick={handleToggleGrowthCurveFit}
+                disabled={busy || growthCurveFitDisabled}
+                title={growthCurveFitDisabled ? 'Not enough positive Total P&L data in this range.' : undefined}
+              >
+                {growthCurveFitActive ? 'Hide growth curve' : 'Fit growth curve'}
+              </button>
+            </li>
+          )}
           {hasExplainMovementAction && (
             <li role="none">
               <button
@@ -1339,6 +1383,19 @@ function ActionMenu({
               </button>
             </li>
           )}
+          {hasSellFractionalSharesAction && (
+            <li role="none">
+              <button
+                type="button"
+                className="equity-card__action-menu-item"
+                role="menuitem"
+                onClick={handleSellFractionalShares}
+                disabled={busy}
+              >
+                Sell fractional shares
+              </button>
+            </li>
+          )}
           {hasEstimateAction && (
             <li role="none">
               <button
@@ -1364,6 +1421,10 @@ ActionMenu.propTypes = {
   onShowHoldingsPieChart: PropTypes.func,
   onEstimateCagr: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onSellFractionalShares: PropTypes.func,
+  onToggleGrowthCurveFit: PropTypes.func,
+  growthCurveFitActive: PropTypes.bool,
+  growthCurveFitDisabled: PropTypes.bool,
   onExplainMovement: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
@@ -1381,6 +1442,10 @@ ActionMenu.defaultProps = {
   onShowHoldingsPieChart: null,
   onEstimateCagr: null,
   onPlanInvestEvenly: null,
+  onSellFractionalShares: null,
+  onToggleGrowthCurveFit: null,
+  growthCurveFitActive: false,
+  growthCurveFitDisabled: false,
   onExplainMovement: null,
   onMarkRebalanced: null,
   onSetPlanningContext: null,
@@ -1408,10 +1473,13 @@ export default function SummaryMetrics({
   showUnbilledInTotalEquity,
   otherAssetsSummary,
   showOtherAssetsInTotalEquity,
+  showNonInvestmentAccountsInTotalEquity,
   canToggleUnbilledInTotalEquity,
   canToggleOtherAssetsInTotalEquity,
+  canToggleNonInvestmentAccountsInTotalEquity,
   onToggleUnbilledInTotalEquity,
   onToggleOtherAssetsInTotalEquity,
+  onToggleNonInvestmentAccountsInTotalEquity,
   onEditOtherAsset,
   onRefreshEarnings,
   givingSummary,
@@ -1424,6 +1492,7 @@ export default function SummaryMetrics({
   onShowTotalPnl,
   onShowAnnualizedReturn,
   isRefreshing,
+  totalEquityLoading,
   isAutoRefreshing,
   onCopySummary,
   onEstimateFutureCagr,
@@ -1431,6 +1500,7 @@ export default function SummaryMetrics({
   onShowHoldingsPieChart,
   onMarkRebalanced,
   onPlanInvestEvenly,
+  onSellFractionalShares,
   onExplainMovement,
   onSetPlanningContext,
   onEditTargetProportions,
@@ -1492,6 +1562,10 @@ export default function SummaryMetrics({
   }, [symbolMode, symbolPriceOnly]);
   const [chartTimeframe, setChartTimeframe] = usePersistentState('total-pnl-chart-timeframe', 'ALL');
   const [chartMetric, setChartMetric] = usePersistentState('total-pnl-chart-metric', DEFAULT_CHART_METRIC);
+  const [totalPnlGrowthFitActive, setTotalPnlGrowthFitActive] = usePersistentState(
+    'total-pnl-chart-growth-fit',
+    false
+  );
   const [includeFxInTotalPnlChart, setIncludeFxInTotalPnlChart] = usePersistentState(
     'total-pnl-chart-include-fx',
     true
@@ -1593,6 +1667,7 @@ export default function SummaryMetrics({
     chartMetricConfig.useDisplayStartDelta !== undefined
       ? chartMetricConfig.useDisplayStartDelta
       : Boolean(totalPnlSeries?.displayStartDate);
+  const applyTotalPnlDisplayStartDelta = Boolean(totalPnlSeries?.displayStartDate);
   const isTotalPnlMetric = chartMetricConfig.valueKey === 'totalPnl';
   const includeFxInChart = includeFxInTotalPnlChart !== false;
   const canToggleIncludeFx = isTotalPnlMetric;
@@ -2273,6 +2348,9 @@ export default function SummaryMetrics({
     const nextValue = event.target.value;
     if (CHART_METRIC_OPTIONS.some((option) => option.value === nextValue)) {
       setChartMetric(nextValue);
+      if (nextValue !== DEFAULT_CHART_METRIC) {
+        setTotalPnlGrowthFitActive(false);
+      }
       return;
     }
     setChartMetric(DEFAULT_CHART_METRIC);
@@ -2660,6 +2738,196 @@ export default function SummaryMetrics({
     symbolMode,
   ]);
 
+  const totalPnlGrowthFitModel = useMemo(() => {
+    if (symbolMode || !filteredTotalPnlSeries.length) {
+      return null;
+    }
+    const inputPoints = filteredTotalPnlSeries
+      .map((entry) => {
+        const date = typeof entry?.date === 'string' ? entry.date : null;
+        const displayValue =
+          applyTotalPnlDisplayStartDelta && Number.isFinite(entry?.totalPnlDelta)
+            ? entry.totalPnlDelta
+            : entry?.totalPnl;
+        const chartValue = Number(displayValue);
+        if (!date || !Number.isFinite(chartValue)) {
+          return null;
+        }
+        return {
+          date,
+          chartValue,
+          totalPnl: Number(entry?.totalPnl ?? entry?.totalPnlCad),
+          netDeposits: Number(entry?.cumulativeNetDepositsCad ?? entry?.netDeposits),
+        };
+      })
+      .filter(
+        (point) =>
+          point &&
+          Number.isFinite(point.totalPnl) &&
+          Number.isFinite(point.netDeposits)
+      );
+    if (inputPoints.length < 2) {
+      return null;
+    }
+    const chartValues = inputPoints.map((point) => point.chartValue).filter((value) => Number.isFinite(value));
+    if (!chartValues.length) {
+      return null;
+    }
+    const minChartValue = Math.min(...chartValues);
+    const maxChartValue = Math.max(...chartValues);
+    const chartRange = maxChartValue - minChartValue || Math.max(1, Math.abs(maxChartValue));
+    const visualOffset = Math.max(1, -minChartValue + chartRange * 0.005);
+    const fitInputSeries = inputPoints
+      .map((point) => ({
+        date: point.date,
+        totalPnl: point.chartValue + visualOffset,
+      }))
+      .filter((point) => Number.isFinite(point.totalPnl) && point.totalPnl > 0);
+    if (fitInputSeries.length < 2) {
+      return null;
+    }
+    const robustFit = buildExponentialGrowthFit(fitInputSeries);
+    if (!robustFit?.fittedPoints?.length) {
+      return null;
+    }
+    const chartBaseline = inputPoints[0].totalPnl - inputPoints[0].chartValue;
+    const buildFittedPoints = (fit) => {
+      if (!fit?.fittedPoints?.length) {
+        return [];
+      }
+      const fitValueByDate = new Map(
+        fit.fittedPoints
+          .filter((point) => point?.date && Number.isFinite(point.value) && point.value > 0)
+          .map((point) => [point.date, point.value])
+      );
+      return inputPoints
+        .map((point) => {
+          const fitValue = fitValueByDate.get(point.date);
+          if (!Number.isFinite(fitValue) || fitValue <= 0) {
+            return null;
+          }
+          const fittedChartValue = fitValue - visualOffset;
+          const fittedTotalPnl = fittedChartValue + chartBaseline;
+          const fittedEquity = point.netDeposits + fittedTotalPnl;
+          if (!Number.isFinite(fittedChartValue) || !Number.isFinite(fittedEquity)) {
+            return null;
+          }
+          return {
+            date: point.date,
+            value: fittedChartValue,
+            fitValue,
+            actualValue: point.chartValue,
+            fittedEquity,
+            netDeposits: point.netDeposits,
+          };
+        })
+        .filter(Boolean);
+    };
+    const findEndpointLabelPoint = (points) =>
+      [...points]
+        .reverse()
+        .find(
+          (point) =>
+            Number.isFinite(point.actualValue) &&
+            Number.isFinite(point.value) &&
+            Math.abs(point.value) > CASH_FLOW_EPSILON
+        ) || null;
+    const robustFittedPoints = buildFittedPoints(robustFit);
+    const untrimmedFit = buildExponentialGrowthFit(fitInputSeries, { trimStages: [] });
+    const untrimmedFittedPoints = buildFittedPoints(untrimmedFit);
+    const robustEndpointPoint = findEndpointLabelPoint(robustFittedPoints);
+    const untrimmedEndpointPoint = findEndpointLabelPoint(untrimmedFittedPoints);
+    const shouldUseUntrimmedFit =
+      inputPoints.length >= 90 &&
+      robustEndpointPoint &&
+      untrimmedEndpointPoint &&
+      Number.isFinite(robustEndpointPoint.actualValue) &&
+      robustEndpointPoint.actualValue > 0 &&
+      Number.isFinite(robustEndpointPoint.value) &&
+      robustEndpointPoint.value > 0 &&
+      Number.isFinite(untrimmedEndpointPoint.value) &&
+      untrimmedEndpointPoint.value > robustEndpointPoint.value * 1.2 &&
+      untrimmedEndpointPoint.value <= robustEndpointPoint.actualValue * 1.1 &&
+      robustEndpointPoint.actualValue / robustEndpointPoint.value >= 1.65;
+    const fittedPoints = shouldUseUntrimmedFit ? untrimmedFittedPoints : robustFittedPoints;
+    if (fittedPoints.length < 2) {
+      return null;
+    }
+    let fittedReturnIndex = 1;
+    let rateStartDate = null;
+    let rateEndDate = null;
+    const finalFittedEquity = fittedPoints[fittedPoints.length - 1]?.fittedEquity;
+    const minimumReturnEquity = Number.isFinite(finalFittedEquity)
+      ? Math.min(1000, Math.max(1, Math.abs(finalFittedEquity) * 0.001))
+      : 1;
+    // Measure the return implied by the fitted P&L curve, using the real cash-flow schedule.
+    for (let index = 1; index < fittedPoints.length; index += 1) {
+      const previous = fittedPoints[index - 1];
+      const point = fittedPoints[index];
+      const depositDelta = point.netDeposits - previous.netDeposits;
+      if (
+        !Number.isFinite(previous.fittedEquity) ||
+        previous.fittedEquity <= minimumReturnEquity ||
+        !Number.isFinite(point.fittedEquity) ||
+        !Number.isFinite(depositDelta)
+      ) {
+        continue;
+      }
+      const growthFactor = (point.fittedEquity - depositDelta) / previous.fittedEquity;
+      if (!Number.isFinite(growthFactor) || growthFactor <= 0) {
+        continue;
+      }
+      fittedReturnIndex *= growthFactor;
+      rateStartDate = rateStartDate || previous.date;
+      rateEndDate = point.date;
+    }
+    const parsedRateStart = parseDateOnly(rateStartDate);
+    const parsedRateEnd = parseDateOnly(rateEndDate);
+    const elapsedYears =
+      parsedRateStart && parsedRateEnd
+        ? (parsedRateEnd.getTime() - parsedRateStart.getTime()) / MS_PER_DAY / DAYS_PER_YEAR
+        : null;
+    const annualGrowthRate =
+      Number.isFinite(fittedReturnIndex) && fittedReturnIndex > 0 && Number.isFinite(elapsedYears) && elapsedYears > 0
+        ? Math.pow(fittedReturnIndex, 1 / elapsedYears) - 1
+        : null;
+    if (!Number.isFinite(annualGrowthRate)) {
+      return null;
+    }
+    const labelPoint = findEndpointLabelPoint(fittedPoints);
+    const temperature =
+      labelPoint && Number.isFinite(labelPoint.actualValue) && Number.isFinite(labelPoint.value)
+        ? labelPoint.actualValue / labelPoint.value
+        : null;
+    return {
+      annualGrowthRate,
+      fittedPoints,
+      temperature,
+    };
+  }, [applyTotalPnlDisplayStartDelta, filteredTotalPnlSeries, symbolMode]);
+
+  const canShowTotalPnlGrowthFitAction =
+    !symbolMode && (filteredTotalPnlSeries.length >= 2 || totalPnlGrowthFitActive);
+  const totalPnlGrowthFitDisabled =
+    canShowTotalPnlGrowthFitAction && !totalPnlGrowthFitActive && !totalPnlGrowthFitModel;
+  const totalPnlGrowthFit =
+    totalPnlGrowthFitActive && isTotalPnlMetric && !symbolMode ? totalPnlGrowthFitModel : null;
+  const totalPnlGrowthFitDomainValues = useMemo(() => {
+    if (!totalPnlGrowthFit?.fittedPoints?.length) {
+      return [];
+    }
+    return totalPnlGrowthFit.fittedPoints
+      .map((point) => Number(point?.value))
+      .filter((value) => Number.isFinite(value));
+  }, [totalPnlGrowthFit]);
+
+  const handleToggleTotalPnlGrowthFit = useCallback(() => {
+    if (!totalPnlGrowthFitActive) {
+      setChartMetric(DEFAULT_CHART_METRIC);
+    }
+    setTotalPnlGrowthFitActive((value) => !value);
+  }, [setChartMetric, setTotalPnlGrowthFitActive, totalPnlGrowthFitActive]);
+
   const { start: timeframeRangeStart, end: timeframeRangeEnd } = useMemo(() => {
     const endCandidates = [];
     if (filteredTotalPnlSeries.length) {
@@ -2689,7 +2957,10 @@ export default function SummaryMetrics({
     if (!chartSeries.length) {
       return null;
     }
-    const extraDomainValues = isTemperaturePriceChart ? [0.5, 1, 1.5] : [];
+    const extraDomainValues = [
+      ...(isTemperaturePriceChart ? [0.5, 1, 1.5] : []),
+      ...totalPnlGrowthFitDomainValues,
+    ];
     // When the series carries a displayStartDate, interpret values as deltas
     // from that baseline so the chart starts at 0 for CAGR views.
     return buildChartMetrics(chartSeries, {
@@ -2699,7 +2970,14 @@ export default function SummaryMetrics({
       extraDomainValues,
       minimumValuePadding: isTemperaturePriceChart ? 0.1 : 10,
     });
-  }, [applyDisplayStartDelta, chartSeries, isTemperaturePriceChart, timeframeRangeStart, timeframeRangeEnd]);
+  }, [
+    applyDisplayStartDelta,
+    chartSeries,
+    isTemperaturePriceChart,
+    timeframeRangeStart,
+    timeframeRangeEnd,
+    totalPnlGrowthFitDomainValues,
+  ]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -2821,12 +3099,76 @@ export default function SummaryMetrics({
     totalPnlChartMetrics,
   ]);
 
+  const totalPnlGrowthCurve = useMemo(() => {
+    if (!totalPnlGrowthFit || !totalPnlChartHasSeries || !totalPnlChartMetrics) {
+      return null;
+    }
+    const xByDate = new Map(
+      totalPnlChartMetrics.points
+        .filter((point) => point?.date && Number.isFinite(point.x))
+        .map((point) => [point.date, point.x])
+    );
+    const plottedPoints = totalPnlGrowthFit.fittedPoints
+      .map((point) => {
+        const x = xByDate.get(point.date);
+        const value = Number(point.value);
+        if (!Number.isFinite(x) || !Number.isFinite(value)) {
+          return null;
+        }
+        return {
+          x,
+          y: totalPnlChartMetrics.yFor(value),
+          value,
+          date: point.date,
+        };
+      })
+      .filter((point) => point && Number.isFinite(point.y));
+    if (plottedPoints.length < 2) {
+      return null;
+    }
+    const path = plottedPoints
+      .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ');
+    const labelPoint = plottedPoints[plottedPoints.length - 1];
+    const leftPercent = Math.max(10, Math.min(90, (labelPoint.x / CHART_WIDTH) * 100));
+    const topPercent = Math.max(12, Math.min(86, ((labelPoint.y - 12) / CHART_HEIGHT) * 100));
+    const transform =
+      leftPercent > 74
+        ? 'translate(-100%, -50%)'
+        : leftPercent < 26
+          ? 'translate(0, -50%)'
+          : 'translate(-50%, -115%)';
+    return {
+      path,
+      annualGrowthRate: totalPnlGrowthFit.annualGrowthRate,
+      temperature: totalPnlGrowthFit.temperature,
+      labelStyle: {
+        left: `${leftPercent}%`,
+        top: `${topPercent}%`,
+        transform,
+      },
+    };
+  }, [totalPnlChartHasSeries, totalPnlChartMetrics, totalPnlGrowthFit]);
+
   const priceGrowthCurveLabel = priceGrowthCurve
     ? `${formatSignedPercent(priceGrowthCurve.annualGrowthRate * 100, {
         minimumFractionDigits: 1,
         maximumFractionDigits: 1,
       })}/yr`
     : null;
+  const totalPnlGrowthCurveLabel = totalPnlGrowthCurve
+    ? `${formatSignedPercent(totalPnlGrowthCurve.annualGrowthRate * 100, {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })}/yr`
+    : null;
+  const totalPnlGrowthCurveTemperatureLabel =
+    totalPnlGrowthCurve && Number.isFinite(totalPnlGrowthCurve.temperature)
+      ? `T = ${formatNumber(totalPnlGrowthCurve.temperature, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      : null;
   const priceGrowthCurveTemperatureLabel =
     priceGrowthCurve && Number.isFinite(priceGrowthCurve.temperature)
       ? `T = ${formatNumber(priceGrowthCurve.temperature, {
@@ -3819,6 +4161,8 @@ export default function SummaryMetrics({
     canToggleIncludeFx || typeof onShowPnlBreakdown === 'function';
   const hasTotalEquityMenuActions =
     (canToggleUnbilledInTotalEquity && typeof onToggleUnbilledInTotalEquity === 'function') ||
+    (canToggleNonInvestmentAccountsInTotalEquity &&
+      typeof onToggleNonInvestmentAccountsInTotalEquity === 'function') ||
     (canToggleOtherAssetsInTotalEquity && typeof onToggleOtherAssetsInTotalEquity === 'function');
 
   const [totalMenuState, setTotalMenuState] = useState({ open: false, x: 0, y: 0 });
@@ -3999,6 +4343,20 @@ export default function SummaryMetrics({
       onToggleOtherAssetsInTotalEquity();
     }
   }, [closeTotalEquityMenu, canToggleOtherAssetsInTotalEquity, onToggleOtherAssetsInTotalEquity]);
+
+  const handleToggleNonInvestmentAccountsInTotalEquity = useCallback(() => {
+    closeTotalEquityMenu();
+    if (
+      canToggleNonInvestmentAccountsInTotalEquity &&
+      typeof onToggleNonInvestmentAccountsInTotalEquity === 'function'
+    ) {
+      onToggleNonInvestmentAccountsInTotalEquity();
+    }
+  }, [
+    closeTotalEquityMenu,
+    canToggleNonInvestmentAccountsInTotalEquity,
+    onToggleNonInvestmentAccountsInTotalEquity,
+  ]);
 
   useEffect(() => {
     if (!childMenuState.open) {
@@ -4453,6 +4811,21 @@ export default function SummaryMetrics({
           <span>Include non-investment assets</span>
         </button>
       )}
+      {canToggleNonInvestmentAccountsInTotalEquity && (
+        <button
+          type="button"
+          className="equity-card__context-menu-item positions-table__context-menu-item--choice"
+          role="menuitemcheckbox"
+          aria-checked={showNonInvestmentAccountsInTotalEquity}
+          onClick={handleToggleNonInvestmentAccountsInTotalEquity}
+        >
+          <span
+            className={`positions-table__context-menu-check${showNonInvestmentAccountsInTotalEquity ? ' positions-table__context-menu-check--active' : ''}`}
+            aria-hidden="true"
+          />
+          <span>Include non-investment accounts</span>
+        </button>
+      )}
       {canToggleUnbilledInTotalEquity && (
         <button
           type="button"
@@ -4524,11 +4897,14 @@ export default function SummaryMetrics({
         <div className="equity-card__heading">
           <h2 className="equity-card__title">{title}</h2>
           <p
-            className="equity-card__value"
+            className={`equity-card__value${totalEquityLoading ? ' equity-card__value--loading' : ''}`}
             title={totalEquityTooltip ?? undefined}
             {...totalEquityValueContextProps}
           >
-            {formatMoney(displayTotalEquity ?? totalEquity)}
+            <span>{formatMoney(displayTotalEquity ?? totalEquity)}</span>
+            {totalEquityLoading ? (
+              <span className="equity-card__value-spinner" role="status" aria-label="Updating total equity" />
+            ) : null}
           </p>
           {usdToCadRate !== null && (
             <p className="equity-card__subtext">
@@ -4593,6 +4969,8 @@ export default function SummaryMetrics({
             onShowHoldingsPieChart ||
             onEstimateFutureCagr ||
             onPlanInvestEvenly ||
+            onSellFractionalShares ||
+            canShowTotalPnlGrowthFitAction ||
             onExplainMovement ||
             onMarkRebalanced ||
             onSetPlanningContext ||
@@ -4607,6 +4985,10 @@ export default function SummaryMetrics({
               onShowHoldingsPieChart={onShowHoldingsPieChart}
               onEstimateCagr={onEstimateFutureCagr}
               onPlanInvestEvenly={onPlanInvestEvenly}
+              onSellFractionalShares={onSellFractionalShares}
+              onToggleGrowthCurveFit={canShowTotalPnlGrowthFitAction ? handleToggleTotalPnlGrowthFit : null}
+              growthCurveFitActive={totalPnlGrowthFitActive}
+              growthCurveFitDisabled={totalPnlGrowthFitDisabled}
               onMarkRebalanced={onMarkRebalanced}
               onExplainMovement={onExplainMovement}
               onSetPlanningContext={onSetPlanningContext}
@@ -4807,6 +5189,9 @@ export default function SummaryMetrics({
                   {totalPnlChartPath && (
                     <path className="qqq-section__series-path" d={totalPnlChartPath} />
                   )}
+                  {totalPnlGrowthCurve?.path && (
+                    <path className="qqq-section__growth-curve-path" d={totalPnlGrowthCurve.path} />
+                  )}
                   {priceGrowthCurve?.path && (
                     <path className="qqq-section__growth-curve-path" d={priceGrowthCurve.path} />
                   )}
@@ -4907,6 +5292,28 @@ export default function SummaryMetrics({
                     <span className="pnl-dialog__label-date">
                       {hoverLabel ? hoverLabel.date : (markerHoverLabel?.date || (totalPnlChartMarker?.date ? formatDate(totalPnlChartMarker.date) : null))}
                     </span>
+                  </div>
+                )}
+                {totalPnlGrowthCurveLabel && totalPnlGrowthCurve?.labelStyle && !selectionSummary && (
+                  <div
+                    className={[
+                      'qqq-section__chart-label',
+                      'qqq-section__growth-curve-label',
+                      hoverPoint ? 'qqq-section__growth-curve-label--muted' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    style={totalPnlGrowthCurve.labelStyle}
+                  >
+                    <span className="pnl-dialog__label-amount qqq-section__growth-curve-rate">
+                      {totalPnlGrowthCurveLabel}
+                    </span>
+                    <span className="pnl-dialog__label-amount qqq-section__growth-curve-temperature">
+                      {totalPnlGrowthCurveTemperatureLabel || 'Growth curve'}
+                    </span>
+                    {totalPnlGrowthCurveTemperatureLabel && (
+                      <span className="pnl-dialog__label-date">Growth curve</span>
+                    )}
                   </div>
                 )}
                 {priceGrowthCurveLabel && growthCurveLabelStyle && !selectionSummary && (
@@ -5227,10 +5634,13 @@ SummaryMetrics.propTypes = {
     totalCad: PropTypes.number,
   }),
   showOtherAssetsInTotalEquity: PropTypes.bool,
+  showNonInvestmentAccountsInTotalEquity: PropTypes.bool,
   canToggleUnbilledInTotalEquity: PropTypes.bool,
   canToggleOtherAssetsInTotalEquity: PropTypes.bool,
+  canToggleNonInvestmentAccountsInTotalEquity: PropTypes.bool,
   onToggleUnbilledInTotalEquity: PropTypes.func,
   onToggleOtherAssetsInTotalEquity: PropTypes.func,
+  onToggleNonInvestmentAccountsInTotalEquity: PropTypes.func,
   onEditOtherAsset: PropTypes.func,
   onRefreshEarnings: PropTypes.func,
   givingSummary: PropTypes.shape({
@@ -5251,6 +5661,7 @@ SummaryMetrics.propTypes = {
   onShowTotalPnl: PropTypes.func,
   onShowAnnualizedReturn: PropTypes.func,
   isRefreshing: PropTypes.bool,
+  totalEquityLoading: PropTypes.bool,
   isAutoRefreshing: PropTypes.bool,
   onCopySummary: PropTypes.func,
   onEstimateFutureCagr: PropTypes.func,
@@ -5258,6 +5669,7 @@ SummaryMetrics.propTypes = {
   onShowHoldingsPieChart: PropTypes.func,
   onMarkRebalanced: PropTypes.func,
   onPlanInvestEvenly: PropTypes.func,
+  onSellFractionalShares: PropTypes.func,
   onExplainMovement: PropTypes.func,
   onSetPlanningContext: PropTypes.func,
   onEditTargetProportions: PropTypes.func,
@@ -5421,10 +5833,13 @@ SummaryMetrics.defaultProps = {
   showUnbilledInTotalEquity: false,
   otherAssetsSummary: null,
   showOtherAssetsInTotalEquity: false,
+  showNonInvestmentAccountsInTotalEquity: false,
   canToggleUnbilledInTotalEquity: false,
   canToggleOtherAssetsInTotalEquity: false,
+  canToggleNonInvestmentAccountsInTotalEquity: false,
   onToggleUnbilledInTotalEquity: null,
   onToggleOtherAssetsInTotalEquity: null,
+  onToggleNonInvestmentAccountsInTotalEquity: null,
   onEditOtherAsset: null,
   onRefreshEarnings: null,
   givingSummary: null,
@@ -5438,6 +5853,7 @@ SummaryMetrics.defaultProps = {
   onShowTotalPnl: null,
   onShowAnnualizedReturn: null,
   isRefreshing: false,
+  totalEquityLoading: false,
   isAutoRefreshing: false,
   onCopySummary: null,
   onEstimateFutureCagr: null,
@@ -5445,6 +5861,7 @@ SummaryMetrics.defaultProps = {
   onShowHoldingsPieChart: null,
   onMarkRebalanced: null,
   onPlanInvestEvenly: null,
+  onSellFractionalShares: null,
   onExplainMovement: null,
   onSetPlanningContext: null,
   onEditTargetProportions: null,

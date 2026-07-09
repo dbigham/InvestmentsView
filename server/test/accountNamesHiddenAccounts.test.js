@@ -52,3 +52,37 @@ test('accounts can be hidden from provider-backed account lists', () => {
   assert.equal(settings['snaptrade-user:duplicate-account'].accountGroup, 'Main RRSP');
   assert.equal(Object.prototype.hasOwnProperty.call(settings['snaptrade-user:visible-account'], 'hidden'), false);
 });
+
+test('investmentAccount metadata can mark visible accounts as non-investment accounts', () => {
+  const config = {
+    accounts: [
+      {
+        id: 'snaptrade-user:cash-account',
+        name: 'WS: Cash',
+      },
+    ],
+  };
+
+  withTempAccountsConfig(config, (mod) => {
+    const disabled = mod.updateAccountMetadata('snaptrade-user:cash-account', {
+      investmentAccount: false,
+    });
+    assert.equal(disabled.updated, true);
+    assert.equal(disabled.payload.investmentAccount, false);
+    assert.equal(mod.getAccountSettings()['snaptrade-user:cash-account'].investmentAccount, false);
+
+    const restored = mod.updateAccountMetadata('snaptrade-user:cash-account', {
+      investmentAccount: true,
+    });
+    assert.equal(restored.updated, true);
+    assert.equal(restored.payload.investmentAccount, true);
+    const restoredSettings = mod.getAccountSettings()['snaptrade-user:cash-account'] || {};
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(
+        restoredSettings,
+        'investmentAccount'
+      ),
+      false
+    );
+  });
+});

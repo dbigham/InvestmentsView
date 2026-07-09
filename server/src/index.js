@@ -15,6 +15,12 @@ const dotenv = require('dotenv');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
 const { resolveCachePath, resolveDataPath } = require('./dataPaths');
 const { buildYahooFinanceFetchOptions } = require('./yahooFinanceFetchOptions');
+const {
+  findArchivedAccountByKey,
+  listArchivedAccounts,
+  upsertArchivedAccountSnapshot,
+  upsertArchivedAccountSnapshots,
+} = require('./archivedAccounts');
 dotenv.config();
 
 const serverEnvPath = path.join(__dirname, '..', '.env');
@@ -82,6 +88,7 @@ const {
   createGift,
   deleteGift,
   listGifts,
+  reconcileGiftReceipts,
   updateGift,
 } = require('./gifts');
 const deploymentDisplay = require('../../shared/deploymentDisplay.cjs');
@@ -7020,6 +7027,15 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'investmentAccount')) {
+    const investmentAccount = parseBooleanEnv(override.investmentAccount, null);
+    if (investmentAccount === false) {
+      target.investmentAccount = false;
+    } else if (investmentAccount === true && Object.prototype.hasOwnProperty.call(target, 'investmentAccount')) {
+      delete target.investmentAccount;
+    }
+  }
+
   if (typeof override.showQQQDetails === 'boolean') {
     target.showQQQDetails = override.showQQQDetails;
   }
@@ -7233,6 +7249,250 @@ function applyAccountSettingsOverrides(account, login) {
 
 function isHiddenAccount(account) {
   return !!(account && (account.hidden === true || account.ignored === true));
+}
+
+function isNonInvestmentAccount(account) {
+  return !!(account && account.investmentAccount === false);
+}
+
+function isArchivedAccount(account) {
+  return !!(account && account.archived === true);
+}
+
+function normalizeLookupValue(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return String(value).trim().toLowerCase();
+}
+
+function getLoginArchiveAliases(login) {
+  const aliases = new Set();
+  const add = (value) => {
+    const normalized = normalizeLookupValue(value);
+    if (!normalized) {
+      return;
+    }
+    aliases.add(normalized);
+    const atIndex = normalized.indexOf('@');
+    if (atIndex > 0) {
+      const local = normalized.slice(0, atIndex);
+      aliases.add(local);
+      const firstPart = local.split(/[._+-]/).filter(Boolean)[0];
+      if (firstPart) {
+        aliases.add(firstPart);
+      }
+    }
+  };
+  add(login && login.id);
+  add(login && login.email);
+  add(login && login.label);
+  add(resolveLoginDisplay(login));
+  return aliases;
+}
+
+function parseArchivedAccountNumberFromKey(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) {
+    return null;
+  }
+  const parts = raw.split(':');
+  const candidate = parts.length > 1 ? parts[parts.length - 1] : raw;
+  return /^\d+$/.test(candidate) ? candidate : null;
+}
+
+function buildArchivedAccountFromSnapshot(login, entry, accountNameOverrides, accountSettings, accountBeneficiaries) {
+  if (!entry || !entry.account || typeof entry.account !== 'object') {
+    return null;
+  }
+  const account = Object.assign({}, entry.account, {
+    archived: true,
+    readOnly: true,
+    investmentAccount: false,
+    status: entry.account.status || 'Archived',
+    provider: entry.account.provider || BROKER_PROVIDER_QUESTRADE,
+    providerLabel: entry.account.providerLabel || getBrokerProviderLabel(entry.account.provider),
+    loginId: login.id,
+    ownerId: login.id,
+    ownerLabel: resolveLoginDisplay(login),
+    ownerEmail: login.email || entry.loginEmail || entry.account.ownerEmail || null,
+    loginLabel: resolveLoginDisplay(login),
+    loginEmail: login.email || entry.loginEmail || entry.account.loginEmail || null,
+    platformLabel: entry.account.platformLabel || 'Archived Questrade',
+    archivedAt: entry.archivedAt || null,
+    lastSeenAt: entry.lastSeenAt || entry.lastLiveSeenAt || null,
+    archiveLoginId: entry.activityCacheLoginId || entry.account.archiveLoginId || null,
+    archiveAccountKey: entry.activityCacheAccountKey || entry.account.archiveAccountKey || entry.account.id,
+  });
+  const displayName = resolveAccountDisplayName(accountNameOverrides, account, login);
+  if (displayName) {
+    account.displayName = displayName;
+  }
+  const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, account, login);
+  applyAccountSettingsOverrideToAccount(account, accountSettingsOverride);
+  const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
+  if (defaultBeneficiary) {
+    account.beneficiary = defaultBeneficiary;
+  }
+  const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, account, login);
+  if (resolvedBeneficiary) {
+    account.beneficiary = resolvedBeneficiary;
+  }
+  return isHiddenAccount(account) ? null : account;
+}
+
+function buildArchivedAccountFromFundingCache(login, cacheLoginId, accountKey, entry, accountNameOverrides, accountSettings, accountBeneficiaries) {
+  const accountNumber = parseArchivedAccountNumberFromKey(accountKey);
+  if (!accountNumber) {
+    return null;
+  }
+  const compositeId = buildCompositeAccountId(login, { number: accountNumber }, accountNumber);
+  const account = {
+    id: compositeId,
+    provider: BROKER_PROVIDER_QUESTRADE,
+    providerLabel: getBrokerProviderLabel(BROKER_PROVIDER_QUESTRADE),
+    providerAccountId: accountNumber,
+    number: accountNumber,
+    accountNumber,
+    loginId: login.id,
+    ownerId: login.id,
+    ownerLabel: resolveLoginDisplay(login),
+    ownerEmail: login.email || null,
+    loginLabel: resolveLoginDisplay(login),
+    loginEmail: login.email || null,
+    platformLabel: 'Archived Questrade',
+    status: 'Archived',
+    archived: true,
+    readOnly: true,
+    investmentAccount: false,
+    archiveLoginId: cacheLoginId,
+    archiveAccountKey: accountKey,
+    archivedAt: entry && entry.cachedAt ? entry.cachedAt : null,
+    lastSeenAt: entry && entry.cachedAt ? entry.cachedAt : null,
+    earliestFunding: entry && entry.earliestFunding ? entry.earliestFunding : null,
+  };
+  const displayName = resolveAccountDisplayName(accountNameOverrides, account, login);
+  if (displayName) {
+    account.displayName = displayName;
+  }
+  const accountSettingsOverride = resolveAccountOverrideValue(accountSettings, account, login);
+  applyAccountSettingsOverrideToAccount(account, accountSettingsOverride);
+  const defaultBeneficiary = accountBeneficiaries.defaultBeneficiary || null;
+  if (defaultBeneficiary) {
+    account.beneficiary = defaultBeneficiary;
+  }
+  const resolvedBeneficiary = resolveAccountBeneficiary(accountBeneficiaries, account, login);
+  if (resolvedBeneficiary) {
+    account.beneficiary = resolvedBeneficiary;
+  }
+  return isHiddenAccount(account) ? null : account;
+}
+
+function listArchivedAccountCandidatesForLogin(login, accountNameOverrides, accountSettings, accountBeneficiaries) {
+  const aliases = getLoginArchiveAliases(login);
+  const candidates = [];
+  const seen = new Set();
+  const addCandidate = (account) => {
+    if (!account || !account.id) {
+      return;
+    }
+    const keys = [
+      account.id,
+      account.number,
+      account.accountNumber,
+      account.providerAccountId,
+    ]
+      .map(normalizeLookupValue)
+      .filter(Boolean);
+    if (keys.some((key) => seen.has(key))) {
+      return;
+    }
+    keys.forEach((key) => seen.add(key));
+    candidates.push(account);
+  };
+
+  listArchivedAccounts()
+    .filter((entry) => {
+      const entryLoginId = normalizeLookupValue(entry.loginId || entry.account?.loginId);
+      const entryEmail = normalizeLookupValue(entry.loginEmail || entry.account?.ownerEmail);
+      return (entryLoginId && aliases.has(entryLoginId)) || (entryEmail && aliases.has(entryEmail));
+    })
+    .forEach((entry) => {
+      addCandidate(
+        buildArchivedAccountFromSnapshot(
+          login,
+          entry,
+          accountNameOverrides,
+          accountSettings,
+          accountBeneficiaries
+        )
+      );
+    });
+
+  Object.entries(earliestFundingCacheState.entries || {}).forEach(([cacheKey, entry]) => {
+    const separatorIndex = cacheKey.indexOf('::');
+    if (separatorIndex <= 0) {
+      return;
+    }
+    const cacheLoginId = cacheKey.slice(0, separatorIndex);
+    if (!aliases.has(normalizeLookupValue(cacheLoginId))) {
+      return;
+    }
+    const accountKey = cacheKey.slice(separatorIndex + 2);
+    addCandidate(
+      buildArchivedAccountFromFundingCache(
+        login,
+        cacheLoginId,
+        accountKey,
+        entry,
+        accountNameOverrides,
+        accountSettings,
+        accountBeneficiaries
+      )
+    );
+  });
+
+  return candidates;
+}
+
+function accountMatchesAnyKey(account, keySet) {
+  if (!account || !keySet || keySet.size === 0) {
+    return false;
+  }
+  const candidates = [
+    account.id,
+    account.number,
+    account.accountNumber,
+    account.providerAccountId,
+    account.name,
+    account.displayName,
+  ];
+  return candidates.some((candidate) => {
+    const normalized = normalizeLookupValue(candidate);
+    return normalized && keySet.has(normalized);
+  });
+}
+
+function getArchivedSnapshotForAccount(accountOrKey) {
+  if (!accountOrKey) {
+    return null;
+  }
+  if (typeof accountOrKey === 'string') {
+    return findArchivedAccountByKey(accountOrKey);
+  }
+  const candidates = [
+    accountOrKey.id,
+    accountOrKey.number,
+    accountOrKey.accountNumber,
+    accountOrKey.providerAccountId,
+  ];
+  for (const candidate of candidates) {
+    const entry = findArchivedAccountByKey(candidate);
+    if (entry) {
+      return entry;
+    }
+  }
+  return null;
 }
 
 function resolveAccountDisplayName(overrides, account, login) {
@@ -10019,6 +10279,7 @@ const MAX_ACTIVITIES_WINDOW_DAYS = 30;
 const MIN_ACTIVITY_DATE = new Date('2000-01-01T00:00:00Z');
 const USD_TO_CAD_SERIES = 'DEXCAUS';
 const ACTIVITIES_CACHE_DIR = resolveCachePath('activities');
+const ACTIVITIES_CACHE_INDEX_PATH = resolveCachePath('activities-index.json');
 const FX_CACHE_DIR = resolveCachePath('fx');
 const USD_CAD_CACHE_FILE_PATH = path.join(FX_CACHE_DIR, 'usd-cad-rates.json');
 
@@ -10162,6 +10423,7 @@ process.on('exit', flushUsdCadRateCacheSync);
 
 const activitiesMemoryCache = new Map();
 let activitiesCacheDirEnsured = false;
+let activitiesCacheIndexState = null;
 
 function debugTotalPnl(accountId, message, payload) {
   if (!DEBUG_TOTAL_PNL) {
@@ -10626,7 +10888,7 @@ function getActivitiesCacheFilePath(cacheKey) {
   return path.join(ACTIVITIES_CACHE_DIR, cacheKey + '.json');
 }
 
-function readActivitiesCache(cacheKey) {
+function readActivitiesCachePayload(cacheKey) {
   try {
     const filePath = getActivitiesCacheFilePath(cacheKey);
     if (!fs.existsSync(filePath)) {
@@ -10636,24 +10898,187 @@ function readActivitiesCache(cacheKey) {
     if (!contents) {
       return null;
     }
-    const parsed = JSON.parse(contents);
-    if (parsed && Array.isArray(parsed.activities)) {
-      return parsed.activities;
-    }
+    return JSON.parse(contents);
   } catch (error) {
     console.warn('Failed to read activities cache entry:', error.message);
   }
   return null;
 }
 
-function writeActivitiesCache(cacheKey, activities) {
+function readActivitiesCache(cacheKey) {
+  const parsed = readActivitiesCachePayload(cacheKey);
+  if (parsed && Array.isArray(parsed.activities)) {
+    return parsed.activities;
+  }
+  return null;
+}
+
+function readActivitiesCacheIndex() {
+  if (activitiesCacheIndexState && typeof activitiesCacheIndexState === 'object') {
+    return activitiesCacheIndexState;
+  }
+  try {
+    if (!fs.existsSync(ACTIVITIES_CACHE_INDEX_PATH)) {
+      activitiesCacheIndexState = { entries: {} };
+      return activitiesCacheIndexState;
+    }
+    const contents = fs.readFileSync(ACTIVITIES_CACHE_INDEX_PATH, 'utf-8');
+    const parsed = contents ? JSON.parse(contents) : null;
+    activitiesCacheIndexState =
+      parsed && typeof parsed === 'object' && parsed.entries && typeof parsed.entries === 'object'
+        ? parsed
+        : { entries: {} };
+  } catch (error) {
+    console.warn('Failed to read activities cache index:', error.message);
+    activitiesCacheIndexState = { entries: {} };
+  }
+  return activitiesCacheIndexState;
+}
+
+function persistActivitiesCacheIndex() {
   try {
     ensureActivitiesCacheDir();
+    fs.writeFileSync(ACTIVITIES_CACHE_INDEX_PATH, JSON.stringify(readActivitiesCacheIndex()));
+  } catch (error) {
+    console.warn('Failed to persist activities cache index:', error.message);
+  }
+}
+
+function normalizeActivitiesCacheIdentity(value) {
+  return value === null || value === undefined ? '' : String(value).trim().toLowerCase();
+}
+
+function parseActivitiesCacheTime(value) {
+  if (!value || typeof value !== 'string') {
+    return Number.NaN;
+  }
+  const parsed = new Date(value);
+  return parsed.getTime();
+}
+
+function updateActivitiesCacheIndex(cacheKey, metadata) {
+  if (!cacheKey || !metadata || typeof metadata !== 'object') {
+    return;
+  }
+  const loginId = metadata.loginId || null;
+  const accountId = metadata.accountId || null;
+  const startTime = metadata.startTime || null;
+  const endTime = metadata.endTime || null;
+  if (!loginId || !accountId || !startTime || !endTime) {
+    return;
+  }
+  const state = readActivitiesCacheIndex();
+  state.entries[cacheKey] = {
+    cacheKey,
+    loginId: String(loginId),
+    accountId: String(accountId),
+    startTime: String(startTime),
+    endTime: String(endTime),
+    cachedAt: metadata.cachedAt || new Date().toISOString(),
+  };
+  persistActivitiesCacheIndex();
+}
+
+function filterActivitiesToWindow(activities, startDate, endDate) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return [];
+  }
+  const startMs = startDate instanceof Date && !Number.isNaN(startDate.getTime())
+    ? startDate.getTime()
+    : Number.NEGATIVE_INFINITY;
+  const endMs = endDate instanceof Date && !Number.isNaN(endDate.getTime())
+    ? endDate.getTime()
+    : Number.POSITIVE_INFINITY;
+  return activities.filter((activity) => {
+    const timestamp = resolveActivityTimestamp(activity);
+    if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+      return false;
+    }
+    const time = timestamp.getTime();
+    return time >= startMs && time <= endMs;
+  });
+}
+
+function readOverlappingActivitiesCache(loginId, accountId, startDate, endDate) {
+  const state = readActivitiesCacheIndex();
+  const entries = state && state.entries && typeof state.entries === 'object' ? state.entries : {};
+  const normalizedLoginId = normalizeActivitiesCacheIdentity(loginId);
+  const normalizedAccountId = normalizeActivitiesCacheIdentity(accountId);
+  const requestStart = startDate instanceof Date ? startDate.getTime() : Number.NaN;
+  const requestEnd = endDate instanceof Date ? endDate.getTime() : Number.NaN;
+  if (!normalizedLoginId || !normalizedAccountId || !Number.isFinite(requestStart) || !Number.isFinite(requestEnd)) {
+    return { hit: false, activities: [] };
+  }
+
+  const candidates = Object.values(entries)
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      if (normalizeActivitiesCacheIdentity(entry.loginId) !== normalizedLoginId) {
+        return null;
+      }
+      if (normalizeActivitiesCacheIdentity(entry.accountId) !== normalizedAccountId) {
+        return null;
+      }
+      const startTime = parseActivitiesCacheTime(entry.startTime);
+      const endTime = parseActivitiesCacheTime(entry.endTime);
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+        return null;
+      }
+      if (startTime > requestEnd || endTime < requestStart) {
+        return null;
+      }
+      const overlapStart = Math.max(startTime, requestStart);
+      const overlapEnd = Math.min(endTime, requestEnd);
+      return Object.assign({}, entry, {
+        startTimeMs: startTime,
+        endTimeMs: endTime,
+        overlapMs: Math.max(0, overlapEnd - overlapStart),
+        cachedAtMs: parseActivitiesCacheTime(entry.cachedAt),
+      });
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b.overlapMs !== a.overlapMs) {
+        return b.overlapMs - a.overlapMs;
+      }
+      const aCached = Number.isFinite(a.cachedAtMs) ? a.cachedAtMs : 0;
+      const bCached = Number.isFinite(b.cachedAtMs) ? b.cachedAtMs : 0;
+      return bCached - aCached;
+    });
+
+  if (!candidates.length) {
+    return { hit: false, activities: [] };
+  }
+
+  const combined = [];
+  let hit = false;
+  candidates.forEach((entry) => {
+    const activities = readActivitiesCache(entry.cacheKey);
+    if (Array.isArray(activities)) {
+      hit = true;
+      combined.push(...filterActivitiesToWindow(activities, startDate, endDate));
+    }
+  });
+
+  return { hit, activities: hit ? dedupeActivities(combined) : [] };
+}
+
+function writeActivitiesCache(cacheKey, activities, metadata = {}) {
+  try {
+    ensureActivitiesCacheDir();
+    const cachedAt = new Date().toISOString();
     const payload = {
-      cachedAt: new Date().toISOString(),
+      cachedAt,
+      loginId: metadata.loginId || null,
+      accountId: metadata.accountId || null,
+      startTime: metadata.startTime || null,
+      endTime: metadata.endTime || null,
       activities: Array.isArray(activities) ? activities : [],
     };
     fs.writeFileSync(getActivitiesCacheFilePath(cacheKey), JSON.stringify(payload));
+    updateActivitiesCacheIndex(cacheKey, payload);
   } catch (error) {
     console.warn('Failed to persist activities cache entry:', error.message);
   }
@@ -11650,7 +12075,7 @@ async function resolveUsdToCadRate(date, accountKey) {
   return null;
 }
 
-async function fetchActivitiesWindow(login, accountId, startDate, endDate, accountKey) {
+async function fetchActivitiesWindow(login, accountId, startDate, endDate, accountKey, options = {}) {
   const startParam = formatDateParam(startDate);
   const endParam = formatDateParam(endDate);
   if (!startParam || !endParam) {
@@ -11662,10 +12087,10 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate, accou
   const nowMs = Date.now();
   const isHistorical = endDate instanceof Date && !Number.isNaN(endDate.getTime()) && endDate.getTime() < nowMs;
   const cacheKey =
-    isHistorical && login
+    login
       ? getActivitiesCacheKey(login.id, accountId, startParam, endParam)
       : null;
-  if (isHistorical && cacheKey) {
+  if ((isHistorical || options.offlineOnly === true) && cacheKey) {
     if (activitiesMemoryCache.has(cacheKey)) {
       debugTotalPnl(accountKey, 'Using cached activities window (memory)', {
         start: startParam,
@@ -11682,6 +12107,25 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate, accou
       });
       return cached;
     }
+    if (options.offlineOnly === true) {
+      const overlappingCache = readOverlappingActivitiesCache(login.id, accountId, startDate, endDate);
+      if (overlappingCache.hit) {
+        activitiesMemoryCache.set(cacheKey, overlappingCache.activities);
+        debugTotalPnl(accountKey, 'Using overlapping cached activities window (disk)', {
+          start: startParam,
+          end: endParam,
+          activities: overlappingCache.activities.length,
+        });
+        return overlappingCache.activities;
+      }
+    }
+  }
+  if (options.offlineOnly === true) {
+    debugTotalPnl(accountKey, 'Activities window unavailable in offline cache', {
+      start: startParam,
+      end: endParam,
+    });
+    return [];
   }
   debugTotalPnl(accountKey, 'Fetching activities window', {
     start: startParam,
@@ -11693,14 +12137,19 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate, accou
   };
   const data = await questradeRequest(login, '/v1/accounts/' + accountId + '/activities', { params });
   const activities = data && Array.isArray(data.activities) ? data.activities : [];
-  if (isHistorical && cacheKey) {
+  if (cacheKey) {
     activitiesMemoryCache.set(cacheKey, activities);
-    writeActivitiesCache(cacheKey, activities);
+    writeActivitiesCache(cacheKey, activities, {
+      loginId: login.id,
+      accountId,
+      startTime: startParam,
+      endTime: endParam,
+    });
   }
   return activities;
 }
 
-async function fetchActivitiesRange(login, accountId, startDate, endDate, accountKey) {
+async function fetchActivitiesRange(login, accountId, startDate, endDate, accountKey, options = {}) {
   if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
     return [];
   }
@@ -11719,7 +12168,7 @@ async function fetchActivitiesRange(login, accountId, startDate, endDate, accoun
         cursor.getTime() + MAX_ACTIVITIES_WINDOW_DAYS * DAY_IN_MS - 1000
       )
     );
-    const windowActivities = await fetchActivitiesWindow(login, accountId, cursor, windowEnd, accountKey);
+    const windowActivities = await fetchActivitiesWindow(login, accountId, cursor, windowEnd, accountKey, options);
     results.push(...windowActivities);
     const nextStart = new Date(windowEnd.getTime() + 1000);
     if (nextStart > endDate) {
@@ -11806,7 +12255,7 @@ function findEarliestFundingTimestamp(activities) {
   return earliest;
 }
 
-async function discoverEarliestFundingDate(login, accountId, accountKey) {
+async function discoverEarliestFundingDate(login, accountId, accountKey, options = {}) {
   const cacheKey = buildEarliestFundingCacheKey(login, accountId, accountKey);
   if (cacheKey) {
     const cached = getCachedEarliestFunding(cacheKey);
@@ -11816,6 +12265,18 @@ async function discoverEarliestFundingDate(login, accountId, accountKey) {
     if (earliestFundingPromises.has(cacheKey)) {
       return earliestFundingPromises.get(cacheKey);
     }
+  }
+  if (options.cachedEarliestFunding) {
+    const parsed =
+      options.cachedEarliestFunding instanceof Date
+        ? options.cachedEarliestFunding
+        : new Date(options.cachedEarliestFunding);
+    if (parsed instanceof Date && !Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  if (options.offlineOnly === true) {
+    return null;
   }
 
   async function computeEarliestFundingDate() {
@@ -11846,7 +12307,7 @@ async function discoverEarliestFundingDate(login, accountId, accountKey) {
         start: formatDateOnly(monthStart),
         end: formatDateOnly(monthEnd),
       };
-      const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey);
+      const activities = await fetchActivitiesRange(login, accountId, monthStart, monthEnd, accountKey, options);
       const funding = filterFundingActivities(activities);
       // Consider trade-like position movements (e.g., book-value transfers logged as trades with quantity)
       // as a fallback when no explicit funding is present for the window.
@@ -12114,13 +12575,20 @@ async function buildAccountActivityContext(login, account, options = {}) {
 
   const accountKey = account.id;
   const accountNumber = account.number || account.accountNumber || account.id;
-  const accountApiId = resolveAccountApiId(login, account);
+  const activityLogin = options.activityLogin || login;
+  const activityCacheAccountKey = options.cacheAccountKey || account.archiveAccountKey || accountKey;
+  const accountApiId = options.accountApiId || resolveAccountApiId(activityLogin, account);
   if (!accountKey || !accountApiId) {
     return null;
   }
 
   const { fallbackMonths = 12 } = options;
-  const earliestFunding = await discoverEarliestFundingDate(login, accountApiId, accountKey);
+  const earliestFunding = await discoverEarliestFundingDate(
+    activityLogin,
+    accountApiId,
+    activityCacheAccountKey,
+    options
+  );
   const now = new Date();
   const nowIsoString = now.toISOString();
 
@@ -12129,15 +12597,24 @@ async function buildAccountActivityContext(login, account, options = {}) {
     : addMonths(now, -Math.max(1, fallbackMonths));
   const crawlStart = clampDate(paddedStart || now, MIN_ACTIVITY_DATE) || MIN_ACTIVITY_DATE;
 
-  const activitiesRaw = await fetchActivitiesRange(login, accountApiId, crawlStart, now, accountKey);
+  const activitiesRaw = await fetchActivitiesRange(
+    activityLogin,
+    accountApiId,
+    crawlStart,
+    now,
+    activityCacheAccountKey,
+    options
+  );
   const activities = dedupeActivities(activitiesRaw);
-  const fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(login, accountKey);
+  const fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(activityLogin, accountKey);
 
   return {
     accountId: accountKey,
     accountNumber,
     accountApiId,
     accountKey,
+    activityCacheLoginId: activityLogin.id || null,
+    activityCacheAccountKey,
     earliestFunding,
     crawlStart,
     activities,
@@ -17658,6 +18135,429 @@ function summarizeAccountBalances(balanceEntry) {
   return summary;
 }
 
+function balanceMapToRawArray(balanceMap) {
+  if (!balanceMap || typeof balanceMap !== 'object') {
+    return [];
+  }
+  return Object.entries(balanceMap)
+    .map(([currency, entry]) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      return Object.assign({ currency }, entry);
+    })
+    .filter(Boolean);
+}
+
+function buildRawBalancesFromSummary(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return { combinedBalances: [], perCurrencyBalances: [] };
+  }
+  return {
+    combinedBalances: balanceMapToRawArray(summary.combined || summary),
+    perCurrencyBalances: balanceMapToRawArray(summary.perCurrency || {}),
+  };
+}
+
+function buildZeroBalanceRaw() {
+  const zero = {
+    currency: 'CAD',
+    cash: 0,
+    marketValue: 0,
+    totalEquity: 0,
+    buyingPower: 0,
+  };
+  return {
+    combinedBalances: [zero],
+    perCurrencyBalances: [zero],
+  };
+}
+
+function getArchivedBalanceRaw(account) {
+  const snapshot = getArchivedSnapshotForAccount(account);
+  if (snapshot && snapshot.balanceRaw) {
+    return snapshot.balanceRaw;
+  }
+  if (snapshot && snapshot.balanceSummary) {
+    return buildRawBalancesFromSummary(snapshot.balanceSummary);
+  }
+  return buildZeroBalanceRaw();
+}
+
+function getArchivedBalanceSummary(account) {
+  const snapshot = getArchivedSnapshotForAccount(account);
+  if (snapshot && snapshot.balanceSummary) {
+    return snapshot.balanceSummary;
+  }
+  return summarizeAccountBalances(getArchivedBalanceRaw(account));
+}
+
+function getArchivedPositions(account) {
+  const snapshot = getArchivedSnapshotForAccount(account);
+  if (snapshot && Array.isArray(snapshot.positions)) {
+    return snapshot.positions;
+  }
+  return [];
+}
+
+async function fetchPositionsForContext(context) {
+  if (!context || !context.login || !context.account) {
+    return [];
+  }
+  if (isArchivedAccount(context.account)) {
+    return getArchivedPositions(context.account);
+  }
+  try {
+    return await fetchPositions(context.login, context.account);
+  } catch (error) {
+    const snapshot = getArchivedSnapshotForAccount(context.account);
+    if (snapshot) {
+      console.warn(
+        'Using archived positions for account ' + context.account.id + ' after provider fetch failed:',
+        error?.message || error
+      );
+      return Array.isArray(snapshot.positions) ? snapshot.positions : [];
+    }
+    throw error;
+  }
+}
+
+async function fetchBalancesForContext(context) {
+  if (!context || !context.login || !context.account) {
+    return buildZeroBalanceRaw();
+  }
+  if (isArchivedAccount(context.account)) {
+    return getArchivedBalanceRaw(context.account);
+  }
+  try {
+    return await fetchBalances(context.login, context.account);
+  } catch (error) {
+    const snapshot = getArchivedSnapshotForAccount(context.account);
+    if (snapshot) {
+      console.warn(
+        'Using archived balances for account ' + context.account.id + ' after provider fetch failed:',
+        error?.message || error
+      );
+      return getArchivedBalanceRaw(context.account);
+    }
+    throw error;
+  }
+}
+
+function parseArchivedDate(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function buildArchivedActivityLogin(login, account, snapshot) {
+  const archiveLoginId =
+    (account && account.archiveLoginId) ||
+    (snapshot && snapshot.activityCacheLoginId) ||
+    (snapshot && snapshot.account && snapshot.account.archiveLoginId) ||
+    (login && login.id);
+  return Object.assign({}, login, {
+    id: archiveLoginId || (login && login.id) || 'archived-login',
+  });
+}
+
+function reviveArchivedActivityContext(login, account, snapshot) {
+  const raw = snapshot && snapshot.activityContext;
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const accountId = account && account.id;
+  if (!accountId) {
+    return null;
+  }
+  const activityLogin = buildArchivedActivityLogin(login, account, snapshot);
+  const normalized = Object.assign({}, raw, {
+    accountId,
+    accountKey: accountId,
+    accountNumber: account.number || account.accountNumber || raw.accountNumber || accountId,
+    accountApiId: raw.accountApiId || resolveAccountApiId(activityLogin, account),
+    earliestFunding: parseArchivedDate(raw.earliestFunding),
+    crawlStart: parseArchivedDate(raw.crawlStart),
+    now: parseArchivedDate(raw.now),
+    nowIsoString: typeof raw.nowIsoString === 'string' ? raw.nowIsoString : null,
+    activities: Array.isArray(raw.activities) ? raw.activities : [],
+    activityCacheLoginId: raw.activityCacheLoginId || activityLogin.id || null,
+    activityCacheAccountKey:
+      raw.activityCacheAccountKey ||
+      account.archiveAccountKey ||
+      (snapshot && snapshot.activityCacheAccountKey) ||
+      accountId,
+  });
+  if (!normalized.now) {
+    normalized.now = new Date();
+  }
+  if (!normalized.nowIsoString) {
+    normalized.nowIsoString = normalized.now.toISOString();
+  }
+  if (!normalized.crawlStart) {
+    normalized.crawlStart = normalized.earliestFunding || normalized.now;
+  }
+  normalized.fingerprint =
+    typeof raw.fingerprint === 'string' ? raw.fingerprint : computeActivityFingerprint(normalized.activities);
+  normalized.fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(activityLogin, accountId);
+  return normalized;
+}
+
+function buildArchivedActivityOptions(login, account, snapshot, extraOptions = {}) {
+  const activityLogin = buildArchivedActivityLogin(login, account, snapshot);
+  return Object.assign({}, extraOptions, {
+    offlineOnly: true,
+    activityLogin,
+    cacheAccountKey:
+      (account && account.archiveAccountKey) ||
+      (snapshot && snapshot.activityCacheAccountKey) ||
+      (snapshot && snapshot.account && snapshot.account.archiveAccountKey) ||
+      (account && account.id),
+    cachedEarliestFunding:
+      (account && account.earliestFunding) ||
+      (snapshot && snapshot.earliestFunding) ||
+      (snapshot && snapshot.activityContext && snapshot.activityContext.earliestFunding) ||
+      null,
+  });
+}
+
+async function buildActivityContextForContext(context, options = {}) {
+  if (!context || !context.login || !context.account) {
+    return null;
+  }
+  if (isArchivedAccount(context.account)) {
+    const snapshot = getArchivedSnapshotForAccount(context.account);
+    const revived = reviveArchivedActivityContext(context.login, context.account, snapshot);
+    if (revived) {
+      return revived;
+    }
+    return buildAccountActivityContext(
+      context.login,
+      context.account,
+      buildArchivedActivityOptions(context.login, context.account, snapshot, options)
+    );
+  }
+  return buildAccountActivityContext(context.login, context.account, options);
+}
+
+function cloneForResponse(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isLikelyArchivedEquityCollapseArtifact(previousPoint, point, nextPoint) {
+  if (!previousPoint || !point || !nextPoint) {
+    return false;
+  }
+  const previousEquity = Number(previousPoint.equityCad);
+  const currentEquity = Number(point.equityCad);
+  const nextEquity = Number(nextPoint.equityCad);
+  if (
+    !Number.isFinite(previousEquity) ||
+    !Number.isFinite(currentEquity) ||
+    !Number.isFinite(nextEquity)
+  ) {
+    return false;
+  }
+  const surroundingEquity = Math.min(Math.abs(previousEquity), Math.abs(nextEquity));
+  if (surroundingEquity < 10000) {
+    return false;
+  }
+  const nearZeroThreshold = Math.max(1000, surroundingEquity * 0.05);
+  if (Math.abs(currentEquity) > nearZeroThreshold) {
+    return false;
+  }
+
+  const currentPnl = Number(point.totalPnlCad);
+  const previousPnl = Number(previousPoint.totalPnlCad);
+  const nextPnl = Number(nextPoint.totalPnlCad);
+  if (
+    !Number.isFinite(currentPnl) ||
+    !Number.isFinite(previousPnl) ||
+    !Number.isFinite(nextPnl)
+  ) {
+    return true;
+  }
+  const surroundingPnl = Math.min(previousPnl, nextPnl);
+  const dropThreshold = Math.max(50000, surroundingEquity * 0.5);
+  return currentPnl < surroundingPnl - dropThreshold;
+}
+
+function sanitizeArchivedTotalPnlSeries(series) {
+  if (!series || typeof series !== 'object' || !Array.isArray(series.points) || series.points.length < 3) {
+    return series;
+  }
+  let removedCount = 0;
+  const points = series.points.filter((point, index, list) => {
+    if (index === 0 || index === list.length - 1) {
+      return true;
+    }
+    const shouldRemove = isLikelyArchivedEquityCollapseArtifact(
+      list[index - 1],
+      point,
+      list[index + 1]
+    );
+    if (shouldRemove) {
+      removedCount += 1;
+    }
+    return !shouldRemove;
+  });
+  if (!removedCount) {
+    return series;
+  }
+  const issues = new Set(Array.isArray(series.issues) ? series.issues : []);
+  issues.add('archived-equity-collapse-filtered');
+  return Object.assign({}, series, {
+    points,
+    issues: Array.from(issues),
+  });
+}
+
+function archivedSnapshotHasActivityContext(snapshot) {
+  return !!(
+    snapshot &&
+    snapshot.activityContext &&
+    typeof snapshot.activityContext === 'object' &&
+    Array.isArray(snapshot.activityContext.activities) &&
+    snapshot.activityContext.activities.length > 0
+  );
+}
+
+function getArchivedTotalPnlSeriesForRequest(account, queryOptions = {}) {
+  if (!account || queryOptions.symbol || queryOptions.startDate || queryOptions.endDate) {
+    return null;
+  }
+  const snapshot = getArchivedSnapshotForAccount(account);
+  if (archivedSnapshotHasActivityContext(snapshot) && queryOptions.allowStoredArchivedSeries !== true) {
+    return null;
+  }
+  const container = snapshot && snapshot.totalPnlSeries;
+  if (!container || typeof container !== 'object') {
+    return null;
+  }
+  const preferredKey = queryOptions.applyAccountCagrStartDate === false ? 'all' : 'cagr';
+  const fallbackKey = preferredKey === 'all' ? 'cagr' : 'all';
+  const series = container[preferredKey] || container[fallbackKey] || (Array.isArray(container.points) ? container : null);
+  if (!series || !Array.isArray(series.points)) {
+    return null;
+  }
+  const cloned = sanitizeArchivedTotalPnlSeries(cloneForResponse(series));
+  const issues = new Set(Array.isArray(cloned.issues) ? cloned.issues : []);
+  issues.add('archived-account');
+  cloned.issues = Array.from(issues);
+  cloned.archived = true;
+  return cloned;
+}
+
+function sanitizeActivityContextForArchive(activityContext) {
+  if (!activityContext || typeof activityContext !== 'object') {
+    return undefined;
+  }
+  return {
+    accountId: activityContext.accountId || null,
+    accountNumber: activityContext.accountNumber || null,
+    accountApiId: activityContext.accountApiId || null,
+    accountKey: activityContext.accountKey || null,
+    activityCacheLoginId: activityContext.activityCacheLoginId || null,
+    activityCacheAccountKey: activityContext.activityCacheAccountKey || null,
+    earliestFunding:
+      activityContext.earliestFunding instanceof Date
+        ? activityContext.earliestFunding.toISOString()
+        : activityContext.earliestFunding || null,
+    crawlStart:
+      activityContext.crawlStart instanceof Date
+        ? activityContext.crawlStart.toISOString()
+        : activityContext.crawlStart || null,
+    now: activityContext.now instanceof Date ? activityContext.now.toISOString() : activityContext.now || null,
+    nowIsoString: activityContext.nowIsoString || null,
+    activities: Array.isArray(activityContext.activities) ? activityContext.activities : [],
+    fingerprint:
+      typeof activityContext.fingerprint === 'string'
+        ? activityContext.fingerprint
+        : computeActivityFingerprint(activityContext.activities || []),
+  };
+}
+
+function buildAccountArchiveSnapshotPayload(context, snapshot = {}) {
+  if (!context || !context.account || !context.account.id) {
+    return null;
+  }
+  return {
+    loginId: context.login && context.login.id ? context.login.id : context.account.loginId || null,
+    loginEmail: context.login && context.login.email ? context.login.email : context.account.ownerEmail || null,
+    provider: context.account.provider || getLoginProvider(context.login),
+    account: context.account,
+    live: snapshot.live === true,
+    archived: isArchivedAccount(context.account),
+    asOf: snapshot.asOf || new Date().toISOString(),
+    balanceSummary: snapshot.balanceSummary,
+    balanceRaw: snapshot.balanceRaw,
+    fundingSummary: snapshot.fundingSummary,
+    dividendSummary: snapshot.dividendSummary,
+    totalPnlSeries: snapshot.totalPnlSeries,
+    totalPnlBySymbol: snapshot.totalPnlBySymbol,
+    totalPnlBySymbolAll: snapshot.totalPnlBySymbolAll,
+    positions: snapshot.positions,
+    orders: snapshot.orders,
+    activityContext: sanitizeActivityContextForArchive(snapshot.activityContext),
+    activityCacheLoginId:
+      snapshot.activityContext && snapshot.activityContext.activityCacheLoginId
+        ? snapshot.activityContext.activityCacheLoginId
+        : context.account.archiveLoginId || null,
+    activityCacheAccountKey:
+      snapshot.activityContext && snapshot.activityContext.activityCacheAccountKey
+        ? snapshot.activityContext.activityCacheAccountKey
+        : context.account.archiveAccountKey || context.account.id,
+    earliestFunding:
+      snapshot.activityContext && snapshot.activityContext.earliestFunding instanceof Date
+        ? snapshot.activityContext.earliestFunding.toISOString()
+        : context.account.earliestFunding || null,
+  };
+}
+
+function persistAccountArchiveSnapshot(context, snapshot = {}) {
+  const payload = buildAccountArchiveSnapshotPayload(context, snapshot);
+  if (!payload) {
+    return null;
+  }
+  try {
+    return upsertArchivedAccountSnapshot(payload);
+  } catch (error) {
+    console.warn(
+      'Failed to persist archived snapshot for account ' + context.account.id + ':',
+      error?.message || error
+    );
+    return null;
+  }
+}
+
+function persistAccountArchiveSnapshots(items) {
+  const payloads = Array.isArray(items)
+    ? items
+        .map((item) => buildAccountArchiveSnapshotPayload(item && item.context, item && item.snapshot))
+        .filter(Boolean)
+    : [];
+  if (!payloads.length) {
+    return [];
+  }
+  try {
+    return upsertArchivedAccountSnapshots(payloads);
+  } catch (error) {
+    console.warn('Failed to persist archived account snapshots:', error?.message || error);
+    return [];
+  }
+}
+
 async function resolveAccountContextByKey(accountKey) {
   if (!accountKey) {
     return null;
@@ -17687,7 +18587,11 @@ async function resolveAccountContextByKey(accountKey) {
     try {
       accounts = await fetchAccounts(login);
     } catch (error) {
-      throw error;
+      console.warn(
+        'Failed to fetch accounts while resolving account ' + normalizedKey + ' for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
+        error?.message || error
+      );
+      continue;
     }
     if (!Array.isArray(accounts)) {
       continue;
@@ -17720,6 +18624,27 @@ async function resolveAccountContextByKey(accountKey) {
       if (targetKeys.some((key) => candidates.includes(key))) {
         return { login, account: normalizedBase };
       }
+    }
+  }
+  const accountNameOverrides = getAccountNameOverrides();
+  const accountSettings = getAccountSettings();
+  const accountBeneficiaries = getAccountBeneficiaries();
+  const targetKeySet = new Set(targetKeys.map(normalizeLookupValue).filter(Boolean));
+  for (const login of allLogins) {
+    const loginIdLower = String(login.id || '').trim().toLowerCase();
+    const aliases = getLoginArchiveAliases(login);
+    if (loginFilter && loginIdLower !== loginFilter && !aliases.has(loginFilter)) {
+      continue;
+    }
+    const archivedAccounts = listArchivedAccountCandidatesForLogin(
+      login,
+      accountNameOverrides,
+      accountSettings,
+      accountBeneficiaries
+    );
+    const match = archivedAccounts.find((account) => accountMatchesAnyKey(account, targetKeySet));
+    if (match) {
+      return { login, account: match };
     }
   }
   return null;
@@ -19136,7 +20061,7 @@ app.post('/api/app-settings/other-assets', function (req, res) {
 });
 
 function handleGiftRouteError(res, error, fallbackMessage) {
-  if (error && ['INVALID_GIFT', 'INVALID_DATE', 'INVALID_ORGANIZATION', 'INVALID_AMOUNT', 'INVALID_YEAR', 'INVALID_ID'].includes(error.code)) {
+  if (error && ['INVALID_GIFT', 'INVALID_DATE', 'INVALID_ORGANIZATION', 'INVALID_AMOUNT', 'INVALID_YEAR', 'INVALID_ID', 'INVALID_RECEIPT_SOURCE', 'INVALID_RECEIPT_TEXT'].includes(error.code)) {
     return res.status(400).json({ message: error.message });
   }
   if (error && error.code === 'NOT_FOUND') {
@@ -19167,6 +20092,16 @@ app.post('/api/gifts', function (req, res) {
     return res.status(201).json({ gift: result.gift, ...current });
   } catch (error) {
     return handleGiftRouteError(res, error, 'Failed to save gift');
+  }
+});
+
+app.post('/api/gifts/reconcile', function (req, res) {
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  try {
+    const result = reconcileGiftReceipts(payload);
+    return res.json(result);
+  } catch (error) {
+    return handleGiftRouteError(res, error, 'Failed to reconcile gift receipts');
   }
 });
 
@@ -19205,13 +20140,23 @@ app.get('/api/accounts', async function (req, res) {
 
   try {
     const accountNameOverrides = getAccountNameOverrides();
+    const accountSettings = getAccountSettings();
+    const accountBeneficiaries = getAccountBeneficiaries();
     const groupRelations = getAccountGroupRelations();
     const groupMetadata = getAccountGroupMetadata();
 
     let allAccounts = [];
     for (const login of allLogins) {
-      const fetchedAccounts = await fetchAccounts(login);
-      const normalized = fetchedAccounts
+      let fetchedAccounts = [];
+      try {
+        fetchedAccounts = await fetchAccounts(login);
+      } catch (error) {
+        console.warn(
+          'Failed to fetch accounts for setup dialog login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
+          error?.message || error
+        );
+      }
+      const normalized = (Array.isArray(fetchedAccounts) ? fetchedAccounts : [])
         .map((account, index) => {
           const normalizedAccount = buildNormalizedAccountBase(login, account, index);
           const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
@@ -19230,7 +20175,20 @@ app.get('/api/accounts', async function (req, res) {
           });
         })
         .filter(Boolean);
-      allAccounts = allAccounts.concat(normalized);
+      const liveKeys = new Set();
+      normalized.forEach((account) => {
+        [account.id, account.number, account.accountNumber, account.providerAccountId]
+          .map(normalizeLookupValue)
+          .filter(Boolean)
+          .forEach((key) => liveKeys.add(key));
+      });
+      const archivedAccounts = listArchivedAccountCandidatesForLogin(
+        login,
+        accountNameOverrides,
+        accountSettings,
+        accountBeneficiaries
+      ).filter((account) => !accountMatchesAnyKey(account, liveKeys));
+      allAccounts = allAccounts.concat(normalized, archivedAccounts);
     }
 
     const { accountGroups } = assignAccountGroups(allAccounts, { groupRelations, groupMetadata });
@@ -19562,6 +20520,9 @@ app.get('/api/summary', async function (req, res) {
       : '';
   const manualRefreshKey = rawRefreshKey && rawRefreshKey !== '0' ? rawRefreshKey : '';
   const effectiveRefreshKey = manualRefreshKey || '0';
+  const includeNonInvestmentAccounts =
+    req.query.includeNonInvestmentAccounts === '1' ||
+    req.query.includeNonInvestmentAccounts === 'true';
 
   // When the client increments refreshKey, treat as manual cache invalidation
   if (effectiveRefreshKey !== activeRefreshKey) {
@@ -19580,6 +20541,9 @@ app.get('/api/summary', async function (req, res) {
   // Scope cache keys to the provided refreshKey (if any)
   const cacheKeyPrefix = `rk:${effectiveRefreshKey}::${SUMMARY_CACHE_VERSION}::`;
   normalizedSelection.cacheKey = `${cacheKeyPrefix}${normalizedSelection.cacheKey}`;
+  if (includeNonInvestmentAccounts) {
+    normalizedSelection.cacheKey = `${normalizedSelection.cacheKey}::includeNonInvestmentAccounts`;
+  }
 
   try {
     if (!forceRefresh) {
@@ -19604,6 +20568,9 @@ app.get('/api/summary', async function (req, res) {
           normalizedSelection = reinterpretedSelection;
           // Re-scope the cache key with the current refreshKey prefix
           normalizedSelection.cacheKey = `${cacheKeyPrefix}${normalizedSelection.cacheKey}`;
+          if (includeNonInvestmentAccounts) {
+            normalizedSelection.cacheKey = `${normalizedSelection.cacheKey}::includeNonInvestmentAccounts`;
+          }
           cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
           if (cached && cached.payload) {
             debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
@@ -19657,10 +20624,30 @@ app.get('/api/summary', async function (req, res) {
     const featureFlags = buildFeatureFlagsPayload(appSettings);
     const otherAssets = appSettings.otherAssets || null;
     const accountBeneficiaries = getAccountBeneficiaries();
+    const accountFetchIssues = [];
     const accountCollections = await Promise.all(
       allLogins.map(async function (login) {
-        const fetchedAccounts = await fetchAccounts(login);
-        const normalized = fetchedAccounts
+        let fetchedAccounts = [];
+        let fetchError = null;
+        let fetchIssue = null;
+        try {
+          fetchedAccounts = await fetchAccounts(login);
+        } catch (error) {
+          fetchError = error;
+          const message = error && error.message ? error.message : String(error);
+          fetchIssue = {
+            loginId: login.id || null,
+            loginLabel: resolveLoginDisplay(login),
+            provider: getLoginProvider(login),
+            message,
+          };
+          accountFetchIssues.push(fetchIssue);
+          console.warn(
+            'Failed to fetch accounts for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
+            message
+          );
+        }
+        const normalized = (Array.isArray(fetchedAccounts) ? fetchedAccounts : [])
           .map(function (account, index) {
             const normalizedAccount = buildNormalizedAccountBase(login, account, index);
             const displayName = resolveAccountDisplayName(accountNameOverrides, normalizedAccount, login);
@@ -19693,7 +20680,34 @@ app.get('/api/summary', async function (req, res) {
             return normalizedAccount;
           })
           .filter(Boolean);
-        return { login, accounts: normalized };
+
+        const liveKeys = new Set();
+        normalized.forEach((account) => {
+          [
+            account.id,
+            account.number,
+            account.accountNumber,
+            account.providerAccountId,
+          ].forEach((value) => {
+            const key = normalizeLookupValue(value);
+            if (key) {
+              liveKeys.add(key);
+            }
+          });
+        });
+
+        const archivedAccounts = listArchivedAccountCandidatesForLogin(
+          login,
+          accountNameOverrides,
+          accountSettings,
+          accountBeneficiaries
+        ).filter((account) => !accountMatchesAnyKey(account, liveKeys));
+
+        if (fetchError && archivedAccounts.length > 0 && fetchIssue) {
+          fetchIssue.archivedAccountCount = archivedAccounts.length;
+        }
+
+        return { login, accounts: normalized.concat(archivedAccounts) };
       })
     );
 
@@ -19823,6 +20837,9 @@ app.get('/api/summary', async function (req, res) {
     }
 
     const viewingAggregateAccounts = viewingAllAccountsRequest || viewingAccountGroup;
+    if (viewingAggregateAccounts && !includeNonInvestmentAccounts) {
+      selectedAccounts = selectedAccounts.filter((account) => !isNonInvestmentAccount(account));
+    }
 
     if (viewingAccountGroup) {
       resolvedAccountId = selectedAccountGroup.id;
@@ -19843,12 +20860,12 @@ app.get('/api/summary', async function (req, res) {
 
     const positionsPromise = Promise.all(
       selectedContexts.map(function (context) {
-        return fetchPositions(context.login, context.account);
+        return fetchPositionsForContext(context);
       })
     );
     const balancesPromise = Promise.all(
       selectedContexts.map(function (context) {
-        return fetchBalances(context.login, context.account);
+        return fetchBalancesForContext(context);
       })
     );
 
@@ -19872,7 +20889,9 @@ app.get('/api/summary', async function (req, res) {
     }
     const perAccountCombinedBalances = {};
     selectedContexts.forEach(function (context, index) {
-      const summary = summarizeAccountBalances(balancesResults[index]);
+      const summary = isArchivedAccount(context && context.account)
+        ? getArchivedBalanceSummary(context.account)
+        : summarizeAccountBalances(balancesResults[index]);
       if (summary) {
         perAccountCombinedBalances[context.account.id] = summary;
       }
@@ -19920,7 +20939,7 @@ app.get('/api/summary', async function (req, res) {
         return buildSkippedActivityContext(context);
       }
       if (!accountActivityContextCache.has(accountId)) {
-        const contextPromise = buildAccountActivityContext(context.login, context.account).catch(
+        const contextPromise = buildActivityContextForContext(context).catch(
           (error) => {
             accountActivityContextCache.delete(accountId);
             throw error;
@@ -20172,8 +21191,15 @@ app.get('/api/summary', async function (req, res) {
         continue;
       }
       const ids = Array.from(symbolSet);
-      const details = await fetchSymbolsDetails(login, ids);
-      Object.assign(symbolsMap, details);
+      try {
+        const details = await fetchSymbolsDetails(login, ids);
+        Object.assign(symbolsMap, details);
+      } catch (symbolError) {
+        console.warn(
+          'Failed to fetch symbol details for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
+          symbolError?.message || symbolError
+        );
+      }
     }
 
     const accountsMap = {};
@@ -20278,7 +21304,7 @@ app.get('/api/summary', async function (req, res) {
       const context = selectedContexts[0];
       let sharedActivityContext = null;
       try {
-        sharedActivityContext = await buildAccountActivityContext(context.login, context.account);
+        sharedActivityContext = await buildActivityContextForContext(context);
       } catch (activityError) {
         const activityMessage =
           activityError && activityError.message ? activityError.message : String(activityError);
@@ -20315,6 +21341,9 @@ app.get('/api/summary', async function (req, res) {
             perAccountCombinedBalances,
             { applyAccountCagrStartDate: true, activityContext: sharedActivityContext }
           );
+          if (isArchivedAccount(context.account)) {
+            totalPnlSeries = sanitizeArchivedTotalPnlSeries(totalPnlSeries);
+          }
         } catch (seriesError) {
           const message =
             seriesError && seriesError.message ? seriesError.message : String(seriesError);
@@ -21299,6 +22328,10 @@ app.get('/api/summary', async function (req, res) {
         name: account.name || null,
         type: account.type,
         status: account.status,
+        archived: account.archived === true,
+        readOnly: account.readOnly === true,
+        archivedAt: account.archivedAt || null,
+        lastSeenAt: account.lastSeenAt || null,
         isPrimary: account.isPrimary,
         isBilling: account.isBilling,
         clientAccountType: account.clientAccountType,
@@ -21551,11 +22584,37 @@ app.get('/api/summary', async function (req, res) {
       accountTotalPnlBySymbolAll,
       accountTotalPnlSeries,
       accountNorbertJournals,
+      accountFetchIssues: accountFetchIssues.length ? accountFetchIssues : undefined,
       featureFlags,
       otherAssets,
       asOf: new Date().toISOString(),
       usdToCadRate: latestUsdToCadRate,
     };
+
+    const archiveSnapshotItems = [];
+    selectedContexts.forEach(function (context, index) {
+      if (!context || !context.account || !context.account.id) {
+        return;
+      }
+      const accountId = context.account.id;
+      archiveSnapshotItems.push({
+        context,
+        snapshot: {
+          live: !isArchivedAccount(context.account),
+          balanceSummary: perAccountCombinedBalances[accountId],
+          balanceRaw: balancesResults[index],
+          fundingSummary: accountFundingSummaries[accountId],
+          dividendSummary: accountDividendSummaries[accountId],
+          totalPnlSeries: accountTotalPnlSeries[accountId],
+          totalPnlBySymbol: accountTotalPnlBySymbol[accountId],
+          totalPnlBySymbolAll: accountTotalPnlBySymbolAll[accountId],
+          positions: positionsByAccountId[accountId],
+          orders: dedupedOrders.filter((order) => order && order.accountId === accountId),
+          asOf: responsePayload.asOf,
+        },
+      });
+    });
+    persistAccountArchiveSnapshots(archiveSnapshotItems);
 
     if (includeAllAccounts) {
       clearSummaryCache();
@@ -21696,6 +22755,22 @@ app.get('/api/summary', async function (req, res) {
         asOf: responsePayload.asOf,
       });
       setSupersetCacheEntry(supersetEntry);
+      const activityArchiveSnapshotItems = [];
+      selectedContexts.forEach(function (context) {
+        const accountId = context && context.account && context.account.id;
+        if (!accountId || !resolvedActivityContexts[accountId]) {
+          return;
+        }
+        activityArchiveSnapshotItems.push({
+          context,
+          snapshot: {
+            live: !isArchivedAccount(context.account),
+            activityContext: resolvedActivityContexts[accountId],
+            asOf: responsePayload.asOf,
+          },
+        });
+      });
+      persistAccountArchiveSnapshots(activityArchiveSnapshotItems);
     } catch (cacheError) {
       // If we fail to persist the superset cache, continue with the response
       debugSummaryCache('failed to persist superset extras', cacheError?.message || cacheError);
@@ -21772,6 +22847,9 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
   const symbolListParam = symbolParam ? normalizeSymbolList(req.query.symbols) : [];
   const includeSyntheticPositionsParam =
     req.query.includeSyntheticPositions === '1' || req.query.includeSyntheticPositions === 'true';
+  const includeNonInvestmentAccountsParam =
+    req.query.includeNonInvestmentAccounts === '1' ||
+    req.query.includeNonInvestmentAccounts === 'true';
   const startDateParam =
     typeof req.query.startDate === 'string' && req.query.startDate.trim() ? req.query.startDate.trim() : null;
   const endDateParam =
@@ -21792,6 +22870,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     symbolGroupKey: symbolGroupKeyParam,
     symbols: symbolListParam && symbolListParam.length ? symbolListParam : undefined,
     includeSyntheticPositions: includeSyntheticPositionsParam,
+    includeNonInvestmentAccounts: includeNonInvestmentAccountsParam,
     refreshKey: refreshKeyParam,
   };
   const cacheKey = buildTotalPnlSeriesCacheKey(normalizedKey, queryOptions);
@@ -21829,6 +22908,9 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
           .filter(Boolean);
       } else {
         // Fallback: fetch from provider
+        const accountNameOverrides = getAccountNameOverrides();
+        const accountSettings = getAccountSettings();
+        const accountBeneficiaries = getAccountBeneficiaries();
         for (const login of allLogins) {
           let fetchedAccounts = [];
           try {
@@ -21837,9 +22919,10 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             const message = error && error.message ? error.message : String(error);
             console.warn('Failed to fetch accounts for aggregate Total P&L:', message);
             hadAccountFetchFailure = true;
-            continue;
           }
-          fetchedAccounts.forEach((account, index) => {
+          const liveKeys = new Set();
+          const loginContexts = [];
+          (Array.isArray(fetchedAccounts) ? fetchedAccounts : []).forEach((account, index) => {
             if (!account) {
               return;
             }
@@ -21855,8 +22938,22 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             if (isHiddenAccount(effectiveAccount)) {
               return;
             }
-            contexts.push({ login, account: effectiveAccount });
+            [effectiveAccount.id, effectiveAccount.number, effectiveAccount.accountNumber, effectiveAccount.providerAccountId]
+              .map(normalizeLookupValue)
+              .filter(Boolean)
+              .forEach((key) => liveKeys.add(key));
+            loginContexts.push({ login, account: effectiveAccount });
           });
+          const archivedAccounts = listArchivedAccountCandidatesForLogin(
+            login,
+            accountNameOverrides,
+            accountSettings,
+            accountBeneficiaries
+          ).filter((account) => !accountMatchesAnyKey(account, liveKeys));
+          archivedAccounts.forEach((account) => {
+            loginContexts.push({ login, account });
+          });
+          contexts.push(...loginContexts);
         }
         if (!contexts.length) {
           return res.status(404).json({ message: 'No accounts available for aggregation' });
@@ -21871,6 +22968,9 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       );
 
       let targetContexts = contexts;
+      if (!includeNonInvestmentAccountsParam) {
+        targetContexts = targetContexts.filter((context) => !isNonInvestmentAccount(context.account));
+      }
       if (isGroupKey) {
         const groupEntry = accountGroupsById.get(rawAccountKey);
         if (!groupEntry || !groupEntry.accounts.length) {
@@ -21897,14 +22997,16 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         const missing = cacheStatuses.filter((e) => !e.hit).map((e) => e.context);
         if (missing.length > 0) {
           const balancesResults = await Promise.all(
-            missing.map((context) => fetchBalances(context.login, context.account))
+            missing.map((context) => fetchBalancesForContext(context))
           );
           balancesResults.forEach((balancesRaw, index) => {
             const context = missing[index];
             if (!context) {
               return;
             }
-            const summary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+            const summary = isArchivedAccount(context.account)
+              ? getArchivedBalanceSummary(context.account)
+              : summarizeAccountBalances(balancesRaw) || balancesRaw;
             if (summary) {
               perAccountCombinedBalances[context.account.id] = summary;
             }
@@ -21923,8 +23025,14 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       const resolver = async (ctx) => {
         try {
           const key = ctx && ctx.account && ctx.account.id;
-          if (!key || !activityContextMap) return null;
-          return activityContextMap[key] || null;
+          if (!key) return null;
+          if (activityContextMap && activityContextMap[key]) {
+            return activityContextMap[key];
+          }
+          if (isArchivedAccount(ctx.account)) {
+            return buildActivityContextForContext(ctx);
+          }
+          return null;
         } catch (_) {
           return null;
         }
@@ -22015,6 +23123,16 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       number: accountWithOverrides.number || normalizedAccount.number || rawAccountKey,
     });
 
+    const archivedSeries = isArchivedAccount(effectiveAccount)
+      ? getArchivedTotalPnlSeriesForRequest(effectiveAccount, queryOptions)
+      : null;
+    if (archivedSeries) {
+      if (cacheKey) {
+        setTotalPnlSeriesCacheEntry(cacheKey, archivedSeries);
+      }
+      return res.json(archivedSeries);
+    }
+
     let perAccountCombinedBalances = {};
     let providedPositions = null;
     // For symbol series, reuse superset balances if available to avoid provider calls
@@ -22031,13 +23149,15 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       }
     }
     if (!symbolParam || !perAccountCombinedBalances || !perAccountCombinedBalances[accountId]) {
-      const balancesRaw = await fetchBalances(login, effectiveAccount);
-      const balanceSummary = summarizeAccountBalances(balancesRaw) || balancesRaw;
+      const balancesRaw = await fetchBalancesForContext({ login, account: effectiveAccount });
+      const balanceSummary = isArchivedAccount(effectiveAccount)
+        ? getArchivedBalanceSummary(effectiveAccount)
+        : summarizeAccountBalances(balancesRaw) || balancesRaw;
       perAccountCombinedBalances = { [accountId]: balanceSummary };
     }
     if (symbolParam && !providedPositions) {
       try {
-        providedPositions = await fetchPositions(login, effectiveAccount);
+        providedPositions = await fetchPositionsForContext({ login, account: effectiveAccount });
       } catch (_) {
         providedPositions = null;
       }
@@ -22062,6 +23182,29 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     if (queryOptions.includeSyntheticPositions === true) {
       options.includeSyntheticPositions = true;
     }
+    let preparedActivityContext = null;
+    if (isArchivedAccount(effectiveAccount)) {
+      preparedActivityContext = await buildActivityContextForContext({ login, account: effectiveAccount });
+      if (preparedActivityContext) {
+        options.activityContext = preparedActivityContext;
+      }
+    } else {
+      const superset = getSupersetCacheEntry();
+      preparedActivityContext =
+        superset && superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
+          ? superset.activityContextsByAccountId[accountId] || null
+          : null;
+      if (!preparedActivityContext) {
+        try {
+          preparedActivityContext = await buildActivityContextForContext({ login, account: effectiveAccount });
+        } catch (activityError) {
+          preparedActivityContext = null;
+        }
+      }
+      if (preparedActivityContext) {
+        options.activityContext = preparedActivityContext;
+      }
+    }
 
     let series = null;
     if (symbolParam) {
@@ -22069,9 +23212,10 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       // reuse it to avoid hitting provider APIs again while rendering the chart.
       const superset = getSupersetCacheEntry();
       const activityCtx =
-        superset && superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
+        preparedActivityContext ||
+        (superset && superset.activityContextsByAccountId && typeof superset.activityContextsByAccountId === 'object'
           ? superset.activityContextsByAccountId[accountId]
-          : null;
+          : null);
       const computedOptions = activityCtx ? { ...options, activityContext: activityCtx, symbol: symbolParam } : { ...options, symbol: symbolParam };
       if (providedPositions && Array.isArray(providedPositions) && providedPositions.length) {
         computedOptions.providedPositions = providedPositions;
@@ -22085,9 +23229,39 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
     } else {
       series = await computeTotalPnlSeries(login, effectiveAccount, perAccountCombinedBalances, options);
     }
+    if (isArchivedAccount(effectiveAccount)) {
+      series = sanitizeArchivedTotalPnlSeries(series);
+    }
     if (!series) {
+      const storedArchivedFallback = isArchivedAccount(effectiveAccount)
+        ? getArchivedTotalPnlSeriesForRequest(
+            effectiveAccount,
+            Object.assign({}, queryOptions, { allowStoredArchivedSeries: true })
+          )
+        : null;
+      if (storedArchivedFallback) {
+        if (cacheKey) {
+          setTotalPnlSeriesCacheEntry(cacheKey, storedArchivedFallback);
+        }
+        return res.json(storedArchivedFallback);
+      }
       return res.status(503).json({ message: 'Total P&L series unavailable' });
     }
+
+    persistAccountArchiveSnapshot(
+      { login, account: effectiveAccount },
+      {
+        live: !isArchivedAccount(effectiveAccount),
+        balanceSummary: perAccountCombinedBalances[accountId],
+        balanceRaw: isArchivedAccount(effectiveAccount) ? getArchivedBalanceRaw(effectiveAccount) : undefined,
+        totalPnlSeries: {
+          [queryOptions.applyAccountCagrStartDate === false ? 'all' : 'cagr']: series,
+        },
+        positions: providedPositions || undefined,
+        activityContext: preparedActivityContext || undefined,
+        asOf: new Date().toISOString(),
+      }
+    );
 
     if (cacheKey) {
       setTotalPnlSeriesCacheEntry(cacheKey, series);
@@ -22158,7 +23332,7 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       let activityContext = activityContextStore[accountId];
       if (!activityContext) {
         try {
-          activityContext = await buildAccountActivityContext(context.login, context.account);
+          activityContext = await buildActivityContextForContext(context);
           if (activityContext) {
             activityContextStore[accountId] = activityContext;
           }
@@ -22315,7 +23489,7 @@ app.get('/api/symbols/annualized', async function (req, res) {
       let activityContext = activityContextStore[accountId];
       if (!activityContext) {
         try {
-          activityContext = await buildAccountActivityContext(context.login, context.account);
+          activityContext = await buildActivityContextForContext(context);
           if (activityContext) {
             activityContextStore[accountId] = activityContext;
           }
