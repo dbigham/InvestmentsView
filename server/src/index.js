@@ -14590,14 +14590,27 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
           needsBackfill: needsQuestradeBackfill,
         });
       }
-      const supplemental = await fetchQuestradePriceHistorySeries(
-        options.login,
-        symbolId,
-        questradeStartDate,
-        exclusiveEnd,
-        options.accountKey,
-        symbol
-      );
+      let supplemental = null;
+      try {
+        supplemental = await fetchQuestradePriceHistorySeries(
+          options.login,
+          symbolId,
+          questradeStartDate,
+          exclusiveEnd,
+          options.accountKey,
+          symbol
+        );
+      } catch (error) {
+        // Retain the Yahoo/cache history when Questrade candle enrichment is
+        // unavailable; discarding it can temporarily zero an entire position.
+        if (DEBUG_TOTAL_PNL) {
+          debugTotalPnl(options.accountKey, 'Questrade candle enrichment failed', {
+            symbol,
+            symbolId,
+            message: error && error.message ? error.message : String(error),
+          });
+        }
+      }
       if (Array.isArray(supplemental) && supplemental.length) {
         const merged = new Map();
         normalized.forEach((entry) => {
@@ -14673,6 +14686,29 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
       }
     } catch (cacheError) {
       // ignore cache read errors; fall through to return normalized (possibly empty)
+    }
+  }
+
+  // Yahoo does not publish a separate history for DLR.U.TO. During Norbert's
+  // Gambit the USD-listed units are economically the same DLR units, so derive
+  // their USD price from DLR.TO's CAD close and the same day's FX rate.
+  if (!normalized.length && normalizeDlrVariantSymbol(symbol) === 'DLR.U.TO') {
+    const cadSeries = await fetchSymbolPriceHistory('DLR.TO', startDateKey, endDateKey, options);
+    normalized = (
+      await Promise.all(
+        cadSeries.map(async (entry) => {
+          const rate = await resolveUsdToCadRate(entry.date, options.accountKey);
+          return Number.isFinite(rate) && rate > 0
+            ? { date: entry.date, price: entry.price / rate }
+            : null;
+        })
+      )
+    ).filter((entry) => entry && Number.isFinite(entry.price) && entry.price > 0);
+    if (normalized.length) {
+      const cacheKey = getPriceHistoryCacheKey(normalizedSymbolKey, startDateKey, endDateKey);
+      if (cacheKey) {
+        setCachedPriceHistory(cacheKey, normalized);
+      }
     }
   }
 
@@ -15569,6 +15605,27 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         });
       }
     });
+  }
+
+  const dlrCadSeries = priceSeriesMap.get('DLR.TO');
+  if (
+    symbols.includes('DLR.U.TO')
+    && dlrCadSeries instanceof Map
+    && dlrCadSeries.size > 0
+  ) {
+    const derivedSeries = new Map();
+    for (const dateKey of dateKeys) {
+      const cadPrice = dlrCadSeries.get(dateKey);
+      if (!Number.isFinite(cadPrice) || cadPrice <= 0) continue;
+      const rate = await resolveUsdToCadRate(parseDateOnlyString(dateKey), accountKey);
+      if (Number.isFinite(rate) && rate > 0) {
+        derivedSeries.set(dateKey, cadPrice / rate);
+      }
+    }
+    if (derivedSeries.size > 0) {
+      priceSeriesMap.set('DLR.U.TO', derivedSeries);
+      missingPriceSymbols.delete('DLR.U.TO');
+    }
   }
 
   applySplitAdjustmentsToPriceSeries(priceSeriesMap, splitEventsBySymbol);
