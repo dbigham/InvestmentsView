@@ -214,6 +214,64 @@ test('aggregate Total P&L drops dates missing a post-start account point', async
   assert.ok(result.issues.includes('aggregate-partial-summary-coverage'));
 });
 
+test('aggregate Total P&L carries archived account results through the aggregate end date', async () => {
+  const contexts = [
+    { login: { id: 'login-1' }, account: { id: 'LIVE', number: 'LIVE' } },
+    { login: { id: 'login-1' }, account: { id: 'ARCHIVED', number: 'ARCHIVED', archived: true } },
+  ];
+  const makeContext = (accountId, now, amount, gain = 0) => ({
+    accountId,
+    accountKey: accountId,
+    accountNumber: accountId,
+    earliestFunding: new Date('2026-06-15T00:00:00Z'),
+    crawlStart: new Date('2026-06-15T00:00:00Z'),
+    now: new Date(now),
+    nowIsoString: new Date(now).toISOString(),
+    activities: [
+      {
+        tradeDate: '2026-06-15T00:00:00Z',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: amount,
+        grossAmount: amount,
+      },
+      ...(gain ? [{
+        tradeDate: '2026-06-16T00:00:00Z',
+        type: 'Other',
+        action: 'GAIN',
+        currency: 'CAD',
+        netAmount: gain,
+        grossAmount: gain,
+      }] : []),
+    ],
+    fingerprint: `${accountId}-archived-coverage-test`,
+  });
+  const activityContexts = {
+    LIVE: makeContext('LIVE', '2026-06-17T00:00:00Z', 100, 10),
+    ARCHIVED: makeContext('ARCHIVED', '2026-06-16T00:00:00Z', 500, 50),
+  };
+  const balances = {
+    LIVE: { combined: { CAD: { totalEquity: 110 } } },
+    ARCHIVED: { combined: { CAD: { totalEquity: 550 } } },
+  };
+
+  const result = await computeAggregateTotalPnlSeriesForContexts(
+    contexts,
+    balances,
+    { applyAccountCagrStartDate: false },
+    'all',
+    false,
+    (context) => activityContexts[context.account.id]
+  );
+
+  const lastPoint = result.points[result.points.length - 1];
+  assert.equal(lastPoint.date, '2026-06-17');
+  assert.equal(lastPoint.totalPnlCad, 60);
+  assert.equal(lastPoint.equityCad, 660);
+  assert.equal(lastPoint.cumulativeNetDepositsCad, 600);
+});
+
 test('computeTotalPnlSeries keeps reconstructed equity when current snapshot is empty', async () => {
   const account = {
     id: 'MISSING-SNAPSHOT-ACCOUNT',

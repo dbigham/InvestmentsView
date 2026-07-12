@@ -667,9 +667,46 @@ async function computeAggregateTotalPnlSeriesForContexts(
     }
   );
 
-  const successfulSeries = seriesResults.filter((result) => result && result.series);
+  let successfulSeries = seriesResults.filter((result) => result && result.series);
   if (!successfulSeries.length) {
     return null;
+  }
+
+  const aggregateEndDate = successfulSeries.reduce((latest, result) => {
+    const points = result && result.series && Array.isArray(result.series.points)
+      ? result.series.points
+      : [];
+    const date = points.length && typeof points[points.length - 1].date === 'string'
+      ? points[points.length - 1].date
+      : null;
+    return date && (!latest || date > latest) ? date : latest;
+  }, null);
+  if (aggregateEndDate) {
+    successfulSeries = successfulSeries.map((result) => {
+      if (!result || !result.context || !isArchivedAccount(result.context.account)) {
+        return result;
+      }
+      const points = Array.isArray(result.series.points) ? result.series.points : [];
+      const finalPoint = points.length ? points[points.length - 1] : null;
+      if (!finalPoint || typeof finalPoint.date !== 'string' || finalPoint.date >= aggregateEndDate) {
+        return result;
+      }
+      const extendedPoints = points.map((point) => ({ ...point }));
+      let cursor = addDays(parseDateOnlyString(finalPoint.date), 1);
+      const end = parseDateOnlyString(aggregateEndDate);
+      while (cursor && end && cursor <= end) {
+        extendedPoints.push({ ...finalPoint, date: formatDateOnly(cursor) });
+        cursor = addDays(cursor, 1);
+      }
+      return {
+        ...result,
+        series: {
+          ...result.series,
+          periodEndDate: aggregateEndDate,
+          points: extendedPoints,
+        },
+      };
+    });
   }
 
   // For symbol-level aggregation, trim leading zero-valued dates so the series
@@ -21086,7 +21123,9 @@ app.get('/api/summary', async function (req, res) {
 
     const viewingAggregateAccounts = viewingAllAccountsRequest || viewingAccountGroup;
     if (viewingAggregateAccounts && !includeNonInvestmentAccounts) {
-      selectedAccounts = selectedAccounts.filter((account) => !isNonInvestmentAccount(account));
+      selectedAccounts = selectedAccounts.filter(
+        (account) => isArchivedAccount(account) || !isNonInvestmentAccount(account)
+      );
     }
 
     if (viewingAccountGroup) {
@@ -23279,7 +23318,9 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
 
       let targetContexts = contexts;
       if (!includeNonInvestmentAccountsParam) {
-        targetContexts = targetContexts.filter((context) => !isNonInvestmentAccount(context.account));
+        targetContexts = targetContexts.filter(
+          (context) => isArchivedAccount(context.account) || !isNonInvestmentAccount(context.account)
+        );
       }
       if (isGroupKey) {
         const groupEntry = accountGroupsById.get(rawAccountKey);
