@@ -3169,6 +3169,9 @@ function resolveYahooSymbol(symbol) {
   if (/\.U\./i.test(normalized)) {
     normalized = normalized.replace(/\.U\./gi, '-U.');
   }
+  // Yahoo denotes share classes with a hyphen, while Questrade uses a dot
+  // (for example QBR.B.TO -> QBR-B.TO and BRK.B -> BRK-B).
+  normalized = normalized.replace(/^([A-Z0-9]+)\.([A-Z])(?=\.|$)/i, '$1-$2');
   // Questrade uses .VN for symbols listed on Cboe Canada (formerly NEO).
   // Yahoo generally lists these under the .TO suffix.
   if (/\.VN$/i.test(normalized)) {
@@ -10627,7 +10630,7 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
     return filtered;
   }
 
-  function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey) {
+function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey) {
     if (!fundingSummary || typeof fundingSummary !== 'object' || !account) {
       return;
     }
@@ -10697,6 +10700,68 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
     };
   }
 
+  fundingSummary.returnBreakdown = returnBreakdown.length ? returnBreakdown : undefined;
+}
+
+function rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, accountKey) {
+  if (!fundingSummary || typeof fundingSummary !== 'object' || !totalPnlSeries) {
+    return;
+  }
+  const points = Array.isArray(totalPnlSeries.points)
+    ? totalPnlSeries.points.filter((point) => {
+        return (
+          point &&
+          typeof point.date === 'string' &&
+          parseDateOnlyString(point.date) &&
+          Number.isFinite(point.equityCad)
+        );
+      })
+    : [];
+  if (points.length < 2) {
+    return;
+  }
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  const startDate = parseDateOnlyString(first.date);
+  const endDate = parseDateOnlyString(last.date);
+  if (!startDate || !endDate) {
+    return;
+  }
+
+  const cashFlows = [{ amount: -Number(first.equityCad), date: startDate }];
+  for (let index = 1; index < points.length; index += 1) {
+    const currentDeposits = Number(points[index].cumulativeNetDepositsCad);
+    const previousDeposits = Number(points[index - 1].cumulativeNetDepositsCad);
+    if (!Number.isFinite(currentDeposits) || !Number.isFinite(previousDeposits)) {
+      continue;
+    }
+    const depositDelta = currentDeposits - previousDeposits;
+    if (Math.abs(depositDelta) >= CASH_FLOW_EPSILON) {
+      cashFlows.push({ amount: -depositDelta, date: parseDateOnlyString(points[index].date) });
+    }
+  }
+  cashFlows.push({ amount: Number(last.equityCad), date: endDate });
+
+  const rate = computeAccountAnnualizedReturn(cashFlows, accountKey);
+  const startIso = first.date.slice(0, 10);
+  const endIso = last.date.slice(0, 10);
+  fundingSummary.annualizedReturn = Number.isFinite(rate)
+    ? {
+        rate,
+        method: 'xirr',
+        cashFlowCount: cashFlows.length,
+        asOf: endIso,
+        startDate: startIso,
+      }
+    : {
+        method: 'xirr',
+        cashFlowCount: cashFlows.length,
+        asOf: endIso,
+        startDate: startIso,
+        incomplete: true,
+      };
+  const returnBreakdown = computeReturnBreakdownFromCashFlows(cashFlows, endDate, rate);
   fundingSummary.returnBreakdown = returnBreakdown.length ? returnBreakdown : undefined;
 }
 
@@ -18372,7 +18437,15 @@ function reviveArchivedActivityContext(login, account, snapshot) {
   }
   normalized.fingerprint =
     typeof raw.fingerprint === 'string' ? raw.fingerprint : computeActivityFingerprint(normalized.activities);
+  const archivedBookValueTransferPrices =
+    raw.bookValueTransferPrices && typeof raw.bookValueTransferPrices === 'object'
+      ? raw.bookValueTransferPrices
+      : {};
   normalized.fetchBookValueTransferPrice = async function fetchArchivedBookValueTransferPrice(_activity, symbol, dateKey) {
+    const archivedPrice = Number(archivedBookValueTransferPrices[`${String(symbol || '').toUpperCase()}|${dateKey}`]);
+    if (Number.isFinite(archivedPrice) && archivedPrice > 0) {
+      return archivedPrice;
+    }
     return fetchBookValueTransferClosePrice(symbol, dateKey, accountId);
   };
   return normalized;
@@ -18548,6 +18621,10 @@ function sanitizeActivityContextForArchive(activityContext) {
     now: activityContext.now instanceof Date ? activityContext.now.toISOString() : activityContext.now || null,
     nowIsoString: activityContext.nowIsoString || null,
     activities: Array.isArray(activityContext.activities) ? activityContext.activities : [],
+    bookValueTransferPrices:
+      activityContext.bookValueTransferPrices && typeof activityContext.bookValueTransferPrices === 'object'
+        ? activityContext.bookValueTransferPrices
+        : undefined,
     fingerprint:
       typeof activityContext.fingerprint === 'string'
         ? activityContext.fingerprint
@@ -21096,15 +21173,9 @@ app.get('/api/summary', async function (req, res) {
               const now = new Date();
               const orders = getArchivedOrders(context.account);
               const earliestRealOrderIso = findEarliestOrderTimestamp(orders);
-              const earliestRealOrderDate =
-                typeof earliestRealOrderIso === 'string' && earliestRealOrderIso.trim()
-                  ? new Date(earliestRealOrderIso)
-                  : null;
-              const cutoffDate =
-                earliestRealOrderDate instanceof Date && !Number.isNaN(earliestRealOrderDate.getTime())
-                  ? earliestRealOrderDate
-                  : now;
-              const activityOrders = buildOrdersFromActivities(activityContext, context, cutoffDate);
+              // Archived provider orders are only a snapshot. Rebuild across the
+              // entire recovered activity history, then dedupe against the snapshot.
+              const activityOrders = buildOrdersFromActivities(activityContext, context, null);
               const startCandidates = [];
               const activityStart = findEarliestOrderTimestamp(activityOrders);
               if (activityStart) {
@@ -21552,7 +21623,14 @@ app.get('/api/summary', async function (req, res) {
                 fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
               }
             }
-            if (Number.isFinite(summary.totalEquityCad) && !Number.isFinite(fundingSummary.totalEquityCad)) {
+            const shouldUseReconstructedArchivedEquity =
+              isArchivedAccount(context.account) &&
+              Array.isArray(totalPnlSeries.issues) &&
+              totalPnlSeries.issues.includes('current-balance-snapshot-missing');
+            if (
+              Number.isFinite(summary.totalEquityCad) &&
+              (!Number.isFinite(fundingSummary.totalEquityCad) || shouldUseReconstructedArchivedEquity)
+            ) {
               fundingSummary.totalEquityCad = summary.totalEquityCad;
             }
             if (Number.isFinite(summary.totalEquitySinceDisplayStartCad)) {
@@ -21561,7 +21639,11 @@ app.get('/api/summary', async function (req, res) {
             if (summary.displayStartTotals) {
               fundingSummary.displayStartTotals = summary.displayStartTotals;
             }
-            rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
+            if (shouldUseReconstructedArchivedEquity) {
+              rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, context.account.id);
+            } else {
+              rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
+            }
           }
         }
         if (totalPnlSeries) {
@@ -23808,5 +23890,6 @@ module.exports = {
     filterCashFlowsAfterDisplayStart,
     applyPendingDepositToFundingSummary,
     resolveCashCurrencyTrade,
+    rebuildAnnualizedReturnFromSeries,
   },
 };
