@@ -80,6 +80,38 @@ test('book-value transfers fall back to book value when price lookup fails', asy
   assert.equal(result.netDeposits.perCurrency.CAD, 25000);
 });
 
+test('book-value transfers recover when a transient price lookup later succeeds', async (t) => {
+  t.after(() => __setBookValueTransferPriceFetcher(null));
+  let lookupCount = 0;
+  __setBookValueTransferPriceFetcher(async () => {
+    lookupCount += 1;
+    return lookupCount === 1 ? null : 300;
+  });
+
+  const activity = {
+    tradeDate: '2025-06-17T00:00:00.000000-04:00',
+    transactionDate: '2025-06-17T00:00:00.000000-04:00',
+    settlementDate: '2025-06-17T00:00:00.000000-04:00',
+    type: 'Transfers',
+    action: 'TF6',
+    symbol: 'SHOP.TO',
+    description: 'SHOPIFY INC TRANSFER BOOK VALUE 25000.00',
+    currency: 'CAD',
+    quantity: 100,
+    price: 0,
+    netAmount: 0,
+    grossAmount: 0,
+  };
+
+  const context = buildActivityContext(activity);
+  const firstResult = await computeNetDepositsCore(buildAccount(), null, {}, context);
+  const secondResult = await computeNetDepositsCore(buildAccount(), null, {}, context);
+
+  assert.equal(firstResult.netDeposits.allTimeCad, 25000);
+  assert.equal(secondResult.netDeposits.allTimeCad, 30000);
+  assert.equal(lookupCount, 2);
+});
+
 test('book-value transfer quantity can be parsed from description when missing', async (t) => {
   t.after(() => __setBookValueTransferPriceFetcher(null));
   __setBookValueTransferPriceFetcher(async () => 200);

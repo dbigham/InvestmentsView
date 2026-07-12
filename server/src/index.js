@@ -7495,6 +7495,47 @@ function getArchivedSnapshotForAccount(accountOrKey) {
   return null;
 }
 
+function isConfirmedArchivedEntry(entry) {
+  return !!(
+    entry &&
+    (entry.archivedAt ||
+      entry.archived === true ||
+      (entry.account && entry.account.archived === true))
+  );
+}
+
+function resolveLoginForArchivedEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const candidates = [
+    entry.loginId,
+    entry.loginEmail,
+    entry.account && entry.account.loginId,
+    entry.account && entry.account.ownerEmail,
+  ]
+    .map((value) => (value === undefined || value === null ? '' : String(value).trim()))
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    const direct = getLoginById(candidate);
+    if (direct) {
+      return direct;
+    }
+    const normalized = normalizeLookupValue(candidate);
+    const match = allLogins.find((login) => {
+      return (
+        normalizeLookupValue(login.id) === normalized ||
+        normalizeLookupValue(login.email) === normalized ||
+        normalizeLookupValue(login.label) === normalized
+      );
+    });
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 function resolveAccountDisplayName(overrides, account, login) {
   return resolveAccountOverrideValue(overrides, account, login);
 }
@@ -12478,6 +12519,10 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
   ].join('|');
 }
 
+function isOfflineActivityContext(activityContext) {
+  return !!(activityContext && activityContext.offlineOnly === true);
+}
+
 function pruneNetDepositsCache() {
   if (netDepositsCache.size <= MAX_NET_DEPOSITS_CACHE_SIZE) {
     return;
@@ -12606,7 +12651,11 @@ async function buildAccountActivityContext(login, account, options = {}) {
     options
   );
   const activities = dedupeActivities(activitiesRaw);
-  const fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(activityLogin, accountKey);
+  const fetchBookValueTransferPrice = options.offlineOnly === true
+    ? async function fetchOfflineBookValueTransferPrice(_activity, symbol, dateKey) {
+        return fetchBookValueTransferClosePrice(symbol, dateKey, accountKey);
+      }
+    : createAccountBookValueTransferPriceFetcher(activityLogin, accountKey);
 
   return {
     accountId: accountKey,
@@ -12618,6 +12667,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
     earliestFunding,
     crawlStart,
     activities,
+    offlineOnly: options.offlineOnly === true,
     now,
     nowIsoString,
     fingerprint: computeActivityFingerprint(activities),
@@ -12765,7 +12815,12 @@ async function fetchBookValueTransferClosePrice(symbol, dateKey, accountKey) {
       });
     }
   }
-  bookValueTransferPriceCache.set(cacheKey, price);
+  // A missing price can be transient (for example, while the local price-history
+  // cache is still being populated). Only cache successful lookups so a later
+  // archived-account replay can recover instead of permanently using book value.
+  if (Number.isFinite(price) && price > 0) {
+    bookValueTransferPriceCache.set(cacheKey, price);
+  }
   return price;
 }
 
@@ -15103,7 +15158,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   // Fetch symbol details early and augment activities missing symbols using symbolId
   let symbolDetails = {};
-  if (symbolIds.size > 0) {
+  if (symbolIds.size > 0 && !isOfflineActivityContext(activityContext)) {
     try {
       symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
     } catch (symbolError) {
@@ -15207,6 +15262,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   let closingPositions = [];
   const canFetchPositions =
+    !isOfflineActivityContext(activityContext) &&
     login &&
     typeof login === 'object' &&
     (login.refreshToken || login.accessToken || login.sessionToken || (login.userId && login.userSecret));
@@ -15334,7 +15390,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
 
   // symbolDetails may already be fetched above; if not, fetch now
-  if ((!symbolDetails || Object.keys(symbolDetails).length === 0) && symbolIds.size > 0) {
+  if ((!symbolDetails || Object.keys(symbolDetails).length === 0) && symbolIds.size > 0 && !isOfflineActivityContext(activityContext)) {
     try {
       symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
     } catch (symbolError) {
@@ -16569,7 +16625,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   });
   // If we have symbolIds but missing currency, try details
   let symbolDetails = {};
-  if (symbolIds.size > 0) {
+  if (symbolIds.size > 0 && !isOfflineActivityContext(activityContext)) {
     try {
       symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
       Object.values(symbolDetails || {}).forEach((detail) => {
@@ -17074,7 +17130,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
 
   // If we have symbolIds but missing symbols, try to backfill via symbol details
   let symbolDetails = {};
-  if (symbolIds.size > 0) {
+  if (symbolIds.size > 0 && !isOfflineActivityContext(activityContext)) {
     try {
       symbolDetails = await fetchSymbolsDetails(login, Array.from(symbolIds));
     } catch (symbolError) {
@@ -18200,6 +18256,14 @@ function getArchivedPositions(account) {
   return [];
 }
 
+function getArchivedOrders(account) {
+  const snapshot = getArchivedSnapshotForAccount(account);
+  if (snapshot && Array.isArray(snapshot.orders)) {
+    return snapshot.orders;
+  }
+  return [];
+}
+
 async function fetchPositionsForContext(context) {
   if (!context || !context.login || !context.account) {
     return [];
@@ -18289,6 +18353,7 @@ function reviveArchivedActivityContext(login, account, snapshot) {
     now: parseArchivedDate(raw.now),
     nowIsoString: typeof raw.nowIsoString === 'string' ? raw.nowIsoString : null,
     activities: Array.isArray(raw.activities) ? raw.activities : [],
+    offlineOnly: true,
     activityCacheLoginId: raw.activityCacheLoginId || activityLogin.id || null,
     activityCacheAccountKey:
       raw.activityCacheAccountKey ||
@@ -18307,7 +18372,9 @@ function reviveArchivedActivityContext(login, account, snapshot) {
   }
   normalized.fingerprint =
     typeof raw.fingerprint === 'string' ? raw.fingerprint : computeActivityFingerprint(normalized.activities);
-  normalized.fetchBookValueTransferPrice = createAccountBookValueTransferPriceFetcher(activityLogin, accountId);
+  normalized.fetchBookValueTransferPrice = async function fetchArchivedBookValueTransferPrice(_activity, symbol, dateKey) {
+    return fetchBookValueTransferClosePrice(symbol, dateKey, accountId);
+  };
   return normalized;
 }
 
@@ -18525,7 +18592,36 @@ function buildAccountArchiveSnapshotPayload(context, snapshot = {}) {
   };
 }
 
+function archivedSnapshotNeedsPersistence(context, snapshot = {}) {
+  if (!context || !context.account || !isArchivedAccount(context.account)) {
+    return true;
+  }
+  const existing = getArchivedSnapshotForAccount(context.account);
+  if (!existing) {
+    return true;
+  }
+  const durableFields = [
+    'balanceSummary',
+    'balanceRaw',
+    'fundingSummary',
+    'dividendSummary',
+    'totalPnlSeries',
+    'totalPnlBySymbol',
+    'totalPnlBySymbolAll',
+    'positions',
+    'orders',
+    'activityContext',
+    'activityCacheLoginId',
+    'activityCacheAccountKey',
+    'earliestFunding',
+  ];
+  return durableFields.some((field) => snapshot[field] !== undefined && existing[field] === undefined);
+}
+
 function persistAccountArchiveSnapshot(context, snapshot = {}) {
+  if (!archivedSnapshotNeedsPersistence(context, snapshot)) {
+    return null;
+  }
   const payload = buildAccountArchiveSnapshotPayload(context, snapshot);
   if (!payload) {
     return null;
@@ -18544,6 +18640,7 @@ function persistAccountArchiveSnapshot(context, snapshot = {}) {
 function persistAccountArchiveSnapshots(items) {
   const payloads = Array.isArray(items)
     ? items
+        .filter((item) => archivedSnapshotNeedsPersistence(item && item.context, item && item.snapshot))
         .map((item) => buildAccountArchiveSnapshotPayload(item && item.context, item && item.snapshot))
         .filter(Boolean)
     : [];
@@ -18565,6 +18662,13 @@ async function resolveAccountContextByKey(accountKey) {
   const normalizedKey = String(accountKey).trim();
   if (!normalizedKey) {
     return null;
+  }
+  const confirmedArchivedEntry = findArchivedAccountByKey(normalizedKey);
+  if (isConfirmedArchivedEntry(confirmedArchivedEntry)) {
+    const archivedLogin = resolveLoginForArchivedEntry(confirmedArchivedEntry);
+    if (archivedLogin && confirmedArchivedEntry.account) {
+      return { login: archivedLogin, account: confirmedArchivedEntry.account };
+    }
   }
   const loweredKey = normalizedKey.toLowerCase();
   const colonIndex = loweredKey.indexOf(':');
@@ -20625,27 +20729,37 @@ app.get('/api/summary', async function (req, res) {
     const otherAssets = appSettings.otherAssets || null;
     const accountBeneficiaries = getAccountBeneficiaries();
     const accountFetchIssues = [];
+    const requestedArchivedEntry =
+      !includeAllAccounts && requestedAccountId ? findArchivedAccountByKey(requestedAccountId) : null;
+    const requestedArchivedLogin =
+      isConfirmedArchivedEntry(requestedArchivedEntry) ? resolveLoginForArchivedEntry(requestedArchivedEntry) : null;
     const accountCollections = await Promise.all(
       allLogins.map(async function (login) {
         let fetchedAccounts = [];
         let fetchError = null;
         let fetchIssue = null;
-        try {
-          fetchedAccounts = await fetchAccounts(login);
-        } catch (error) {
-          fetchError = error;
-          const message = error && error.message ? error.message : String(error);
-          fetchIssue = {
-            loginId: login.id || null,
-            loginLabel: resolveLoginDisplay(login),
-            provider: getLoginProvider(login),
-            message,
-          };
-          accountFetchIssues.push(fetchIssue);
-          console.warn(
-            'Failed to fetch accounts for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
-            message
-          );
+        const skipLiveAccountFetch =
+          requestedArchivedLogin &&
+          login &&
+          requestedArchivedLogin.id === login.id;
+        if (!skipLiveAccountFetch) {
+          try {
+            fetchedAccounts = await fetchAccounts(login);
+          } catch (error) {
+            fetchError = error;
+            const message = error && error.message ? error.message : String(error);
+            fetchIssue = {
+              loginId: login.id || null,
+              loginLabel: resolveLoginDisplay(login),
+              provider: getLoginProvider(login),
+              message,
+            };
+            accountFetchIssues.push(fetchIssue);
+            console.warn(
+              'Failed to fetch accounts for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
+              message
+            );
+          }
         }
         const normalized = (Array.isArray(fetchedAccounts) ? fetchedAccounts : [])
           .map(function (account, index) {
@@ -20967,6 +21081,46 @@ app.get('/api/summary', async function (req, res) {
           selectedContexts,
           Math.min(MAX_ORDER_HISTORY_CONCURRENCY, selectedContexts.length),
           async function (context) {
+            if (context && context.account && isArchivedAccount(context.account)) {
+              let activityContext = null;
+              try {
+                activityContext = await ensureAccountActivityContext(context);
+              } catch (activityError) {
+                const activityMessage =
+                  activityError && activityError.message ? activityError.message : String(activityError);
+                console.warn(
+                  'Failed to prepare archived activity history for order lookup for account ' + context.account.id + ':',
+                  activityMessage
+                );
+              }
+              const now = new Date();
+              const orders = getArchivedOrders(context.account);
+              const earliestRealOrderIso = findEarliestOrderTimestamp(orders);
+              const earliestRealOrderDate =
+                typeof earliestRealOrderIso === 'string' && earliestRealOrderIso.trim()
+                  ? new Date(earliestRealOrderIso)
+                  : null;
+              const cutoffDate =
+                earliestRealOrderDate instanceof Date && !Number.isNaN(earliestRealOrderDate.getTime())
+                  ? earliestRealOrderDate
+                  : now;
+              const activityOrders = buildOrdersFromActivities(activityContext, context, cutoffDate);
+              const startCandidates = [];
+              const activityStart = findEarliestOrderTimestamp(activityOrders);
+              if (activityStart) {
+                startCandidates.push(activityStart);
+              }
+              if (earliestRealOrderIso) {
+                startCandidates.push(earliestRealOrderIso);
+              }
+              return {
+                context,
+                orders,
+                activityOrders,
+                start: startCandidates.length ? startCandidates.sort()[0] : null,
+                end: now.toISOString(),
+              };
+            }
             if (
               context &&
               context.account &&
@@ -21184,8 +21338,25 @@ app.get('/api/summary', async function (req, res) {
       symbolIdsByLogin.set(order.loginId, loginBucket);
     });
 
+    const selectedContextsByLoginId = new Map();
+    selectedContexts.forEach(function (context) {
+      const loginId = context && context.login && context.login.id ? context.login.id : null;
+      if (!loginId) {
+        return;
+      }
+      const bucket = selectedContextsByLoginId.get(loginId) || [];
+      bucket.push(context);
+      selectedContextsByLoginId.set(loginId, bucket);
+    });
+
     const symbolsMap = {};
     for (const [loginId, symbolSet] of symbolIdsByLogin.entries()) {
+      const loginContexts = selectedContextsByLoginId.get(loginId) || [];
+      const loginIsArchivedOnly =
+        loginContexts.length > 0 && loginContexts.every((context) => isArchivedAccount(context.account));
+      if (loginIsArchivedOnly) {
+        continue;
+      }
       const login = loginsById[loginId];
       if (!login) {
         continue;
