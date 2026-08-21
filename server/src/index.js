@@ -11402,6 +11402,18 @@ function applyOpeningFundingReconciliationToSummary(fundingSummary, seriesSummar
   if (seriesSummary.estimatedHistoryReturn && typeof seriesSummary.estimatedHistoryReturn === 'object') {
     fundingSummary.estimatedHistoryReturn = { ...seriesSummary.estimatedHistoryReturn };
   }
+  if (seriesSummary.cashFlowCoverageIncomplete === true) {
+    fundingSummary.cashFlowCoverageIncomplete = true;
+    ['annualizedReturn', 'annualizedReturnAllTime'].forEach((field) => {
+      const existing = fundingSummary[field] && typeof fundingSummary[field] === 'object'
+        ? { ...fundingSummary[field] }
+        : {};
+      delete existing.rate;
+      existing.incomplete = true;
+      fundingSummary[field] = existing;
+    });
+    fundingSummary.returnBreakdown = undefined;
+  }
   const openingAdjustment = Number(seriesSummary.openingFundingAdjustmentCad);
   if (!Number.isFinite(openingAdjustment)) {
     return;
@@ -11414,19 +11426,6 @@ function applyOpeningFundingReconciliationToSummary(fundingSummary, seriesSummar
     fundingSummary.netDeposits.allTimeCad = seriesSummary.netDepositsAllTimeCad;
   }
   fundingSummary.openingFundingAdjustmentCad = openingAdjustment;
-  if (seriesSummary.cashFlowCoverageIncomplete !== true) {
-    return;
-  }
-  fundingSummary.cashFlowCoverageIncomplete = true;
-  ['annualizedReturn', 'annualizedReturnAllTime'].forEach((field) => {
-    const existing = fundingSummary[field] && typeof fundingSummary[field] === 'object'
-      ? { ...fundingSummary[field] }
-      : {};
-    delete existing.rate;
-    existing.incomplete = true;
-    fundingSummary[field] = existing;
-  });
-  fundingSummary.returnBreakdown = undefined;
 }
 
 function applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, totalPnlSeries, account) {

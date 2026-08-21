@@ -217,6 +217,8 @@ test('aggregate funding adopts the reconciled per-account series summary', () =>
     netDeposits: { combinedCad: 9176.96125, allTimeCad: 9176.96125 },
     totalPnl: { combinedCad: 2108.61758796, allTimeCad: 2108.61758796 },
     totalEquityCad: 11285.57883796,
+    annualizedReturn: { rate: 35.66, method: 'xirr' },
+    annualizedReturnAllTime: { rate: 35.66, method: 'xirr' },
   };
   __test__.applyTotalPnlSeriesSummaryToFundingSummary(
     fundingSummary,
@@ -240,4 +242,31 @@ test('aggregate funding adopts the reconciled per-account series summary', () =>
   assert.equal(fundingSummary.totalPnl.combinedCad, -992.252994252096);
   assert.equal(fundingSummary.openingFundingReconciled, true);
   assert.equal(fundingSummary.openingFundingAdjustmentCad, 3100.8705822120955);
+  assert.equal(fundingSummary.annualizedReturn.rate, undefined);
+  assert.equal(fundingSummary.annualizedReturnAllTime.rate, undefined);
+  assert.equal(fundingSummary.annualizedReturn.incomplete, true);
+});
+
+test('incomplete series coverage suppresses stale annualized rates without an opening adjustment', () => {
+  const fundingSummary = {
+    annualizedReturn: { rate: 35.66, method: 'xirr' },
+    annualizedReturnAllTime: { rate: 35.66, method: 'xirr' },
+  };
+
+  __test__.applyOpeningFundingReconciliationToSummary(fundingSummary, {
+    cashFlowCoverageIncomplete: true,
+    historyStartDate: '2026-07-13',
+    historyStartDateEstimated: true,
+    estimatedHistoryReturn: {
+      startDate: '2026-07-13',
+      annualizedRate: -0.32,
+      estimated: true,
+    },
+  });
+
+  assert.equal(fundingSummary.annualizedReturn.rate, undefined);
+  assert.equal(fundingSummary.annualizedReturnAllTime.rate, undefined);
+  assert.equal(fundingSummary.annualizedReturn.incomplete, true);
+  assert.equal(fundingSummary.historyStartDate, '2026-07-13');
+  assert.equal(fundingSummary.estimatedHistoryReturn.estimated, true);
 });
