@@ -4908,12 +4908,28 @@ function applyPriceSnapshotsToBalances(balances, positions, currencyRates, baseC
       const currencyKey = (typeof currency === 'string' && currency.trim()) || '';
       const totals = resolveCombinedTotals(currencyKey || normalizedBase);
       const nextEntry = entry && typeof entry === 'object' ? { ...entry } : {};
-      nextEntry.marketValue = totals.marketValue;
+      // Keep the provider's combined account valuation authoritative. Live
+      // quotes refresh the position rows and P&L, but rebuilding account
+      // equity from a different quote source can diverge from the brokerage
+      // valuation and can omit cash held in another currency.
+      const providerMarketValue = coerceNumber(entry?.marketValue);
+      const providerTotalEquity = coerceNumber(entry?.totalEquity);
+      const combinedCash = computeCombinedCashAcrossCurrencies({
+        balances,
+        targetCurrency: currencyKey || normalizedBase,
+        currencyRates,
+        baseCurrency: normalizedBase,
+      });
+      nextEntry.marketValue = providerMarketValue !== null ? providerMarketValue : totals.marketValue;
       nextEntry.dayPnl = totals.dayPnl;
       nextEntry.openPnl = totals.openPnl;
-      const cash = coerceNumber(entry?.cash);
-      const equityBase = Number.isFinite(nextEntry.marketValue) ? nextEntry.marketValue : 0;
-      nextEntry.totalEquity = (cash !== null ? cash : 0) + equityBase;
+      if (providerTotalEquity !== null) {
+        nextEntry.totalEquity = providerTotalEquity;
+      } else {
+        const cash = Number.isFinite(combinedCash) ? combinedCash : coerceNumber(entry?.cash);
+        const equityBase = Number.isFinite(nextEntry.marketValue) ? nextEntry.marketValue : 0;
+        nextEntry.totalEquity = (cash !== null ? cash : 0) + equityBase;
+      }
       nextBalances.combined[currency] = nextEntry;
       changed = true;
     });
