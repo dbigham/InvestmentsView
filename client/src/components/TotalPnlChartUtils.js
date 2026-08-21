@@ -128,12 +128,30 @@ export function buildChartMetrics(
 
   let resolvedRangeStartDate = normalizeDate(rangeStartDate);
   let resolvedRangeEndDate = normalizeDate(rangeEndDate);
+  const actualRangeStartDate = finiteDates.length
+    ? new Date(Math.min(...finiteDates.map((date) => date.getTime())))
+    : null;
+  const actualRangeEndDate = finiteDates.length
+    ? new Date(Math.max(...finiteDates.map((date) => date.getTime())))
+    : null;
 
-  if (!resolvedRangeStartDate && finiteDates.length) {
-    resolvedRangeStartDate = new Date(Math.min(...finiteDates.map((date) => date.getTime())));
+  if (!resolvedRangeStartDate && actualRangeStartDate) {
+    resolvedRangeStartDate = actualRangeStartDate;
+  } else if (
+    resolvedRangeStartDate &&
+    actualRangeStartDate &&
+    resolvedRangeStartDate.getTime() < actualRangeStartDate.getTime()
+  ) {
+    resolvedRangeStartDate = actualRangeStartDate;
   }
-  if (!resolvedRangeEndDate && finiteDates.length) {
-    resolvedRangeEndDate = new Date(Math.max(...finiteDates.map((date) => date.getTime())));
+  if (!resolvedRangeEndDate && actualRangeEndDate) {
+    resolvedRangeEndDate = actualRangeEndDate;
+  } else if (
+    resolvedRangeEndDate &&
+    actualRangeEndDate &&
+    resolvedRangeEndDate.getTime() > actualRangeEndDate.getTime()
+  ) {
+    resolvedRangeEndDate = actualRangeEndDate;
   }
   if (!resolvedRangeStartDate && resolvedRangeEndDate) {
     resolvedRangeStartDate = new Date(resolvedRangeEndDate.getTime());

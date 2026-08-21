@@ -88,6 +88,10 @@ import {
 } from './utils/positions';
 import { buildQuoteUrl, openQuote } from './utils/quotes';
 import { applySeriesAnnualizedToFundingSummary } from './utils/annualizedReturn';
+import {
+  computeReserveValueAcrossCurrencies,
+  mergeAuthoritativeUsdToCadRate,
+} from './utils/currencyRates';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 import {
@@ -3627,6 +3631,9 @@ function needsDedicatedSnapTradeSummary(summary, accountKey) {
   if (!funding || typeof funding !== 'object') {
     return true;
   }
+  if (funding.openingFundingReconciled !== true) {
+    return true;
+  }
 
   const hasPeriodStart =
     typeof funding.periodStartDate === 'string' && funding.periodStartDate.trim().length > 0;
@@ -3931,29 +3938,56 @@ function resolveTotalPnl(position) {
 }
 
 function buildPnlSummaries(positions) {
-  return positions.reduce(
+  const summary = positions.reduce(
     (acc, position) => {
       const currency = (position.currency || 'CAD').toUpperCase();
       if (!acc.perCurrency[currency]) {
-        acc.perCurrency[currency] = { dayPnl: 0, openPnl: 0, totalPnl: 0 };
+        acc.perCurrency[currency] = {
+          dayPnl: 0,
+          dayPnlCount: 0,
+          openPnl: 0,
+          openPnlCount: 0,
+          totalPnl: 0,
+        };
       }
 
-      const day = position.dayPnl || 0;
-      const open = position.openPnl || 0;
+      const day = isFiniteNumber(position.dayPnl) ? position.dayPnl : null;
+      const open = isFiniteNumber(position.openPnl) ? position.openPnl : null;
       const total = resolveTotalPnl(position);
 
-      acc.perCurrency[currency].dayPnl += day;
-      acc.perCurrency[currency].openPnl += open;
+      if (day !== null) {
+        acc.perCurrency[currency].dayPnl += day;
+        acc.perCurrency[currency].dayPnlCount += 1;
+        acc.combined.dayPnl += day;
+        acc.combined.dayPnlCount += 1;
+      }
+      if (open !== null) {
+        acc.perCurrency[currency].openPnl += open;
+        acc.perCurrency[currency].openPnlCount += 1;
+        acc.combined.openPnl += open;
+        acc.combined.openPnlCount += 1;
+      }
       acc.perCurrency[currency].totalPnl += total;
-
-      acc.combined.dayPnl += day;
-      acc.combined.openPnl += open;
       acc.combined.totalPnl += total;
 
       return acc;
     },
-    { combined: { dayPnl: 0, openPnl: 0, totalPnl: 0 }, perCurrency: {} }
+    {
+      combined: { dayPnl: 0, dayPnlCount: 0, openPnl: 0, openPnlCount: 0, totalPnl: 0 },
+      perCurrency: {},
+    }
   );
+  [summary.combined, ...Object.values(summary.perCurrency)].forEach((entry) => {
+    if (entry.dayPnlCount === 0) {
+      entry.dayPnl = null;
+    }
+    if (entry.openPnlCount === 0) {
+      entry.openPnl = null;
+    }
+    delete entry.dayPnlCount;
+    delete entry.openPnlCount;
+  });
+  return summary;
 }
 
 
@@ -7471,7 +7505,7 @@ function resolveNormalizedMarketValue(position, currencyRates, baseCurrency = 'C
 
 function resolveNormalizedPnl(position, field, currencyRates, baseCurrency = 'CAD') {
   if (!position || !isFiniteNumber(position?.[field])) {
-    return 0;
+    return null;
   }
   const currency = position?.currency || baseCurrency;
   return normalizeCurrencyAmount(position[field], currency, currencyRates, baseCurrency);
@@ -10699,10 +10733,10 @@ export default function App() {
   }, [isNewsFeatureEnabled, newsTabContextMenuState.open]);
 
   const baseCurrency = 'CAD';
-  const currencyRates = useMemo(
-    () => buildCurrencyRateMap(baseBalances, baseCurrency),
-    [baseBalances, baseCurrency]
-  );
+  const currencyRates = useMemo(() => {
+    const balanceRates = buildCurrencyRateMap(baseBalances, baseCurrency);
+    return mergeAuthoritativeUsdToCadRate(balanceRates, data?.usdToCadRate, baseCurrency);
+  }, [baseBalances, baseCurrency, data?.usdToCadRate]);
 
   const usdToCadRate = useMemo(() => {
     const apiRate = isFiniteNumber(data?.usdToCadRate) && data.usdToCadRate > 0 ? data.usdToCadRate : null;
@@ -10832,8 +10866,8 @@ export default function App() {
           return accumulator;
         }
         const marketValue = Number(position?.normalizedMarketValue);
-        const dayPnl = Number(position?.normalizedDayPnl ?? position?.dayPnl);
-        const openPnl = Number(position?.normalizedOpenPnl ?? position?.openPnl);
+        const dayPnl = position?.normalizedDayPnl ?? position?.dayPnl;
+        const openPnl = position?.normalizedOpenPnl ?? position?.openPnl;
         if (Number.isFinite(marketValue)) {
           accumulator.marketValue += marketValue;
         }
@@ -10856,8 +10890,8 @@ export default function App() {
     return excludedPositionsWithShare.reduce(
       (accumulator, position) => {
         const marketValue = Number(position?.normalizedMarketValue);
-        const dayPnl = Number(position?.normalizedDayPnl ?? position?.dayPnl);
-        const openPnl = Number(position?.normalizedOpenPnl ?? position?.openPnl);
+        const dayPnl = position?.normalizedDayPnl ?? position?.dayPnl;
+        const openPnl = position?.normalizedOpenPnl ?? position?.openPnl;
         if (Number.isFinite(marketValue)) {
           accumulator.marketValue += marketValue;
         }
@@ -12845,6 +12879,63 @@ export default function App() {
           ? marketValueValue
           : 0;
 
+    const selectedProvider =
+      typeof selectedAccountInfo?.provider === 'string'
+        ? selectedAccountInfo.provider.trim().toLowerCase()
+        : '';
+    const canonicalDeployment =
+      selectedAccountFunding?.deploymentSummary &&
+      typeof selectedAccountFunding.deploymentSummary === 'object'
+        ? selectedAccountFunding.deploymentSummary
+        : null;
+    if (
+      (selectedProvider === 'snaptrade' || selectedProvider === 'wealthsimple') &&
+      activeCurrency.scope === 'combined' &&
+      normalizeSymbolKey(activeCurrency.currency) === baseCurrency &&
+      canonicalDeployment &&
+      isFiniteNumber(canonicalDeployment.reserveValueCad)
+    ) {
+      const reserveValue = Math.max(0, canonicalDeployment.reserveValueCad);
+      const deployedValue = isFiniteNumber(canonicalDeployment.deployedValueCad)
+        ? Math.max(0, canonicalDeployment.deployedValueCad)
+        : Math.max(0, total - reserveValue);
+      return {
+        deployedValue,
+        deployedPercent: total > 0 ? (deployedValue / total) * 100 : null,
+        reserveValue,
+        reservePercent: total > 0 ? (reserveValue / total) * 100 : null,
+      };
+    }
+
+    if (
+      (selectedProvider === 'snaptrade' || selectedProvider === 'wealthsimple') &&
+      activeCurrency.scope === 'combined'
+    ) {
+      const cashByCurrency = new Map();
+      Object.entries(balances?.perCurrency || {}).forEach(([currency, entry]) => {
+        const cashValue = coerceNumber(entry?.cash);
+        if (cashValue !== null) {
+          cashByCurrency.set(normalizeSymbolKey(entry?.currency || currency), cashValue);
+        }
+      });
+      const reserveValue = computeReserveValueAcrossCurrencies({
+        cashByCurrency,
+        reservePositionsByCurrency,
+        targetCurrency: activeCurrency.currency,
+        currencyRates,
+        baseCurrency,
+      });
+      if (isFiniteNumber(reserveValue)) {
+        const deployedValue = Math.max(0, total - reserveValue);
+        return {
+          deployedValue,
+          deployedPercent: total > 0 ? (deployedValue / total) * 100 : null,
+          reserveValue,
+          reservePercent: total > 0 ? (reserveValue / total) * 100 : null,
+        };
+      }
+    }
+
     const cashValueRaw = coerceNumber(activeBalancesForDisplay.cash);
     const cashValue = cashValueRaw !== null ? cashValueRaw : 0;
 
@@ -12885,6 +12976,9 @@ export default function App() {
     reservePositionsByCurrency,
     currencyRates,
     baseCurrency,
+    selectedAccountInfo,
+    selectedAccountFunding,
+    balances,
   ]);
 
   const fundingSummaryVariants = useMemo(() => {
@@ -12929,19 +13023,44 @@ export default function App() {
       returnBreakdown,
       periodEndDate,
       autoFixPendingWithdrawls: selectedAccountFunding?.autoFixPendingWithdrawls || null,
+      cashFlowCoverageIncomplete: selectedAccountFunding?.cashFlowCoverageIncomplete === true,
+      providerObservedReturn:
+        selectedAccountFunding?.providerObservedReturn &&
+        typeof selectedAccountFunding.providerObservedReturn === 'object'
+          ? selectedAccountFunding.providerObservedReturn
+          : null,
     };
 
-    const effectiveNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
-      ? selectedAccountFunding.netDeposits.combinedCad
-      : null;
-    const effectiveTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
+    const reliableProviderPeriod =
+      baseSummary.providerObservedReturn?.activityCoverageComplete === true &&
+      typeof baseSummary.providerObservedReturn?.startDate === 'string' &&
+      baseSummary.providerObservedReturn.startDate.trim()
+        ? baseSummary.providerObservedReturn
+        : null;
+
+    const providerPeriodNetDeposits =
+      reliableProviderPeriod &&
+      isFiniteNumber(reliableProviderPeriod.startEquityCad) &&
+      isFiniteNumber(reliableProviderPeriod.netExternalFlowsCad)
+        ? reliableProviderPeriod.startEquityCad + reliableProviderPeriod.netExternalFlowsCad
+        : null;
+    const effectiveNetDeposits = isFiniteNumber(providerPeriodNetDeposits)
+      ? providerPeriodNetDeposits
+      : isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
+        ? selectedAccountFunding.netDeposits.combinedCad
+        : null;
+    const effectiveTotalPnl = reliableProviderPeriod && isFiniteNumber(reliableProviderPeriod.observedPnlCad)
+      ? reliableProviderPeriod.observedPnlCad
+      : isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
       ? selectedAccountFunding.totalPnlSinceDisplayStartCad
       : isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
         ? selectedAccountFunding.totalPnl.combinedCad
         : null;
-    const effectiveTotalPnlDelta = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
-      ? selectedAccountFunding.totalPnlSinceDisplayStartCad
-      : null;
+    const effectiveTotalPnlDelta = reliableProviderPeriod && isFiniteNumber(reliableProviderPeriod.observedPnlCad)
+      ? reliableProviderPeriod.observedPnlCad
+      : isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
+        ? selectedAccountFunding.totalPnlSinceDisplayStartCad
+        : null;
     const effectiveTotalEquityDelta = isFiniteNumber(selectedAccountFunding?.totalEquitySinceDisplayStartCad)
       ? selectedAccountFunding.totalEquitySinceDisplayStartCad
       : null;
@@ -12949,7 +13068,9 @@ export default function App() {
       selectedAccountFunding?.displayStartTotals && typeof selectedAccountFunding.displayStartTotals === 'object'
         ? selectedAccountFunding.displayStartTotals
         : null;
-    const effectivePeriodStart = normalizeDate(selectedAccountFunding?.periodStartDate);
+    const effectivePeriodStart =
+      normalizeDate(reliableProviderPeriod?.startDate) ||
+      normalizeDate(selectedAccountFunding?.periodStartDate);
 
     const normalizedOriginalPeriodStart =
       normalizeDate(selectedAccountFunding?.originalPeriodStartDate) || null;
@@ -12983,14 +13104,19 @@ export default function App() {
       annualizedReturnStartDate: effectiveAnnualized.startDate,
     };
 
-    const allTimeNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
+    const allTimeNetDeposits = reliableProviderPeriod
+      ? effectiveVariant.netDepositsCad
+      : isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
       ? selectedAccountFunding.netDeposits.allTimeCad
       : effectiveVariant.netDepositsCad;
-    const allTimeTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnl?.allTimeCad)
+    const allTimeTotalPnl = reliableProviderPeriod
+      ? effectiveVariant.totalPnlCad
+      : isFiniteNumber(selectedAccountFunding?.totalPnl?.allTimeCad)
       ? selectedAccountFunding.totalPnl.allTimeCad
       : effectiveVariant.totalPnlCad;
-    const allTimePeriodStart =
-      normalizedOriginalPeriodStart || effectiveVariant.periodStartDate;
+    const allTimePeriodStart = reliableProviderPeriod
+      ? effectiveVariant.periodStartDate
+      : normalizedOriginalPeriodStart || effectiveVariant.periodStartDate;
 
     // Build all-time annualized details from server-provided values.
     const baseAllTimeAnnualized = {
@@ -13057,6 +13183,14 @@ export default function App() {
   const totalPnlRangeOptions = useMemo(() => {
     if (!fundingSummaryVariants) {
       return [];
+    }
+    const providerStart =
+      fundingSummaryVariants?.effective?.providerObservedReturn?.activityCoverageComplete === true
+        ? fundingSummaryVariants.effective.providerObservedReturn.startDate
+        : null;
+    const providerStartLabel = providerStart ? formatDate(providerStart) : null;
+    if (providerStartLabel && providerStartLabel !== '?') {
+      return [{ value: 'all', label: `Since ${providerStartLabel}` }];
     }
     const options = [];
     if (cagrStartDate) {
@@ -13772,6 +13906,15 @@ export default function App() {
     const balanceEntry = balancePnlSummaries[activeCurrency.scope]?.[activeCurrency.currency] || null;
     const totalFromBalance = balanceEntry ? balanceEntry.totalPnl : null;
     const hasBalanceTotal = isFiniteNumber(totalFromBalance);
+    const resolvePositionBackedPnl = (balanceValue, positionValue) => {
+      if (
+        isFiniteNumber(positionValue) &&
+        (!isFiniteNumber(balanceValue) || (balanceValue === 0 && positionValue !== 0))
+      ) {
+        return positionValue;
+      }
+      return balanceValue ?? positionValue;
+    };
 
     if (!balanceEntry) {
       return {
@@ -13781,8 +13924,8 @@ export default function App() {
       };
     }
     return {
-      dayPnl: balanceEntry.dayPnl ?? fallbackPnl.dayPnl,
-      openPnl: balanceEntry.openPnl ?? fallbackPnl.openPnl,
+      dayPnl: resolvePositionBackedPnl(balanceEntry.dayPnl, fallbackPnl.dayPnl),
+      openPnl: resolvePositionBackedPnl(balanceEntry.openPnl, fallbackPnl.openPnl),
       totalPnl:
         effectiveFundingSummaryForDisplay && isFiniteNumber(effectiveFundingSummaryForDisplay.totalPnlCad)
           ? effectiveFundingSummaryForDisplay.totalPnlCad
@@ -13790,7 +13933,12 @@ export default function App() {
             ? totalFromBalance
             : null,
     };
-  }, [activeCurrency, balancePnlSummaries, fallbackPnl, effectiveFundingSummaryForDisplay]);
+  }, [
+    activeCurrency,
+    balancePnlSummaries,
+    fallbackPnl,
+    effectiveFundingSummaryForDisplay,
+  ]);
 
   const activePnlForDisplay = useMemo(() => {
     if (!symbolExclusionActive || !activeCurrency) {
@@ -18480,7 +18628,7 @@ export default function App() {
             onCurrencyChange={setCurrencyView}
             balances={focusedSymbol ? { totalEquity: symbolFilteredPositions.total, marketValue: symbolFilteredPositions.total, cash: null } : activeBalancesForDisplay}
             deploymentSummary={focusedSymbol ? null : activeDeploymentSummary}
-            pnl={focusedSymbol ? { dayPnl: focusedSymbolPnl?.dayPnl ?? 0, openPnl: focusedSymbolPnl?.openPnl ?? 0, totalPnl: focusedSymbolPnl?.totalPnl ?? null } : activePnlForDisplay}
+            pnl={focusedSymbol ? { dayPnl: focusedSymbolPnl?.dayPnl ?? null, openPnl: focusedSymbolPnl?.openPnl ?? null, totalPnl: focusedSymbolPnl?.totalPnl ?? null } : activePnlForDisplay}
             fundingSummary={focusedSymbol ? (function buildSymbolFunding(){
               if (focusedSymbolFundingSummary) {
                 return focusedSymbolFundingSummary;

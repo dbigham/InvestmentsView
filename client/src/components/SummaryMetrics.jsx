@@ -827,6 +827,31 @@ function alignTotalPnlSeriesToSummary(series, targetTotal, displayStartDate) {
   return adjusted;
 }
 
+function InfoTooltip({ label, text }) {
+  const tooltipId = useId();
+  return (
+    <span className="metric-info-tooltip">
+      <button
+        type="button"
+        className="metric-info-tooltip__trigger"
+        aria-label={label}
+        aria-describedby={tooltipId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        i
+      </button>
+      <span id={tooltipId} role="tooltip" className="metric-info-tooltip__content">
+        {text}
+      </span>
+    </span>
+  );
+}
+
+InfoTooltip.propTypes = {
+  label: PropTypes.string.isRequired,
+  text: PropTypes.string.isRequired,
+};
+
 function MetricRow({
   label,
   value,
@@ -1539,6 +1564,13 @@ export default function SummaryMetrics({
   onTotalPnlRangeSelectionChange,
   onTotalPnlSelectionCleared,
 }) {
+  const reliableProviderStartLabel =
+    fundingSummary?.cashFlowCoverageIncomplete === true &&
+    fundingSummary?.providerObservedReturn?.activityCoverageComplete === true &&
+    typeof fundingSummary.providerObservedReturn.startDate === 'string'
+      ? formatDate(fundingSummary.providerObservedReturn.startDate)
+      : null;
+
   // Local timeframe for the Total P&L chart (Since inception by default)
   const TIMEFRAME_BUTTONS = useMemo(
     () => [
@@ -1550,9 +1582,14 @@ export default function SummaryMetrics({
       { value: '3Y', label: '3Y' },
       { value: '5Y', label: '5Y' },
       { value: '10Y', label: '10Y' },
-      { value: 'ALL', label: 'Since inception' },
+      {
+        value: 'ALL',
+        label: reliableProviderStartLabel && reliableProviderStartLabel !== '—'
+          ? `Since ${reliableProviderStartLabel}`
+          : 'Since inception',
+      },
     ],
-    []
+    [reliableProviderStartLabel]
   );
   const availableChartMetricOptions = useMemo(() => {
     if (symbolMode && symbolPriceOnly) {
@@ -2184,9 +2221,27 @@ export default function SummaryMetrics({
       ? `Adjusted net deposits by ${autoFixAmountLabel} to offset a suspected missing withdrawal; today's Total P&L is treated as zero.`
       : 'Applied an automated fix for a suspected missing withdrawal to keep Total P&L accurate.');
 
-  const baseAnnualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
+  const officialAnnualizedReturnRate = Number.isFinite(fundingSummary?.annualizedReturnRate)
+    && fundingSummary?.annualizedReturnIncomplete !== true
     ? fundingSummary.annualizedReturnRate
     : null;
+  const providerObservedReturn =
+    fundingSummary?.cashFlowCoverageIncomplete === true &&
+    fundingSummary?.providerObservedReturn &&
+    typeof fundingSummary.providerObservedReturn === 'object'
+      ? fundingSummary.providerObservedReturn
+      : null;
+  const providerAnnualizedReturnRate =
+    providerObservedReturn?.activityCoverageComplete === true &&
+    Number.isFinite(providerObservedReturn?.annualizedRate)
+      ? providerObservedReturn.annualizedRate
+      : null;
+  const providerCumulativeReturnRate = Number.isFinite(providerObservedReturn?.cumulativeRate)
+    ? providerObservedReturn.cumulativeRate
+    : null;
+  const usesProviderPeriodReturn =
+    officialAnnualizedReturnRate === null && providerObservedReturn !== null;
+  const baseAnnualizedReturnRate = officialAnnualizedReturnRate ?? providerAnnualizedReturnRate;
   const canShowReturnBreakdown =
     typeof onShowAnnualizedReturn === 'function' &&
     Array.isArray(fundingSummary?.returnBreakdown);
@@ -2197,13 +2252,15 @@ export default function SummaryMetrics({
       ? fundingSummary.totalEquityCad
       : null;
 
-  const basePeriodStartDate =
-    parseDateString(fundingSummary?.periodStartDate, { assumeDateOnly: true }) ||
-    parseDateString(fundingSummary?.annualizedReturnStartDate, { assumeDateOnly: true });
-  const basePeriodEndDate =
-    parseDateString(fundingSummary?.periodEndDate, { assumeDateOnly: true }) ||
-    parseDateString(fundingSummary?.annualizedReturnAsOf) ||
-    parseDateString(asOf);
+  const basePeriodStartDate = usesProviderPeriodReturn
+    ? parseDateString(providerObservedReturn?.startDate, { assumeDateOnly: true })
+    : parseDateString(fundingSummary?.periodStartDate, { assumeDateOnly: true }) ||
+      parseDateString(fundingSummary?.annualizedReturnStartDate, { assumeDateOnly: true });
+  const basePeriodEndDate = usesProviderPeriodReturn
+    ? parseDateString(providerObservedReturn?.asOf, { assumeDateOnly: true }) || parseDateString(asOf)
+    : parseDateString(fundingSummary?.periodEndDate, { assumeDateOnly: true }) ||
+      parseDateString(fundingSummary?.annualizedReturnAsOf) ||
+      parseDateString(asOf);
 
   const formatPnlPercent = (change, baseValue = safeTotalEquity) => {
     if (!Number.isFinite(change)) {
@@ -2947,11 +3004,32 @@ export default function SummaryMetrics({
       return { start: null, end: null };
     }
     if (chartTimeframe && chartTimeframe !== 'ALL') {
-      const start = subtractInterval(resolvedEnd, chartTimeframe);
-      return { start: start ?? null, end: resolvedEnd };
+      const requestedStart = subtractInterval(resolvedEnd, chartTimeframe);
+      const dataStartCandidates = [];
+      if (filteredTotalPnlSeries.length) {
+        const firstFiltered = parseDateOnly(filteredTotalPnlSeries[0]?.date);
+        if (firstFiltered) dataStartCandidates.push(firstFiltered);
+      }
+      if (Array.isArray(totalPnlSeries?.points) && totalPnlSeries.points.length) {
+        const firstRaw = parseDateOnly(totalPnlSeries.points[0]?.date);
+        if (firstRaw) dataStartCandidates.push(firstRaw);
+      }
+      const displayStart = parseDateOnly(totalPnlSeries?.displayStartDate);
+      if (displayStart) dataStartCandidates.push(displayStart);
+      const clampedStartCandidates = [requestedStart, ...dataStartCandidates].filter(Boolean);
+      const clampedStart = clampedStartCandidates.length
+        ? new Date(Math.max(...clampedStartCandidates.map((date) => date.getTime())))
+        : null;
+      return { start: clampedStart, end: resolvedEnd };
     }
     return { start: null, end: null };
-  }, [filteredTotalPnlSeries, totalPnlSeries?.points, totalPnlSeries?.periodEndDate, chartTimeframe]);
+  }, [
+    filteredTotalPnlSeries,
+    totalPnlSeries?.displayStartDate,
+    totalPnlSeries?.points,
+    totalPnlSeries?.periodEndDate,
+    chartTimeframe,
+  ]);
 
   const totalPnlChartMetrics = useMemo(() => {
     if (!chartSeries.length) {
@@ -3736,13 +3814,62 @@ export default function SummaryMetrics({
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         });
-  const formattedCagr = annualizedPercentDisplay ?? '—';
+  const showProviderCumulativeFallback =
+    !hasActiveRangeSummary &&
+    usesProviderPeriodReturn &&
+    providerAnnualizedReturnRate === null &&
+    providerCumulativeReturnRate !== null;
+  const displayedReturnRate = showProviderCumulativeFallback
+    ? providerCumulativeReturnRate
+    : displayAnnualizedReturnRate;
+  const formattedCagr = showProviderCumulativeFallback
+    ? formatSignedPercent(providerCumulativeReturnRate * 100, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+    : annualizedPercentDisplay ?? '—';
   const cagrTone =
-    displayAnnualizedReturnRate > 0
+    displayedReturnRate > 0
       ? 'positive'
-      : displayAnnualizedReturnRate < 0
+      : displayedReturnRate < 0
         ? 'negative'
         : 'neutral';
+  const providerPeriodStartLabel = reliableProviderStartLabel || (basePeriodStartDate ? formatDate(basePeriodStartDate) : null);
+  const providerPeriodSuffix = providerPeriodStartLabel ? ` since ${providerPeriodStartLabel}` : '';
+  const returnMetricLabel = showProviderCumulativeFallback
+    ? `Observed return${providerPeriodSuffix}`
+    : usesProviderPeriodReturn && !hasActiveRangeSummary
+      ? `Annualized return${providerPeriodSuffix}`
+      : 'Annualized return';
+  let returnMetricExplanation = null;
+  if (usesProviderPeriodReturn && !hasActiveRangeSummary) {
+    if (providerAnnualizedReturnRate !== null) {
+      returnMetricExplanation =
+        `This annualized rate covers only the reliable provider-observed period${providerPeriodSuffix}. ` +
+        'Assets were present without corresponding opening activity, so the earlier in-kind or prior-provider transfer date and value are unavailable.';
+    } else if (showProviderCumulativeFallback) {
+      returnMetricExplanation =
+        `Annualization is unavailable for the reliable provider-observed period${providerPeriodSuffix}; ` +
+        'the displayed value is the cumulative observed-period return.';
+    } else {
+      returnMetricExplanation =
+        'Unavailable: opening transfer date/value is estimated, and the provider-observed period does not contain enough verified data for a reliable return rate.';
+    }
+  } else if (
+    !hasActiveRangeSummary &&
+    fundingSummary?.cashFlowCoverageIncomplete === true &&
+    officialAnnualizedReturnRate === null
+  ) {
+    returnMetricExplanation = 'Unavailable: opening transfer date/value is estimated.';
+  }
+  const returnMetricLabelNode = returnMetricExplanation ? (
+    <span className="metric-label-with-info">
+      <span>{returnMetricLabel}</span>
+      <InfoTooltip label="About this return period" text={returnMetricExplanation} />
+    </span>
+  ) : (
+    returnMetricLabel
+  );
 
   let deAnnualizedReturnRate = null;
   if (Number.isFinite(displayAnnualizedReturnRate)) {
@@ -3769,6 +3896,10 @@ export default function SummaryMetrics({
 
   const formattedTotal = formatSignedMoney(displayTotalPnlValue);
   const totalTone = classifyPnL(displayTotalPnlValue);
+  const totalPnlMetricLabel =
+    usesProviderPeriodReturn && !hasActiveRangeSummary
+      ? `Total P&L${providerPeriodSuffix}`
+      : 'Total P&L';
   const formattedNetDeposits =
     displayNetDepositsValue !== null ? formatMoney(displayNetDepositsValue) : null;
   const totalPercentBaseValue =
@@ -3778,13 +3909,27 @@ export default function SummaryMetrics({
         ? hoverRangeSummary.endEquityCad
         : safeTotalEquity;
   const totalPercent = formatPnlPercent(displayTotalPnlValue, totalPercentBaseValue);
+  const providerHeadlineCumulativeRate =
+    !hasActiveRangeSummary &&
+    providerObservedReturn?.activityCoverageComplete === true &&
+    Number.isFinite(providerObservedReturn?.cumulativeRate)
+      ? providerObservedReturn.cumulativeRate
+      : null;
+  const suppressTotalReturnPercent =
+    fundingSummary?.cashFlowCoverageIncomplete === true && providerHeadlineCumulativeRate === null;
 
   let totalExtraPercent = null;
   let totalExtraPercentTooltip = null;
-  if (deAnnualizedPercentDisplay !== null) {
+  if (providerHeadlineCumulativeRate !== null) {
+    totalExtraPercent = `(${formatSignedPercent(providerHeadlineCumulativeRate * 100, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })})`;
+    totalExtraPercentTooltip = `Cumulative return for the reliable provider-observed period${providerPeriodSuffix}.`;
+  } else if (!suppressTotalReturnPercent && deAnnualizedPercentDisplay !== null) {
     totalExtraPercent = `(${deAnnualizedPercentDisplay})`;
     totalExtraPercentTooltip = 'Estimated cumulative total return. (De-annualized XIRR)';
-  } else if (totalPercent) {
+  } else if (!suppressTotalReturnPercent && totalPercent) {
     totalExtraPercent = `(${totalPercent})`;
     totalExtraPercentTooltip = 'Fallback calculation: Total P&L divided by cost basis.';
   }
@@ -5464,7 +5609,7 @@ export default function SummaryMetrics({
             />
           )}
           <MetricRow
-            label="Total P&L"
+            label={totalPnlMetricLabel}
             value={formattedTotal}
             extra={totalExtraPercent}
             extraTooltip={totalExtraPercentTooltip}
@@ -5477,8 +5622,8 @@ export default function SummaryMetrics({
           {!symbolMode && (selectionRangeLabelNode || hoverRangeLabelNode || totalPnlRangeNode)}
           {!symbolMode && totalDetailBlock}
           <MetricRow
-            label="Annualized return"
-            tooltip="The equivalent constant yearly rate (with compounding) that gets from start value to today."
+            label={returnMetricLabelNode}
+            tooltip={returnMetricExplanation ? null : 'The equivalent constant yearly rate (with compounding) that gets from start value to today.'}
             value={formattedCagr}
             tone={cagrTone}
             onActivate={symbolMode ? null : (canShowReturnBreakdown ? onShowAnnualizedReturn : null)}
@@ -5594,9 +5739,19 @@ SummaryMetrics.propTypes = {
     annualizedReturnRate: PropTypes.number,
     annualizedReturnAsOf: PropTypes.string,
     annualizedReturnIncomplete: PropTypes.bool,
+    cashFlowCoverageIncomplete: PropTypes.bool,
     annualizedReturnStartDate: PropTypes.string,
     periodStartDate: PropTypes.string,
     periodEndDate: PropTypes.string,
+    providerObservedReturn: PropTypes.shape({
+      annualizedRate: PropTypes.number,
+      cumulativeRate: PropTypes.number,
+      observedPnlCad: PropTypes.number,
+      startDate: PropTypes.string,
+      asOf: PropTypes.string,
+      activityCoverageComplete: PropTypes.bool,
+      annualizationUnavailableReason: PropTypes.string,
+    }),
     returnBreakdown: PropTypes.arrayOf(
       PropTypes.shape({
         period: PropTypes.string,

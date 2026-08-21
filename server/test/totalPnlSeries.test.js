@@ -576,6 +576,113 @@ test('computeTotalPnlSeries skips pending-deposit auto-fix for historical end da
   assert.ok(Math.abs(result.summary.totalPnlAllTimeCad - 500) < 1e-6);
 });
 
+test('SnapTrade reconciles unreported inbound opening assets as funding without changing Questrade seeding', async () => {
+  const account = { id: 'MISSING-INBOUND-TRANSFER', number: 'MISSING-INBOUND-TRANSFER' };
+  const now = new Date('2026-06-18T00:00:00Z');
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.number,
+    earliestFunding: new Date('2026-06-16T00:00:00Z'),
+    crawlStart: new Date('2026-06-16T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    offlineOnly: true,
+    providerActivityCoverageComplete: true,
+    activities: [
+      {
+        tradeDate: '2026-06-16T00:00:00Z',
+        type: 'CONTRIBUTION',
+        action: 'CONTRIBUTION',
+        description: 'Deposit of $1000.00',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+      },
+      {
+        tradeDate: '2026-06-17T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -1000,
+        grossAmount: -1000,
+        quantity: 10,
+        symbol: 'XYZ.TO',
+      },
+    ],
+    fingerprint: 'missing-inbound-transfer',
+  };
+  const balances = {
+    [account.id]: {
+      combined: { CAD: { totalEquity: 1320 } },
+      perCurrency: { CAD: { totalEquity: 1320, marketValue: 1320, cash: 0 } },
+    },
+  };
+  const providedPositions = [
+    {
+      accountId: account.id,
+      symbol: 'XYZ.TO',
+      currency: 'CAD',
+      openQuantity: 12,
+      currentPrice: 110,
+      currentMarketValue: 1320,
+    },
+  ];
+  const priceSeriesBySymbol = new Map([
+    ['XYZ.TO', new Map([
+      ['2026-06-16', 100],
+      ['2026-06-17', 100],
+      ['2026-06-18', 110],
+    ])],
+  ]);
+  const commonOptions = {
+    activityContext,
+    applyAccountCagrStartDate: false,
+    providedPositions,
+    priceSeriesBySymbol,
+  };
+
+  const snapTradeSeries = await computeTotalPnlSeries(
+    { id: 'snap-login', provider: 'wealthsimple' },
+    account,
+    balances,
+    commonOptions
+  );
+
+  assert.equal(snapTradeSeries.summary.openingFundingSource, 'residual-opening-equity');
+  assert.equal(snapTradeSeries.summary.openingFundingAdjustmentCad, 200);
+  assert.equal(snapTradeSeries.summary.netDepositsCad, 1200);
+  assert.equal(snapTradeSeries.summary.netDepositsAllTimeCad, 1200);
+  assert.equal(snapTradeSeries.summary.totalPnlCad, 120);
+  assert.equal(snapTradeSeries.summary.cashFlowCoverageIncomplete, true);
+  assert.ok(snapTradeSeries.issues.includes('opening-funding-estimated-from-market-value'));
+  assert.equal(snapTradeSeries.periodStartDate, '2026-06-17');
+  assert.equal(snapTradeSeries.displayStartDate, '2026-06-17');
+  assert.equal(snapTradeSeries.points[0].date, '2026-06-17');
+  assert.equal(snapTradeSeries.points[0].equityCad, 1200);
+  assert.equal(snapTradeSeries.points[0].cumulativeNetDepositsCad, 1200);
+  assert.equal(snapTradeSeries.points[0].totalPnlCad, 0);
+  assert.equal(snapTradeSeries.points.at(-1).equityCad, 1320);
+  assert.equal(snapTradeSeries.points.at(-1).totalPnlCad, 120);
+  assert.ok(!snapTradeSeries.issues?.includes('current-snapshot-diverges-from-reconstruction'));
+  assert.equal(snapTradeSeries.summary.providerObservedReturn.startDate, '2026-06-17');
+  assert.equal(snapTradeSeries.summary.providerObservedReturn.activityCoverageComplete, true);
+  assert.equal(snapTradeSeries.summary.providerObservedReturn.observedPnlCad, 120);
+  assert.equal(snapTradeSeries.summary.totalPnlSinceDisplayStartCad, 120);
+  assert.equal(snapTradeSeries.summary.netDepositsCad, 1200);
+
+  const questradeSeries = await computeTotalPnlSeries(
+    { id: 'questrade-login', provider: 'questrade' },
+    account,
+    balances,
+    commonOptions
+  );
+  assert.equal(questradeSeries.summary.openingFundingAdjustmentCad, undefined);
+  assert.equal(questradeSeries.summary.netDepositsCad, 1000);
+  assert.equal(questradeSeries.summary.totalPnlCad, 320);
+  assert.equal(questradeSeries.points.at(-1).equityCad, 1320);
+});
+
 test('computeTotalPnlSeries can ignore manual net deposit adjustments', async () => {
   const account = {
     id: 'ADJUSTED-ACCOUNT',
