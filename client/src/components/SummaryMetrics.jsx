@@ -1571,6 +1571,13 @@ export default function SummaryMetrics({
     Number.isFinite(fundingSummary.providerObservedReturn.observedPnlCad)
       ? formatDate(fundingSummary.providerObservedReturn.startDate)
       : null;
+  const inferredHistoryStartLabel =
+    fundingSummary?.historyStartDateEstimated === true &&
+    typeof fundingSummary?.historyStartDate === 'string' &&
+    fundingSummary.historyStartDate.trim()
+      ? formatDate(fundingSummary.historyStartDate)
+      : null;
+  const chartStartLabel = inferredHistoryStartLabel || reliableProviderStartLabel;
 
   // Local timeframe for the Total P&L chart (Since inception by default)
   const TIMEFRAME_BUTTONS = useMemo(
@@ -1585,12 +1592,12 @@ export default function SummaryMetrics({
       { value: '10Y', label: '10Y' },
       {
         value: 'ALL',
-        label: reliableProviderStartLabel && reliableProviderStartLabel !== '—'
-          ? `Since ${reliableProviderStartLabel}`
+        label: chartStartLabel && chartStartLabel !== '—'
+          ? `Since ${chartStartLabel}`
           : 'Since inception',
       },
     ],
-    [reliableProviderStartLabel]
+    [chartStartLabel]
   );
   const availableChartMetricOptions = useMemo(() => {
     if (symbolMode && symbolPriceOnly) {
@@ -2232,15 +2239,24 @@ export default function SummaryMetrics({
     typeof fundingSummary.providerObservedReturn === 'object'
       ? fundingSummary.providerObservedReturn
       : null;
-  const providerAnnualizedReturnRate =
-    Number.isFinite(providerObservedReturn?.annualizedRate)
-      ? providerObservedReturn.annualizedRate
+  const estimatedHistoryReturn =
+    fundingSummary?.historyStartDateEstimated === true &&
+    fundingSummary?.estimatedHistoryReturn &&
+    typeof fundingSummary.estimatedHistoryReturn === 'object'
+      ? fundingSummary.estimatedHistoryReturn
       : null;
-  const providerCumulativeReturnRate = Number.isFinite(providerObservedReturn?.cumulativeRate)
-    ? providerObservedReturn.cumulativeRate
+  const displayPeriodReturn = estimatedHistoryReturn || providerObservedReturn;
+  const estimatedHistoryReturnActive =
+    estimatedHistoryReturn !== null && Number.isFinite(estimatedHistoryReturn.annualizedRate);
+  const providerAnnualizedReturnRate =
+    Number.isFinite(displayPeriodReturn?.annualizedRate)
+      ? displayPeriodReturn.annualizedRate
+      : null;
+  const providerCumulativeReturnRate = Number.isFinite(displayPeriodReturn?.cumulativeRate)
+    ? displayPeriodReturn.cumulativeRate
     : null;
   const usesProviderPeriodReturn =
-    officialAnnualizedReturnRate === null && providerObservedReturn !== null;
+    officialAnnualizedReturnRate === null && displayPeriodReturn !== null;
   const baseAnnualizedReturnRate = officialAnnualizedReturnRate ?? providerAnnualizedReturnRate;
   const canShowReturnBreakdown =
     typeof onShowAnnualizedReturn === 'function' &&
@@ -2253,11 +2269,11 @@ export default function SummaryMetrics({
       : null;
 
   const basePeriodStartDate = usesProviderPeriodReturn
-    ? parseDateString(providerObservedReturn?.startDate, { assumeDateOnly: true })
+    ? parseDateString(displayPeriodReturn?.startDate, { assumeDateOnly: true })
     : parseDateString(fundingSummary?.periodStartDate, { assumeDateOnly: true }) ||
       parseDateString(fundingSummary?.annualizedReturnStartDate, { assumeDateOnly: true });
   const basePeriodEndDate = usesProviderPeriodReturn
-    ? parseDateString(providerObservedReturn?.asOf, { assumeDateOnly: true }) || parseDateString(asOf)
+    ? parseDateString(displayPeriodReturn?.asOf, { assumeDateOnly: true }) || parseDateString(asOf)
     : parseDateString(fundingSummary?.periodEndDate, { assumeDateOnly: true }) ||
       parseDateString(fundingSummary?.annualizedReturnAsOf) ||
       parseDateString(asOf);
@@ -3834,8 +3850,13 @@ export default function SummaryMetrics({
       : displayedReturnRate < 0
         ? 'negative'
         : 'neutral';
-  const providerPeriodStartLabel = reliableProviderStartLabel || (basePeriodStartDate ? formatDate(basePeriodStartDate) : null);
+  const providerPeriodStartLabel =
+    (estimatedHistoryReturnActive ? inferredHistoryStartLabel : null) ||
+    reliableProviderStartLabel ||
+    (basePeriodStartDate ? formatDate(basePeriodStartDate) : null);
   const providerPeriodSuffix = providerPeriodStartLabel ? ` since ${providerPeriodStartLabel}` : '';
+  const totalPnlPeriodStartLabel = inferredHistoryStartLabel || providerPeriodStartLabel;
+  const totalPnlPeriodSuffix = totalPnlPeriodStartLabel ? ` since ${totalPnlPeriodStartLabel}` : '';
   const returnMetricLabel = showProviderCumulativeFallback
     ? `Observed return${providerPeriodSuffix}`
     : usesProviderPeriodReturn && !hasActiveRangeSummary
@@ -3843,7 +3864,14 @@ export default function SummaryMetrics({
       : 'Annualized return';
   let returnMetricExplanation = null;
   if (usesProviderPeriodReturn && !hasActiveRangeSummary) {
-    if (providerAnnualizedReturnRate !== null) {
+    if (estimatedHistoryReturnActive) {
+      const reliablePeriodText = reliableProviderStartLabel
+        ? ` The reliable provider-observed period begins ${reliableProviderStartLabel}.`
+        : '';
+      returnMetricExplanation =
+        `This annualized return uses reconstructed opening history from ${providerPeriodStartLabel} and is estimated.` +
+        reliablePeriodText;
+    } else if (providerAnnualizedReturnRate !== null) {
       returnMetricExplanation =
         `This annualized rate covers only the reliable provider-observed period${providerPeriodSuffix}. ` +
         'Assets were present without corresponding opening activity, so the earlier in-kind or prior-provider transfer date and value are unavailable.';
@@ -3898,7 +3926,7 @@ export default function SummaryMetrics({
   const totalTone = classifyPnL(displayTotalPnlValue);
   const totalPnlMetricLabel =
     usesProviderPeriodReturn && !hasActiveRangeSummary
-      ? `Total P&L${providerPeriodSuffix}`
+      ? `Total P&L${totalPnlPeriodSuffix}`
       : 'Total P&L';
   const formattedNetDeposits =
     displayNetDepositsValue !== null ? formatMoney(displayNetDepositsValue) : null;
@@ -3911,8 +3939,8 @@ export default function SummaryMetrics({
   const totalPercent = formatPnlPercent(displayTotalPnlValue, totalPercentBaseValue);
   const providerHeadlineCumulativeRate =
     !hasActiveRangeSummary &&
-    Number.isFinite(providerObservedReturn?.cumulativeRate)
-      ? providerObservedReturn.cumulativeRate
+    Number.isFinite(displayPeriodReturn?.cumulativeRate)
+      ? displayPeriodReturn.cumulativeRate
       : null;
   const suppressTotalReturnPercent =
     fundingSummary?.cashFlowCoverageIncomplete === true && providerHeadlineCumulativeRate === null;
@@ -3924,7 +3952,9 @@ export default function SummaryMetrics({
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })})`;
-    totalExtraPercentTooltip = `Cumulative return for the reliable provider-observed period${providerPeriodSuffix}.`;
+    totalExtraPercentTooltip = estimatedHistoryReturnActive
+      ? `Cumulative return for the reconstructed period${providerPeriodSuffix} (estimated).`
+      : `Cumulative return for the reliable provider-observed period${providerPeriodSuffix}.`;
   } else if (!suppressTotalReturnPercent && deAnnualizedPercentDisplay !== null) {
     totalExtraPercent = `(${deAnnualizedPercentDisplay})`;
     totalExtraPercentTooltip = 'Estimated cumulative total return. (De-annualized XIRR)';
@@ -5742,6 +5772,16 @@ SummaryMetrics.propTypes = {
     annualizedReturnStartDate: PropTypes.string,
     periodStartDate: PropTypes.string,
     periodEndDate: PropTypes.string,
+    historyStartDate: PropTypes.string,
+    historyStartDateEstimated: PropTypes.bool,
+    estimatedHistoryReturn: PropTypes.shape({
+      annualizedRate: PropTypes.number,
+      cumulativeRate: PropTypes.number,
+      observedPnlCad: PropTypes.number,
+      startDate: PropTypes.string,
+      asOf: PropTypes.string,
+      estimated: PropTypes.bool,
+    }),
     providerObservedReturn: PropTypes.shape({
       annualizedRate: PropTypes.number,
       cumulativeRate: PropTypes.number,
@@ -5884,6 +5924,8 @@ SummaryMetrics.propTypes = {
     periodStartDate: PropTypes.string,
     periodEndDate: PropTypes.string,
     displayStartDate: PropTypes.string,
+    historyStartDate: PropTypes.string,
+    historyStartDateEstimated: PropTypes.bool,
     points: PropTypes.arrayOf(
       PropTypes.shape({
         date: PropTypes.string,

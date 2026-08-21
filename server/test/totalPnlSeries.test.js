@@ -683,6 +683,80 @@ test('SnapTrade reconciles unreported inbound opening assets as funding without 
   assert.equal(questradeSeries.points.at(-1).equityCad, 1320);
 });
 
+test('explicit history start displays reconstructed opening days without moving the provider boundary', async () => {
+  const account = {
+    id: 'SNAPTRADE-HISTORY-START',
+    historyStartDate: '2026-06-16',
+  };
+  const now = new Date('2026-06-18T00:00:00Z');
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2026-06-17T00:00:00Z'),
+    crawlStart: new Date('2026-06-16T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2026-06-17T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -1000,
+        grossAmount: -1000,
+        quantity: 10,
+        symbol: 'XYZ.TO',
+      },
+    ],
+    fingerprint: 'explicit-history-start',
+    providerActivityCoverageComplete: true,
+  };
+  const balances = {
+    [account.id]: {
+      combined: { CAD: { totalEquity: 1320, cash: 0, marketValue: 1320 } },
+      perCurrency: { CAD: { totalEquity: 1320, cash: 0, marketValue: 1320 } },
+    },
+  };
+  const series = await computeTotalPnlSeries(
+    { id: 'snap-login', provider: 'wealthsimple' },
+    account,
+    balances,
+    {
+      activityContext,
+      applyAccountCagrStartDate: false,
+      providedPositions: [
+        {
+          accountId: account.id,
+          symbol: 'XYZ.TO',
+          currency: 'CAD',
+          openQuantity: 12,
+          currentPrice: 110,
+          currentMarketValue: 1320,
+        },
+      ],
+      priceSeriesBySymbol: new Map([
+        ['XYZ.TO', new Map([
+          ['2026-06-16', 100],
+          ['2026-06-17', 100],
+          ['2026-06-18', 110],
+        ])],
+      ]),
+    }
+  );
+
+  assert.equal(series.periodStartDate, '2026-06-16');
+  assert.equal(series.displayStartDate, '2026-06-16');
+  assert.equal(series.historyStartDate, '2026-06-16');
+  assert.equal(series.historyStartDateEstimated, true);
+  assert.equal(series.points[0].date, '2026-06-16');
+  assert.equal(series.points[0].totalPnlCad, 0);
+  assert.equal(series.summary.providerObservedReturn.startDate, '2026-06-17');
+  assert.equal(series.summary.estimatedHistoryReturn.startDate, '2026-06-16');
+  assert.equal(series.summary.estimatedHistoryReturn.estimated, true);
+  assert.equal(series.summary.totalPnlSinceDisplayStartCad, 120);
+});
+
 test('computeTotalPnlSeries can ignore manual net deposit adjustments', async () => {
   const account = {
     id: 'ADJUSTED-ACCOUNT',

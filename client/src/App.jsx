@@ -13068,11 +13068,29 @@ export default function App() {
     const totalEquityCad = isFiniteNumber(selectedAccountFunding?.totalEquityCad)
       ? selectedAccountFunding.totalEquityCad
       : null;
+    const historyStartDate = normalizeDate(selectedAccountFunding?.historyStartDate);
+    const historyStartDateEstimated =
+      selectedAccountFunding?.historyStartDateEstimated === true && Boolean(historyStartDate);
+    const serverNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
+      ? selectedAccountFunding.netDeposits.combinedCad
+      : null;
+    const serverTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
+      ? selectedAccountFunding.totalPnlSinceDisplayStartCad
+      : isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
+        ? selectedAccountFunding.totalPnl.combinedCad
+        : null;
 
     const baseSummary = {
       totalEquityCad,
       returnBreakdown,
       periodEndDate,
+      historyStartDate,
+      historyStartDateEstimated,
+      estimatedHistoryReturn:
+        selectedAccountFunding?.estimatedHistoryReturn &&
+        typeof selectedAccountFunding.estimatedHistoryReturn === 'object'
+          ? selectedAccountFunding.estimatedHistoryReturn
+          : null,
       autoFixPendingWithdrawls: selectedAccountFunding?.autoFixPendingWithdrawls || null,
       cashFlowCoverageIncomplete: selectedAccountFunding?.cashFlowCoverageIncomplete === true,
       providerObservedReturn:
@@ -13096,22 +13114,28 @@ export default function App() {
       isFiniteNumber(providerObservedPeriod.netExternalFlowsCad)
         ? providerObservedPeriod.startEquityCad + providerObservedPeriod.netExternalFlowsCad
         : null;
-    const effectiveNetDeposits = isFiniteNumber(providerPeriodNetDeposits)
+    const effectiveNetDeposits = historyStartDateEstimated && isFiniteNumber(serverNetDeposits)
+      ? serverNetDeposits
+      : isFiniteNumber(providerPeriodNetDeposits)
       ? providerPeriodNetDeposits
       : isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
         ? selectedAccountFunding.netDeposits.combinedCad
         : null;
-    const effectiveTotalPnl = providerObservedPeriod && isFiniteNumber(providerObservedPeriod.observedPnlCad)
+    const effectiveTotalPnl = historyStartDateEstimated && isFiniteNumber(serverTotalPnl)
+      ? serverTotalPnl
+      : providerObservedPeriod && isFiniteNumber(providerObservedPeriod.observedPnlCad)
       ? providerObservedPeriod.observedPnlCad
       : isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
       ? selectedAccountFunding.totalPnlSinceDisplayStartCad
       : isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
         ? selectedAccountFunding.totalPnl.combinedCad
         : null;
-    const effectiveTotalPnlDelta = providerObservedPeriod && isFiniteNumber(providerObservedPeriod.observedPnlCad)
+    const effectiveTotalPnlDelta = historyStartDateEstimated && isFiniteNumber(serverTotalPnl)
+      ? serverTotalPnl
+      : providerObservedPeriod && isFiniteNumber(providerObservedPeriod.observedPnlCad)
       ? providerObservedPeriod.observedPnlCad
       : isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
-        ? selectedAccountFunding.totalPnlSinceDisplayStartCad
+      ? selectedAccountFunding.totalPnlSinceDisplayStartCad
         : null;
     const effectiveTotalEquityDelta = isFiniteNumber(selectedAccountFunding?.totalEquitySinceDisplayStartCad)
       ? selectedAccountFunding.totalEquitySinceDisplayStartCad
@@ -13121,6 +13145,7 @@ export default function App() {
         ? selectedAccountFunding.displayStartTotals
         : null;
     const effectivePeriodStart =
+      (historyStartDateEstimated ? historyStartDate : null) ||
       normalizeDate(providerObservedPeriod?.startDate) ||
       normalizeDate(selectedAccountFunding?.periodStartDate);
 
@@ -13243,7 +13268,13 @@ export default function App() {
       isFiniteNumber(fundingSummaryVariants.effective.providerObservedReturn.observedPnlCad)
         ? fundingSummaryVariants.effective.providerObservedReturn.startDate
         : null;
-    const providerStartLabel = providerStart ? formatDate(providerStart) : null;
+    const chartStart =
+      fundingSummaryVariants?.effective?.historyStartDateEstimated === true &&
+      typeof fundingSummaryVariants.effective.historyStartDate === 'string' &&
+      fundingSummaryVariants.effective.historyStartDate.trim()
+        ? fundingSummaryVariants.effective.historyStartDate
+        : providerStart;
+    const providerStartLabel = chartStart ? formatDate(chartStart) : null;
     if (providerStartLabel && providerStartLabel !== '?') {
       return [{ value: 'all', label: `Since ${providerStartLabel}` }];
     }

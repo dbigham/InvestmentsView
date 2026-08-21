@@ -7343,6 +7343,22 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (typeof override.historyStartDate === 'string') {
+    const trimmedDate = override.historyStartDate.trim();
+    if (trimmedDate) {
+      target.historyStartDate = trimmedDate;
+    }
+  } else if (
+    override.historyStartDate &&
+    typeof override.historyStartDate === 'object' &&
+    typeof override.historyStartDate.date === 'string'
+  ) {
+    const trimmedDate = override.historyStartDate.date.trim();
+    if (trimmedDate) {
+      target.historyStartDate = trimmedDate;
+    }
+  }
+
   if (
     typeof override.ignoreSittingCash === 'number' &&
     Number.isFinite(override.ignoreSittingCash)
@@ -11379,6 +11395,13 @@ function applyOpeningFundingReconciliationToSummary(fundingSummary, seriesSummar
       fundingSummary.periodStartDate = seriesSummary.providerObservedReturn.startDate;
     }
   }
+  if (typeof seriesSummary.historyStartDate === 'string' && seriesSummary.historyStartDate.trim()) {
+    fundingSummary.historyStartDate = seriesSummary.historyStartDate.trim();
+    fundingSummary.historyStartDateEstimated = seriesSummary.historyStartDateEstimated === true;
+  }
+  if (seriesSummary.estimatedHistoryReturn && typeof seriesSummary.estimatedHistoryReturn === 'object') {
+    fundingSummary.estimatedHistoryReturn = { ...seriesSummary.estimatedHistoryReturn };
+  }
   const openingAdjustment = Number(seriesSummary.openingFundingAdjustmentCad);
   if (!Number.isFinite(openingAdjustment)) {
     return;
@@ -11452,6 +11475,13 @@ function applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, totalPnlSeri
   }
   if (summary.displayStartTotals) {
     fundingSummary.displayStartTotals = summary.displayStartTotals;
+  }
+  if (typeof totalPnlSeries.historyStartDate === 'string' && totalPnlSeries.historyStartDate.trim()) {
+    fundingSummary.historyStartDate = totalPnlSeries.historyStartDate.trim();
+    fundingSummary.historyStartDateEstimated = totalPnlSeries.historyStartDateEstimated === true;
+  }
+  if (totalPnlSeries.estimatedHistoryReturn && typeof totalPnlSeries.estimatedHistoryReturn === 'object') {
+    fundingSummary.estimatedHistoryReturn = { ...totalPnlSeries.estimatedHistoryReturn };
   }
 
   if (shouldUseReconstructedArchivedEquity) {
@@ -15953,6 +15983,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     return null;
   }
 
+  const configuredHistoryStartDate =
+    typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
+      ? parseDateOnlyString(account.historyStartDate.trim())
+      : null;
+  const historyStartIso = configuredHistoryStartDate
+    ? formatDateOnly(configuredHistoryStartDate)
+    : null;
+
   // Choose a conservative series start: prefer the earliest available activity/crawl start so we can
   // compute a correct baseline even when a CAGR start date is applied.
   const candidateStarts = [];
@@ -15965,6 +16003,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       : null;
   if (netDepositsPeriodStart) {
     candidateStarts.push(netDepositsPeriodStart);
+  }
+  if (historyStartIso) {
+    candidateStarts.push(historyStartIso);
   }
   const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
   const nowIso = formatDateOnly(activityContext.now) || null;
@@ -15994,7 +16035,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     options && options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
       ? account.cagrStartDate.trim()
       : null;
-  const displayStartIso = cagrStartDate || startDateIso;
+  const displayStartIso = historyStartIso || cagrStartDate || startDateIso;
   const endDateIso =
     typeof options.endDate === 'string' && options.endDate.trim()
       ? options.endDate.trim()
@@ -17224,10 +17265,27 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     openingFundingCoverageIncomplete ||
     (Number.isFinite(openingFundingAdjustmentCad) &&
       Math.abs(openingFundingAdjustmentCad) >= CASH_FLOW_EPSILON);
-  const providerHeadline = hasInferredOpeningHistory
-    ? buildProviderObservedHeadlineSeries(points, providerObservedReturn, { allowIncomplete: true })
+  const historyHeadline = hasInferredOpeningHistory && historyStartIso
+    ? buildProviderObservedHeadlineSeries(
+        points,
+        { startDate: historyStartIso, activityCoverageComplete: false },
+        { allowIncomplete: true }
+      )
     : null;
-  if (providerHeadline && providerObservedReturn) {
+  const providerHeadline = historyHeadline || (hasInferredOpeningHistory
+    ? buildProviderObservedHeadlineSeries(points, providerObservedReturn, { allowIncomplete: true })
+    : null);
+  const estimatedHistoryReturn = historyHeadline
+    ? buildProviderObservedReturnFromSeries(historyHeadline.points, historyStartIso, {
+        accountKey,
+        activityCoverageComplete: false,
+        allowIncompleteAnnualization: true,
+      })
+    : null;
+  if (estimatedHistoryReturn) {
+    estimatedHistoryReturn.estimated = true;
+  }
+  if (providerHeadline && providerObservedReturn && !historyHeadline) {
     providerObservedReturn.startEquityCad = providerHeadline.startEquityCad;
     providerObservedReturn.endingEquityCad = providerHeadline.endingEquityCad;
     providerObservedReturn.netExternalFlowsCad = providerHeadline.netExternalFlowsCad;
@@ -17409,6 +17467,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     accountId: accountKey,
     periodStartDate: effectivePeriodStart,
     displayStartDate: effectiveDisplayStartDate ? formatDateOnly(effectiveDisplayStartDate) : undefined,
+    historyStartDate: historyHeadline ? historyStartIso : undefined,
+    historyStartDateEstimated: historyHeadline ? true : undefined,
     periodEndDate: effectivePeriodEnd,
     points: normalizedPoints,
     debugPriceSeries: options && options.debugPriceSeries && debugPriceSeries.length ? debugPriceSeries : undefined,
@@ -17439,6 +17499,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       deployedValueCad: Number.isFinite(summaryDeployedValue) ? summaryDeployedValue : undefined,
       deployedPercent: Number.isFinite(summaryDeployedPercent) ? summaryDeployedPercent : undefined,
       providerObservedReturn: providerObservedReturn || undefined,
+      historyStartDate: historyHeadline ? historyStartIso : undefined,
+      historyStartDateEstimated: historyHeadline ? true : undefined,
+      estimatedHistoryReturn: estimatedHistoryReturn || undefined,
       displayStartTotals: displayStartTotals || baselineTotals || undefined,
       seriesStartTotals:
         displayStartTotals &&
@@ -23833,6 +23896,10 @@ app.get('/api/summary', async function (req, res) {
         cagrStartDate:
           typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
             ? account.cagrStartDate.trim()
+            : null,
+        historyStartDate:
+          typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
+            ? account.historyStartDate.trim()
             : null,
         projectionGrowthPercent: (function () {
           const raw = account.projectionGrowthPercent;

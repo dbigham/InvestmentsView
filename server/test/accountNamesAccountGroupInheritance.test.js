@@ -85,3 +85,18 @@ test('accounts without explicit accountGroup inherit from the nearest ancestor',
   assert.deepEqual(settings['111'], { accountGroup: 'Aggressive RRSP' });
   assert.deepEqual(settings['222'], { accountGroup: 'Aggressive RRSP' });
 });
+
+test('account history start dates are normalized as separate history settings', () => {
+  const config = {
+    accounts: [
+      {
+        number: '333',
+        name: 'May 2026 RRSP',
+        historyStartDate: '2026-06-29',
+      },
+    ],
+  };
+
+  const settings = loadAccountSettingsFromConfig(config);
+  assert.deepEqual(settings['333'], { historyStartDate: '2026-06-29' });
+});

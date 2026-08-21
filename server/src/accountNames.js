@@ -479,6 +479,19 @@ function applyCagrStartDateSetting(target, key, value) {
   container.cagrStartDate = normalized;
 }
 
+function applyHistoryStartDateSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeDateOnly(value);
+  if (!normalized) {
+    delete container.historyStartDate;
+    return;
+  }
+  container.historyStartDate = normalized;
+}
+
 function applyIgnoreSittingCashSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -1729,6 +1742,9 @@ function extractEntry(
     if (Object.prototype.hasOwnProperty.call(entry, 'cagrStartDate')) {
       applyCagrStartDateSetting(settingsTarget, resolvedKey, entry.cagrStartDate);
     }
+    if (Object.prototype.hasOwnProperty.call(entry, 'historyStartDate')) {
+      applyHistoryStartDateSetting(settingsTarget, resolvedKey, entry.historyStartDate);
+    }
     if (Object.prototype.hasOwnProperty.call(entry, 'ignoreSittingCash')) {
       applyIgnoreSittingCashSetting(settingsTarget, resolvedKey, entry.ignoreSittingCash);
     }
@@ -2779,6 +2795,19 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'historyStartDate')) {
+    const normalized = normalizeDateOnly(updates.historyStartDate);
+    if (normalized) {
+      if (entry.historyStartDate !== normalized) {
+        entry.historyStartDate = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'historyStartDate')) {
+      delete entry.historyStartDate;
+      changed = true;
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(updates, 'rebalancePeriod')) {
     const normalized = normalizePositiveInteger(updates.rebalancePeriod);
     if (normalized !== null) {
@@ -3171,6 +3200,7 @@ function updateAccountMetadata(accountKey, updates) {
       portalAccountId: normalizePortalId(updates?.portalAccountId) || null,
       chatURL: normalizeChatUrl(updates?.chatURL) || null,
       cagrStartDate: normalizeDateOnly(updates?.cagrStartDate) || null,
+      historyStartDate: normalizeDateOnly(updates?.historyStartDate) || null,
       rebalancePeriod: normalizePositiveInteger(updates?.rebalancePeriod),
       ignoreSittingCash: (function () {
         const numeric = normalizeNumberLike(updates?.ignoreSittingCash);
