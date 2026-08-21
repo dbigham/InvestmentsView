@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  computeCombinedCashAcrossCurrencies,
   computeReserveValueAcrossCurrencies,
   mergeAuthoritativeUsdToCadRate,
 } from './currencyRates.js';
@@ -30,4 +31,22 @@ test('combined CAD reserve includes USD VBIL and USD cash without a USD equity b
   });
 
   assert.equal(reserve, 1020);
+});
+
+test('combined CAD cash includes USD-only cash without a USD combined balance', () => {
+  const rates = mergeAuthoritativeUsdToCadRate(new Map([['CAD', 1]]), 1.4, 'CAD');
+  const cash = computeCombinedCashAcrossCurrencies({
+    balances: {
+      combined: { CAD: { currency: 'CAD', cash: 0 } },
+      perCurrency: {
+        CAD: { currency: 'CAD', cash: 0 },
+        USD: { currency: 'USD', cash: 0.23 },
+      },
+    },
+    targetCurrency: 'CAD',
+    currencyRates: rates,
+    baseCurrency: 'CAD',
+  });
+
+  assert.equal(cash, 0.322);
 });

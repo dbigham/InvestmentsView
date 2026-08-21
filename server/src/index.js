@@ -331,6 +331,20 @@ const QUESTRADE_API_RETRYABLE_ERROR_CODES = new Set([
   'UND_ERR_SOCKET',
   'UND_ERR_CONNECT',
 ]);
+const SNAPTRADE_MIN_REQUEST_INTERVAL_MS = (() => {
+  const value = Number(process.env.SNAPTRADE_MIN_REQUEST_INTERVAL_MS);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 300;
+})();
+const SNAPTRADE_RATE_LIMIT_MAX_RETRIES = 1;
+const SNAPTRADE_ACCOUNT_DATA_CACHE_TTL_MS = (() => {
+  const value = Number(process.env.SNAPTRADE_ACCOUNT_DATA_CACHE_TTL_MINUTES);
+  return Number.isFinite(value) && value > 0 ? Math.round(value * 60 * 1000) : 10 * 60 * 1000;
+})();
+const SNAPTRADE_ACTIVITIES_CACHE_MAX_AGE_MS = (() => {
+  const value = Number(process.env.SNAPTRADE_ACTIVITIES_CACHE_MAX_AGE_HOURS);
+  return Number.isFinite(value) && value > 0 ? Math.round(value * 60 * 60 * 1000) : 24 * 60 * 60 * 1000;
+})();
+const SNAPTRADE_STALE_RESPONSE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const OPENAI_API_KEY = typeof process.env.OPENAI_API_KEY === 'string' ? process.env.OPENAI_API_KEY.trim() : '';
 // Default model for Responses API + web_search. Override via OPENAI_NEWS_MODEL.
@@ -413,8 +427,11 @@ if (DEBUG_SUMMARY_CACHE) {
 const summaryCacheStore = new Map();
 let supersetSummaryCache = null;
 const totalPnlSeriesCacheStore = new Map();
-const SUMMARY_CACHE_VERSION = 'funding-v6';
-const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v5';
+// Bump this whenever the shape or authority of a cached summary changes. In
+// particular, older entries may still contain the pre-reconciliation funding
+// totals that made Total P&L equal current equity minus raw deposits.
+const SUMMARY_CACHE_VERSION = 'funding-v8';
+const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v6-journal-replay';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const rangeBreakdownCache = new Map();
 // Cache for Questrade candle lookups to avoid duplicate provider calls for identical ranges
@@ -1316,6 +1333,16 @@ function setRangeBreakdownCacheEntry(key, payload) {
 }
 
 function getSupersetCacheEntry() {
+  if (!supersetSummaryCache) {
+    return null;
+  }
+  // The superset cache is kept separately from the keyed summary cache. Make
+  // it version-aware too, otherwise an in-process cache created before a
+  // funding reconciliation fix can keep reintroducing the old totals.
+  if (supersetSummaryCache.cacheVersion !== SUMMARY_CACHE_VERSION) {
+    supersetSummaryCache = null;
+    return null;
+  }
   return supersetSummaryCache;
 }
 
@@ -1324,7 +1351,10 @@ function setSupersetCacheEntry(entry) {
     supersetSummaryCache = null;
     return;
   }
-  supersetSummaryCache = entry;
+  supersetSummaryCache = {
+    ...entry,
+    cacheVersion: SUMMARY_CACHE_VERSION,
+  };
   try {
     const expiresAtIso = formatExpiryIso(entry.expiresAt);
     debugSummaryCache('superset cache stored', {
@@ -4619,72 +4649,223 @@ if (CLIENT_BUILD_DIR) {
 }
 
 const MIN_REQUEST_INTERVAL_MS = 50;
-const requestQueue = [];
-let isProcessingQueue = false;
-let nextAvailableTime = Date.now();
+const requestQueues = new Map([
+  [
+    'default',
+    {
+      jobs: [],
+      isProcessing: false,
+      nextAvailableTime: Date.now(),
+      minIntervalMs: MIN_REQUEST_INTERVAL_MS,
+    },
+  ],
+  [
+    'snaptrade',
+    {
+      jobs: [],
+      isProcessing: false,
+      nextAvailableTime: Date.now(),
+      minIntervalMs: SNAPTRADE_MIN_REQUEST_INTERVAL_MS,
+    },
+  ],
+]);
+const SNAPTRADE_ACCOUNT_RATE_WINDOW_MS = 60 * 1000;
+const SNAPTRADE_ACCOUNT_RATE_MAX_REQUESTS = 9;
+const snapTradeAccountRequestTimes = new Map();
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function updateRateLimitFromHeaders(headers) {
+function readResponseHeader(headers, name) {
   if (!headers) {
+    return null;
+  }
+  const normalizedName = name.toLowerCase();
+  const value = headers[normalizedName] ?? headers[name] ?? null;
+  return value === null || value === undefined ? null : String(value);
+}
+
+function resolveRetryAfterMs(headers, responseData) {
+  const rawRetryAfter = readResponseHeader(headers, 'retry-after');
+  if (rawRetryAfter) {
+    const seconds = Number(rawRetryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.max(0, Math.round(seconds * 1000));
+    }
+    const retryAt = Date.parse(rawRetryAfter);
+    if (Number.isFinite(retryAt)) {
+      return Math.max(0, retryAt - Date.now());
+    }
+  }
+
+  const detail =
+    responseData && typeof responseData === 'object' && typeof responseData.detail === 'string'
+      ? responseData.detail
+      : typeof responseData === 'string'
+        ? responseData
+        : '';
+  const detailMatch = detail.match(/(\d+(?:\.\d+)?)\s*seconds?/i);
+  if (detailMatch) {
+    const seconds = Number(detailMatch[1]);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.max(0, Math.ceil(seconds * 1000));
+    }
+  }
+
+  let maxResetDelay = 0;
+  ['x-ratelimit-reset', 'x-ratelimit-account-reset'].forEach((headerName) => {
+    const rawReset = readResponseHeader(headers, headerName);
+    const reset = Number(rawReset);
+    if (!Number.isFinite(reset)) {
+      return;
+    }
+    maxResetDelay = Math.max(maxResetDelay, reset * 1000);
+  });
+  return maxResetDelay > 0 ? Math.ceil(maxResetDelay) : null;
+}
+
+function updateRateLimitFromHeaders(headers, queueState) {
+  if (!headers || !queueState) {
     return;
   }
-  const remaining = parseInt(headers['x-ratelimit-remaining'], 10);
-  const reset = parseInt(headers['x-ratelimit-reset'], 10);
-  if (!Number.isNaN(remaining) && remaining <= 1 && !Number.isNaN(reset)) {
-    const resetMs = reset * 1000;
-    if (resetMs > nextAvailableTime) {
-      nextAvailableTime = resetMs;
+  const resetDelays = [];
+  [
+    ['x-ratelimit-remaining', 'x-ratelimit-reset'],
+    ['x-ratelimit-account-remaining', 'x-ratelimit-account-reset'],
+  ].forEach(([remainingName, resetName]) => {
+    const remaining = Number(readResponseHeader(headers, remainingName));
+    const reset = Number(readResponseHeader(headers, resetName));
+    if (!Number.isFinite(remaining) || remaining > 1 || !Number.isFinite(reset)) {
+      return;
     }
+    resetDelays.push(Date.now() + Math.max(0, reset * 1000));
+  });
+  if (resetDelays.length) {
+    queueState.nextAvailableTime = Math.max(queueState.nextAvailableTime, ...resetDelays);
   }
 }
 
-function enqueueRequest(executor) {
+function getRequestQueueState(queueName) {
+  const normalizedName = queueName === 'snaptrade' ? 'snaptrade' : 'default';
+  return requestQueues.get(normalizedName);
+}
+
+function resolveSnapTradeAccountRateLimitKey(login, path) {
+  const match = typeof path === 'string' ? path.match(/^\/accounts\/([^/]+)/) : null;
+  if (!match || !match[1]) {
+    return null;
+  }
+  let accountId = match[1];
+  try {
+    accountId = decodeURIComponent(accountId);
+  } catch (_) {
+    // Keep the encoded identifier if it is not valid URI text.
+  }
+  const loginId = login && login.id ? String(login.id) : '';
+  return `${loginId}::${accountId}`;
+}
+
+function getSnapTradeAccountRateLimitWait(rateLimitKey, now = Date.now()) {
+  if (!rateLimitKey) {
+    return 0;
+  }
+  const timestamps = snapTradeAccountRequestTimes.get(rateLimitKey) || [];
+  const cutoff = now - SNAPTRADE_ACCOUNT_RATE_WINDOW_MS;
+  const recent = timestamps.filter((timestamp) => timestamp > cutoff);
+  if (recent.length !== timestamps.length) {
+    if (recent.length) {
+      snapTradeAccountRequestTimes.set(rateLimitKey, recent);
+    } else {
+      snapTradeAccountRequestTimes.delete(rateLimitKey);
+    }
+  }
+  if (recent.length < SNAPTRADE_ACCOUNT_RATE_MAX_REQUESTS) {
+    return 0;
+  }
+  return Math.max(0, recent[0] + SNAPTRADE_ACCOUNT_RATE_WINDOW_MS - now);
+}
+
+function recordSnapTradeAccountRequest(rateLimitKey, now = Date.now()) {
+  if (!rateLimitKey) {
+    return;
+  }
+  const timestamps = snapTradeAccountRequestTimes.get(rateLimitKey) || [];
+  const cutoff = now - SNAPTRADE_ACCOUNT_RATE_WINDOW_MS;
+  const recent = timestamps.filter((timestamp) => timestamp > cutoff);
+  recent.push(now);
+  snapTradeAccountRequestTimes.set(rateLimitKey, recent);
+}
+
+function enqueueRequest(executor, options = {}) {
+  const queueName = options.queueName === 'snaptrade' ? 'snaptrade' : 'default';
+  const queueState = getRequestQueueState(queueName);
   return new Promise((resolve, reject) => {
-    requestQueue.push({ executor, resolve, reject, attempt: 0 });
-    processQueue();
+    queueState.jobs.push({
+      executor,
+      resolve,
+      reject,
+      attempt: 0,
+      maxRateLimitRetries:
+        Number.isFinite(options.maxRateLimitRetries) ? Math.max(0, Math.round(options.maxRateLimitRetries)) : 3,
+      rateLimitKey: options.rateLimitKey || null,
+    });
+    processQueue(queueName);
   });
 }
 
-function processQueue() {
-  if (isProcessingQueue) {
+function processQueue(queueName = 'default') {
+  const queueState = getRequestQueueState(queueName);
+  if (queueState.isProcessing) {
     return;
   }
-  const job = requestQueue.shift();
+  const job = queueState.jobs.shift();
   if (!job) {
     return;
   }
-  isProcessingQueue = true;
+  queueState.isProcessing = true;
   const now = Date.now();
-  const wait = Math.max(0, nextAvailableTime - now);
+  const accountWait =
+    queueName === 'snaptrade' ? getSnapTradeAccountRateLimitWait(job.rateLimitKey, now) : 0;
+  const wait = Math.max(0, queueState.nextAvailableTime - now, accountWait);
   setTimeout(async () => {
+    recordSnapTradeAccountRequest(job.rateLimitKey);
     try {
       const response = await job.executor();
-      updateRateLimitFromHeaders(response.headers);
-      nextAvailableTime = Math.max(Date.now() + MIN_REQUEST_INTERVAL_MS, nextAvailableTime + MIN_REQUEST_INTERVAL_MS);
+      updateRateLimitFromHeaders(response.headers, queueState);
+      queueState.nextAvailableTime = Math.max(
+        Date.now() + queueState.minIntervalMs,
+        queueState.nextAvailableTime
+      );
       job.resolve(response);
-      isProcessingQueue = false;
-      processQueue();
+      queueState.isProcessing = false;
+      processQueue(queueName);
     } catch (error) {
-      updateRateLimitFromHeaders(error.response && error.response.headers);
-      nextAvailableTime = Math.max(Date.now() + MIN_REQUEST_INTERVAL_MS, nextAvailableTime + MIN_REQUEST_INTERVAL_MS);
+      const responseHeaders = error.response && error.response.headers;
+      updateRateLimitFromHeaders(responseHeaders, queueState);
       const status = error.response && error.response.status;
       const code = error.response && error.response.data && error.response.data.code;
-      if ((status === 429 || code === 1011 || code === 1006) && job.attempt < 3) {
+      if (
+        (status === 429 || code === 1011 || code === 1006) &&
+        job.attempt < job.maxRateLimitRetries
+      ) {
         job.attempt += 1;
-        const backoff = 200 * Math.pow(2, job.attempt);
-        setTimeout(() => {
-          requestQueue.unshift(job);
-          isProcessingQueue = false;
-          processQueue();
-        }, backoff);
+        const retryDelay =
+          resolveRetryAfterMs(responseHeaders, error.response && error.response.data) ||
+          Math.max(queueState.minIntervalMs * 4, 200 * Math.pow(2, job.attempt));
+        queueState.nextAvailableTime = Math.max(queueState.nextAvailableTime, Date.now() + retryDelay);
+        queueState.jobs.unshift(job);
+        queueState.isProcessing = false;
+        processQueue(queueName);
         return;
       }
       job.reject(error);
-      isProcessingQueue = false;
-      processQueue();
+      queueState.nextAvailableTime = Math.max(
+        Date.now() + queueState.minIntervalMs,
+        queueState.nextAvailableTime
+      );
+      queueState.isProcessing = false;
+      processQueue(queueName);
     }
   }, wait);
 }
@@ -8907,10 +9088,139 @@ function ensureSnapTradeConfigured(login) {
   return credentials;
 }
 
+const snapTradeResponseCache = new Map();
+const snapTradeInFlightRequests = new Map();
+
+function cloneSnapTradeResponse(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch (_) {
+      // Fall through to JSON cloning for plain provider payloads.
+    }
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function resolveSnapTradeResponseCacheTtl(path, method) {
+  if (method !== 'GET') {
+    return 0;
+  }
+  if (
+    path === '/authorizations' ||
+    /^\/authorizations\/[^/]+\/accounts$/.test(path)
+  ) {
+    return SNAPTRADE_ACCOUNT_DATA_CACHE_TTL_MS;
+  }
+  if (/^\/accounts\/[^/]+\/activities$/.test(path)) {
+    return SNAPTRADE_ACTIVITIES_CACHE_MAX_AGE_MS;
+  }
+  if (/^\/accounts\/[^/]+(?:\/positions\/all|\/balances|\/orders)?$/.test(path)) {
+    return SNAPTRADE_ACCOUNT_DATA_CACHE_TTL_MS;
+  }
+  return 0;
+}
+
+function buildSnapTradeResponseCacheKey(login, method, path, params, data) {
+  const stableParams = Object.entries(params || {})
+    .filter(([key]) => !['clientId', 'timestamp', 'userId', 'userSecret'].includes(key))
+    .sort(([left], [right]) => left.localeCompare(right));
+  let serializedData = null;
+  if (data !== undefined && data !== null) {
+    try {
+      serializedData = JSON.stringify(data);
+    } catch (_) {
+      serializedData = String(data);
+    }
+  }
+  return JSON.stringify([
+    login && login.id ? String(login.id) : '',
+    method,
+    path,
+    stableParams,
+    serializedData,
+  ]);
+}
+
+function getSnapTradeCachedResponse(cacheKey, maxAgeMs) {
+  if (!cacheKey || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) {
+    return null;
+  }
+  const entry = snapTradeResponseCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  const ageMs = Date.now() - entry.cachedAt;
+  if (ageMs > maxAgeMs) {
+    if (ageMs > SNAPTRADE_STALE_RESPONSE_MAX_AGE_MS) {
+      snapTradeResponseCache.delete(cacheKey);
+    }
+    return null;
+  }
+  return cloneSnapTradeResponse(entry.value);
+}
+
+function getStaleSnapTradeCachedResponse(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+  const entry = snapTradeResponseCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  const ageMs = Date.now() - entry.cachedAt;
+  if (ageMs > SNAPTRADE_STALE_RESPONSE_MAX_AGE_MS) {
+    snapTradeResponseCache.delete(cacheKey);
+    return null;
+  }
+  return cloneSnapTradeResponse(entry.value);
+}
+
+function setSnapTradeCachedResponse(cacheKey, value) {
+  if (!cacheKey) {
+    return;
+  }
+  snapTradeResponseCache.set(cacheKey, {
+    cachedAt: Date.now(),
+    value: cloneSnapTradeResponse(value),
+  });
+}
+
 async function snapTradeRequest(login, pathSegment, options = {}) {
   const credentials = ensureSnapTradeConfigured(options.credentials || login);
   const method = options.method || 'GET';
   const params = Object.assign({}, options.params || {});
+  const normalizedPath = pathSegment.startsWith('/') ? pathSegment : '/' + pathSegment;
+  const cacheTtl = resolveSnapTradeResponseCacheTtl(normalizedPath, method);
+  const cacheKey =
+    cacheTtl > 0 && options.bypassCache !== true
+      ? buildSnapTradeResponseCacheKey(login, method, normalizedPath, params, options.data)
+      : null;
+  if (cacheKey) {
+    const cached = getSnapTradeCachedResponse(cacheKey, cacheTtl);
+    if (cached !== null) {
+      return cached;
+    }
+    const inFlight = snapTradeInFlightRequests.get(cacheKey);
+    if (inFlight) {
+      try {
+        return cloneSnapTradeResponse(await inFlight);
+      } catch (error) {
+        const status = error?.response?.status || null;
+        const stale = status === 429 ? getStaleSnapTradeCachedResponse(cacheKey) : null;
+        if (stale !== null) {
+          console.warn(
+            'Using stale SnapTrade response cache for ' + normalizedPath + ' after provider rate limiting.'
+          );
+          return stale;
+        }
+        throw error;
+      }
+    }
+  }
   if (login) {
     if (!login.userId || !login.userSecret) {
       throw new Error('SnapTrade end-user ID and secret are required.');
@@ -8921,7 +9231,6 @@ async function snapTradeRequest(login, pathSegment, options = {}) {
   params.clientId = credentials.clientId;
   params.timestamp = String(Math.floor(Date.now() / 1000));
 
-  const normalizedPath = pathSegment.startsWith('/') ? pathSegment : '/' + pathSegment;
   const searchParams = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null) {
@@ -8948,19 +9257,41 @@ async function snapTradeRequest(login, pathSegment, options = {}) {
     headers['Content-Type'] = 'application/json';
   }
 
-  try {
-    const response = await enqueueRequest(() =>
+  const requestPromise = enqueueRequest(
+    () =>
       performUndiciApiRequest({
         method,
         url,
         data,
         headers,
-      })
-    );
+      }),
+    {
+      queueName: 'snaptrade',
+      maxRateLimitRetries: SNAPTRADE_RATE_LIMIT_MAX_RETRIES,
+      rateLimitKey: resolveSnapTradeAccountRateLimitKey(login, normalizedPath),
+    }
+  ).then((response) => {
+    if (cacheKey) {
+      setSnapTradeCachedResponse(cacheKey, response.data);
+    }
     return response.data;
+  });
+  if (cacheKey) {
+    snapTradeInFlightRequests.set(cacheKey, requestPromise);
+  }
+
+  try {
+    return cloneSnapTradeResponse(await requestPromise);
   } catch (error) {
     const status = error?.response?.status || null;
     const details = error?.response?.data;
+    const stale = status === 429 ? getStaleSnapTradeCachedResponse(cacheKey) : null;
+    if (stale !== null) {
+      console.warn(
+        'Using stale SnapTrade response cache for ' + normalizedPath + ' after provider rate limiting.'
+      );
+      return stale;
+    }
     const message = status
       ? `SnapTrade API request failed with status ${status} for ${normalizedPath}`
       : error?.message || 'SnapTrade API request failed';
@@ -8970,6 +9301,10 @@ async function snapTradeRequest(login, pathSegment, options = {}) {
     wrapped.status = status;
     wrapped.details = details;
     throw wrapped;
+  } finally {
+    if (cacheKey && snapTradeInFlightRequests.get(cacheKey) === requestPromise) {
+      snapTradeInFlightRequests.delete(cacheKey);
+    }
   }
 }
 
@@ -9294,9 +9629,18 @@ async function fetchSnapTradeBalances(login, accountRef) {
   if (!accountId) {
     return {};
   }
+  const accountListDetail =
+    accountRef &&
+    accountRef.balance &&
+    typeof accountRef.balance === 'object' &&
+    Object.prototype.hasOwnProperty.call(accountRef.balance, 'total')
+      ? accountRef
+      : null;
   const [balances, detail] = await Promise.all([
     snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/balances`).catch(() => []),
-    fetchSnapTradeAccountDetail(login, accountRef).catch(() => null),
+    accountListDetail
+      ? Promise.resolve(accountListDetail)
+      : fetchSnapTradeAccountDetail(login, accountRef).catch(() => null),
   ]);
   return normalizeSnapTradeBalancesPayload(balances, detail);
 }
@@ -10897,7 +11241,8 @@ function buildProviderObservedReturnFromSeries(points, requestedStartDate, optio
     activityCoverageComplete: options.activityCoverageComplete === true,
   };
 
-  if (options.activityCoverageComplete !== true) {
+  const allowIncompleteAnnualization = options.allowIncompleteAnnualization === true;
+  if (options.activityCoverageComplete !== true && !allowIncompleteAnnualization) {
     result.annualizationUnavailableReason = 'provider-activity-coverage-incomplete';
     return result;
   }
@@ -10950,11 +11295,12 @@ function buildProviderObservedReturnFromSeries(points, requestedStartDate, optio
   return result;
 }
 
-function buildProviderObservedHeadlineSeries(points, providerObservedReturn) {
+function buildProviderObservedHeadlineSeries(points, providerObservedReturn, options = {}) {
+  const allowIncompleteActivityCoverage = options.allowIncomplete === true;
   if (
     !Array.isArray(points) ||
     !providerObservedReturn ||
-    providerObservedReturn.activityCoverageComplete !== true ||
+    (!allowIncompleteActivityCoverage && providerObservedReturn.activityCoverageComplete !== true) ||
     typeof providerObservedReturn.startDate !== 'string'
   ) {
     return null;
@@ -11029,10 +11375,7 @@ function applyOpeningFundingReconciliationToSummary(fundingSummary, seriesSummar
   }
   if (seriesSummary.providerObservedReturn && typeof seriesSummary.providerObservedReturn === 'object') {
     fundingSummary.providerObservedReturn = { ...seriesSummary.providerObservedReturn };
-    if (
-      seriesSummary.providerObservedReturn.activityCoverageComplete === true &&
-      typeof seriesSummary.providerObservedReturn.startDate === 'string'
-    ) {
+    if (typeof seriesSummary.providerObservedReturn.startDate === 'string') {
       fundingSummary.periodStartDate = seriesSummary.providerObservedReturn.startDate;
     }
   }
@@ -11061,6 +11404,62 @@ function applyOpeningFundingReconciliationToSummary(fundingSummary, seriesSummar
     fundingSummary[field] = existing;
   });
   fundingSummary.returnBreakdown = undefined;
+}
+
+function applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, totalPnlSeries, account) {
+  if (!fundingSummary || typeof fundingSummary !== 'object') {
+    return;
+  }
+  const summary = totalPnlSeries && totalPnlSeries.summary;
+  if (!summary || typeof summary !== 'object') {
+    return;
+  }
+
+  if (!fundingSummary.totalPnl || typeof fundingSummary.totalPnl !== 'object') {
+    fundingSummary.totalPnl = {};
+  }
+  if (Number.isFinite(summary.totalPnlCad)) {
+    fundingSummary.totalPnl.combinedCad = summary.totalPnlCad;
+  }
+  if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+    fundingSummary.totalPnl.allTimeCad = summary.totalPnlAllTimeCad;
+  }
+  if (Number.isFinite(summary.totalPnlSinceDisplayStartCad)) {
+    fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlSinceDisplayStartCad;
+  }
+  if (Number.isFinite(summary.netDepositsCad)) {
+    fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+    fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
+  }
+  if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+    fundingSummary.netDeposits = fundingSummary.netDeposits || {};
+    fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
+  }
+
+  const shouldUseReconstructedArchivedEquity =
+    account &&
+    isArchivedAccount(account) &&
+    Array.isArray(totalPnlSeries.issues) &&
+    totalPnlSeries.issues.includes('current-balance-snapshot-missing');
+  if (
+    Number.isFinite(summary.totalEquityCad) &&
+    (!Number.isFinite(fundingSummary.totalEquityCad) || shouldUseReconstructedArchivedEquity)
+  ) {
+    fundingSummary.totalEquityCad = summary.totalEquityCad;
+  }
+  if (Number.isFinite(summary.totalEquitySinceDisplayStartCad)) {
+    fundingSummary.totalEquitySinceDisplayStartCad = summary.totalEquitySinceDisplayStartCad;
+  }
+  if (summary.displayStartTotals) {
+    fundingSummary.displayStartTotals = summary.displayStartTotals;
+  }
+
+  if (shouldUseReconstructedArchivedEquity) {
+    rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, account.id);
+  } else {
+    rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, account.id);
+  }
+  applyOpeningFundingReconciliationToSummary(fundingSummary, summary);
 }
 
 function parseDateOnlyString(value) {
@@ -12513,17 +12912,58 @@ async function fetchActivitiesWindow(login, accountId, startDate, endDate, accou
   if (!startParam || !endParam) {
     return [];
   }
-  if (isSnapTradeLogin(login)) {
-    return fetchSnapTradeActivities(login, accountId, startDate, endDate, {
-      coverage: options.activityCoverage,
-    });
-  }
   const nowMs = Date.now();
   const isHistorical = endDate instanceof Date && !Number.isNaN(endDate.getTime()) && endDate.getTime() < nowMs;
+  const isSnapTrade = isSnapTradeLogin(login);
+  const cacheStartParam = isSnapTrade ? normalizeDateOnly(startDate) || startParam : startParam;
+  const cacheEndParam = isSnapTrade ? normalizeDateOnly(endDate) || endParam : endParam;
   const cacheKey =
     login
-      ? getActivitiesCacheKey(login.id, accountId, startParam, endParam)
+      ? getActivitiesCacheKey(login.id, accountId, cacheStartParam, cacheEndParam)
       : null;
+  if (isSnapTrade) {
+    if (cacheKey) {
+      const cachedPayload = readActivitiesCachePayload(cacheKey);
+      const cachedAt = parseActivitiesCacheTime(cachedPayload?.cachedAt);
+      if (
+        cachedPayload &&
+        Array.isArray(cachedPayload.activities) &&
+        Number.isFinite(cachedAt) &&
+        nowMs - cachedAt <= SNAPTRADE_ACTIVITIES_CACHE_MAX_AGE_MS
+      ) {
+        debugTotalPnl(accountKey, 'Using cached SnapTrade activities window', {
+          start: startParam,
+          end: endParam,
+        });
+        return cachedPayload.activities;
+      }
+    }
+    try {
+      const activities = await fetchSnapTradeActivities(login, accountId, startDate, endDate, {
+        coverage: options.activityCoverage,
+      });
+      if (cacheKey) {
+        activitiesMemoryCache.set(cacheKey, activities);
+        writeActivitiesCache(cacheKey, activities, {
+          loginId: login.id,
+          accountId,
+          startTime: cacheStartParam,
+          endTime: cacheEndParam,
+        });
+      }
+      return activities;
+    } catch (error) {
+      const staleActivities = cacheKey ? readActivitiesCache(cacheKey) : null;
+      if (Array.isArray(staleActivities)) {
+        console.warn(
+          'Using stale SnapTrade activities cache for account ' + accountId + ' after provider request failed:',
+          error?.message || error
+        );
+        return staleActivities;
+      }
+      throw error;
+    }
+  }
   if ((isHistorical || options.offlineOnly === true) && cacheKey) {
     if (activitiesMemoryCache.has(cacheKey)) {
       debugTotalPnl(accountKey, 'Using cached activities window (memory)', {
@@ -12592,6 +13032,11 @@ async function fetchActivitiesRange(login, accountId, startDate, endDate, accoun
   }
   if (startDate > endDate) {
     return [];
+  }
+  if (isSnapTradeLogin(login)) {
+    // SnapTrade supports the full requested range and paginates by offset.
+    // Splitting the range into 30-day windows multiplies account-level API calls.
+    return fetchActivitiesWindow(login, accountId, startDate, endDate, accountKey, options);
   }
   const results = [];
   let cursor = new Date(startDate.getTime());
@@ -13021,11 +13466,19 @@ async function buildAccountActivityContext(login, account, options = {}) {
   }
 
   const { fallbackMonths = 12 } = options;
+  const providerFundingDate =
+    isSnapTradeLogin(activityLogin) && account && account.fundingDate
+      ? account.fundingDate
+      : null;
+  const discoveryOptions =
+    options.cachedEarliestFunding || !providerFundingDate
+      ? options
+      : { ...options, cachedEarliestFunding: providerFundingDate };
   const earliestFunding = await discoverEarliestFundingDate(
     activityLogin,
     accountApiId,
     activityCacheAccountKey,
-    options
+    discoveryOptions
   );
   const now = new Date();
   const nowIsoString = now.toISOString();
@@ -13673,9 +14126,35 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
       ? accountBalanceSummary.combined
       : accountBalanceSummary;
   const cadBalance = combinedBalances ? combinedBalances.CAD || combinedBalances.cad : null;
-  const totalEquityCad = cadBalance && Number.isFinite(Number(cadBalance.totalEquity))
+  const perCurrencyBalances =
+    accountBalanceSummary && accountBalanceSummary.perCurrency
+      ? accountBalanceSummary.perCurrency
+      : combinedBalances;
+  const cadEquity = cadBalance && Number.isFinite(Number(cadBalance.totalEquity))
     ? Number(cadBalance.totalEquity)
     : null;
+  const hasNonCadEquity = Object.entries(perCurrencyBalances || {}).some(([key, entry]) => {
+    const currency = normalizeCurrency(entry?.currency || key);
+    return currency !== 'CAD' && Number.isFinite(Number(entry?.totalEquity));
+  });
+  let totalEquityCad = cadEquity;
+  if (cadEquity === null || (Math.abs(cadEquity) < CASH_FLOW_EPSILON && hasNonCadEquity)) {
+    let convertedEquity = 0;
+    let hasConvertedEquity = false;
+    for (const [key, entry] of Object.entries(perCurrencyBalances || {})) {
+      const currency = normalizeCurrency(entry?.currency || key);
+      const equity = Number(entry?.totalEquity);
+      if (!currency || !Number.isFinite(equity)) {
+        continue;
+      }
+      const conversion = await convertAmountToCad(equity, currency, now, accountKey);
+      if (Number.isFinite(conversion.cadAmount)) {
+        convertedEquity += conversion.cadAmount;
+        hasConvertedEquity = true;
+      }
+    }
+    totalEquityCad = hasConvertedEquity ? convertedEquity : cadEquity;
+  }
 
   let combinedCadValue = conversionIncomplete ? null : combinedCad;
   let totalPnlCad =
@@ -15665,6 +16144,61 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
 
   const accountNumber = account.number || account.accountNumber || account.id;
 
+  // SnapTrade can represent a Norbert's Gambit journal with one share-class
+  // symbol (for example DLR.TO) and the later sale with its USD variant
+  // (DLR.U.TO). Replay both variants through one ledger symbol so reversing
+  // the sale closes the same units that were purchased. This is scoped to the
+  // SnapTrade opening-snapshot path; Questrade keeps its existing semantics.
+  const journalCanonicalSymbols = new Map();
+  if (reconcileSnapTradeOpeningSnapshot) {
+    const stripJournalSuffix = (symbol) => {
+      const normalized = normalizeSymbol(symbol);
+      if (!normalized) {
+        return null;
+      }
+      const withoutMarket = normalized.endsWith('.TO') ? normalized.slice(0, -3) : normalized;
+      return withoutMarket.endsWith('.U') ? withoutMarket.slice(0, -2) : withoutMarket;
+    };
+    const journalBases = new Set();
+    processedActivities.forEach((entry) => {
+      if (!entry || !isInternalShareJournalActivity(entry.activity)) {
+        return;
+      }
+      const base = stripJournalSuffix(entry.symbol);
+      if (base) {
+        journalBases.add(base);
+      }
+    });
+    for (const symbol of symbolMeta.keys()) {
+      const base = stripJournalSuffix(symbol);
+      if (!base || !journalBases.has(base) || journalCanonicalSymbols.has(base)) {
+        continue;
+      }
+      const normalized = normalizeSymbol(symbol);
+      if (normalized && normalized.endsWith('.TO') && !normalized.includes('.U')) {
+        journalCanonicalSymbols.set(base, normalized);
+      }
+    }
+    for (const base of journalBases) {
+      if (journalCanonicalSymbols.has(base)) {
+        continue;
+      }
+      const fallback = Array.from(symbolMeta.keys()).find((symbol) => stripJournalSuffix(symbol) === base);
+      if (fallback) {
+        journalCanonicalSymbols.set(base, normalizeSymbol(fallback));
+      }
+    }
+  }
+  const resolveLedgerSymbol = (symbol) => {
+    const normalized = normalizeSymbol(symbol);
+    if (!normalized) {
+      return null;
+    }
+    const withoutMarket = normalized.endsWith('.TO') ? normalized.slice(0, -3) : normalized;
+    const base = withoutMarket.endsWith('.U') ? withoutMarket.slice(0, -2) : withoutMarket;
+    return journalCanonicalSymbols.get(base) || normalized;
+  };
+
   const closingHoldings = new Map();
   const closingCashByCurrency = new Map();
   const closingMarketValueByCurrency = new Map();
@@ -15736,7 +16270,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       if (!position || typeof position !== 'object') {
         return;
       }
-      const symbol = normalizeSymbol(position.symbol);
+      const symbol = resolveLedgerSymbol(position.symbol);
       if (!symbol) {
         return;
       }
@@ -15802,11 +16336,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           continue;
         }
         const activity = entry.activity;
-        const symbol = entry && entry.cashCurrencyTrade
+        const rawSymbol = entry && entry.cashCurrencyTrade
           ? null
           : entry.symbol || resolveActivitySymbol(activity) || null;
+        const symbol = resolveLedgerSymbol(rawSymbol);
+        const internalShareJournal = isInternalShareJournalActivity(activity);
         const quantity = Number(activity.quantity);
         if (
+          !internalShareJournal &&
           symbol &&
           seededHoldings &&
           Number.isFinite(quantity) &&
@@ -15817,6 +16354,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         const currency = normalizeCurrency(activity.currency);
         const netAmount = Number(activity.netAmount);
         if (
+          !internalShareJournal &&
           seededCash &&
           currency &&
           Number.isFinite(netAmount) &&
@@ -15825,6 +16363,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           adjustCash(seededCash, currency, -netAmount);
         }
         if (
+          !internalShareJournal &&
           seededCash &&
           entry &&
           entry.cashCurrencyTrade &&
@@ -16124,11 +16663,12 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const netAmount = Number(activity.netAmount);
       const quantity = Number(activity.quantity);
       const internalShareJournal = isInternalShareJournalActivity(activity);
-      const symbol = entry && entry.cashCurrencyTrade
+      const rawSymbol = entry && entry.cashCurrencyTrade
         ? null
         : entry && entry.symbol
           ? entry.symbol
           : resolveActivitySymbol(activity) || null;
+      const symbol = resolveLedgerSymbol(rawSymbol);
 
       if (
         !internalShareJournal &&
@@ -16672,6 +17212,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     ? buildProviderObservedReturnFromSeries(points, providerObservedStartDate, {
         accountKey,
         activityCoverageComplete: activityContext.providerActivityCoverageComplete === true,
+        // The all-time opening history is incomplete, but the provider-observed
+        // period starts at a genuine position activity boundary. Annualize
+        // that bounded period from its observed starting equity and subsequent
+        // external-flow deltas; do not use it to fabricate an all-time return.
+        allowIncompleteAnnualization: true,
       })
     : null;
   const hasInferredOpeningHistory =
@@ -16679,7 +17224,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     (Number.isFinite(openingFundingAdjustmentCad) &&
       Math.abs(openingFundingAdjustmentCad) >= CASH_FLOW_EPSILON);
   const providerHeadline = hasInferredOpeningHistory
-    ? buildProviderObservedHeadlineSeries(points, providerObservedReturn)
+    ? buildProviderObservedHeadlineSeries(points, providerObservedReturn, { allowIncomplete: true })
     : null;
   if (providerHeadline && providerObservedReturn) {
     providerObservedReturn.startEquityCad = providerHeadline.startEquityCad;
@@ -19287,13 +19832,6 @@ async function resolveAccountContextByKey(accountKey) {
   if (!normalizedKey) {
     return null;
   }
-  const confirmedArchivedEntry = findArchivedAccountByKey(normalizedKey);
-  if (isConfirmedArchivedEntry(confirmedArchivedEntry)) {
-    const archivedLogin = resolveLoginForArchivedEntry(confirmedArchivedEntry);
-    if (archivedLogin && confirmedArchivedEntry.account) {
-      return { login: archivedLogin, account: confirmedArchivedEntry.account };
-    }
-  }
   const loweredKey = normalizedKey.toLowerCase();
   const colonIndex = loweredKey.indexOf(':');
   const targetKeys = [loweredKey];
@@ -19352,6 +19890,17 @@ async function resolveAccountContextByKey(accountKey) {
       if (targetKeys.some((key) => candidates.includes(key))) {
         return { login, account: normalizedBase };
       }
+    }
+  }
+
+  // A provider account can reappear after an earlier archive snapshot was
+  // created. Prefer the live account whenever it resolves; only fall back to
+  // the archived snapshot after live resolution has failed.
+  const confirmedArchivedEntry = findArchivedAccountByKey(normalizedKey);
+  if (isConfirmedArchivedEntry(confirmedArchivedEntry)) {
+    const archivedLogin = resolveLoginForArchivedEntry(confirmedArchivedEntry);
+    if (archivedLogin && confirmedArchivedEntry.account) {
+      return { login: archivedLogin, account: confirmedArchivedEntry.account };
     }
   }
   const accountNameOverrides = getAccountNameOverrides();
@@ -21470,37 +22019,27 @@ app.get('/api/summary', async function (req, res) {
     const otherAssets = appSettings.otherAssets || null;
     const accountBeneficiaries = getAccountBeneficiaries();
     const accountFetchIssues = [];
-    const requestedArchivedEntry =
-      !includeAllAccounts && requestedAccountId ? findArchivedAccountByKey(requestedAccountId) : null;
-    const requestedArchivedLogin =
-      isConfirmedArchivedEntry(requestedArchivedEntry) ? resolveLoginForArchivedEntry(requestedArchivedEntry) : null;
     const accountCollections = await Promise.all(
       allLogins.map(async function (login) {
         let fetchedAccounts = [];
         let fetchError = null;
         let fetchIssue = null;
-        const skipLiveAccountFetch =
-          requestedArchivedLogin &&
-          login &&
-          requestedArchivedLogin.id === login.id;
-        if (!skipLiveAccountFetch) {
-          try {
-            fetchedAccounts = await fetchAccounts(login);
-          } catch (error) {
-            fetchError = error;
-            const message = error && error.message ? error.message : String(error);
-            fetchIssue = {
-              loginId: login.id || null,
-              loginLabel: resolveLoginDisplay(login),
-              provider: getLoginProvider(login),
-              message,
-            };
-            accountFetchIssues.push(fetchIssue);
-            console.warn(
-              'Failed to fetch accounts for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
-              message
-            );
-          }
+        try {
+          fetchedAccounts = await fetchAccounts(login);
+        } catch (error) {
+          fetchError = error;
+          const message = error && error.message ? error.message : String(error);
+          fetchIssue = {
+            loginId: login.id || null,
+            loginLabel: resolveLoginDisplay(login),
+            provider: getLoginProvider(login),
+            message,
+          };
+          accountFetchIssues.push(fetchIssue);
+          console.warn(
+            'Failed to fetch accounts for login ' + (resolveLoginDisplay(login) || login.id || 'unknown') + ':',
+            message
+          );
         }
         const normalized = (Array.isArray(fetchedAccounts) ? fetchedAccounts : [])
           .map(function (account, index) {
@@ -22226,7 +22765,11 @@ app.get('/api/summary', async function (req, res) {
       const context = selectedContexts[0];
       let sharedActivityContext = null;
       try {
-        sharedActivityContext = await buildActivityContextForContext(context);
+        // Reuse the context prepared for order enrichment above. Building it
+        // twice multiplies historical activity requests for a single account.
+        sharedActivityContext = await ensureAccountActivityContext(context, {
+          allowSkippedProviderHistory: false,
+        });
       } catch (activityError) {
         const activityMessage =
           activityError && activityError.message ? activityError.message : String(activityError);
@@ -22301,15 +22844,14 @@ app.get('/api/summary', async function (req, res) {
             }
             if (Number.isFinite(summary.netDepositsCad)) {
               fundingSummary.netDeposits = fundingSummary.netDeposits || {};
-              if (!Number.isFinite(fundingSummary.netDeposits.combinedCad)) {
-                fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
-              }
+              // The reconstructed series is the authoritative source when it
+              // is available. Do not preserve the raw activity total here:
+              // opening funding can predate the provider activity window.
+              fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
             }
             if (Number.isFinite(summary.netDepositsAllTimeCad)) {
               fundingSummary.netDeposits = fundingSummary.netDeposits || {};
-              if (!Number.isFinite(fundingSummary.netDeposits.allTimeCad)) {
-                fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
-              }
+              fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
             }
             const shouldUseReconstructedArchivedEquity =
               isArchivedAccount(context.account) &&
@@ -22625,42 +23167,7 @@ app.get('/api/summary', async function (req, res) {
             if (!fundingSummary || typeof fundingSummary !== 'object') {
               return;
             }
-            const summary = series.summary;
-            // Mirror the single-account augmentation logic
-            if (!fundingSummary.totalPnl || typeof fundingSummary.totalPnl !== 'object') {
-              fundingSummary.totalPnl = {};
-            }
-            if (Number.isFinite(summary.totalPnlCad)) {
-              fundingSummary.totalPnl.combinedCad = summary.totalPnlCad;
-            }
-            if (Number.isFinite(summary.totalPnlAllTimeCad)) {
-              fundingSummary.totalPnl.allTimeCad = summary.totalPnlAllTimeCad;
-            }
-            if (Number.isFinite(summary.totalPnlSinceDisplayStartCad)) {
-              fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlSinceDisplayStartCad;
-            }
-            if (Number.isFinite(summary.netDepositsCad)) {
-              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
-              if (!Number.isFinite(fundingSummary.netDeposits.combinedCad)) {
-                fundingSummary.netDeposits.combinedCad = summary.netDepositsCad;
-              }
-            }
-            if (Number.isFinite(summary.netDepositsAllTimeCad)) {
-              fundingSummary.netDeposits = fundingSummary.netDeposits || {};
-              if (!Number.isFinite(fundingSummary.netDeposits.allTimeCad)) {
-                fundingSummary.netDeposits.allTimeCad = summary.netDepositsAllTimeCad;
-              }
-            }
-            if (Number.isFinite(summary.totalEquityCad) && !Number.isFinite(fundingSummary.totalEquityCad)) {
-              fundingSummary.totalEquityCad = summary.totalEquityCad;
-            }
-            if (Number.isFinite(summary.totalEquitySinceDisplayStartCad)) {
-              fundingSummary.totalEquitySinceDisplayStartCad = summary.totalEquitySinceDisplayStartCad;
-            }
-            if (summary.displayStartTotals) {
-              fundingSummary.displayStartTotals = summary.displayStartTotals;
-            }
-            rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
+            applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, series, context.account);
           }
         );
       }
@@ -23077,6 +23584,18 @@ app.get('/api/summary', async function (req, res) {
               entry.cagr = Object.assign({}, entry.all, { displayStartDate: cagrStart });
             }
           }
+
+          // The aggregate response can reuse an all-time per-account series
+          // from the series cache. Keep that series and the funding summary
+          // in lockstep; otherwise the chart is reconciled while the summary
+          // cards still show raw equity-minus-activity totals.
+          if (entry.all && entry.all.summary && accountFundingSummaries[accountId]) {
+            applyTotalPnlSeriesSummaryToFundingSummary(
+              accountFundingSummaries[accountId],
+              entry.all,
+              ctx.account
+            );
+          }
         });
       }
 
@@ -23105,6 +23624,13 @@ app.get('/api/summary', async function (req, res) {
                 const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, { applyAccountCagrStartDate: true });
                 if (cacheKey) {
                   setTotalPnlSeriesCacheEntry(cacheKey, series);
+                }
+                if (accountFundingSummaries[context.account.id]) {
+                  applyTotalPnlSeriesSummaryToFundingSummary(
+                    accountFundingSummaries[context.account.id],
+                    series,
+                    context.account
+                  );
                 }
               }
             } catch (seriesError) {
@@ -24609,11 +25135,14 @@ module.exports = {
   getLoginById,
   applyAccountSettingsOverrides,
   __test__: {
+    resolveRetryAfterMs,
+    resolveSnapTradeResponseCacheTtl,
     filterCashFlowsAfterDisplayStart,
     applyPendingDepositToFundingSummary,
     resolveCashCurrencyTrade,
     rebuildAnnualizedReturnFromSeries,
     applyOpeningFundingReconciliationToSummary,
+    applyTotalPnlSeriesSummaryToFundingSummary,
     buildProviderObservedReturnFromSeries,
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,

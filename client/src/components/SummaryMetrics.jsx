@@ -1566,8 +1566,9 @@ export default function SummaryMetrics({
 }) {
   const reliableProviderStartLabel =
     fundingSummary?.cashFlowCoverageIncomplete === true &&
-    fundingSummary?.providerObservedReturn?.activityCoverageComplete === true &&
-    typeof fundingSummary.providerObservedReturn.startDate === 'string'
+    typeof fundingSummary?.providerObservedReturn?.startDate === 'string' &&
+    Number.isFinite(fundingSummary.providerObservedReturn.startEquityCad) &&
+    Number.isFinite(fundingSummary.providerObservedReturn.observedPnlCad)
       ? formatDate(fundingSummary.providerObservedReturn.startDate)
       : null;
 
@@ -2232,7 +2233,6 @@ export default function SummaryMetrics({
       ? fundingSummary.providerObservedReturn
       : null;
   const providerAnnualizedReturnRate =
-    providerObservedReturn?.activityCoverageComplete === true &&
     Number.isFinite(providerObservedReturn?.annualizedRate)
       ? providerObservedReturn.annualizedRate
       : null;
@@ -3911,7 +3911,6 @@ export default function SummaryMetrics({
   const totalPercent = formatPnlPercent(displayTotalPnlValue, totalPercentBaseValue);
   const providerHeadlineCumulativeRate =
     !hasActiveRangeSummary &&
-    providerObservedReturn?.activityCoverageComplete === true &&
     Number.isFinite(providerObservedReturn?.cumulativeRate)
       ? providerObservedReturn.cumulativeRate
       : null;

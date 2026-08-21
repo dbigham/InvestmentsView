@@ -56,6 +56,26 @@ test('incomplete provider activity coverage exposes observed P&L without fabrica
   assert.equal(result.annualizationUnavailableReason, 'provider-activity-coverage-incomplete');
 });
 
+test('bounded provider period can annualize despite incomplete pre-boundary activity coverage', () => {
+  const result = __test__.buildProviderObservedReturnFromSeries(
+    [
+      { date: '2025-01-01', equityCad: 100, cumulativeNetDepositsCad: 100 },
+      { date: '2026-01-01', equityCad: 110, cumulativeNetDepositsCad: 100 },
+    ],
+    '2025-01-01',
+    {
+      activityCoverageComplete: false,
+      allowIncompleteAnnualization: true,
+      accountKey: 'provider-period-bounded-incomplete',
+    }
+  );
+
+  assert.equal(result.activityCoverageComplete, false);
+  assert.ok(Math.abs(result.annualizedRate - 0.1) < 0.000001);
+  assert.ok(Math.abs(result.cumulativeRate - 0.1) < 0.000001);
+  assert.equal(result.annualizationUnavailableReason, undefined);
+});
+
 test('provider headline series trims and rebases P&L from boundary equity and later external flows', () => {
   const points = [
     { date: '2026-06-16', equityCad: 1000, cumulativeNetDepositsCad: 1000, totalPnlCad: 0 },
@@ -89,6 +109,22 @@ test('provider headline series requires complete provider activity coverage', ()
   );
 
   assert.equal(headline, null);
+});
+
+test('provider headline series can be displayed with incomplete activity coverage', () => {
+  const headline = __test__.buildProviderObservedHeadlineSeries(
+    [
+      { date: '2026-07-14', equityCad: 1200, cumulativeNetDepositsCad: 1000 },
+      { date: '2026-08-21', equityCad: 1120, cumulativeNetDepositsCad: 1000 },
+    ],
+    { startDate: '2026-07-14', activityCoverageComplete: false },
+    { allowIncomplete: true }
+  );
+
+  assert.deepEqual(headline.points.map((point) => point.date), ['2026-07-14', '2026-08-21']);
+  assert.equal(headline.points[0].totalPnlCad, 0);
+  assert.equal(headline.totalPnlCad, -80);
+  assert.equal(headline.netDepositsCad, 1200);
 });
 
 test('SnapTrade cash refunds become event-date external flows without classifying security refunds', async () => {
@@ -174,4 +210,34 @@ test('opening reconciliation preserves canonical deployment and observed-period 
   assert.equal(fundingSummary.annualizedReturn.rate, undefined);
   assert.equal(fundingSummary.annualizedReturnAllTime.rate, undefined);
   assert.equal(fundingSummary.annualizedReturn.incomplete, true);
+});
+
+test('aggregate funding adopts the reconciled per-account series summary', () => {
+  const fundingSummary = {
+    netDeposits: { combinedCad: 9176.96125, allTimeCad: 9176.96125 },
+    totalPnl: { combinedCad: 2108.61758796, allTimeCad: 2108.61758796 },
+    totalEquityCad: 11285.57883796,
+  };
+  __test__.applyTotalPnlSeriesSummaryToFundingSummary(
+    fundingSummary,
+    {
+      summary: {
+        netDepositsCad: 12277.831832212096,
+        netDepositsAllTimeCad: 12277.831832212096,
+        totalPnlCad: -992.252994252096,
+        totalPnlAllTimeCad: -992.252994252096,
+        totalPnlSinceDisplayStartCad: -992.252994252096,
+        totalEquityCad: 11285.57883796,
+        openingFundingAdjustmentCad: 3100.8705822120955,
+        cashFlowCoverageIncomplete: true,
+      },
+    },
+    { id: 'aggregate-series-test-account', archived: false }
+  );
+
+  assert.equal(fundingSummary.netDeposits.combinedCad, 12277.831832212096);
+  assert.equal(fundingSummary.netDeposits.allTimeCad, 12277.831832212096);
+  assert.equal(fundingSummary.totalPnl.combinedCad, -992.252994252096);
+  assert.equal(fundingSummary.openingFundingReconciled, true);
+  assert.equal(fundingSummary.openingFundingAdjustmentCad, 3100.8705822120955);
 });

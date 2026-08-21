@@ -57,3 +57,36 @@ export function computeReserveValueAcrossCurrencies({
   }
   return hasValue ? Math.max(0, reserveValue) : null;
 }
+
+export function computeCombinedCashAcrossCurrencies({
+  balances,
+  targetCurrency = 'CAD',
+  currencyRates,
+  baseCurrency = 'CAD',
+}) {
+  if (!balances || typeof balances !== 'object') return null;
+  const perCurrency = balances.perCurrency;
+  if (!perCurrency || typeof perCurrency !== 'object') return null;
+
+  const normalizedBase = String(baseCurrency || 'CAD').trim().toUpperCase();
+  let totalCash = 0;
+  let hasValue = false;
+  Object.entries(perCurrency).forEach(([currencyKey, entry]) => {
+    if (!entry || typeof entry !== 'object') return;
+    const cash = Number(entry.cash);
+    if (!Number.isFinite(cash)) return;
+    const converted = convertAmount(
+      cash,
+      entry.currency || currencyKey,
+      targetCurrency,
+      currencyRates,
+      normalizedBase
+    );
+    if (Number.isFinite(converted)) {
+      totalCash += converted;
+      hasValue = true;
+    }
+  });
+
+  return hasValue ? totalCash : null;
+}

@@ -89,6 +89,7 @@ import {
 import { buildQuoteUrl, openQuote } from './utils/quotes';
 import { applySeriesAnnualizedToFundingSummary } from './utils/annualizedReturn';
 import {
+  computeCombinedCashAcrossCurrencies,
   computeReserveValueAcrossCurrencies,
   mergeAuthoritativeUsdToCadRate,
 } from './utils/currencyRates';
@@ -3770,7 +3771,10 @@ function useSummaryData(accountNumber, refreshKey, includeNonInvestmentAccounts 
       (!cachedData || cachedNeedsDedicatedFetch || refreshChanged)
     ) {
       fetchKey = normalizedAccount;
-      forceFetch = true; // superset skips SnapTrade history; hydrate the real funding basis
+      // Let the server's dedicated-account cache and SnapTrade response cache
+      // satisfy a normal page load. Manual refreshes still set forceFetch via
+      // refreshChanged above.
+      forceFetch = false;
     } else if (
       // If viewing a group derived from the superset, fetch the dedicated
       // group summary when key fields are missing (annualized, period dates,
@@ -3844,7 +3848,9 @@ function useSummaryData(accountNumber, refreshKey, includeNonInvestmentAccounts 
               setState({ loading: true, data: derived, error: null });
               const dedicatedSummary = await loadSummary(normalizedAccount, {
                 refreshKey,
-                force: true,
+                // A normal account switch should use the server/provider
+                // cache. Only an explicit refresh should bypass it.
+                force: refreshChanged || forceFetch,
                 includeNonInvestmentAccounts,
               });
               if (cancelled) {
@@ -3858,7 +3864,25 @@ function useSummaryData(accountNumber, refreshKey, includeNonInvestmentAccounts 
             storeEntry(normalizedAccount, derived);
             setState({ loading: false, data: derived, error: null });
           } else {
-            setState({ loading: false, data: summary, error: null });
+            if (isConcreteAccountSelection) {
+              // Never fall back to the aggregate response for a concrete
+              // account. That leaks other accounts' positions into the table
+              // when a selected key is not present in a stale/incomplete
+              // superset response.
+              setState({ loading: true, data: initialData, error: null });
+              const dedicatedSummary = await loadSummary(normalizedAccount, {
+                refreshKey,
+                force: refreshChanged || forceFetch,
+                includeNonInvestmentAccounts,
+              });
+              if (cancelled) {
+                return;
+              }
+              storeEntry(normalizedAccount, dedicatedSummary);
+              setState({ loading: false, data: dedicatedSummary, error: null });
+            } else {
+              setState({ loading: false, data: summary, error: null });
+            }
           }
           return;
         }
@@ -12698,8 +12722,29 @@ export default function App() {
   const activeBalances =
     activeCurrency && balances ? balances[activeCurrency.scope]?.[activeCurrency.currency] ?? null : null;
   const activeBalancesForDisplay = useMemo(() => {
-    if (!symbolExclusionActive || !activeBalances || !activeCurrency) {
-      return activeBalances;
+    let displayBalances = activeBalances;
+    const selectedProvider =
+      typeof selectedAccountInfo?.provider === 'string'
+        ? selectedAccountInfo.provider.trim().toLowerCase()
+        : '';
+    if (
+      displayBalances &&
+      activeCurrency?.scope === 'combined' &&
+      normalizeSymbolKey(activeCurrency.currency) === baseCurrency &&
+      (selectedProvider === 'snaptrade' || selectedProvider === 'wealthsimple')
+    ) {
+      const combinedCash = computeCombinedCashAcrossCurrencies({
+        balances,
+        targetCurrency: baseCurrency,
+        currencyRates,
+        baseCurrency,
+      });
+      if (Number.isFinite(combinedCash)) {
+        displayBalances = { ...displayBalances, cash: combinedCash };
+      }
+    }
+    if (!symbolExclusionActive || !displayBalances || !activeCurrency) {
+      return displayBalances;
     }
     const targetCurrency = activeCurrency.currency || baseCurrency;
     const excludedMarketValue = convertAmountToCurrency(
@@ -12710,15 +12755,15 @@ export default function App() {
       baseCurrency
     );
     if (!Number.isFinite(excludedMarketValue) || Math.abs(excludedMarketValue) < 0.000001) {
-      return activeBalances;
+      return displayBalances;
     }
 
-    const nextBalances = { ...activeBalances };
-    const marketValue = coerceNumber(activeBalances.marketValue);
+    const nextBalances = { ...displayBalances };
+    const marketValue = coerceNumber(displayBalances.marketValue);
     if (marketValue !== null) {
       nextBalances.marketValue = marketValue - excludedMarketValue;
     }
-    const totalEquity = coerceNumber(activeBalances.totalEquity);
+    const totalEquity = coerceNumber(displayBalances.totalEquity);
     if (totalEquity !== null) {
       nextBalances.totalEquity = totalEquity - excludedMarketValue;
     }
@@ -12727,9 +12772,11 @@ export default function App() {
     symbolExclusionActive,
     activeBalances,
     activeCurrency,
+    balances,
     excludedPositionTotalsCad.marketValue,
     currencyRates,
     baseCurrency,
+    selectedAccountInfo,
   ]);
   const holdingsPieChartCashValue = useMemo(() => {
     if (focusedSymbol || !activeBalancesForDisplay) {
@@ -13031,33 +13078,34 @@ export default function App() {
           : null,
     };
 
-    const reliableProviderPeriod =
-      baseSummary.providerObservedReturn?.activityCoverageComplete === true &&
+    const providerObservedPeriod =
       typeof baseSummary.providerObservedReturn?.startDate === 'string' &&
-      baseSummary.providerObservedReturn.startDate.trim()
+      baseSummary.providerObservedReturn.startDate.trim() &&
+      isFiniteNumber(baseSummary.providerObservedReturn.startEquityCad) &&
+      isFiniteNumber(baseSummary.providerObservedReturn.observedPnlCad)
         ? baseSummary.providerObservedReturn
         : null;
 
     const providerPeriodNetDeposits =
-      reliableProviderPeriod &&
-      isFiniteNumber(reliableProviderPeriod.startEquityCad) &&
-      isFiniteNumber(reliableProviderPeriod.netExternalFlowsCad)
-        ? reliableProviderPeriod.startEquityCad + reliableProviderPeriod.netExternalFlowsCad
+      providerObservedPeriod &&
+      isFiniteNumber(providerObservedPeriod.startEquityCad) &&
+      isFiniteNumber(providerObservedPeriod.netExternalFlowsCad)
+        ? providerObservedPeriod.startEquityCad + providerObservedPeriod.netExternalFlowsCad
         : null;
     const effectiveNetDeposits = isFiniteNumber(providerPeriodNetDeposits)
       ? providerPeriodNetDeposits
       : isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
         ? selectedAccountFunding.netDeposits.combinedCad
         : null;
-    const effectiveTotalPnl = reliableProviderPeriod && isFiniteNumber(reliableProviderPeriod.observedPnlCad)
-      ? reliableProviderPeriod.observedPnlCad
+    const effectiveTotalPnl = providerObservedPeriod && isFiniteNumber(providerObservedPeriod.observedPnlCad)
+      ? providerObservedPeriod.observedPnlCad
       : isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
       ? selectedAccountFunding.totalPnlSinceDisplayStartCad
       : isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
         ? selectedAccountFunding.totalPnl.combinedCad
         : null;
-    const effectiveTotalPnlDelta = reliableProviderPeriod && isFiniteNumber(reliableProviderPeriod.observedPnlCad)
-      ? reliableProviderPeriod.observedPnlCad
+    const effectiveTotalPnlDelta = providerObservedPeriod && isFiniteNumber(providerObservedPeriod.observedPnlCad)
+      ? providerObservedPeriod.observedPnlCad
       : isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
         ? selectedAccountFunding.totalPnlSinceDisplayStartCad
         : null;
@@ -13069,7 +13117,7 @@ export default function App() {
         ? selectedAccountFunding.displayStartTotals
         : null;
     const effectivePeriodStart =
-      normalizeDate(reliableProviderPeriod?.startDate) ||
+      normalizeDate(providerObservedPeriod?.startDate) ||
       normalizeDate(selectedAccountFunding?.periodStartDate);
 
     const normalizedOriginalPeriodStart =
@@ -13104,17 +13152,17 @@ export default function App() {
       annualizedReturnStartDate: effectiveAnnualized.startDate,
     };
 
-    const allTimeNetDeposits = reliableProviderPeriod
+    const allTimeNetDeposits = providerObservedPeriod
       ? effectiveVariant.netDepositsCad
       : isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
       ? selectedAccountFunding.netDeposits.allTimeCad
       : effectiveVariant.netDepositsCad;
-    const allTimeTotalPnl = reliableProviderPeriod
+    const allTimeTotalPnl = providerObservedPeriod
       ? effectiveVariant.totalPnlCad
       : isFiniteNumber(selectedAccountFunding?.totalPnl?.allTimeCad)
       ? selectedAccountFunding.totalPnl.allTimeCad
       : effectiveVariant.totalPnlCad;
-    const allTimePeriodStart = reliableProviderPeriod
+    const allTimePeriodStart = providerObservedPeriod
       ? effectiveVariant.periodStartDate
       : normalizedOriginalPeriodStart || effectiveVariant.periodStartDate;
 
@@ -13185,7 +13233,10 @@ export default function App() {
       return [];
     }
     const providerStart =
-      fundingSummaryVariants?.effective?.providerObservedReturn?.activityCoverageComplete === true
+      typeof fundingSummaryVariants?.effective?.providerObservedReturn?.startDate === 'string' &&
+      fundingSummaryVariants.effective.providerObservedReturn.startDate.trim() &&
+      isFiniteNumber(fundingSummaryVariants.effective.providerObservedReturn.startEquityCad) &&
+      isFiniteNumber(fundingSummaryVariants.effective.providerObservedReturn.observedPnlCad)
         ? fundingSummaryVariants.effective.providerObservedReturn.startDate
         : null;
     const providerStartLabel = providerStart ? formatDate(providerStart) : null;
@@ -18874,6 +18925,14 @@ export default function App() {
               hidden={portfolioViewTab !== 'positions'}
             >
               <PositionsTable
+                key={[
+                  'positions',
+                  selectedAccountKey || selectedAccount || 'default',
+                  data?.requestedAccountId || '',
+                  data?.resolvedAccountId || '',
+                  Array.isArray(data?.filteredAccountIds) ? data.filteredAccountIds.join(',') : '',
+                  Array.isArray(data?.positions) ? data.positions.length : 0,
+                ].join('::')}
                 positions={symbolFilteredPositions.list}
                 totalMarketValue={symbolFilteredPositions.total}
                 sortColumn={resolvedSortColumn}
