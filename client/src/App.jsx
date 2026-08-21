@@ -7625,6 +7625,9 @@ export default function App() {
     error: null,
     refreshedAt: null,
   });
+  const priceRefreshInFlightRef = useRef(false);
+  const priceRefreshGenerationRef = useRef(0);
+  const priceRefreshInFlightGenerationRef = useRef(null);
   const [lastRebalanceOverrides, setLastRebalanceOverrides] = useState(() => new Map());
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [positionsSort, setPositionsSort] = usePersistentState('positionsTableSort', DEFAULT_POSITIONS_SORT);
@@ -8377,9 +8380,10 @@ export default function App() {
   }, [loadAccountStructureData]);
 
   useEffect(() => {
+    priceRefreshGenerationRef.current += 1;
     setSymbolPriceSnapshots(new Map());
     setPriceRefreshState({ status: 'idle', error: null, refreshedAt: null });
-  }, [data]);
+  }, [activeAccountId, data]);
   const priceRefreshInFlight = priceRefreshState.status === 'loading';
 
   useEffect(() => {
@@ -17174,19 +17178,27 @@ export default function App() {
     fetchQqqTemperature({ force: true, includeLivePrice: true });
   }, [fetchQqqTemperature]);
 
-  const handlePriceOnlyRefresh = useCallback(async () => {
-    if (priceRefreshInFlight) {
+  const refreshPricesForPositions = useCallback(async (positionsToRefresh) => {
+    const requestGeneration = priceRefreshGenerationRef.current;
+    if (
+      priceRefreshInFlightRef.current &&
+      priceRefreshInFlightGenerationRef.current === requestGeneration
+    ) {
       return;
     }
-    if (!rawPositions.length) {
+    if (!Array.isArray(positionsToRefresh) || !positionsToRefresh.length) {
       return;
     }
-    const symbols = rawPositions
+
+    const symbols = positionsToRefresh
       .map((position) => (typeof position?.symbol === 'string' ? position.symbol : ''))
       .filter(Boolean);
     if (!symbols.length) {
       return;
     }
+
+    priceRefreshInFlightRef.current = true;
+    priceRefreshInFlightGenerationRef.current = requestGeneration;
     setPriceRefreshState((prev) => ({
       status: 'loading',
       error: null,
@@ -17194,6 +17206,9 @@ export default function App() {
     }));
     try {
       const { snapshots, failures } = await fetchQuotesForSymbols(symbols);
+      if (requestGeneration !== priceRefreshGenerationRef.current) {
+        return;
+      }
       if (!snapshots.size) {
         const failureMessage =
           failures.length && failures[0]?.error && failures[0].error.message
@@ -17222,14 +17237,33 @@ export default function App() {
         refreshedAt: new Date().toISOString(),
       });
     } catch (error) {
+      if (requestGeneration !== priceRefreshGenerationRef.current) {
+        return;
+      }
       const normalizedError = error instanceof Error ? error : new Error('Failed to refresh prices');
       setPriceRefreshState((prev) => ({
         status: 'error',
         error: normalizedError,
         refreshedAt: prev.refreshedAt,
       }));
+    } finally {
+      if (priceRefreshInFlightGenerationRef.current === requestGeneration) {
+        priceRefreshInFlightRef.current = false;
+        priceRefreshInFlightGenerationRef.current = null;
+      }
     }
-  }, [priceRefreshInFlight, rawPositions]);
+  }, []);
+
+  useEffect(() => {
+    if (loading || !data || !basePositions.length) {
+      return;
+    }
+    refreshPricesForPositions(basePositions);
+  }, [activeAccountId, basePositions, data, loading, refreshPricesForPositions]);
+
+  const handlePriceOnlyRefresh = useCallback(() => {
+    refreshPricesForPositions(rawPositions);
+  }, [rawPositions, refreshPricesForPositions]);
 
   const handleRefresh = (event) => {
     if (event?.altKey) {
