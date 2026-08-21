@@ -11927,7 +11927,8 @@ function isSnapTradeCashRefundActivity(activity) {
   }
   const currency = normalizeCurrency(activity.currency);
   const symbol = typeof activity.symbol === 'string' ? activity.symbol.trim().toUpperCase() : '';
-  return !!currency && (!symbol || symbol === currency);
+  const isCurrencyQualifiedCashSymbol = symbol.startsWith(`${currency}.`);
+  return !!currency && (!symbol || symbol === currency || isCurrencyQualifiedCashSymbol);
 }
 
 function isInternalShareJournalActivity(activity) {
@@ -25137,6 +25138,8 @@ module.exports = {
   __test__: {
     resolveRetryAfterMs,
     resolveSnapTradeResponseCacheTtl,
+    isSnapTradeCashRefundActivity,
+    isFundingActivity,
     filterCashFlowsAfterDisplayStart,
     applyPendingDepositToFundingSummary,
     resolveCashCurrencyTrade,

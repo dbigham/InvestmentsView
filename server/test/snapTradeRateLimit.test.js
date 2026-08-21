@@ -20,3 +20,22 @@ test('SnapTrade response cache uses the recommended holdings and activity window
   assert.equal(__test__.resolveSnapTradeResponseCacheTtl('/accounts/example/activities', 'GET'), 24 * 60 * 60 * 1000);
   assert.equal(__test__.resolveSnapTradeResponseCacheTtl('/accounts/example/balances', 'POST'), 0);
 });
+
+test('SnapTrade cash refunds accept currency-qualified cash symbols', () => {
+  const refund = {
+    source: 'snaptrade',
+    type: 'REFUND',
+    action: 'REFUND',
+    symbol: 'CAD.VN',
+    quantity: 0,
+    netAmount: 172.5,
+    currency: 'CAD',
+  };
+
+  assert.equal(__test__.isSnapTradeCashRefundActivity(refund), true);
+  assert.equal(__test__.isFundingActivity(refund), true);
+  assert.equal(
+    __test__.isSnapTradeCashRefundActivity({ ...refund, symbol: 'SHOP' }),
+    false
+  );
+});
