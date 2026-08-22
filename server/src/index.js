@@ -701,7 +701,13 @@ async function computeAggregateTotalPnlSeriesForContexts(
   }, null);
   if (aggregateEndDate) {
     successfulSeries = successfulSeries.map((result) => {
-      if (!result || !result.context || !isArchivedAccount(result.context.account)) {
+      if (
+        !result ||
+        !result.context ||
+        !isArchivedAccount(result.context.account) ||
+        isClosedAccount(result.context.account) ||
+        result.context.account.migratedTo
+      ) {
         return result;
       }
       const points = Array.isArray(result.series.points) ? result.series.points : [];
@@ -785,7 +791,139 @@ async function computeAggregateTotalPnlSeriesForContexts(
   let aggregatedPriceNative = null;
   const seriesCoverage = [];
 
-  successfulSeries.forEach(({ series }) => {
+  // Closed Questrade accounts can be useful historical contributors, but their
+  // cached final snapshot must not be carried forward as if it were still a
+  // live position. When a successor account is present, clip the source series
+  // at the successor's history boundary and carry the source P&L baseline into
+  // the successor series so the stitched graph remains continuous.
+  const seriesByAccountId = new Map();
+  successfulSeries.forEach((result) => {
+    const accountId = result && result.context && result.context.account && result.context.account.id;
+    if (accountId) {
+      seriesByAccountId.set(String(accountId), result);
+    }
+  });
+  const historicalSeriesBySuccessorId = new Map();
+  successfulSeries.forEach((result) => {
+    const account = result && result.context && result.context.account;
+    const successorId = account && account.migratedTo ? String(account.migratedTo).trim() : '';
+    if (
+      successorId &&
+      result.series &&
+      (isArchivedAccount(account) || isClosedAccount(account))
+    ) {
+      const list = historicalSeriesBySuccessorId.get(successorId) || [];
+      list.push(result);
+      historicalSeriesBySuccessorId.set(successorId, list);
+    }
+  });
+  successfulSeries = successfulSeries.map((result) => {
+    const account = result && result.context && result.context.account;
+    const accountId = account && account.id ? String(account.id) : '';
+    if (!account || !accountId || isArchivedAccount(account) || isClosedAccount(account)) {
+      return result;
+    }
+    const historicalResults = historicalSeriesBySuccessorId.get(accountId) || [];
+    if (!historicalResults.length || !result.series || !Array.isArray(result.series.points)) {
+      return result;
+    }
+    const boundary =
+      typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
+        ? account.historyStartDate.trim().slice(0, 10)
+        : result.series.points[0]?.date || null;
+    if (!boundary) {
+      return result;
+    }
+    let pnlCarryForward = 0;
+    historicalResults.forEach((historicalResult) => {
+      const historicalPoints = Array.isArray(historicalResult.series.points)
+        ? historicalResult.series.points.filter((point) => point && point.date <= boundary)
+        : [];
+      if (!historicalPoints.length) {
+        return;
+      }
+      const lastHistoricalPoint = historicalPoints[historicalPoints.length - 1];
+      const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
+      if (Number.isFinite(historicalPnl)) {
+        pnlCarryForward += historicalPnl;
+      }
+    });
+    if (!Number.isFinite(pnlCarryForward) || Math.abs(pnlCarryForward) < CASH_FLOW_EPSILON) {
+      return result;
+    }
+    const adjustedPoints = result.series.points.map((point) => {
+      if (!point || typeof point.date !== 'string' || point.date < boundary) {
+        return point;
+      }
+      const totalPnl = Number(point.totalPnlCad);
+      return Number.isFinite(totalPnl)
+        ? { ...point, totalPnlCad: totalPnl + pnlCarryForward }
+        : point;
+    });
+    const adjustedSummary = result.series.summary && typeof result.series.summary === 'object'
+      ? { ...result.series.summary }
+      : null;
+    if (adjustedSummary) {
+      ['totalPnlCad', 'totalPnlAllTimeCad'].forEach((key) => {
+        if (Number.isFinite(adjustedSummary[key])) {
+          adjustedSummary[key] += pnlCarryForward;
+        }
+      });
+    }
+    return {
+      ...result,
+      series: {
+        ...result.series,
+        points: adjustedPoints,
+        summary: adjustedSummary || result.series.summary,
+      },
+    };
+  });
+
+  // Clip migrated historical series after successor stitching has captured
+  // their terminal P&L. This is deliberately done before aggregation so the
+  // old account contributes history without becoming a current balance.
+  successfulSeries = successfulSeries.map((result) => {
+    const account = result && result.context && result.context.account;
+    const successorId = account && account.migratedTo ? String(account.migratedTo).trim() : '';
+    const successor = successorId ? seriesByAccountId.get(successorId) : null;
+    if (!successor || !result.series || !Array.isArray(result.series.points)) {
+      return result;
+    }
+    const successorAccount = successor.context && successor.context.account;
+    const boundary =
+      successorAccount && typeof successorAccount.historyStartDate === 'string'
+        ? successorAccount.historyStartDate.trim().slice(0, 10)
+        : null;
+    if (!boundary) {
+      return result;
+    }
+    // The successor owns the boundary day. The historical point at that same
+    // date is used as the carry baseline, but is removed to avoid counting the
+    // handoff day twice in the aggregate.
+    const points = result.series.points.filter((point) => point && point.date < boundary);
+    if (!points.length || points.length === result.series.points.length) {
+      return result;
+    }
+    return {
+      ...result,
+      series: {
+        ...result.series,
+        periodEndDate: points[points.length - 1].date,
+        points,
+      },
+    };
+  });
+
+  const contributesCurrentAggregateSummary = (result) => {
+    const account = result && result.context && result.context.account;
+    return !(
+      account &&
+      (isClosedAccount(account) || Boolean(account.migratedTo))
+    );
+  };
+
+  successfulSeries.forEach(({ series, context }) => {
     if (!series) {
       return;
     }
@@ -928,13 +1066,21 @@ async function computeAggregateTotalPnlSeriesForContexts(
       });
     }
     if (pointDates.size > 0) {
+      const account = context && context.account;
       seriesCoverage.push({
         firstMeaningfulDate: firstMeaningfulDate || series.periodStartDate || Array.from(pointDates).sort()[0],
+        lastDate: Array.from(pointDates).sort().at(-1) || null,
+        closed:
+          Boolean(account) &&
+          (isClosedAccount(account) || Boolean(account.migratedTo)),
         pointDates,
       });
     }
 
     const { summary } = series;
+    if (!contributesCurrentAggregateSummary({ series, context })) {
+      return;
+    }
     if (summary && typeof summary === 'object') {
       if (Number.isFinite(summary.totalPnlCad)) {
         summaryTotals.totalPnlCad += summary.totalPnlCad;
@@ -986,7 +1132,13 @@ async function computeAggregateTotalPnlSeriesForContexts(
       if (!coverage || !coverage.firstMeaningfulDate) {
         return count;
       }
-      return coverage.firstMeaningfulDate <= dateKey ? count + 1 : count;
+      if (coverage.firstMeaningfulDate > dateKey) {
+        return count;
+      }
+      if (coverage.closed && coverage.lastDate && dateKey > coverage.lastDate) {
+        return count;
+      }
+      return count + 1;
     }, 0);
   };
   let droppedPartialDate = false;
@@ -1046,7 +1198,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
   const lastPointIndex = combinedPoints.length - 1;
   const lastPoint = combinedPoints[lastPointIndex];
   if (lastPoint && typeof lastPoint === 'object') {
-    const summaryCoverageCount = successfulSeries.length;
+    const summaryCoverageCount = successfulSeries.filter(contributesCurrentAggregateSummary).length;
     const lastPointIsCurrent = !aggregatedEnd || lastPoint.date === aggregatedEnd;
     const hasCompleteSummaryCoverage =
       lastPointIsCurrent &&
@@ -1128,7 +1280,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
   }
 
   const lastCombinedPoint = combinedPoints[combinedPoints.length - 1] || null;
-  const summaryCoverageCount = successfulSeries.length;
+  const summaryCoverageCount = successfulSeries.filter(contributesCurrentAggregateSummary).length;
   const lastCombinedPointIsCurrent = !aggregatedEnd || lastCombinedPoint?.date === aggregatedEnd;
   const hasCompleteSummaryCoverage =
     lastCombinedPointIsCurrent &&
@@ -18194,15 +18346,29 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       .sort((a, b) => a.t - b.t);
     return valid.length ? valid[0].d : netDepositsPeriodStart || crawlStartIso || nowIso;
   })();
+  const configuredHistoryStartIso =
+    typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
+      ? formatDateOnly(parseDateOnlyString(account.historyStartDate.trim()))
+      : null;
+  // A Wealthsimple successor may have an opening position snapshot that
+  // predates the configured migration boundary. For symbol views, that
+  // snapshot represents the transferred holding, so do not expose a second
+  // pre-migration series from the successor account. An explicit API range can
+  // still narrow the result further, but cannot move a successor before its
+  // configured migration boundary.
+  const effectiveStartIso =
+    configuredHistoryStartIso && startDateIso && configuredHistoryStartIso > startDateIso
+      ? configuredHistoryStartIso
+      : startDateIso;
   const displayStartIso = options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
     ? account.cagrStartDate.trim()
-    : startDateIso;
+    : effectiveStartIso;
   const endDateIso =
     typeof options.endDate === 'string' && options.endDate.trim()
       ? options.endDate.trim()
       : netDepositsSummary.periodEndDate || formatDateOnly(activityContext.now);
 
-  const startDate = parseDateOnlyString(startDateIso);
+  const startDate = parseDateOnlyString(effectiveStartIso);
   const displayStartDate = parseDateOnlyString(displayStartIso);
   const endDate = parseDateOnlyString(endDateIso);
   if (!startDate || !endDate || startDate > endDate) {
@@ -25279,32 +25445,84 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         { groupRelations, groupMetadata }
       );
 
-      let targetContexts = contexts;
-      if (!includeNonInvestmentAccountsParam) {
-        targetContexts = targetContexts.filter(
-          (context) => isArchivedAccount(context.account) || !isNonInvestmentAccount(context.account)
-        );
-      }
-      if (symbolParam && isAggregateRequest) {
-        // A symbol search on an aggregate view describes the currently held
-        // portfolio. Archived accounts may still contribute useful history
-        // when selected directly, but carrying their last snapshot into an
-        // aggregate symbol series makes closed holdings reappear as current
-        // equity and deposits.
-        targetContexts = targetContexts.filter(
-          (context) => !isArchivedAccount(context.account) && !isClosedAccount(context.account)
-        );
-      }
+      let scopedContexts = contexts;
       if (isGroupKey) {
         const groupEntry = accountGroupsById.get(rawAccountKey);
         if (!groupEntry || !groupEntry.accounts.length) {
           return res.status(404).json({ message: 'No accounts available for aggregation' });
         }
         const allowedIds = new Set(groupEntry.accounts.map((account) => account.id));
-        targetContexts = contexts.filter((context) => allowedIds.has(context.account.id));
-        if (!targetContexts.length) {
+        scopedContexts = contexts.filter((context) => allowedIds.has(context.account.id));
+        if (!scopedContexts.length) {
           return res.status(404).json({ message: 'No accounts available for aggregation' });
         }
+      }
+
+      let targetContexts = scopedContexts;
+      if (!includeNonInvestmentAccountsParam) {
+        targetContexts = targetContexts.filter(
+          (context) => isArchivedAccount(context.account) || !isNonInvestmentAccount(context.account)
+        );
+      }
+      let historicalSymbolContexts = [];
+      if (symbolParam && isAggregateRequest) {
+        const symbolCandidates = new Set(
+          [symbolParam, ...symbolListParam]
+            .map((symbol) => normalizeSymbol(symbol))
+            .filter(Boolean)
+        );
+        const symbolGroup =
+          (symbolGroupKeyParam && getSymbolGroupByKey(normalizeSymbol(symbolGroupKeyParam))) ||
+          getSymbolGroupByKey(normalizeSymbol(symbolParam)) ||
+          getSymbolGroupForSymbol(normalizeSymbol(symbolParam));
+        if (Array.isArray(symbolGroup?.symbols)) {
+          symbolGroup.symbols.forEach((symbol) => {
+            const normalized = normalizeSymbol(symbol);
+            if (normalized) {
+              symbolCandidates.add(normalized);
+            }
+          });
+        }
+
+        // Keep closed Questrade accounts out of the current portfolio, but
+        // retain linked historical accounts when their archived activity cache
+        // contains the requested symbol. Their series is later clipped at the
+        // successor's history boundary and stitched into the successor P&L.
+        historicalSymbolContexts = scopedContexts.filter((context) => {
+          const account = context && context.account;
+          if (!account || (!isArchivedAccount(account) && !isClosedAccount(account))) {
+            return false;
+          }
+          if (!account.migratedTo && !isClosedAccount(account)) {
+            return false;
+          }
+          const snapshot = getArchivedSnapshotForAccount(account);
+          const activities = snapshot?.activityContext?.activities;
+          if (!Array.isArray(activities)) {
+            return false;
+          }
+          return activities.some((activity) => {
+            const directSymbol = normalizeSymbol(activity?.symbol);
+            const resolvedSymbol = directSymbol || resolveActivitySymbol(activity);
+            return symbolCandidates.has(normalizeSymbol(resolvedSymbol));
+          });
+        });
+
+        targetContexts = targetContexts.filter(
+          (context) => !isArchivedAccount(context.account) && !isClosedAccount(context.account)
+        );
+      }
+      if (symbolParam && historicalSymbolContexts.length) {
+        const byId = new Map();
+        [...targetContexts, ...historicalSymbolContexts].forEach((context) => {
+          if (context?.account?.id) {
+            byId.set(context.account.id, context);
+          }
+        });
+        targetContexts = Array.from(byId.values());
+      }
+      if (!targetContexts.length) {
+        return res.status(404).json({ message: 'No accounts available for aggregation' });
       }
 
       // Per-account balances: reuse superset cache when available for symbol queries; otherwise fetch as before
@@ -25414,7 +25632,10 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
             .map((symbol) => normalizeSymbol(symbol))
             .filter(Boolean)
         );
-        const contextsWithCurrentSymbolPosition = targetContexts.filter((context) => {
+        const currentContextsForPositionFilter = targetContexts.filter(
+          (context) => !isArchivedAccount(context.account) && !isClosedAccount(context.account)
+        );
+        const contextsWithCurrentSymbolPosition = currentContextsForPositionFilter.filter((context) => {
           const accountId = context && context.account && context.account.id;
           const positions = accountId ? positionsByAccountIdForAgg[accountId] : null;
           return Array.isArray(positions) && positions.some((position) => {
@@ -25428,7 +25649,12 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
           // current positions. Accounts with stale historical buys but no
           // current snapshot position (for example after an internal transfer)
           // must not resurrect that holding in the aggregate chart.
-          targetContexts = contextsWithCurrentSymbolPosition;
+          const currentIds = new Set(contextsWithCurrentSymbolPosition.map((context) => context.account.id));
+          targetContexts = targetContexts.filter(
+            (context) => isArchivedAccount(context.account) || isClosedAccount(context.account)
+              ? historicalSymbolContexts.some((historical) => historical.account.id === context.account.id)
+              : currentIds.has(context.account.id)
+          );
         }
       }
 

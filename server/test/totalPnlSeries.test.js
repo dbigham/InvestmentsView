@@ -382,6 +382,105 @@ test('aggregate Total P&L carries archived account results through the aggregate
   assert.equal(lastPoint.cumulativeNetDepositsCad, 600);
 });
 
+test('aggregate symbol Total P&L stitches linked closed history into a successor', async () => {
+  const priceSeries = buildDailyPriceSeries(
+    [
+      { date: new Date('2026-01-01T00:00:00Z'), price: 100 },
+      { date: new Date('2026-01-02T00:00:00Z'), price: 110 },
+      { date: new Date('2026-01-03T00:00:00Z'), price: 120 },
+      { date: new Date('2026-01-04T00:00:00Z'), price: 130 },
+      { date: new Date('2026-01-05T00:00:00Z'), price: 140 },
+    ],
+    ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04', '2026-01-05']
+  );
+  const makeActivityContext = (accountId, now, activities) => ({
+    accountId,
+    accountKey: accountId,
+    accountNumber: accountId,
+    earliestFunding: new Date('2026-01-01T00:00:00Z'),
+    crawlStart: new Date('2026-01-01T00:00:00Z'),
+    now: new Date(now),
+    nowIsoString: new Date(now).toISOString(),
+    activities,
+    fingerprint: `${accountId}-symbol-migration-test`,
+  });
+  const contexts = [
+    {
+      login: { id: 'login-1' },
+      account: {
+        id: 'HISTORICAL',
+        number: 'HISTORICAL',
+        archived: true,
+        closed: true,
+        migratedTo: 'SUCCESSOR',
+      },
+    },
+    {
+      login: { id: 'login-1' },
+      account: {
+        id: 'SUCCESSOR',
+        number: 'SUCCESSOR',
+        historyStartDate: '2026-01-03',
+      },
+    },
+  ];
+  const activityContexts = {
+    HISTORICAL: makeActivityContext('HISTORICAL', '2026-01-03T00:00:00Z', [
+      {
+        tradeDate: '2026-01-01T00:00:00Z',
+        transactionDate: '2026-01-01T00:00:00Z',
+        settlementDate: '2026-01-01T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -100,
+        grossAmount: -100,
+        quantity: 1,
+        symbol: 'ABC.TO',
+      },
+    ]),
+    SUCCESSOR: makeActivityContext('SUCCESSOR', '2026-01-05T00:00:00Z', []),
+  };
+  const positionsByAccountId = {
+    HISTORICAL: [{ accountId: 'HISTORICAL', symbol: 'ABC.TO', currency: 'CAD', openQuantity: 1 }],
+    SUCCESSOR: [{ accountId: 'SUCCESSOR', symbol: 'ABC.TO', currency: 'CAD', openQuantity: 1 }],
+  };
+
+  const result = await computeAggregateTotalPnlSeriesForContexts(
+    contexts,
+    {
+      HISTORICAL: { combined: { CAD: { totalEquity: 120 } } },
+      SUCCESSOR: { combined: { CAD: { totalEquity: 140 } } },
+    },
+    {
+      symbol: 'ABC.TO',
+      startDate: '2026-01-01',
+      endDate: '2026-01-05',
+      applyAccountCagrStartDate: false,
+      includeSyntheticPositions: true,
+      positionsByAccountId,
+      priceSeriesBySymbol: new Map([['ABC.TO', priceSeries]]),
+    },
+    'all',
+    false,
+    (context) => activityContexts[context.account.id]
+  );
+
+  assert.ok(result, 'Expected stitched symbol series');
+  assert.deepEqual(
+    result.points.map((point) => [point.date, point.totalPnlCad]),
+    [
+      ['2026-01-01', 0],
+      ['2026-01-02', 10],
+      ['2026-01-03', 20],
+      ['2026-01-04', 30],
+      ['2026-01-05', 40],
+    ]
+  );
+  assert.equal(result.periodStartDate, '2026-01-01');
+  assert.equal(result.periodEndDate, '2026-01-05');
+});
+
 test('computeTotalPnlSeries keeps reconstructed equity when current snapshot is empty', async () => {
   const account = {
     id: 'MISSING-SNAPSHOT-ACCOUNT',
