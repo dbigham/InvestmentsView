@@ -492,6 +492,30 @@ function applyHistoryStartDateSetting(target, key, value) {
   container.historyStartDate = normalized;
 }
 
+function applyHistoryPnlRebaseDatesSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    delete container.historyPnlRebaseDates;
+    return;
+  }
+  const normalized = {};
+  Object.entries(value).forEach(([displayDate, valuationDate]) => {
+    const normalizedDisplayDate = normalizeDateOnly(displayDate);
+    const normalizedValuationDate = normalizeDateOnly(valuationDate);
+    if (normalizedDisplayDate && normalizedValuationDate) {
+      normalized[normalizedDisplayDate] = normalizedValuationDate;
+    }
+  });
+  if (Object.keys(normalized).length) {
+    container.historyPnlRebaseDates = normalized;
+  } else {
+    delete container.historyPnlRebaseDates;
+  }
+}
+
 function applyIgnoreSittingCashSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -1498,6 +1522,7 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'chatURL',
   'chatUrl',
   'showQQQDetails',
+  'historyPnlRebaseDates',
   'hidden',
   'ignored',
   'investmentAccount',
@@ -1744,6 +1769,13 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'historyStartDate')) {
       applyHistoryStartDateSetting(settingsTarget, resolvedKey, entry.historyStartDate);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'historyPnlRebaseDates')) {
+      applyHistoryPnlRebaseDatesSetting(
+        settingsTarget,
+        resolvedKey,
+        entry.historyPnlRebaseDates
+      );
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'ignoreSittingCash')) {
       applyIgnoreSittingCashSetting(settingsTarget, resolvedKey, entry.ignoreSittingCash);

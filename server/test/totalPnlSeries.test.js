@@ -6,7 +6,38 @@ const {
   computeTotalPnlSeriesForSymbol,
   computeAggregateTotalPnlSeriesForContexts,
   buildDailyPriceSeries,
+  __test__,
 } = require('../src/index.js');
+
+test('aggregate funding follows the reconstructed series summary', () => {
+  const fundingSummary = {
+    netDeposits: { combinedCad: 1003071.10 },
+    totalPnl: { combinedCad: 669510.64 },
+    totalEquityCad: 1672581.75,
+  };
+
+  __test__.applyTotalPnlSeriesSummaryToFundingSummary(
+    fundingSummary,
+    {
+      summary: {
+        totalPnlCad: 167461.07,
+        totalPnlAllTimeCad: 245750.85,
+        netDepositsCad: 1502127.70,
+        netDepositsAllTimeCad: 1426841.00,
+        totalEquityCad: 1672591.86,
+      },
+    },
+    { id: 'all' }
+  );
+
+  assert.equal(fundingSummary.totalPnl.combinedCad, 167461.07);
+  assert.equal(fundingSummary.totalPnl.allTimeCad, 245750.85);
+  assert.equal(fundingSummary.netDeposits.combinedCad, 1502127.70);
+  assert.equal(fundingSummary.netDeposits.allTimeCad, 1426841.00);
+  // Preserve the live balance snapshot; the series reconciliation is for
+  // funding/P&L, not a replacement for the current balance endpoint.
+  assert.equal(fundingSummary.totalEquityCad, 1672581.75);
+});
 
 test('buildDailyPriceSeries uses same-day closing prices for late timestamps', () => {
   const history = [
@@ -20,6 +51,85 @@ test('buildDailyPriceSeries uses same-day closing prices for late timestamps', (
   assert.equal(series.get('2025-10-09'), 100);
   assert.equal(series.get('2025-10-10'), 91);
   assert.equal(series.get('2025-10-11'), 91);
+});
+
+test('computeTotalPnlSeries can rebase a provider-observed historical P&L boundary', async () => {
+  const account = {
+    id: 'HISTORICAL-REBASE-ACCOUNT',
+    historyPnlRebaseDates: { '2026-07-16': '2026-07-15' },
+  };
+  const now = new Date('2026-07-17T00:00:00Z');
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2026-07-15T00:00:00Z'),
+    crawlStart: new Date('2026-07-15T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    activities: [
+      {
+        tradeDate: '2026-07-15T00:00:00Z',
+        transactionDate: '2026-07-15T00:00:00Z',
+        settlementDate: '2026-07-15T00:00:00Z',
+        type: 'Deposits',
+        action: 'CON',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+      },
+      {
+        tradeDate: '2026-07-15T00:00:00Z',
+        transactionDate: '2026-07-15T00:00:00Z',
+        settlementDate: '2026-07-15T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -1000,
+        grossAmount: -1000,
+        quantity: 10,
+        price: 100,
+        symbol: 'XYZ.TO',
+      },
+    ],
+    fingerprint: 'historical-rebase',
+  };
+  const balances = {
+    [account.id]: {
+      combined: { CAD: { totalEquity: 700, cash: 0, marketValue: 700 } },
+      perCurrency: { CAD: { totalEquity: 700, cash: 0, marketValue: 700 } },
+    },
+  };
+  const series = await computeTotalPnlSeries(
+    { id: 'questrade-login', provider: 'questrade' },
+    account,
+    balances,
+    {
+      activityContext,
+      applyAccountCagrStartDate: false,
+      providedPositions: [
+        {
+          accountId: account.id,
+          symbol: 'XYZ.TO',
+          currency: 'CAD',
+          openQuantity: 10,
+        },
+      ],
+      priceSeriesBySymbol: new Map([
+        ['XYZ.TO', new Map([
+          ['2026-07-15', 100],
+          ['2026-07-16', 80],
+          ['2026-07-17', 70],
+        ])],
+      ]),
+    }
+  );
+
+  assert.ok(series, 'Expected a P&L series');
+  assert.equal(series.points[0].totalPnlCad, 0);
+  assert.equal(series.points[1].totalPnlCad, 0);
+  assert.equal(series.points[2].totalPnlCad, -100);
+  assert.ok(series.issues.includes('history-pnl-rebased'));
 });
 
 test('computeTotalPnlSeries handles cash-only activities', async () => {

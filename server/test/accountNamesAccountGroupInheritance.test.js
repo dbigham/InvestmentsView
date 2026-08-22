@@ -100,3 +100,23 @@ test('account history start dates are normalized as separate history settings', 
   const settings = loadAccountSettingsFromConfig(config);
   assert.deepEqual(settings['333'], { historyStartDate: '2026-06-29' });
 });
+
+test('historical P&L rebase dates are normalized as separate history settings', () => {
+  const config = {
+    accounts: [
+      {
+        number: '444',
+        name: 'RESP',
+        historyPnlRebaseDates: {
+          '2026-07-16': '2026-07-15',
+          invalid: 'not-a-date',
+        },
+      },
+    ],
+  };
+
+  const settings = loadAccountSettingsFromConfig(config);
+  assert.deepEqual(settings['444'], {
+    historyPnlRebaseDates: { '2026-07-16': '2026-07-15' },
+  });
+});

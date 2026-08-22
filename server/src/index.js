@@ -7420,6 +7420,25 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'historyPnlRebaseDates')) {
+    const normalizedOverrides = {};
+    const source = override.historyPnlRebaseDates;
+    if (source && typeof source === 'object' && !Array.isArray(source)) {
+      Object.entries(source).forEach(([displayDate, valuationDate]) => {
+        const normalizedDisplayDate = normalizeDateOnly(displayDate);
+        const normalizedValuationDate = normalizeDateOnly(valuationDate);
+        if (normalizedDisplayDate && normalizedValuationDate) {
+          normalizedOverrides[normalizedDisplayDate] = normalizedValuationDate;
+        }
+      });
+    }
+    if (Object.keys(normalizedOverrides).length) {
+      target.historyPnlRebaseDates = normalizedOverrides;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'historyPnlRebaseDates')) {
+      delete target.historyPnlRebaseDates;
+    }
+  }
+
   if (
     typeof override.ignoreSittingCash === 'number' &&
     Number.isFinite(override.ignoreSittingCash)
@@ -16083,6 +16102,19 @@ function computeLedgerEquitySnapshot(
   };
 }
 
+function isHistoryPnlRebaseDate(account, dateKey) {
+  if (!account || !dateKey || !account.historyPnlRebaseDates) {
+    return false;
+  }
+  const rebaseDates = account.historyPnlRebaseDates;
+  return (
+    rebaseDates &&
+    typeof rebaseDates === 'object' &&
+    !Array.isArray(rebaseDates) &&
+    Object.prototype.hasOwnProperty.call(rebaseDates, dateKey)
+  );
+}
+
 async function computeTotalPnlSeries(login, account, perAccountCombinedBalances, options = {}) {
   if (!account || !account.id) {
     return null;
@@ -16775,7 +16807,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       Array.from(holdings.keys()).some((symbol) => {
         const meta = symbolMeta.get(symbol);
         return meta && meta.currency === 'USD' && Math.abs(holdings.get(symbol)) >= LEDGER_QUANTITY_EPSILON;
-      });
+    });
     if (openingNeedsUsdRate) {
       openingUsdRate = await resolveUsdRateForDate(openingDateKey, accountKey, usdRateCache);
     }
@@ -16851,6 +16883,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     cumulativeNetDeposits += rolledNetDeposits;
   }
   let activityIndex = 0;
+  let historyPnlRebaseAdjustmentCad = 0;
 
   for (const dateKey of dateKeys) {
     while (activityIndex < processedActivities.length && processedActivities[activityIndex].dateKey <= dateKey) {
@@ -16939,6 +16972,19 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     }
 
     const equityCad = Number.isFinite(snapshot.equityCad) ? snapshot.equityCad : null;
+    if (isHistoryPnlRebaseDate(account, dateKey) && Number.isFinite(equityCad)) {
+      const previousPoint = points.length ? points[points.length - 1] : null;
+      const targetPnlCad = previousPoint && Number.isFinite(previousPoint.totalPnlCad)
+        ? previousPoint.totalPnlCad
+        : 0;
+      const desiredCumulativeNetDeposits = equityCad - targetPnlCad;
+      if (Number.isFinite(desiredCumulativeNetDeposits) && Number.isFinite(cumulativeNetDeposits)) {
+        const adjustment = desiredCumulativeNetDeposits - cumulativeNetDeposits;
+        cumulativeNetDeposits += adjustment;
+        historyPnlRebaseAdjustmentCad += adjustment;
+        issues.add('history-pnl-rebased');
+      }
+    }
     const cumulativeNetDepositsCad = Number.isFinite(cumulativeNetDeposits) ? cumulativeNetDeposits : null;
     let totalPnlCad = null;
     if (Number.isFinite(equityCad) && Number.isFinite(cumulativeNetDepositsCad)) {
@@ -17328,6 +17374,21 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const adjustedPnl = summaryEquity - summaryNetDeposits;
       summaryTotalPnl = adjustedPnl;
       summaryTotalPnlAllTime = adjustedPnl;
+    }
+  }
+
+  if (Math.abs(historyPnlRebaseAdjustmentCad) >= CASH_FLOW_EPSILON) {
+    if (Number.isFinite(summaryNetDeposits)) {
+      summaryNetDeposits += historyPnlRebaseAdjustmentCad;
+    }
+    if (Number.isFinite(summaryNetDepositsAllTime)) {
+      summaryNetDepositsAllTime += historyPnlRebaseAdjustmentCad;
+    }
+    if (Number.isFinite(summaryEquity) && Number.isFinite(summaryNetDeposits)) {
+      summaryTotalPnl = summaryEquity - summaryNetDeposits;
+    }
+    if (Number.isFinite(summaryEquity) && Number.isFinite(summaryNetDepositsAllTime)) {
+      summaryTotalPnlAllTime = summaryEquity - summaryNetDepositsAllTime;
     }
   }
 
@@ -23649,6 +23710,22 @@ app.get('/api/summary', async function (req, res) {
           );
           if (aggregatedSeries) {
             setAccountTotalPnlSeries(accountTotalPnlSeries, aggregateSelectionKey, 'all', aggregatedSeries);
+            // Keep the aggregate funding summary in lockstep with the series.
+            // The earlier funding pass can only reconcile activity-level cash
+            // flows; for migrated accounts that leaves the aggregate net
+            // deposits and P&L incomplete even though the reconstructed series
+            // has the correct opening funding adjustment. The UI uses the
+            // funding summary to align the chart's final point, so leaving the
+            // stale values here produces a false end-of-period jump.
+            const aggregateFundingSummary = accountFundingSummaries[aggregateSelectionKey];
+            if (aggregateFundingSummary) {
+              const aggregateAccount = selectedAccountGroup || { id: aggregateSelectionKey };
+              applyTotalPnlSeriesSummaryToFundingSummary(
+                aggregateFundingSummary,
+                aggregatedSeries,
+                aggregateAccount
+              );
+            }
             const aggregateCacheKey = buildTotalPnlSeriesCacheKey(aggregateSelectionKey, aggregateSeriesOptions);
             if (aggregateCacheKey) {
               setTotalPnlSeriesCacheEntry(aggregateCacheKey, aggregatedSeries);
