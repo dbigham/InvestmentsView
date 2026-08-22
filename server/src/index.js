@@ -431,7 +431,7 @@ const totalPnlSeriesCacheStore = new Map();
 // particular, older entries may still contain the pre-reconciliation funding
 // totals that made Total P&L equal current equity minus raw deposits.
 const SUMMARY_CACHE_VERSION = 'funding-v8';
-const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v6-journal-replay';
+const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v7-migration-basis';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
 const rangeBreakdownCache = new Map();
@@ -835,6 +835,9 @@ async function computeAggregateTotalPnlSeriesForContexts(
       return result;
     }
     let pnlCarryForward = 0;
+    let historicalEquityTotal = 0;
+    let historicalDepositsTotal = 0;
+    let hasCompleteHistoricalBoundaryBasis = true;
     historicalResults.forEach((historicalResult) => {
       const historicalPoints = Array.isArray(historicalResult.series.points)
         ? historicalResult.series.points.filter((point) => point && point.date <= boundary)
@@ -847,18 +850,53 @@ async function computeAggregateTotalPnlSeriesForContexts(
       if (Number.isFinite(historicalPnl)) {
         pnlCarryForward += historicalPnl;
       }
+      const historicalEquity = Number(lastHistoricalPoint.equityCad);
+      const historicalDeposits = Number(lastHistoricalPoint.cumulativeNetDepositsCad);
+      if (Number.isFinite(historicalEquity) && Number.isFinite(historicalDeposits)) {
+        historicalEquityTotal += historicalEquity;
+        historicalDepositsTotal += historicalDeposits;
+      } else {
+        hasCompleteHistoricalBoundaryBasis = false;
+      }
     });
     if (!Number.isFinite(pnlCarryForward) || Math.abs(pnlCarryForward) < CASH_FLOW_EPSILON) {
       return result;
     }
+    const destinationBoundaryPoint = result.series.points.find(
+      (point) => point && typeof point.date === 'string' && point.date >= boundary
+    );
+    const destinationEquity = Number(destinationBoundaryPoint?.equityCad);
+    const destinationDeposits = Number(destinationBoundaryPoint?.cumulativeNetDepositsCad);
+    const boundaryEquityTolerance = Math.max(
+      1,
+      Math.max(Math.abs(historicalEquityTotal), Math.abs(destinationEquity)) * 0.005
+    );
+    const hasMatchingBoundaryEquity =
+      hasCompleteHistoricalBoundaryBasis &&
+      Number.isFinite(destinationEquity) &&
+      Number.isFinite(destinationDeposits) &&
+      Math.abs(historicalEquityTotal - destinationEquity) <= boundaryEquityTolerance;
+    // When the source and destination hold the same symbol value at the handoff,
+    // the destination's opening position is a transferred investment, not a new
+    // external deposit. Rebase its cumulative deposits to the historical basis so
+    // the stitched P&L and the XIRR annualized return use the same cash-flow story.
+    const depositCarryForward = hasMatchingBoundaryEquity
+      ? historicalDepositsTotal - destinationDeposits
+      : 0;
     const adjustedPoints = result.series.points.map((point) => {
       if (!point || typeof point.date !== 'string' || point.date < boundary) {
         return point;
       }
       const totalPnl = Number(point.totalPnlCad);
-      return Number.isFinite(totalPnl)
-        ? { ...point, totalPnlCad: totalPnl + pnlCarryForward }
-        : point;
+      const cumulativeNetDeposits = Number(point.cumulativeNetDepositsCad);
+      const adjustedPoint = { ...point };
+      if (Number.isFinite(totalPnl)) {
+        adjustedPoint.totalPnlCad = totalPnl + pnlCarryForward;
+      }
+      if (hasMatchingBoundaryEquity && Number.isFinite(cumulativeNetDeposits)) {
+        adjustedPoint.cumulativeNetDepositsCad = cumulativeNetDeposits + depositCarryForward;
+      }
+      return adjustedPoint;
     });
     const adjustedSummary = result.series.summary && typeof result.series.summary === 'object'
       ? { ...result.series.summary }
@@ -869,6 +907,13 @@ async function computeAggregateTotalPnlSeriesForContexts(
           adjustedSummary[key] += pnlCarryForward;
         }
       });
+      if (hasMatchingBoundaryEquity) {
+        ['netDepositsCad', 'netDepositsAllTimeCad'].forEach((key) => {
+          if (Number.isFinite(adjustedSummary[key])) {
+            adjustedSummary[key] += depositCarryForward;
+          }
+        });
+      }
     }
     return {
       ...result,

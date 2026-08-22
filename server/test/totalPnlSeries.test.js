@@ -468,17 +468,22 @@ test('aggregate symbol Total P&L stitches linked closed history into a successor
 
   assert.ok(result, 'Expected stitched symbol series');
   assert.deepEqual(
-    result.points.map((point) => [point.date, point.totalPnlCad]),
+    result.points.map((point) => [point.date, point.totalPnlCad, point.cumulativeNetDepositsCad]),
     [
-      ['2026-01-01', 0],
-      ['2026-01-02', 10],
-      ['2026-01-03', 20],
-      ['2026-01-04', 30],
-      ['2026-01-05', 40],
+      ['2026-01-01', 0, 100],
+      ['2026-01-02', 10, 100],
+      ['2026-01-03', 20, 100],
+      ['2026-01-04', 30, 100],
+      ['2026-01-05', 40, 100],
     ]
   );
   assert.equal(result.periodStartDate, '2026-01-01');
   assert.equal(result.periodEndDate, '2026-01-05');
+  assert.equal(result.summary.netDepositsCad, 100);
+
+  const fundingSummary = {};
+  __test__.rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, result, 'symbol-migration-test');
+  assert.equal(fundingSummary.annualizedReturn.cashFlowCount, 2);
 });
 
 test('computeTotalPnlSeries keeps reconstructed equity when current snapshot is empty', async () => {
