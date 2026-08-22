@@ -1044,3 +1044,130 @@ test('computeTotalPnlSeriesForSymbol nets same-day trades before clamping', asyn
   assert.equal(lastPoint.date, '2025-01-03');
   assert.ok(Math.abs(lastPoint.equityCad - 1100) < 1e-6);
 });
+
+test('computeTotalPnlSeriesForSymbol carries opening snapshot holdings through the series', async () => {
+  const account = {
+    id: 'SYMBOL-OPENING-SNAPSHOT-ACCOUNT',
+  };
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2025-01-01T00:00:00Z'),
+    crawlStart: new Date('2025-01-01T00:00:00Z'),
+    now: new Date('2025-01-03T00:00:00Z'),
+    nowIsoString: '2025-01-03T00:00:00.000Z',
+    activities: [
+      {
+        tradeDate: '2025-01-02T00:00:00Z',
+        transactionDate: '2025-01-02T00:00:00Z',
+        settlementDate: '2025-01-02T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -100,
+        grossAmount: -100,
+        quantity: 1,
+        price: 100,
+        symbol: 'ABC.TO',
+      },
+    ],
+    fingerprint: 'symbol-opening-snapshot-fingerprint',
+  };
+  const balances = {
+    [account.id]: {
+      combined: {
+        CAD: {
+          totalEquity: 330,
+        },
+      },
+    },
+  };
+  const dateKeys = ['2025-01-01', '2025-01-02', '2025-01-03'];
+  const priceSeries = buildDailyPriceSeries(
+    [
+      { date: new Date('2025-01-01T00:00:00Z'), price: 100 },
+      { date: new Date('2025-01-03T00:00:00Z'), price: 110 },
+    ],
+    dateKeys
+  );
+
+  const result = await computeTotalPnlSeriesForSymbol(
+    { id: 'login-1' },
+    account,
+    balances,
+    {
+      startDate: '2025-01-01',
+      endDate: '2025-01-03',
+      symbol: 'ABC.TO',
+      applyAccountCagrStartDate: false,
+      activityContext,
+      providedPositions: [
+        {
+          accountId: account.id,
+          symbol: 'ABC.TO',
+          currency: 'CAD',
+          openQuantity: 3,
+        },
+      ],
+      priceSeriesBySymbol: new Map([['ABC.TO', priceSeries]]),
+    }
+  );
+
+  assert.ok(result, 'Expected symbol series result');
+  assert.deepEqual(
+    result.points.map((point) => [point.date, point.equityCad, point.cumulativeNetDepositsCad, point.totalPnlCad]),
+    [
+      ['2025-01-01', 200, 200, 0],
+      ['2025-01-02', 300, 300, 0],
+      ['2025-01-03', 330, 300, 30],
+    ]
+  );
+});
+
+test('computeTotalPnlSeriesForSymbol ignores accounts without symbol activity or holdings', async () => {
+  const account = { id: 'SYMBOL-NO-MATCH-ACCOUNT' };
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.id,
+    earliestFunding: new Date('2025-01-01T00:00:00Z'),
+    crawlStart: new Date('2025-01-01T00:00:00Z'),
+    now: new Date('2025-01-02T00:00:00Z'),
+    nowIsoString: '2025-01-02T00:00:00.000Z',
+    activities: [
+      {
+        tradeDate: '2025-01-01T00:00:00Z',
+        transactionDate: '2025-01-01T00:00:00Z',
+        settlementDate: '2025-01-01T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -100,
+        grossAmount: -100,
+        quantity: 1,
+        price: 100,
+        symbol: 'OTHER.TO',
+      },
+    ],
+    fingerprint: 'symbol-no-match-fingerprint',
+  };
+  const result = await computeTotalPnlSeriesForSymbol(
+    { id: 'login-1' },
+    account,
+    {
+      [account.id]: {
+        combined: { CAD: { totalEquity: 100 } },
+      },
+    },
+    {
+      startDate: '2025-01-01',
+      endDate: '2025-01-02',
+      symbol: 'SPCX',
+      applyAccountCagrStartDate: false,
+      activityContext,
+    }
+  );
+
+  assert.equal(result, null);
+});

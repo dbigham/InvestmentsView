@@ -18322,6 +18322,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   }
 
   const activityQtyBySymbol = new Map();
+  const openingHoldingsBySymbol = new Map();
   processedActivities.forEach((entry) => {
     const qty = Number(entry?.activity?.quantity);
     if (!entry || !entry.symbol || !Number.isFinite(qty)) {
@@ -18334,7 +18335,6 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       activityContext && activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
         ? activityContext.now.getTime()
         : Date.now();
-    const syntheticDateKey = formatDateOnly(startDate);
     providedPositionsBySymbol.forEach((pos, sym) => {
       if (!symbolMemberSet.has(sym)) {
         return;
@@ -18348,39 +18348,21 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       if (Math.abs(missingQty) < LEDGER_QUANTITY_EPSILON) {
         return;
       }
-      const avgPrice =
-        (Number(pos.averageEntryPrice) && pos.averageEntryPrice > 0 ? Number(pos.averageEntryPrice) : null) ||
-        (Number(pos.totalCost) && Number(targetQty) ? Number(pos.totalCost) / Number(targetQty) : null) ||
-        (Number(pos.currentPrice) && pos.currentPrice > 0 ? Number(pos.currentPrice) : null);
       const posSymbolId = Number(pos.symbolId);
       const currency =
         normalizeCurrency(pos.currency) ||
         (symbolMeta.get(sym) && symbolMeta.get(sym).currency) ||
         inferSymbolCurrency(sym) ||
         null;
-      const syntheticActivity = {
-        type: 'SyntheticPosition',
-        action: missingQty >= 0 ? 'SyntheticBuy' : 'SyntheticSell',
-        quantity: missingQty,
-        netAmount: Number.isFinite(avgPrice) ? -missingQty * avgPrice : 0,
-        currency,
-        description: 'Synthetic baseline from provided positions',
-        symbol: sym,
-        symbolId: posSymbolId,
-      };
-      if (syntheticDateKey) {
-        const syntheticTimestamp =
-          startDate instanceof Date && !Number.isNaN(startDate.getTime())
-            ? startDate
-            : new Date(`${syntheticDateKey}T00:00:00Z`);
-        processedActivities.push({
-          activity: syntheticActivity,
-          timestamp: syntheticTimestamp,
-          dateKey: syntheticDateKey,
-          symbol: sym,
-        });
-        adjustNumericMap(activityQtyBySymbol, sym, missingQty, LEDGER_QUANTITY_EPSILON);
-      }
+      // The current position snapshot identifies shares that existed before the
+      // activity window. Keep those shares as an opening ledger balance instead
+      // of manufacturing a same-day trade. A synthetic trade creates an
+      // artificial cash-flow event at the first date and can leave the final
+      // point on a different position basis than the historical points.
+      const openingQuantity = openingHoldingsBySymbol.has(sym)
+        ? openingHoldingsBySymbol.get(sym)
+        : 0;
+      openingHoldingsBySymbol.set(sym, openingQuantity + missingQty);
       if (Number.isFinite(posSymbolId) && posSymbolId > 0) {
         symbolIds.add(posSymbolId);
         if (!symbolIdToSymbols.has(posSymbolId)) {
@@ -18403,6 +18385,13 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
         symbolMeta.set(sym, meta);
       }
     });
+  }
+  if (processedActivities.length === 0 && providedPositionsBySymbol.size === 0) {
+    // Aggregate symbol requests can include many accounts whose provider
+    // history was intentionally skipped. Do not turn their whole-account
+    // funding summary into phantom deposits/P&L for a symbol they neither
+    // traded nor currently hold.
+    return null;
   }
   // Ensure every group member has at least a metadata entry so currency inference works consistently
   symbolMembers.forEach((memberSymbol) => {
@@ -18619,12 +18608,39 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   });
 
   // Iterate days computing symbol equity and P&L
-  const holdings = new Map();
+  const holdings = new Map(openingHoldingsBySymbol);
   // Track symbol-linked cash so equity includes dividends, coupon payments, and trade cash effects.
   const cashByCurrency = new Map();
   const usdRateCache = new Map();
   const points = [];
   let cumulativeInvested = 0;
+  if (openingHoldingsBySymbol.size && dateKeys.length) {
+    for (const openingDateKey of dateKeys) {
+      const openingUsdRate = await resolveUsdRateForDate(openingDateKey, accountKey, usdRateCache);
+      const openingSnapshot = computeLedgerEquitySnapshot(
+        openingDateKey,
+        openingHoldingsBySymbol,
+        new Map(),
+        symbolMeta,
+        priceSeriesMap,
+        openingUsdRate,
+        { reserveSymbols: new Set() }
+      );
+      if (
+        openingSnapshot.missingPrices.length === 0 &&
+        openingSnapshot.unsupportedCurrencies.length === 0 &&
+        Number.isFinite(openingSnapshot.equityCad)
+      ) {
+        // Match the account-level SnapTrade opening-snapshot convention: the
+        // first observed market value is treated as the opening capital base,
+        // so the graph starts at zero rather than inventing an unobserved
+        // purchase price for transferred holdings. If the activity crawl
+        // predates the first quote, wait until the first fully priced date.
+        cumulativeInvested = openingSnapshot.equityCad;
+        break;
+      }
+    }
+  }
   for (const dateKey of dateKeys) {
     // apply net quantity deltas for this day to avoid ordering artifacts
     const dailyQtyMap = dailyNetQtyBySymbol.get(dateKey);
@@ -25269,6 +25285,16 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
           (context) => isArchivedAccount(context.account) || !isNonInvestmentAccount(context.account)
         );
       }
+      if (symbolParam && isAggregateRequest) {
+        // A symbol search on an aggregate view describes the currently held
+        // portfolio. Archived accounts may still contribute useful history
+        // when selected directly, but carrying their last snapshot into an
+        // aggregate symbol series makes closed holdings reappear as current
+        // equity and deposits.
+        targetContexts = targetContexts.filter(
+          (context) => !isArchivedAccount(context.account) && !isClosedAccount(context.account)
+        );
+      }
       if (isGroupKey) {
         const groupEntry = accountGroupsById.get(rawAccountKey);
         if (!groupEntry || !groupEntry.accounts.length) {
@@ -25340,37 +25366,69 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       let positionsByAccountIdForAgg = null;
       try {
         const superset = getSupersetCacheEntry();
-        const flattened = superset && superset.payload && Array.isArray(superset.payload.flattenedPositions)
-          ? superset.payload.flattenedPositions
-          : null;
-        if (flattened) {
+        if (superset) {
           const map = {};
-          flattened.forEach((p) => {
-            if (!p || !p.accountId) return;
-            if (!Array.isArray(map[p.accountId])) map[p.accountId] = [];
-            map[p.accountId].push(p);
+          let foundPositions = false;
+          targetContexts.forEach((context) => {
+            const accountId = context && context.account && context.account.id;
+            if (!accountId) {
+              return;
+            }
+            const positions = getPositionsForAccountFromSuperset(superset, accountId);
+            map[accountId] = positions;
+            if (positions.length) {
+              foundPositions = true;
+            }
           });
-          positionsByAccountIdForAgg = map;
+          if (foundPositions) {
+            positionsByAccountIdForAgg = map;
+          }
         }
       } catch (_) {
         positionsByAccountIdForAgg = null;
       }
       if (!positionsByAccountIdForAgg && symbolParam) {
-        try {
-          const results = await Promise.all(
-            targetContexts.map((context) => fetchPositions(context.login, context.account))
-          );
-          const map = {};
-          results.forEach((arr, index) => {
-            const context = targetContexts[index];
-            if (!context || !context.account || !context.account.id) {
-              return;
+        const results = await Promise.all(
+          targetContexts.map(async (context) => {
+            try {
+              return await fetchPositions(context.login, context.account);
+            } catch (_) {
+              return [];
             }
-            map[context.account.id] = Array.isArray(arr) ? arr : [];
+          })
+        );
+        const map = {};
+        results.forEach((arr, index) => {
+          const context = targetContexts[index];
+          if (!context || !context.account || !context.account.id) {
+            return;
+          }
+          map[context.account.id] = Array.isArray(arr) ? arr : [];
+        });
+        positionsByAccountIdForAgg = map;
+      }
+
+      if (symbolParam && positionsByAccountIdForAgg) {
+        const symbolCandidates = new Set(
+          [queryOptions.symbol, ...(Array.isArray(queryOptions.symbols) ? queryOptions.symbols : [])]
+            .map((symbol) => normalizeSymbol(symbol))
+            .filter(Boolean)
+        );
+        const contextsWithCurrentSymbolPosition = targetContexts.filter((context) => {
+          const accountId = context && context.account && context.account.id;
+          const positions = accountId ? positionsByAccountIdForAgg[accountId] : null;
+          return Array.isArray(positions) && positions.some((position) => {
+            const positionSymbol = normalizeSymbol(position?.symbol || position?.displaySymbol);
+            const quantity = Number(position?.openQuantity);
+            return symbolCandidates.has(positionSymbol) && Number.isFinite(quantity) && Math.abs(quantity) > LEDGER_QUANTITY_EPSILON;
           });
-          positionsByAccountIdForAgg = map;
-        } catch (_) {
-          positionsByAccountIdForAgg = null;
+        });
+        if (contextsWithCurrentSymbolPosition.length) {
+          // If the symbol is currently held somewhere, aggregate only those
+          // current positions. Accounts with stale historical buys but no
+          // current snapshot position (for example after an internal transfer)
+          // must not resurrect that holding in the aggregate chart.
+          targetContexts = contextsWithCurrentSymbolPosition;
         }
       }
 
@@ -25453,7 +25511,7 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
         : summarizeAccountBalances(balancesRaw) || balancesRaw;
       perAccountCombinedBalances = { [accountId]: balanceSummary };
     }
-    if (symbolParam && !providedPositions) {
+    if (symbolParam && (!Array.isArray(providedPositions) || providedPositions.length === 0)) {
       try {
         providedPositions = await fetchPositionsForContext({ login, account: effectiveAccount });
       } catch (_) {

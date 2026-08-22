@@ -15003,6 +15003,7 @@ export default function App() {
       applyAccountCagrStartDate: false,
       symbolGroupKey: desiredGroupKey,
       symbols: focusedSymbolMembers,
+      includeSyntheticPositions: true,
     });
   }, [
     focusedSymbol,
@@ -17924,6 +17925,7 @@ export default function App() {
     });
     let total = null;
     let usedFallback = false;
+    let totalCameFromSeries = false;
     if (
       selectedSymbolTotalPnlSeries &&
       Array.isArray(selectedSymbolTotalPnlSeries.points) &&
@@ -17933,6 +17935,7 @@ export default function App() {
       const seriesTotal = Number(lastPoint?.totalPnlCad);
       if (Number.isFinite(seriesTotal)) {
         total = seriesTotal;
+        totalCameFromSeries = true;
       }
     }
     if (!Number.isFinite(total)) {
@@ -17973,7 +17976,7 @@ export default function App() {
     }
     // Approximate symbol Total P&L as-of now by
     // adjusting the series/fallback baseline with today's intraday P&L.
-    if (Number.isFinite(total) && Number.isFinite(day) && Math.abs(day) > 1e-6) {
+    if (!totalCameFromSeries && Number.isFinite(total) && Number.isFinite(day) && Math.abs(day) > 1e-6) {
       total += day;
     }
     return { dayPnl: day, openPnl: open, totalPnl: Number.isFinite(total) ? total : null };
@@ -18011,12 +18014,10 @@ export default function App() {
     const entry = preferAllTime
       ? focusedSymbolTotalsEntry.allTime || focusedSymbolTotalsEntry.current || null
       : focusedSymbolTotalsEntry.current || focusedSymbolTotalsEntry.allTime || null;
-    if (!entry) {
-      return null;
-    }
+    const resolvedEntry = entry || {};
     const annualized = preferAllTime
-      ? entry.annualizedReturn || focusedSymbolTotalsEntry.allTime?.annualizedReturn || null
-      : entry.annualizedReturn ||
+      ? resolvedEntry.annualizedReturn || focusedSymbolTotalsEntry.allTime?.annualizedReturn || null
+      : resolvedEntry.annualizedReturn ||
         focusedSymbolTotalsEntry.current?.annualizedReturn ||
         focusedSymbolTotalsEntry.allTime?.annualizedReturn ||
         null;
@@ -18040,14 +18041,27 @@ export default function App() {
         : null;
     const annualizedIncomplete = resolvedAnnualized?.incomplete === true;
     const positionsTotalPnl = Number(focusedSymbolPnl?.totalPnl);
-    const entryTotalPnl = Number(entry.totalPnlCad);
+    const entryTotalPnl = Number(resolvedEntry.totalPnlCad);
+    const seriesSummary = selectedSymbolTotalPnlSeries?.summary || null;
+    const seriesTotalPnl = Number(
+      preferAllTime ? seriesSummary?.totalPnlAllTimeCad ?? seriesSummary?.totalPnlCad : seriesSummary?.totalPnlCad
+    );
+    const seriesNetDeposits = Number(
+      preferAllTime
+        ? seriesSummary?.netDepositsAllTimeCad ?? seriesSummary?.netDepositsCad
+        : seriesSummary?.netDepositsCad
+    );
     const totalPnlCad = preferAllTime
-      ? Number.isFinite(entryTotalPnl)
+      ? Number.isFinite(seriesTotalPnl)
+        ? seriesTotalPnl
+        : Number.isFinite(entryTotalPnl)
         ? entryTotalPnl
         : Number.isFinite(positionsTotalPnl)
           ? positionsTotalPnl
           : null
-      : Number.isFinite(positionsTotalPnl)
+      : Number.isFinite(seriesTotalPnl)
+        ? seriesTotalPnl
+        : Number.isFinite(positionsTotalPnl)
         ? positionsTotalPnl
         : Number.isFinite(entryTotalPnl)
           ? entryTotalPnl
@@ -18055,10 +18069,14 @@ export default function App() {
     const equityFromPositions = Number(symbolFilteredPositions.total);
     const totalEquityCad = Number.isFinite(equityFromPositions)
       ? equityFromPositions
-      : Number.isFinite(entry.marketValueCad)
-        ? entry.marketValueCad
+      : Number.isFinite(resolvedEntry.marketValueCad)
+        ? resolvedEntry.marketValueCad
         : null;
-    const netDepositsCad = Number.isFinite(entry.investedCad) ? entry.investedCad : null;
+    const netDepositsCad = Number.isFinite(seriesNetDeposits)
+      ? seriesNetDeposits
+      : Number.isFinite(resolvedEntry.investedCad)
+        ? resolvedEntry.investedCad
+        : null;
     return {
       netDepositsCad,
       totalPnlCad,
@@ -18074,6 +18092,7 @@ export default function App() {
     focusedSymbol,
     focusedSymbolTotalsEntry,
     focusedSymbolPnl?.totalPnl,
+    selectedSymbolTotalPnlSeries,
     symbolFilteredPositions.total,
     asOf,
     isAggregateSelection,
