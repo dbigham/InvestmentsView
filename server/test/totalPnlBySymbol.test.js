@@ -111,6 +111,31 @@ test('transfer uses book value when available', async () => {
   assert.ok(Math.abs(enb.totalPnlCad) < 1e-6, 'ENB transfer uses book value for ~0 P&L');
 });
 
+test('opening-transfer positions contribute even without symbol activity', async () => {
+  const account = { id: 'test:opening-position', number: 'test:opening-position' };
+  const login = { id: 'login' };
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const ctx = makeContext(account.id, start, end, []);
+  const priceSeries = new Map([
+    ['XYZ', new Map([[d(start), 100], [d(end), 110]])],
+  ]);
+
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: false,
+    displayStartKey: d(start),
+    displayEndKey: d(end),
+    providedPositions: [{ symbol: 'XYZ', currency: 'CAD', openQuantity: 10 }],
+    endHoldingsBySymbol: new Map([['XYZ', 10]]),
+    priceSeriesBySymbol: priceSeries,
+  });
+
+  const xyz = result.entries.find((entry) => entry.symbol === 'XYZ');
+  assert.ok(xyz, 'opening-transfer position is present');
+  assert.equal(xyz.totalPnlCad, 100);
+});
+
 test('transfer cash applied once per date', async () => {
   const account = { id: 'test:10', number: 'test:10', cagrStartDate: '2025-01-01' };
   const login = { id: 'login' };

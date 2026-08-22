@@ -433,6 +433,7 @@ const totalPnlSeriesCacheStore = new Map();
 const SUMMARY_CACHE_VERSION = 'funding-v8';
 const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v6-journal-replay';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
+const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
 const rangeBreakdownCache = new Map();
 // Cache for Questrade candle lookups to avoid duplicate provider calls for identical ranges
 const questradeCandleCache = new Map();
@@ -1309,7 +1310,7 @@ function buildRangeBreakdownCacheKey(scopeKey, startDate, endDate) {
   if (!normalizedStart || !normalizedEnd) {
     return null;
   }
-  return [scope, normalizedStart, normalizedEnd].join('|');
+  return [RANGE_BREAKDOWN_CACHE_VERSION, scope, normalizedStart, normalizedEnd].join('|');
 }
 
 function getRangeBreakdownCacheEntry(key) {
@@ -2737,6 +2738,66 @@ function aggregateSymbolBreakdowns(results) {
   return payload;
 }
 
+// A historical account can remain in the local account list after its
+// brokerage connection has been closed. Its cached Total P&L series ends on
+// the last day for which that account was part of the portfolio; valuing its
+// old holdings through the requested range end would invent post-closure P&L.
+function resolveRangeBreakdownWindowForAccount(superset, accountId, startKey, endKey) {
+  const seriesEntry = superset?.accountTotalPnlSeries?.[accountId];
+  const series = seriesEntry && typeof seriesEntry === 'object' ? seriesEntry.all : null;
+  if (!series || typeof series !== 'object') {
+    return { startDate: startKey, endDate: endKey };
+  }
+
+  const pointDates = Array.isArray(series.points)
+    ? series.points
+        .map((point) => normalizeDateOnly(point?.date))
+        .filter(Boolean)
+    : [];
+  const seriesStart = normalizeDateOnly(series.periodStartDate) || pointDates[0] || null;
+  const seriesEnd =
+    normalizeDateOnly(series.periodEndDate) || pointDates[pointDates.length - 1] || null;
+
+  const clippedStart = seriesStart && seriesStart > startKey ? seriesStart : startKey;
+  const clippedEnd = seriesEnd && seriesEnd < endKey ? seriesEnd : endKey;
+  if (clippedStart > clippedEnd) {
+    return null;
+  }
+  return { startDate: clippedStart, endDate: clippedEnd };
+}
+
+function getPositionsForAccountFromSuperset(superset, accountId) {
+  const positions = Array.isArray(superset?.flattenedPositions)
+    ? superset.flattenedPositions
+    : Array.isArray(superset?.positions)
+      ? superset.positions
+      : Array.isArray(superset?.payload?.positions)
+        ? superset.payload.positions
+        : [];
+  if (!positions.length) {
+    return [];
+  }
+  return positions.filter(
+    (position) => position && String(position.accountId || '').trim() === String(accountId).trim()
+  );
+}
+
+function buildEndHoldingsBySymbol(positions) {
+  const holdings = new Map();
+  if (!Array.isArray(positions)) {
+    return holdings;
+  }
+  positions.forEach((position) => {
+    const symbol = normalizeSymbol(position?.symbol);
+    const quantity = Number(position?.openQuantity);
+    if (!symbol || !Number.isFinite(quantity)) {
+      return;
+    }
+    holdings.set(symbol, (holdings.get(symbol) || 0) + quantity);
+  });
+  return holdings;
+}
+
 function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) {
   if (!superset || !normalizedSelection) {
     if (debugDetails) {
@@ -3419,6 +3480,7 @@ function getDispatcherForUrl(targetUrl, { reuse = false } = {}) {
 }
 
 const YAHOO_CHART_BASE_URL = 'https://query1.finance.yahoo.com';
+const YAHOO_CHART_FALLBACK_BASE_URL = 'https://query2.finance.yahoo.com';
 const YAHOO_QUOTE_BASE_URL = 'https://query1.finance.yahoo.com/v7/finance/quote';
 const YAHOO_QUOTE_SUMMARY_BASE_URL = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
 
@@ -3447,6 +3509,12 @@ function resolveYahooSymbol(symbol) {
   }
   if (/\.U\./i.test(normalized)) {
     normalized = normalized.replace(/\.U\./gi, '-U.');
+  }
+  // A trailing .V is Yahoo's TSX Venture exchange suffix (for example
+  // TOI.V), not a dot-form share-class suffix. Preserve it when a symbol
+  // has already been resolved from a provider alias.
+  if (/\.V$/i.test(normalized)) {
+    return normalized;
   }
   // Yahoo denotes share classes with a hyphen, while Questrade uses a dot
   // (for example QBR.B.TO -> QBR-B.TO and BRK.B -> BRK-B).
@@ -3522,18 +3590,30 @@ async function fetchYahooHistoricalDirect(symbol, queryOptions = {}) {
     period2: String(Math.floor(period2.getTime() / 1000)),
     interval: String(queryOptions.interval || '1d'),
   });
-  const url = `${YAHOO_CHART_BASE_URL}/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?${query.toString()}`;
-  const { dispatcher } = getDispatcherForUrl(YAHOO_CHART_BASE_URL, { reuse: true });
-  const response = await undiciRequest(url, {
-    method: 'GET',
-    dispatcher,
-    headers: buildYahooFinanceFetchOptions({ dispatcher }).headers,
-  });
-  const body = await response.body.text();
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`Yahoo chart request failed with status ${response.statusCode}`);
+  const baseUrls = Array.from(new Set([
+    YAHOO_CHART_BASE_URL,
+    YAHOO_CHART_FALLBACK_BASE_URL,
+  ]));
+  let lastError = null;
+  for (const baseUrl of baseUrls) {
+    const url = `${baseUrl}/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?${query.toString()}`;
+    const { dispatcher } = getDispatcherForUrl(baseUrl, { reuse: true });
+    try {
+      const response = await undiciRequest(url, {
+        method: 'GET',
+        dispatcher,
+        headers: buildYahooFinanceFetchOptions({ dispatcher }).headers,
+      });
+      const body = await response.body.text();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw new Error(`Yahoo chart request failed with status ${response.statusCode}`);
+      }
+      return normalizeYahooChartResponse(JSON.parse(body));
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return normalizeYahooChartResponse(JSON.parse(body));
+  throw lastError || new Error('Yahoo chart request failed');
 }
 
 async function fetchYahooQuote(symbol) {
@@ -18765,6 +18845,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   const processedActivities = [];
   const symbolIds = new Set();
   const symbolMeta = new Map();
+  const providedPositions = Array.isArray(options.providedPositions) ? options.providedPositions : [];
 
   const rawActivities = Array.isArray(activityContext.activities) ? activityContext.activities : [];
   rawActivities.forEach((activity) => {
@@ -18810,6 +18891,44 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
           meta.activityCurrency = activityCurrency;
         }
       }
+    }
+  });
+
+  // Opening transfers may have no symbol-level activity even though the
+  // current positions snapshot identifies the securities now held. Seed
+  // those symbols so a selected range can attribute their price movement.
+  providedPositions.forEach((position) => {
+    const symbol = normalizeSymbol(position?.symbol);
+    if (!symbol) {
+      return;
+    }
+    const symbolId = Number(position?.symbolId);
+    const positionCurrency = normalizeCurrency(position?.currency) || null;
+    if (!symbolMeta.has(symbol)) {
+      symbolMeta.set(symbol, {
+        symbolId: Number.isFinite(symbolId) && symbolId > 0 ? symbolId : null,
+        symbolIdTimestamp: null,
+        currency: positionCurrency || inferSymbolCurrency(symbol) || null,
+        activityCurrency: positionCurrency,
+      });
+      if (Number.isFinite(symbolId) && symbolId > 0) {
+        symbolIds.add(symbolId);
+      }
+      return;
+    }
+    const meta = symbolMeta.get(symbol);
+    if (!meta) {
+      return;
+    }
+    if (!meta.symbolId && Number.isFinite(symbolId) && symbolId > 0) {
+      meta.symbolId = symbolId;
+      symbolIds.add(symbolId);
+    }
+    if (!meta.currency) {
+      meta.currency = positionCurrency || inferSymbolCurrency(symbol) || null;
+    }
+    if (!meta.activityCurrency && positionCurrency) {
+      meta.activityCurrency = positionCurrency;
     }
   });
 
@@ -25508,6 +25627,18 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
         return;
       }
       const accountId = context.account.id;
+      const accountWindow = resolveRangeBreakdownWindowForAccount(
+        superset,
+        accountId,
+        startKey,
+        endKey
+      );
+      if (!accountWindow) {
+        return;
+      }
+      const providedPositions = isArchivedAccount(context.account)
+        ? []
+        : getPositionsForAccountFromSuperset(superset, accountId);
       let activityContext = activityContextStore[accountId];
       if (!activityContext) {
         try {
@@ -25529,9 +25660,11 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       try {
         const breakdown = await computeTotalPnlBySymbol(context.login, context.account, {
           applyAccountCagrStartDate: false,
-          displayStartKey: startKey,
-          displayEndKey: endKey,
+          displayStartKey: accountWindow.startDate,
+          displayEndKey: accountWindow.endDate,
           activityContext,
+          providedPositions,
+          endHoldingsBySymbol: buildEndHoldingsBySymbol(providedPositions),
         });
         if (breakdown) {
           perAccountResults.push({ accountId, breakdown });
@@ -25817,6 +25950,8 @@ module.exports = {
     inferSymbolCurrency,
     normalizeYahooChartResponse,
     resolveYahooSymbol,
+    fetchYahooHistoricalDirect,
+    fetchSymbolPriceHistory,
     resolveRetryAfterMs,
     resolveSnapTradeResponseCacheTtl,
     isSnapTradeCashRefundActivity,
@@ -25829,6 +25964,8 @@ module.exports = {
     applyTotalPnlSeriesSummaryToFundingSummary,
     rebuildAggregateAnnualizedReturnFromSeries,
     computeMigrationReconciledNetInvestedCapital,
+    resolveRangeBreakdownWindowForAccount,
+    getPositionsForAccountFromSuperset,
     buildProviderObservedReturnFromSeries,
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,

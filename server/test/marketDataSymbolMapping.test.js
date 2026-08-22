@@ -5,6 +5,7 @@ const { __test__ } = require('../src/index.js');
 
 test('maps SnapTrade Topicus symbols to Yahoo and CAD', () => {
   assert.equal(__test__.resolveYahooSymbol('TOI.VN'), 'TOI.V');
+  assert.equal(__test__.resolveYahooSymbol('TOI.V'), 'TOI.V');
   assert.equal(__test__.inferSymbolCurrency('TOI.VN'), 'CAD');
 });
 
