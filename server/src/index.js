@@ -3217,6 +3217,9 @@ const YAHOO_QUOTE_SUMMARY_BASE_URL = 'https://query1.finance.yahoo.com/v10/finan
 const YAHOO_SYMBOL_ALIASES = new Map([
   // CBIT is a Cboe Canada (NEO) listing that Yahoo exposes as CBIT.V
   ['cbit.vn', 'CBIT.V'],
+  // Topicus is returned by SnapTrade as TOI.VN, while Yahoo exposes the
+  // TSX Venture listing as TOI.V.
+  ['toi.vn', 'TOI.V'],
 ]);
 
 function resolveYahooSymbol(symbol) {
@@ -3231,7 +3234,7 @@ function resolveYahooSymbol(symbol) {
   // Apply explicit alias overrides first
   const alias = YAHOO_SYMBOL_ALIASES.get(normalized.toLowerCase());
   if (alias) {
-    normalized = alias;
+    return alias;
   }
   if (/\.U\./i.test(normalized)) {
     normalized = normalized.replace(/\.U\./gi, '-U.');
@@ -3264,6 +3267,64 @@ async function fetchYahooHistorical(symbol, queryOptions) {
   return finance.historical(yahooSymbol, queryOptions, {
     fetchOptions: buildYahooFinanceFetchOptions({ dispatcher }),
   });
+}
+
+function normalizeYahooChartResponse(payload) {
+  const result = payload && payload.chart && Array.isArray(payload.chart.result)
+    ? payload.chart.result[0]
+    : null;
+  const timestamps = result && Array.isArray(result.timestamp) ? result.timestamp : [];
+  const quote = result && result.indicators && Array.isArray(result.indicators.quote)
+    ? result.indicators.quote[0]
+    : null;
+  const adjusted = result && result.indicators && Array.isArray(result.indicators.adjclose)
+    ? result.indicators.adjclose[0]
+    : null;
+  const closes = quote && Array.isArray(quote.close) ? quote.close : [];
+  const adjustedCloses = adjusted && Array.isArray(adjusted.adjclose) ? adjusted.adjclose : [];
+
+  return timestamps
+    .map((timestamp, index) => {
+      const timestampNumber = Number(timestamp);
+      const date = Number.isFinite(timestampNumber) ? new Date(timestampNumber * 1000) : null;
+      const price = Number.isFinite(Number(adjustedCloses[index]))
+        ? Number(adjustedCloses[index])
+        : Number(closes[index]);
+      if (!(date instanceof Date) || Number.isNaN(date.getTime()) || !Number.isFinite(price) || price <= 0) {
+        return null;
+      }
+      return { date, adjClose: price };
+    })
+    .filter(Boolean);
+}
+
+async function fetchYahooHistoricalDirect(symbol, queryOptions = {}) {
+  const yahooSymbol = resolveYahooSymbol(symbol);
+  if (!yahooSymbol) {
+    return [];
+  }
+  const period1 = queryOptions.period1 instanceof Date ? queryOptions.period1 : new Date(queryOptions.period1);
+  const period2 = queryOptions.period2 instanceof Date ? queryOptions.period2 : new Date(queryOptions.period2);
+  if (Number.isNaN(period1.getTime()) || Number.isNaN(period2.getTime())) {
+    return [];
+  }
+  const query = new URLSearchParams({
+    period1: String(Math.floor(period1.getTime() / 1000)),
+    period2: String(Math.floor(period2.getTime() / 1000)),
+    interval: String(queryOptions.interval || '1d'),
+  });
+  const url = `${YAHOO_CHART_BASE_URL}/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?${query.toString()}`;
+  const { dispatcher } = getDispatcherForUrl(YAHOO_CHART_BASE_URL, { reuse: true });
+  const response = await undiciRequest(url, {
+    method: 'GET',
+    dispatcher,
+    headers: buildYahooFinanceFetchOptions({ dispatcher }).headers,
+  });
+  const body = await response.body.text();
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`Yahoo chart request failed with status ${response.statusCode}`);
+  }
+  return normalizeYahooChartResponse(JSON.parse(body));
 }
 
 async function fetchYahooQuote(symbol) {
@@ -12395,6 +12456,7 @@ const CAD_SYMBOL_SUFFIXES = new Set([
   'TO',
   'TSX',
   'V',
+  'VN',
   'CN',
   'NE',
   'ME',
@@ -15372,6 +15434,18 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     } catch (error) {
       history = null;
     }
+    const hasExplicitYahooAlias = YAHOO_SYMBOL_ALIASES.has(String(symbol).trim().toLowerCase());
+    if (hasExplicitYahooAlias && (!Array.isArray(history) || history.length === 0)) {
+      try {
+        history = await fetchYahooHistoricalDirect(candidate, {
+          period1: startDate,
+          period2: exclusiveEnd,
+          interval: '1d',
+        });
+      } catch (error) {
+        history = null;
+      }
+    }
     normalized = normalizeYahooHistoricalEntries(history);
     if (normalized.length) {
       cachedCandidate = candidate;
@@ -15703,6 +15777,75 @@ function buildDailyPriceSeries(normalizedHistory, dateKeys) {
     }
   }
   return series;
+}
+
+function buildActivityPriceHistoryFallback(
+  processedActivities,
+  symbol,
+  startDateKey,
+  endDateKey
+) {
+  const pointsByDate = new Map();
+  const normalizedSymbol = normalizeSymbol(symbol);
+  if (!normalizedSymbol || !Array.isArray(processedActivities)) {
+    return [];
+  }
+
+  processedActivities.forEach((entry) => {
+    if (!entry || normalizeSymbol(entry.symbol) !== normalizedSymbol || !isOrderLikeActivity(entry.activity)) {
+      return;
+    }
+    const activity = entry.activity;
+    const quantity = Math.abs(Number(activity.quantity));
+    if (!Number.isFinite(quantity) || quantity < LEDGER_QUANTITY_EPSILON) {
+      return;
+    }
+    let price = Number(activity.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      const amount = Math.abs(Number(activity.netAmount ?? activity.grossAmount));
+      price = amount / quantity;
+    }
+    const dateKey = entry.dateKey || formatDateOnly(entry.timestamp);
+    if (!dateKey || !Number.isFinite(price) || price <= 0) {
+      return;
+    }
+    pointsByDate.set(dateKey, {
+      date: parseDateOnlyString(dateKey),
+      price,
+    });
+  });
+
+  // Do not append a current quote here. A live mark is not a historical close;
+  // appending it would manufacture an end-of-period jump whenever the real
+  // market history is unavailable. Carry the last observed transaction price
+  // forward instead, and keep the fallback explicitly visible in diagnostics.
+  const observedPoints = Array.from(pointsByDate.entries())
+    .map(([dateKey, point]) => ({ dateKey, ...point }))
+    .filter((point) => point.date instanceof Date && !Number.isNaN(point.date.getTime()))
+    .sort((a, b) => a.date - b.date);
+  const fallbackStart = observedPoints.length ? observedPoints[0].date : null;
+  const fallbackEnd = parseDateOnlyString(endDateKey);
+  if (fallbackStart && fallbackEnd && fallbackStart <= fallbackEnd) {
+    let observedIndex = 0;
+    let lastObservedPrice = null;
+    for (const dateKey of enumerateDateKeys(fallbackStart, fallbackEnd)) {
+      const date = parseDateOnlyString(dateKey);
+      while (
+        observedIndex < observedPoints.length &&
+        observedPoints[observedIndex].date <= date
+      ) {
+        lastObservedPrice = observedPoints[observedIndex].price;
+        observedIndex += 1;
+      }
+      if (Number.isFinite(lastObservedPrice) && lastObservedPrice > 0) {
+        pointsByDate.set(dateKey, { date, price: lastObservedPrice });
+      }
+    }
+  }
+
+  return Array.from(pointsByDate.values())
+    .filter((point) => point.date instanceof Date && !Number.isNaN(point.date.getTime()))
+    .sort((a, b) => a.date - b.date);
 }
 
 function adjustNumericMap(map, key, delta, epsilon = 1e-8) {
@@ -16457,6 +16600,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const symbols = Array.from(symbolMeta.keys());
   const priceSeriesMap = new Map();
   const missingPriceSymbols = new Set();
+  const fallbackPriceSymbols = new Set();
   const debugPriceSeries = [];
   const priceSeriesStartKey = dateKeys[0];
   const priceSeriesEndKey = dateKeys[dateKeys.length - 1];
@@ -16514,6 +16658,18 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
             }
           } catch (_) {
             // ignore fallback failure
+          }
+        }
+        if (!Array.isArray(history) || history.length === 0) {
+          const fallbackHistory = buildActivityPriceHistoryFallback(
+            processedActivities,
+            symbol,
+            priceSeriesStartKey,
+            priceSeriesEndKey
+          );
+          if (fallbackHistory.length) {
+            history = fallbackHistory;
+            fallbackPriceSymbols.add(symbol);
           }
         }
         if (Array.isArray(history) && history.length > 0 && cacheKey) {
@@ -17215,16 +17371,23 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       const snapTradeDivergenceIsMaterial =
         Number.isFinite(snapTradeEquityDivergence) &&
         snapTradeEquityDivergence > Math.max(25, Math.abs(summaryEquity) * 0.02);
+      const canReconcileCurrentSnapshot =
+        missingPriceSymbols.size === 0 &&
+        fallbackPriceSymbols.size === 0 &&
+        !conversionIncomplete;
       if (snapTradeDivergenceIsMaterial) {
         issues.add('current-snapshot-diverges-from-reconstruction');
-      } else if (Number.isFinite(summaryEquity)) {
+      } else if (
+        Number.isFinite(summaryEquity) &&
+        canReconcileCurrentSnapshot
+      ) {
         last.equityCad = summaryEquity;
         if (Number.isFinite(last.cumulativeNetDepositsCad)) {
           last.totalPnlCad = summaryEquity - last.cumulativeNetDepositsCad;
         } else if (effectiveSummaryPnl !== null) {
           last.totalPnlCad = effectiveSummaryPnl;
         }
-      } else if (effectiveSummaryPnl !== null) {
+      } else if (effectiveSummaryPnl !== null && canReconcileCurrentSnapshot) {
         last.totalPnlCad = effectiveSummaryPnl;
         if (Number.isFinite(last.cumulativeNetDepositsCad)) {
           last.equityCad = effectiveSummaryPnl + last.cumulativeNetDepositsCad;
@@ -17238,6 +17401,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
   if (missingPriceSymbols.size) {
     issues.add('missing-price-data');
+  }
+  if (fallbackPriceSymbols.size) {
+    issues.add('activity-price-fallback');
   }
   if (openingFundingCoverageIncomplete) {
     issues.add('opening-funding-reconciliation-incomplete');
@@ -25202,6 +25368,10 @@ module.exports = {
   getLoginById,
   applyAccountSettingsOverrides,
   __test__: {
+    buildActivityPriceHistoryFallback,
+    inferSymbolCurrency,
+    normalizeYahooChartResponse,
+    resolveYahooSymbol,
     resolveRetryAfterMs,
     resolveSnapTradeResponseCacheTtl,
     isSnapTradeCashRefundActivity,
