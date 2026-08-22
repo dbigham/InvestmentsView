@@ -87,7 +87,10 @@ import {
   listAccountsForPosition,
 } from './utils/positions';
 import { buildQuoteUrl, openQuote } from './utils/quotes';
-import { applySeriesAnnualizedToFundingSummary } from './utils/annualizedReturn';
+import {
+  applySeriesAnnualizedToFundingSummary,
+  computeAnnualizedReturnFromSeriesPoints,
+} from './utils/annualizedReturn';
 import {
   computeCombinedCashAcrossCurrencies,
   computeReserveValueAcrossCurrencies,
@@ -18026,8 +18029,21 @@ export default function App() {
       symbolGroupAnnualizedState.key === symbolGroupAnnualizedKey
         ? symbolGroupAnnualizedState.data?.annualizedReturn || null
         : null;
+    const seriesAnnualized =
+      selectedSymbolTotalPnlSeries && Array.isArray(selectedSymbolTotalPnlSeries.points)
+        ? computeAnnualizedReturnFromSeriesPoints(selectedSymbolTotalPnlSeries.points)
+        : null;
+    const seriesAnnualizedPayload = seriesAnnualized
+      ? {
+          rate: seriesAnnualized.rate,
+          startDate: seriesAnnualized.startDate,
+          asOf: seriesAnnualized.endDate,
+          incomplete: seriesAnnualized.incomplete,
+        }
+      : null;
     const resolvedAnnualized =
-      focusedSymbolMembers.length > 1 && groupAnnualized ? groupAnnualized : annualized;
+      seriesAnnualizedPayload ||
+      (focusedSymbolMembers.length > 1 && groupAnnualized ? groupAnnualized : annualized);
     const annualizedRate = Number.isFinite(Number(resolvedAnnualized?.rate))
       ? Number(resolvedAnnualized.rate)
       : null;
@@ -18099,6 +18115,7 @@ export default function App() {
     focusedSymbolMembers,
     symbolGroupAnnualizedKey,
     symbolGroupAnnualizedState,
+    selectedSymbolTotalPnlSeries,
   ]);
 
   // If focusing a symbol, synthesize a lightweight per-symbol series for the dialog

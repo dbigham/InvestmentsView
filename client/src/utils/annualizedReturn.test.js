@@ -18,6 +18,20 @@ test('computeAnnualizedReturnFromSeriesPoints derives annualized return from equ
   assert.ok(Math.abs(result.rate - 0.21) < 0.0005);
 });
 
+test('computeAnnualizedReturnFromSeriesPoints ignores leading zero-equity rows', () => {
+  const result = computeAnnualizedReturnFromSeriesPoints([
+    { date: '2026-05-31', equityCad: 0, cumulativeNetDepositsCad: 100 },
+    { date: '2026-06-12', equityCad: 100, cumulativeNetDepositsCad: 100 },
+    { date: '2026-08-22', equityCad: 110, cumulativeNetDepositsCad: 100 },
+  ]);
+
+  assert.equal(result.startDate, '2026-06-12');
+  assert.equal(result.endDate, '2026-08-22');
+  assert.equal(result.incomplete, false);
+  assert.ok(Number.isFinite(result.rate));
+  assert.ok(result.rate > 0);
+});
+
 test('applySeriesAnnualizedToFundingSummary replaces stale annualized values with filtered-series values', () => {
   const original = {
     totalPnlCad: 40,

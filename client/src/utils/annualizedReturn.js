@@ -315,8 +315,30 @@ export function computeAnnualizedReturnFromSeriesPoints(seriesPoints) {
   }
 
   const resolveNumber = (value) => (Number.isFinite(value) ? value : null);
-  const startKey = entries[0].key;
-  const endKey = entries[entries.length - 1].key;
+  const firstPricedIndex = entries.findIndex(({ entry }) => {
+    const equity =
+      resolveNumber(entry?.equityCad) ??
+      resolveNumber(entry?.equity);
+    return Number.isFinite(equity) && Math.abs(equity) > CASH_FLOW_EPSILON;
+  });
+
+  // A symbol series can begin before a usable price is available. Those
+  // leading rows may already carry opening deposits while equity is still
+  // zero; treating that interval as invested time produces an invalid XIRR
+  // (and can turn a modest return into an enormous annualized percentage).
+  const effectiveEntries =
+    firstPricedIndex > 0 ? entries.slice(firstPricedIndex) : entries;
+  if (effectiveEntries.length < 2 || firstPricedIndex === -1) {
+    return {
+      rate: null,
+      startDate: effectiveEntries[0]?.key || null,
+      endDate: effectiveEntries[effectiveEntries.length - 1]?.key || null,
+      incomplete: true,
+    };
+  }
+
+  const startKey = effectiveEntries[0].key;
+  const endKey = effectiveEntries[effectiveEntries.length - 1].key;
   const startDate = parseDateString(startKey);
   const endDate = parseDateString(endKey);
 
@@ -329,8 +351,8 @@ export function computeAnnualizedReturnFromSeriesPoints(seriesPoints) {
     };
   }
 
-  const startEntry = entries[0].entry || null;
-  const endEntry = entries[entries.length - 1].entry || null;
+  const startEntry = effectiveEntries[0].entry || null;
+  const endEntry = effectiveEntries[effectiveEntries.length - 1].entry || null;
 
   const startEquity =
     resolveNumber(startEntry?.equityCad) ??
@@ -344,9 +366,9 @@ export function computeAnnualizedReturnFromSeriesPoints(seriesPoints) {
     cashFlows.push({ amount: -startEquity, date: startDate });
   }
 
-  for (let i = 1; i < entries.length; i += 1) {
-    const current = entries[i]?.entry;
-    const previous = entries[i - 1]?.entry;
+  for (let i = 1; i < effectiveEntries.length; i += 1) {
+    const current = effectiveEntries[i]?.entry;
+    const previous = effectiveEntries[i - 1]?.entry;
     if (!current || !previous) {
       continue;
     }
@@ -361,7 +383,7 @@ export function computeAnnualizedReturnFromSeriesPoints(seriesPoints) {
     }
     const delta = currentDeposits - previousDeposits;
     if (Math.abs(delta) > CASH_FLOW_EPSILON) {
-      const flowDate = parseDateString(entries[i].key);
+      const flowDate = parseDateString(effectiveEntries[i].key);
       if (flowDate) {
         cashFlows.push({ amount: -delta, date: flowDate });
       }
