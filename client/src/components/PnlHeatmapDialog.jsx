@@ -250,6 +250,8 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
 
   const prepared = sourcePositions
     .map((position) => {
+      const isResidual =
+        position.isResidual === true || String(position.symbol || '').toUpperCase() === 'OTHER / UNALLOCATED';
       const marketValue = isFiniteNumber(position.normalizedMarketValue)
         ? position.normalizedMarketValue
         : 0;
@@ -269,7 +271,8 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
           position.symbolId ||
           String(position.id || position.symbol || Math.random()),
         symbol: position.symbol || position.symbolId || '—',
-        displaySymbol: resolveHoldingsDisplaySymbol(position.symbol || position.symbolId || '—'),
+        displaySymbol:
+          position.displaySymbol || resolveHoldingsDisplaySymbol(position.symbol || position.symbolId || '—'),
         description: position.description || null,
         weight: metricKey === 'totalPnl' && styleMode === 'style1' ? Math.abs(metricValue) : marketValue,
         marketValue,
@@ -282,7 +285,7 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
         metricValue,
         percentChange,
         rawSymbols: Array.isArray(position.rawSymbols) ? position.rawSymbols : undefined,
-        positionDetail: position,
+        positionDetail: { ...position, isResidual },
       };
     })
     .filter(Boolean);
@@ -908,8 +911,10 @@ export default function PnlHeatmapDialog({
         }
         return {
           symbol: entry.symbol,
+          displaySymbol: entry.displaySymbol || null,
           symbolId: entry.symbolId ?? base.symbolId ?? null,
-          description: base.description || null,
+          description: entry.description || base.description || null,
+          isResidual: entry.isResidual === true,
           currentPrice: base.currentPrice ?? null,
           currency: base.currency || 'CAD',
           normalizedMarketValue: Number.isFinite(base.normalizedMarketValue)
@@ -964,6 +969,9 @@ export default function PnlHeatmapDialog({
   const handleTileClick = useCallback(
     (event, symbol) => {
       closeContextMenu();
+      if (event.currentTarget?.dataset?.residual === 'true') {
+        return;
+      }
       if (!symbol) {
         return;
       }
@@ -979,7 +987,7 @@ export default function PnlHeatmapDialog({
   );
 
   const handleTileContextMenu = useCallback((event, node) => {
-    if (!node) {
+    if (!node || node.positionDetail?.isResidual) {
       return;
     }
     event.preventDefault();
@@ -1409,7 +1417,7 @@ export default function PnlHeatmapDialog({
             <h2 id="pnl-heatmap-title">{metricLabel} breakdown</h2>
             <p className="pnl-heatmap-dialog__subtitle">
               {metricKey === 'totalPnl'
-                ? `${pnlLabel} total across traded symbols`
+                ? `${pnlLabel} total including traded symbols and cash / unallocated`
                 : `${pnlLabel} in ${marketValueLabel} total market value`}
             </p>
             {rangeSummary ? (
@@ -1740,6 +1748,7 @@ export default function PnlHeatmapDialog({
                     type="button"
                     key={node.id}
                     className="pnl-heatmap-board__tile"
+                    data-residual={node.positionDetail?.isResidual ? 'true' : undefined}
                     style={{
                       left: touchesLeftEdge
                         ? toPercent(node.x)
