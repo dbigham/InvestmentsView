@@ -798,6 +798,9 @@ function shouldHideAccountSummaryEntry(account) {
   if (!account || typeof account !== 'object') {
     return false;
   }
+  if (account.closed === true) {
+    return true;
+  }
   const fieldsToCheck = [
     account.displayName,
     account.ownerLabel,
@@ -1546,6 +1549,9 @@ function buildAccountHierarchySummary({
       visited.add(current);
       const members = accountsByGroupKey.get(current) || [];
       members.forEach((account) => {
+        if (shouldHideAccountSummaryEntry(account)) {
+          return;
+        }
         const accountId = resolveAccountKey(account);
         if (accountId) {
           accountIds.add(accountId);
@@ -12145,6 +12151,9 @@ export default function App() {
         if (members && members.length) {
           members.forEach((account) => {
             if (!account || account.id === undefined || account.id === null) {
+              return;
+            }
+            if (shouldHideAccountSummaryEntry(account)) {
               return;
             }
             const accountId = String(account.id).trim();

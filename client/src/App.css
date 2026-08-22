@@ -1176,6 +1176,54 @@ textarea {
   font-size: 13px;
   color: var(--color-text-muted);
 }
+
+.account-selector__section-label {
+  padding: 12px 18px 6px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.account-selector__context-menu {
+  position: fixed;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.2);
+  z-index: 100;
+}
+
+.account-selector__context-menu-item {
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 9px 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.account-selector__context-menu-item:hover,
+.account-selector__context-menu-item:focus-visible {
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.account-selector__status {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .equity-card {
   background: var(--color-surface);
   border-radius: var(--radius-card);

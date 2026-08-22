@@ -234,11 +234,11 @@
       "id": "179a3980-63d4-49db-b0a5-3beca4594930",
       "date": "2026-01-01",
       "organization": "John and Elaine Winter",
-      "amountCad": 1200,
+      "amountCad": 1400,
       "taxClaimable": true,
       "note": "",
       "createdAt": "2026-06-15T12:19:28.047Z",
-      "updatedAt": "2026-06-15T17:20:49.553Z"
+      "updatedAt": "2026-08-22T12:53:58.768Z"
     },
     {
       "id": "2b3f1d12-c6b7-4212-80ce-916f5fdb6c6c",
@@ -254,11 +254,11 @@
       "id": "5bfe848f-20fc-4e4e-bb61-57126ddbf1eb",
       "date": "2026-01-01",
       "organization": "Phil and Merilee Henderson",
-      "amountCad": 1200,
+      "amountCad": 1450,
       "taxClaimable": true,
       "note": "",
       "createdAt": "2026-06-15T13:21:54.049Z",
-      "updatedAt": "2026-06-15T13:21:54.049Z"
+      "updatedAt": "2026-08-22T12:54:12.865Z"
     },
     {
       "id": "a8e392d1-771a-4070-8ebd-b2f977bd6a5d",
@@ -291,5 +291,5 @@
       "updatedAt": "2026-06-15T12:17:29.027Z"
     }
   ],
-  "updatedAt": "2026-07-09T12:10:16.176Z"
+  "updatedAt": "2026-08-22T12:54:12.866Z"
 }

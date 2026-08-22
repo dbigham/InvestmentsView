@@ -6,8 +6,7 @@ export function mergeAuthoritativeUsdToCadRate(rates, usdToCadRate, baseCurrency
   if (
     normalizedBase === 'CAD' &&
     Number.isFinite(normalizedRate) &&
-    normalizedRate > 0 &&
-    !nextRates.has('USD')
+    normalizedRate > 0
   ) {
     nextRates.set('USD', normalizedRate);
   }

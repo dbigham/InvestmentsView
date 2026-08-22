@@ -1815,11 +1815,23 @@ export default function SummaryMetrics({
     ? `(${formatNumber(deploymentSummary.reservePercent, percentDisplayOptions)}%)`
     : null;
 
-  const baseTotalPnlValue = Number.isFinite(fundingSummary?.totalPnlCad)
-    ? fundingSummary.totalPnlCad
-    : Number.isFinite(pnl?.totalPnl)
-      ? pnl.totalPnl
-      : null;
+  const isAggregateTotalPnlSeries =
+    !symbolMode &&
+    typeof totalPnlSeries?.accountId === 'string' &&
+    (totalPnlSeries.accountId === 'all' || totalPnlSeries.accountId.startsWith('group:'));
+  const seriesTotalPnlValue = Number.isFinite(totalPnlSeries?.summary?.totalPnlCad)
+    ? totalPnlSeries.summary.totalPnlCad
+    : null;
+  // Aggregate series points contain the reconstructed period-by-period P&L.
+  // Use that same summary value for the chart endpoint instead of replacing
+  // the final point with the separate all-time funding total.
+  const baseTotalPnlValue = isAggregateTotalPnlSeries && seriesTotalPnlValue !== null
+    ? seriesTotalPnlValue
+    : Number.isFinite(fundingSummary?.totalPnlCad)
+      ? fundingSummary.totalPnlCad
+      : Number.isFinite(pnl?.totalPnl)
+        ? pnl.totalPnl
+        : null;
   const todayTone = classifyPnL(pnl?.dayPnl);
   const openTone = classifyPnL(pnl?.openPnl);
   const formattedToday = formatSignedMoney(pnl?.dayPnl ?? null);

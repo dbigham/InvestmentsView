@@ -492,6 +492,32 @@ function applyHistoryStartDateSetting(target, key, value) {
   container.historyStartDate = normalized;
 }
 
+function applyClosedSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = coerceBoolean(value);
+  if (normalized === true) {
+    container.closed = true;
+  } else if (normalized === false) {
+    delete container.closed;
+  }
+}
+
+function applyClosedDateSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = normalizeDateOnly(value);
+  if (!normalized) {
+    delete container.closedDate;
+    return;
+  }
+  container.closedDate = normalized;
+}
+
 function applyHistoryPnlRebaseDatesSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -1442,7 +1468,9 @@ function normalizeDateOnly(value) {
     if (!trimmed) {
       return null;
     }
-    const parsed = new Date(`${trimmed}T00:00:00Z`);
+    const isoDateMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})(?:$|T|\s)/);
+    const dateOnly = isoDateMatch ? isoDateMatch[1] : trimmed;
+    const parsed = new Date(`${dateOnly}T00:00:00Z`);
     if (Number.isNaN(parsed.getTime())) {
       return null;
     }
@@ -1523,6 +1551,8 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'chatUrl',
   'showQQQDetails',
   'historyPnlRebaseDates',
+  'closed',
+  'closedDate',
   'hidden',
   'ignored',
   'investmentAccount',
@@ -1769,6 +1799,12 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'historyStartDate')) {
       applyHistoryStartDateSetting(settingsTarget, resolvedKey, entry.historyStartDate);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'closed')) {
+      applyClosedSetting(settingsTarget, resolvedKey, entry.closed);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'closedDate')) {
+      applyClosedDateSetting(settingsTarget, resolvedKey, entry.closedDate);
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'historyPnlRebaseDates')) {
       applyHistoryPnlRebaseDatesSetting(
@@ -2840,6 +2876,32 @@ function applyMetadataToEntry(entry, updates) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(updates, 'closed')) {
+    const normalized = coerceBoolean(updates.closed);
+    if (normalized === true) {
+      if (entry.closed !== true) {
+        entry.closed = true;
+        changed = true;
+      }
+    } else if (normalized === false && Object.prototype.hasOwnProperty.call(entry, 'closed')) {
+      delete entry.closed;
+      changed = true;
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'closedDate')) {
+    const normalized = normalizeDateOnly(updates.closedDate);
+    if (normalized) {
+      if (entry.closedDate !== normalized) {
+        entry.closedDate = normalized;
+        changed = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(entry, 'closedDate')) {
+      delete entry.closedDate;
+      changed = true;
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(updates, 'rebalancePeriod')) {
     const normalized = normalizePositiveInteger(updates.rebalancePeriod);
     if (normalized !== null) {
@@ -3233,6 +3295,8 @@ function updateAccountMetadata(accountKey, updates) {
       chatURL: normalizeChatUrl(updates?.chatURL) || null,
       cagrStartDate: normalizeDateOnly(updates?.cagrStartDate) || null,
       historyStartDate: normalizeDateOnly(updates?.historyStartDate) || null,
+      closed: coerceBoolean(updates?.closed) === true,
+      closedDate: normalizeDateOnly(updates?.closedDate) || null,
       rebalancePeriod: normalizePositiveInteger(updates?.rebalancePeriod),
       ignoreSittingCash: (function () {
         const numeric = normalizeNumberLike(updates?.ignoreSittingCash);

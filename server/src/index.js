@@ -2607,25 +2607,51 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     debugDetails.totalAccountIds = accountIds.length;
   }
 
-  const accountIdSet = new Set(accountIds);
+  const isAggregateSelection =
+    normalizedSelection.type === 'all' || normalizedSelection.type === 'group';
+  const accountById = new Map();
+  (Array.isArray(superset.accounts) ? superset.accounts : []).forEach((account) => {
+    if (account && account.id) {
+      accountById.set(String(account.id).trim(), account);
+    }
+  });
+  if (superset.accountsById instanceof Map) {
+    superset.accountsById.forEach((account, accountId) => {
+      if (account && accountId !== undefined && accountId !== null) {
+        const normalizedId = String(accountId).trim();
+        if (normalizedId && !accountById.has(normalizedId)) {
+          accountById.set(normalizedId, account);
+        }
+      }
+    });
+  }
+  const currentMetricAccountIds = new Set(
+    accountIds.filter((accountId) => {
+      const account = accountById.get(String(accountId).trim());
+      return !isAggregateSelection || !isClosedAccount(account);
+    })
+  );
+  const aggregateMetricAccountIds = isAggregateSelection
+    ? Array.from(currentMetricAccountIds)
+    : accountIds;
 
   const decoratedPositions = Array.isArray(superset.decoratedPositions)
     ? superset.decoratedPositions.filter((position) =>
-        position && accountIdSet.has(position.accountId || position.accountNumber)
+        position && currentMetricAccountIds.has(position.accountId || position.accountNumber)
       )
     : [];
 
   const flattenedPositions = Array.isArray(superset.flattenedPositions)
     ? superset.flattenedPositions.filter((position) =>
-        position && accountIdSet.has(position.accountId || position.accountNumber)
+        position && currentMetricAccountIds.has(position.accountId || position.accountNumber)
       )
     : [];
 
   const decoratedOrders = Array.isArray(superset.decoratedOrders)
-    ? superset.decoratedOrders.filter((order) => order && accountIdSet.has(order.accountId || order.accountNumber))
+    ? superset.decoratedOrders.filter((order) => order && currentMetricAccountIds.has(order.accountId || order.accountNumber))
     : [];
 
-  const balancesRaw = accountIds
+  const balancesRaw = aggregateMetricAccountIds
     .map((accountId) => superset.balancesRawByAccountId?.get(accountId))
     .filter(Boolean);
   const balancesSummary = mergeBalances(balancesRaw);
@@ -2634,7 +2660,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
   const pnl = mergePnL(flattenedPositions);
 
   const accountBalances = {};
-  accountIds.forEach((accountId) => {
+  aggregateMetricAccountIds.forEach((accountId) => {
     if (superset.perAccountCombinedBalances && superset.perAccountCombinedBalances[accountId]) {
       accountBalances[accountId] = superset.perAccountCombinedBalances[accountId];
     }
@@ -2694,7 +2720,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
   if (aggregateKey) {
     const aggregateFunding = aggregateFundingSummariesForAccounts(
       superset.accountFundingSummaries,
-      accountIds
+      aggregateMetricAccountIds
     );
     if (aggregateFunding) {
       accountFunding[aggregateKey] = aggregateFunding;
@@ -2702,7 +2728,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
 
     const aggregateDividends = aggregateDividendSummaries(
       superset.accountDividendSummaries,
-      accountIds,
+      aggregateMetricAccountIds,
       'all'
     );
     if (aggregateDividends) {
@@ -2726,6 +2752,10 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     const groupSeriesContainer = accountTotalPnlSeries[aggregateKey];
     const groupAllSeries = groupSeriesContainer && typeof groupSeriesContainer === 'object' ? groupSeriesContainer.all : null;
     const groupAllSummary = groupAllSeries && typeof groupAllSeries.summary === 'object' ? groupAllSeries.summary : null;
+    const hasClosedAggregateAccounts = isAggregateSelection && accountIds.some((accountId) => {
+      const account = accountById.get(String(accountId).trim());
+      return isClosedAccount(account);
+    });
     if (groupAllSummary) {
       const override = accountFunding[aggregateKey] || {};
       const merged = { ...override };
@@ -2744,7 +2774,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
       if (Object.keys(totalPnl).length) {
         merged.totalPnl = totalPnl;
       }
-      if (Number.isFinite(groupAllSummary.totalEquityCad)) {
+      if (!hasClosedAggregateAccounts && Number.isFinite(groupAllSummary.totalEquityCad)) {
         merged.totalEquityCad = groupAllSummary.totalEquityCad;
       }
       if (groupAllSeries.periodStartDate) {
@@ -2765,7 +2795,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
       let pnlSinceCount = 0;
       let equitySinceDisplay = 0;
       let equitySinceCount = 0;
-      accountIds.forEach((accountId) => {
+      aggregateMetricAccountIds.forEach((accountId) => {
         const entry = superset.accountFundingSummaries && superset.accountFundingSummaries[accountId];
         if (!entry || typeof entry !== 'object') {
           return;
@@ -7420,6 +7450,35 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(override, 'closed')) {
+    const closed = parseBooleanEnv(override.closed, null);
+    if (closed === true) {
+      target.closed = true;
+    } else if (closed === false && Object.prototype.hasOwnProperty.call(target, 'closed')) {
+      delete target.closed;
+    }
+  }
+
+  if (typeof override.closedDate === 'string') {
+    const trimmedDate = normalizeDateOnly(override.closedDate.trim());
+    if (trimmedDate) {
+      target.closedDate = trimmedDate;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'closedDate')) {
+      delete target.closedDate;
+    }
+  } else if (
+    override.closedDate &&
+    typeof override.closedDate === 'object' &&
+    typeof override.closedDate.date === 'string'
+  ) {
+    const trimmedDate = normalizeDateOnly(override.closedDate.date.trim());
+    if (trimmedDate) {
+      target.closedDate = trimmedDate;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'closedDate')) {
+      delete target.closedDate;
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(override, 'historyPnlRebaseDates')) {
     const normalizedOverrides = {};
     const source = override.historyPnlRebaseDates;
@@ -7574,6 +7633,10 @@ function isNonInvestmentAccount(account) {
 
 function isArchivedAccount(account) {
   return !!(account && account.archived === true);
+}
+
+function isClosedAccount(account) {
+  return !!(account && account.closed === true);
 }
 
 function normalizeLookupValue(value) {
@@ -22544,6 +22607,16 @@ app.get('/api/summary', async function (req, res) {
       return { login, account };
     });
 
+    // Closed accounts remain selected so their archived history can continue to
+    // contribute to explicit historical-series requests. Current aggregate
+    // metrics, however, must not include stale holdings from those accounts.
+    const currentMetricAccountIds = new Set(
+      selectedContexts
+        .filter((context) => !viewingAggregateAccounts || !isClosedAccount(context && context.account))
+        .map((context) => context && context.account && context.account.id)
+        .filter(Boolean)
+    );
+
     const positionsPromise = Promise.all(
       selectedContexts.map(function (context) {
         return fetchPositionsForContext(context);
@@ -22647,6 +22720,10 @@ app.get('/api/summary', async function (req, res) {
         });
       })
       .flat();
+
+    const currentMetricPositions = flattenedPositions.filter(function (position) {
+      return position && currentMetricAccountIds.has(position.accountId);
+    });
 
     const orderFetchResults = selectedContexts.length
       ? await mapWithConcurrency(
@@ -22825,6 +22902,9 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const dedupedOrders = dedupeOrdersByIdentifier(flattenedOrders);
+    const currentMetricOrders = dedupedOrders.filter(function (order) {
+      return order && currentMetricAccountIds.has(order.accountId);
+    });
 
     dedupedOrders.forEach(function (order) {
       if (!order || typeof order !== 'object') {
@@ -22847,7 +22927,7 @@ app.get('/api/summary', async function (req, res) {
     const symbolsWithTodayOrders = new Set();
     const todayKey = getTorontoDateKey(new Date());
     if (todayKey) {
-      dedupedOrders.forEach(function (order) {
+      currentMetricOrders.forEach(function (order) {
         if (!order || !order.symbol) {
           return;
         }
@@ -22887,7 +22967,7 @@ app.get('/api/summary', async function (req, res) {
     );
 
     const symbolIdsByLogin = new Map();
-    flattenedPositions.forEach(function (position) {
+    currentMetricPositions.forEach(function (position) {
       if (!position.symbolId) {
         return;
       }
@@ -22895,7 +22975,7 @@ app.get('/api/summary', async function (req, res) {
       loginBucket.add(position.symbolId);
       symbolIdsByLogin.set(position.loginId, loginBucket);
     });
-    dedupedOrders.forEach(function (order) {
+    currentMetricOrders.forEach(function (order) {
       if (!order || !order.symbolId) {
         return;
       }
@@ -22945,7 +23025,7 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const symbolsNeedingPreviousClose = new Set(symbolsWithTodayOrders);
-    flattenedPositions.forEach(function (position) {
+    currentMetricPositions.forEach(function (position) {
       if (!position || Number.isFinite(toFiniteNumber(position.dayPnl))) {
         return;
       }
@@ -22964,7 +23044,7 @@ app.get('/api/summary', async function (req, res) {
         : new Map();
 
     const dividendSymbolEntriesMap = new Map();
-    flattenedPositions.forEach(function (position) {
+    currentMetricPositions.forEach(function (position) {
       if (!position) {
         return;
       }
@@ -22986,15 +23066,24 @@ app.get('/api/summary', async function (req, res) {
     const dividendYieldMap = await fetchDividendYieldMap(dividendSymbolEntries);
 
     const decoratedPositions = decoratePositions(
-      flattenedPositions,
+      currentMetricPositions,
       symbolsMap,
       accountsMap,
       dividendYieldMap,
       { previousCloseMap }
     );
-    const decoratedOrders = decorateOrders(dedupedOrders, symbolsMap, accountsMap);
+    const decoratedOrders = decorateOrders(currentMetricOrders, symbolsMap, accountsMap);
     const pnl = mergePnL(decoratedPositions);
-    const balancesSummary = mergeBalances(balancesResults);
+    const currentMetricBalances = selectedContexts.reduce(function (entries, context, index) {
+      if (!context || !context.account || !currentMetricAccountIds.has(context.account.id)) {
+        return entries;
+      }
+      if (balancesResults[index]) {
+        entries.push(balancesResults[index]);
+      }
+      return entries;
+    }, []);
+    const balancesSummary = mergeBalances(currentMetricBalances);
     finalizeBalances(balancesSummary);
 
     const defaultAccountId = defaultAccount ? defaultAccount.id : null;
@@ -23016,7 +23105,7 @@ app.get('/api/summary', async function (req, res) {
 
           const payload = buildInvestmentModelRequest(
             account,
-            flattenedPositions,
+            currentMetricPositions,
             perAccountCombinedBalances,
             modelConfig
           );
@@ -23336,6 +23425,13 @@ app.get('/api/summary', async function (req, res) {
           return;
         }
 
+        // Keep the per-account funding summary available for historical views,
+        // but do not let a closed Questrade account contribute stale current
+        // balances, deposits, or return calculations to the live aggregate.
+        if (isClosedAccount(context.account)) {
+          return;
+        }
+
         const netDepositsCad =
           fundingSummaryForAggregate && fundingSummaryForAggregate.netDeposits
             ? fundingSummaryForAggregate.netDeposits.combinedCad
@@ -23580,6 +23676,17 @@ app.get('/api/summary', async function (req, res) {
       }
 
       const aggregateEntry = {};
+      // The aggregate chart intentionally spans migrated Questrade history,
+      // but the live Net deposits card must describe only accounts that are
+      // still current. Keep this separate because the historical series
+      // reconciliation below also carries its own all-time funding total.
+      const currentAggregateFunding = aggregateFundingSummariesForAccounts(
+        accountFundingSummaries,
+        Array.from(currentMetricAccountIds)
+      );
+      const currentAggregateNetDeposits = currentAggregateFunding?.netDeposits
+        ? { ...currentAggregateFunding.netDeposits }
+        : null;
       if (aggregateTotals.netDepositsCount > 0) {
         aggregateEntry.netDeposits = { combinedCad: aggregateTotals.netDepositsCad };
       }
@@ -23725,6 +23832,13 @@ app.get('/api/summary', async function (req, res) {
                 aggregatedSeries,
                 aggregateAccount
               );
+              if (currentAggregateNetDeposits) {
+                aggregateFundingSummary.netDeposits = Object.assign(
+                  {},
+                  aggregateFundingSummary.netDeposits || {},
+                  currentAggregateNetDeposits
+                );
+              }
             }
             const aggregateCacheKey = buildTotalPnlSeriesCacheKey(aggregateSelectionKey, aggregateSeriesOptions);
             if (aggregateCacheKey) {
@@ -23981,6 +24095,32 @@ app.get('/api/summary', async function (req, res) {
       }
     }
 
+    // Per-account series reconciliation can refine net deposits after the
+    // first aggregate pass. Rebuild the current-only aggregate one final
+    // time so the All accounts card cannot regain closed Questrade funding or
+    // retain an earlier pre-reconciliation snapshot.
+    if (viewingAggregateAccounts) {
+      const finalAggregateSelectionKey = viewingAccountGroup && selectedAccountGroup
+        ? selectedAccountGroup.id
+        : viewingAllAccountsRequest
+          ? 'all'
+          : null;
+      const finalCurrentAggregateFunding = aggregateFundingSummariesForAccounts(
+        accountFundingSummaries,
+        Array.from(currentMetricAccountIds)
+      );
+      const finalAggregateSummary = finalAggregateSelectionKey
+        ? accountFundingSummaries[finalAggregateSelectionKey]
+        : null;
+      if (finalAggregateSummary && finalCurrentAggregateFunding?.netDeposits) {
+        finalAggregateSummary.netDeposits = Object.assign(
+          {},
+          finalAggregateSummary.netDeposits || {},
+          finalCurrentAggregateFunding.netDeposits
+        );
+      }
+    }
+
     Object.values(accountFundingSummaries).forEach((entry) => {
       if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsCad')) {
         delete entry.cashFlowsCad;
@@ -24103,6 +24243,8 @@ app.get('/api/summary', async function (req, res) {
         type: account.type,
         status: account.status,
         archived: account.archived === true,
+        closed: account.closed === true,
+        closedDate: account.closedDate || null,
         readOnly: account.readOnly === true,
         archivedAt: account.archivedAt || null,
         lastSeenAt: account.lastSeenAt || null,
@@ -24366,6 +24508,17 @@ app.get('/api/summary', async function (req, res) {
       );
     }
 
+    const responseAccountBalances = {};
+    selectedContexts.forEach(function (context) {
+      if (!context || !context.account || !currentMetricAccountIds.has(context.account.id)) {
+        return;
+      }
+      const accountId = context.account.id;
+      if (perAccountCombinedBalances[accountId]) {
+        responseAccountBalances[accountId] = perAccountCombinedBalances[accountId];
+      }
+    });
+
     const responsePayload = {
       accounts: responseAccounts,
       accountGroups: responseAccountGroups,
@@ -24385,7 +24538,7 @@ app.get('/api/summary', async function (req, res) {
       ordersWindow: { start: orderWindowStartIso, end: orderWindowEndIso },
       pnl: pnl,
       balances: balancesSummary,
-      accountBalances: perAccountCombinedBalances,
+      accountBalances: responseAccountBalances,
       investmentModelEvaluations,
       accountFunding: accountFundingSummaries,
       accountDividends: accountDividendSummaries,

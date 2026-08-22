@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { openAccountSummary } from '../utils/questrade';
 import { buildAccountViewUrl } from '../utils/navigation';
@@ -244,6 +244,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
 
   const containerRef = useRef(null);
   const listRef = useRef(null);
+  const contextMenuRef = useRef(null);
 
   const totalAccounts = accounts.length;
   const multipleOwners = useMemo(() => {
@@ -313,6 +314,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
           option,
           orderIndex: index,
           children: [],
+          hasActiveAccounts: account?.closed !== true,
         },
         groupKey,
         groupName,
@@ -363,6 +365,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
         children: [],
         parent: null,
         isPlaceholder: true,
+        hasActiveAccounts: false,
       };
       syntheticGroupIndex += 1;
       groupNodesByKey.set(normalizedKey, node);
@@ -389,6 +392,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
           normalizedKey,
           children: [],
           parent: null,
+          hasActiveAccounts: false,
         };
         groupNodesByKey.set(normalizedKey, node);
         groupNodesList.push(node);
@@ -523,8 +527,20 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
     };
 
     const topLevelNodes = [...rootGroupNodes, ...rootAccountNodes];
+    const computeActiveAccountDescendants = (node) => {
+      if (!node) {
+        return false;
+      }
+      if (node.type === 'account') {
+        node.hasActiveAccounts = node.option?.account?.closed !== true;
+        return node.hasActiveAccounts;
+      }
+      node.hasActiveAccounts = node.children.some(computeActiveAccountDescendants);
+      return node.hasActiveAccounts;
+    };
     topLevelNodes.forEach((node) => {
       computeEffectiveOrder(node);
+      computeActiveAccountDescendants(node);
     });
 
     const compareNodes = (a, b) => {
@@ -566,6 +582,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
           depth,
           isGroup: node.type === 'group',
           hasChildren: node.type === 'group' && node.children.length > 0,
+          hasActiveAccounts: node.hasActiveAccounts === true,
           treeAncestors: ancestorFlags,
           isLastChild: isLast,
         };
@@ -595,31 +612,68 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       });
     }
 
+    const activeOptions = flattenedOptions.filter((option) => {
+      if (option.value === 'all') {
+        return true;
+      }
+      return option.isGroup ? option.hasActiveAccounts === true : option.account?.closed !== true;
+    });
+    const historicalOptions = accountOptions
+      .filter((option) => option.account?.closed === true)
+      .map((option) => ({
+        ...option,
+        depth: 0,
+        isGroup: false,
+        hasChildren: false,
+        treeAncestors: [],
+        isLastChild: false,
+      }));
+
     return {
       options: flattenedOptions,
+      activeOptions,
+      historicalOptions,
       accountOptions,
       groupOptions,
       allOption,
     };
   }, [accounts, accountGroups, groupRelations, multipleOwners, totalAccounts]);
 
-  const options = optionsState.options;
+  const activeOptions = optionsState.activeOptions;
+  const historicalOptions = optionsState.historicalOptions;
   const accountOptions = optionsState.accountOptions;
   const allOption = optionsState.allOption;
 
   const [isOpen, setIsOpen] = useState(false);
+  const [showHistoricalAccounts, setShowHistoricalAccounts] = useState(false);
+  const [contextMenuPosition, setContextMenuPosition] = useState(null);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
 
+  const selectedAccountIsClosed = useMemo(() => {
+    const selectedOption = accountOptions.find((option) => option.value === selected);
+    return selectedOption?.account?.closed === true;
+  }, [accountOptions, selected]);
+
+  const displayOptions = useMemo(() => {
+    if (!historicalOptions.length) {
+      return activeOptions;
+    }
+    if (showHistoricalAccounts || selectedAccountIsClosed) {
+      return [...activeOptions, ...historicalOptions];
+    }
+    return activeOptions;
+  }, [activeOptions, historicalOptions, selectedAccountIsClosed, showHistoricalAccounts]);
+
   const selectedIndex = useMemo(
-    () => options.findIndex((option) => option.value === selected),
-    [options, selected]
+    () => displayOptions.findIndex((option) => option.value === selected),
+    [displayOptions, selected]
   );
 
   const selectedOption = useMemo(() => {
-    if (!options.length) {
+    if (!displayOptions.length) {
       return null;
     }
-    const direct = options.find((option) => option.value === selected);
+    const direct = displayOptions.find((option) => option.value === selected);
     if (direct) {
       return direct;
     }
@@ -632,8 +686,8 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
         secondary: single.secondary,
       };
     }
-    return options[0];
-  }, [options, selected, accountOptions]);
+    return displayOptions[0];
+  }, [displayOptions, selected, accountOptions]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -666,20 +720,51 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
     if (!listElement) {
       return;
     }
-    if (highlightedIndex < 0 || highlightedIndex >= listElement.children.length) {
+    if (highlightedIndex < 0 || highlightedIndex >= displayOptions.length) {
       return;
     }
-    const optionNode = listElement.children[highlightedIndex];
+    const optionNode = listElement.querySelector(`[data-option-index="${highlightedIndex}"]`);
     if (optionNode && optionNode.scrollIntoView) {
       optionNode.scrollIntoView({ block: 'nearest' });
     }
-  }, [isOpen, highlightedIndex]);
+  }, [isOpen, highlightedIndex, displayOptions.length]);
 
   useEffect(() => {
     if (disabled && isOpen) {
       setIsOpen(false);
     }
   }, [disabled, isOpen]);
+
+  useEffect(() => {
+    if (!contextMenuPosition) {
+      return;
+    }
+
+    const handlePointerDown = (event) => {
+      if (contextMenuRef.current && contextMenuRef.current.contains(event.target)) {
+        return;
+      }
+      setContextMenuPosition(null);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setContextMenuPosition(null);
+      }
+    };
+    const handleViewportChange = () => setContextMenuPosition(null);
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [contextMenuPosition]);
 
   const handleSelect = (option, event) => {
     if (!option) {
@@ -712,7 +797,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      if (!options.length) {
+      if (!displayOptions.length) {
         return;
       }
       if (!isOpen) {
@@ -722,16 +807,16 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       setHighlightedIndex((current) => {
         const direction = event.key === 'ArrowDown' ? 1 : -1;
         if (current < 0) {
-          return direction === 1 ? 0 : options.length - 1;
+          return direction === 1 ? 0 : displayOptions.length - 1;
         }
-        return (current + direction + options.length) % options.length;
+        return (current + direction + displayOptions.length) % displayOptions.length;
       });
       return;
     }
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (isOpen && highlightedIndex >= 0 && highlightedIndex < options.length) {
-        handleSelect(options[highlightedIndex]);
+      if (isOpen && highlightedIndex >= 0 && highlightedIndex < displayOptions.length) {
+        handleSelect(displayOptions[highlightedIndex]);
       } else {
         setIsOpen(true);
       }
@@ -741,8 +826,8 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       event.preventDefault();
       if (!isOpen) {
         setIsOpen(true);
-      } else if (highlightedIndex >= 0 && highlightedIndex < options.length) {
-        handleSelect(options[highlightedIndex]);
+      } else if (highlightedIndex >= 0 && highlightedIndex < displayOptions.length) {
+        handleSelect(displayOptions[highlightedIndex]);
       }
       return;
     }
@@ -754,16 +839,16 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       return;
     }
     if (event.key === 'Home') {
-      if (isOpen && options.length) {
+      if (isOpen && displayOptions.length) {
         event.preventDefault();
         setHighlightedIndex(0);
       }
       return;
     }
     if (event.key === 'End') {
-      if (isOpen && options.length) {
+      if (isOpen && displayOptions.length) {
         event.preventDefault();
-        setHighlightedIndex(options.length - 1);
+        setHighlightedIndex(displayOptions.length - 1);
       }
       return;
     }
@@ -781,7 +866,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
       secondary: totalAccounts > 1 ? `Combined across ${totalAccounts} accounts` : null,
     };
 
-  const isTriggerDisabled = disabled || !options.length;
+  const isTriggerDisabled = disabled || !displayOptions.length;
 
   const handleToggle = (event) => {
     if (isTriggerDisabled) {
@@ -801,6 +886,22 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
     setIsOpen((value) => !value);
   };
 
+  const handleContextMenu = (event) => {
+    if (isTriggerDisabled || historicalOptions.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setIsOpen(false);
+    setContextMenuPosition({ x: event.clientX, y: event.clientY });
+  };
+
+  const handleHistoricalAccountsMenuItem = () => {
+    setContextMenuPosition(null);
+    setShowHistoricalAccounts(true);
+    setIsOpen(true);
+  };
+
   const listId = `${baseId}-list`;
   const activeOptionId = isOpen && highlightedIndex >= 0 ? `${baseId}-option-${highlightedIndex}` : undefined;
   const classes = ['account-selector'];
@@ -817,6 +918,7 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
         type="button"
         className="account-selector__trigger"
         onClick={handleToggle}
+        onContextMenu={handleContextMenu}
         onKeyDown={handleKeyDown}
         disabled={isTriggerDisabled}
         aria-haspopup="listbox"
@@ -827,6 +929,9 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
         <div className="account-selector__value">
           {displayOption.meta && <span className="account-selector__meta">{displayOption.meta}</span>}
           <span className="account-selector__primary">{displayOption.primary}</span>
+          {displayOption.account?.closed === true && (
+            <span className="account-selector__status">Closed</span>
+          )}
           {displayOption.secondary && (
             <span className="account-selector__secondary">{displayOption.secondary}</span>
           )}
@@ -834,11 +939,29 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
         <span className="account-selector__chevron" aria-hidden="true" />
       </button>
 
+      {contextMenuPosition && historicalOptions.length > 0 && (
+        <div
+          ref={contextMenuRef}
+          className="account-selector__context-menu"
+          role="menu"
+          style={{ left: contextMenuPosition.x, top: contextMenuPosition.y }}
+        >
+          <button
+            type="button"
+            className="account-selector__context-menu-item"
+            role="menuitem"
+            onClick={handleHistoricalAccountsMenuItem}
+          >
+            Show historical accounts ({historicalOptions.length})
+          </button>
+        </div>
+      )}
+
       {isOpen && (
         <div className="account-selector__dropdown">
-          {options.length ? (
+          {displayOptions.length ? (
             <ul className="account-selector__list" role="listbox" id={listId} ref={listRef}>
-              {options.map((option, index) => {
+              {displayOptions.map((option, index) => {
                 const optionClasses = ['account-selector__option'];
                 if (option.value === selected) {
                   optionClasses.push('account-selector__option--selected');
@@ -864,15 +987,21 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
                   currentSegmentClasses.push('account-selector__tree-segment--last');
                 }
                 return (
-                  <li
-                    key={option.value}
-                    id={optionId}
-                    role="option"
-                    aria-selected={option.value === selected}
-                    className={optionClasses.join(' ')}
-                    onMouseEnter={() => setHighlightedIndex(index)}
-                    onClick={(event) => handleSelect(option, event)}
-                  >
+                  <Fragment key={option.value}>
+                    {index === activeOptions.length && historicalOptions.length > 0 ? (
+                      <li className="account-selector__section-label" role="presentation">
+                        Historical accounts
+                      </li>
+                    ) : null}
+                    <li
+                      id={optionId}
+                      data-option-index={index}
+                      role="option"
+                      aria-selected={option.value === selected}
+                      className={optionClasses.join(' ')}
+                      onMouseEnter={() => setHighlightedIndex(index)}
+                      onClick={(event) => handleSelect(option, event)}
+                    >
                     <div className="account-selector__option-inner">
                       {option.depth > 0 && (
                         <div className="account-selector__option-tree" aria-hidden="true">
@@ -897,13 +1026,17 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
                       <div className="account-selector__option-content">
                         {option.meta && <span className="account-selector__meta">{option.meta}</span>}
                         <span className="account-selector__primary">{option.primary}</span>
+                        {option.account?.closed === true && (
+                          <span className="account-selector__status">Closed</span>
+                        )}
                         {option.secondary && (
                           <span className="account-selector__secondary">{option.secondary}</span>
                         )}
                       </div>
                     </div>
                     {option.value === selected && <span className="account-selector__check" aria-hidden="true" />}
-                  </li>
+                    </li>
+                  </Fragment>
                 );
               })}
             </ul>
@@ -934,6 +1067,8 @@ AccountSelector.propTypes = {
       beneficiary: PropTypes.string,
       portalAccountId: PropTypes.string,
       showQQQDetails: PropTypes.bool,
+      closed: PropTypes.bool,
+      closedDate: PropTypes.string,
     })
   ).isRequired,
   accountGroups: PropTypes.arrayOf(

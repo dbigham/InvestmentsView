@@ -53,6 +53,26 @@ test('accounts can be hidden from provider-backed account lists', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(settings['snaptrade-user:visible-account'], 'hidden'), false);
 });
 
+test('closed account metadata preserves lifecycle state and closure date', () => {
+  const config = {
+    accounts: [
+      {
+        id: 'questrade-user:closed-account',
+        name: 'Legacy RRSP',
+        closed: true,
+        closedDate: '2026-07-15T12:00:00Z',
+      },
+    ],
+  };
+
+  const settings = withTempAccountsConfig(config, (mod) => mod.getAccountSettings());
+
+  assert.deepEqual(settings['questrade-user:closed-account'], {
+    closed: true,
+    closedDate: '2026-07-15',
+  });
+});
+
 test('investmentAccount metadata can mark visible accounts as non-investment accounts', () => {
   const config = {
     accounts: [

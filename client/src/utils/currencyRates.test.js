@@ -15,9 +15,19 @@ test('authoritative USD/CAD rate fills a missing balance-derived USD rate', () =
   assert.equal(original.has('USD'), false);
 });
 
-test('balance-derived USD rate is not overwritten', () => {
+test('authoritative USD/CAD rate replaces a misleading balance-derived rate', () => {
   const rates = mergeAuthoritativeUsdToCadRate(new Map([['CAD', 1], ['USD', 1.35]]), 1.4, 'CAD');
-  assert.equal(rates.get('USD'), 1.35);
+  assert.equal(rates.get('USD'), 1.4);
+});
+
+test('authoritative USD/CAD rate wins over combined-currency balance ratios', () => {
+  const rates = mergeAuthoritativeUsdToCadRate(
+    new Map([['CAD', 1], ['USD', 362.1]]),
+    1.376,
+    'CAD'
+  );
+
+  assert.equal(rates.get('USD'), 1.376);
 });
 
 test('combined CAD reserve includes USD VBIL and USD cash without a USD equity balance', () => {
