@@ -2738,127 +2738,6 @@ function aggregateSymbolBreakdowns(results) {
   return payload;
 }
 
-const RANGE_BREAKDOWN_RESIDUAL_SYMBOL = 'OTHER / UNALLOCATED';
-const RANGE_BREAKDOWN_RESIDUAL_EPSILON = 0.005;
-
-function getSeriesPointValueAtDate(series, dateKey) {
-  if (!series || !Array.isArray(series.points)) {
-    return null;
-  }
-  const normalizedDate = normalizeDateOnly(dateKey);
-  if (!normalizedDate) {
-    return null;
-  }
-  const points = series.points
-    .map((point) => {
-      const pointDate = normalizeDateOnly(point?.date);
-      const value = Number(point?.totalPnlCad);
-      return pointDate && Number.isFinite(value) ? { date: pointDate, value } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  if (!points.length) {
-    return null;
-  }
-  const exact = points.find((point) => point.date === normalizedDate);
-  if (exact) {
-    return exact.value;
-  }
-  const prior = points.filter((point) => point.date < normalizedDate).pop();
-  if (prior) {
-    return prior.value;
-  }
-  return points[0].value;
-}
-
-function getRangeTotalPnlDelta(series, startKey, endKey) {
-  const startValue = getSeriesPointValueAtDate(series, startKey);
-  const endValue = getSeriesPointValueAtDate(series, endKey);
-  if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
-    return null;
-  }
-  return endValue - startValue;
-}
-
-function getAccountRangeTotalPnlDelta(superset, accountId, accountWindow) {
-  const seriesEntry = superset?.accountTotalPnlSeries?.[accountId];
-  const series = seriesEntry && typeof seriesEntry === 'object' ? seriesEntry.all : null;
-  if (!accountWindow || !series) {
-    return null;
-  }
-  return getRangeTotalPnlDelta(series, accountWindow.startDate, accountWindow.endDate);
-}
-
-function sumAccountRangeTotalPnlDeltas(superset, perAccountResults) {
-  if (!Array.isArray(perAccountResults) || !perAccountResults.length) {
-    return { totalPnlCad: null, accountCount: 0, missingAccountIds: [] };
-  }
-  let totalPnlCad = 0;
-  let accountCount = 0;
-  const missingAccountIds = [];
-  perAccountResults.forEach((entry) => {
-    const delta = getAccountRangeTotalPnlDelta(superset, entry?.accountId, entry?.accountWindow);
-    if (Number.isFinite(delta)) {
-      totalPnlCad += delta;
-      accountCount += 1;
-    } else if (entry?.accountId) {
-      missingAccountIds.push(entry.accountId);
-    }
-  });
-  return {
-    totalPnlCad: accountCount > 0 ? totalPnlCad : null,
-    accountCount,
-    missingAccountIds,
-  };
-}
-
-function sumBreakdownPnl(entries) {
-  if (!Array.isArray(entries)) {
-    return 0;
-  }
-  return entries.reduce((total, entry) => {
-    const value = Number(entry?.totalPnlCad);
-    return total + (Number.isFinite(value) ? value : 0);
-  }, 0);
-}
-
-function buildRangeBreakdownResidualEntry(totalPnlCad) {
-  return {
-    symbol: RANGE_BREAKDOWN_RESIDUAL_SYMBOL,
-    symbolId: null,
-    totalPnlCad,
-    investedCad: 0,
-    openQuantity: 0,
-    marketValueCad: 0,
-    currency: 'CAD',
-    isResidual: true,
-    description: 'Cash, account-level adjustments, and other unallocated P&L',
-  };
-}
-
-function reconcileRangeBreakdown(source, totalPnlCad) {
-  const payload = source && typeof source === 'object' ? { ...source } : { entries: [] };
-  if (!Number.isFinite(totalPnlCad)) {
-    return payload;
-  }
-  const tradedSymbolsPnlCad = sumBreakdownPnl(payload.entries);
-  const unallocatedPnlCad = totalPnlCad - tradedSymbolsPnlCad;
-  payload.totalPnlRangeCad = totalPnlCad;
-  payload.tradedSymbolsPnlCad = tradedSymbolsPnlCad;
-  payload.unallocatedPnlCad = unallocatedPnlCad;
-  if (Math.abs(unallocatedPnlCad) < RANGE_BREAKDOWN_RESIDUAL_EPSILON) {
-    payload.breakdownReconciled = true;
-    return payload;
-  }
-  const residual = buildRangeBreakdownResidualEntry(unallocatedPnlCad);
-  payload.entries = Array.isArray(payload.entries) ? payload.entries.concat([residual]) : [residual];
-  if (Array.isArray(payload.entriesNoFx)) {
-    payload.entriesNoFx = payload.entriesNoFx.concat([{ ...residual }]);
-  }
-  payload.breakdownReconciled = true;
-  return payload;
-}
-
 // A historical account can remain in the local account list after its
 // brokerage connection has been closed. Its cached Total P&L series ends on
 // the last day for which that account was part of the portfolio; valuing its
@@ -2917,11 +2796,6 @@ function buildEndHoldingsBySymbol(positions) {
     holdings.set(symbol, (holdings.get(symbol) || 0) + quantity);
   });
   return holdings;
-}
-
-function shouldUseCurrentEndHoldingsForRange(superset, endKey) {
-  const asOfKey = normalizeDateOnly(superset?.asOf || superset?.payload?.asOf);
-  return Boolean(asOfKey && endKey && endKey >= asOfKey);
 }
 
 function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) {
@@ -18954,23 +18828,6 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
   };
 }
 
-const TRUSTEE_CASH_SYMBOL_REGEX = /^8200010(?:\.\d+)?$/;
-
-function isTrusteeCashActivity(activity, resolvedSymbol) {
-  if (!activity || typeof activity !== 'object') {
-    return false;
-  }
-  const symbol = normalizeSymbol(resolvedSymbol || activity.symbol);
-  if (symbol && TRUSTEE_CASH_SYMBOL_REGEX.test(symbol)) {
-    return true;
-  }
-  const description = [activity.type, activity.action, activity.description]
-    .filter((value) => typeof value === 'string')
-    .join(' ')
-    .toUpperCase();
-  return /U\.?S\.?\s*DOLLARS?\s*\(\s*RSP TRUSTEE\s*\)/i.test(description);
-}
-
 // Compute total P&L by symbol (in CAD) using the same activity context and pricing used
 // for the account-level Total P&L series. Result entries include closed symbols.
 async function computeTotalPnlBySymbol(login, account, options = {}) {
@@ -19003,9 +18860,6 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     const directSymbol = normalizeSymbol(activity.symbol);
     const fallbackSymbol = resolveActivitySymbol(activity);
     const resolvedSymbol = directSymbol || fallbackSymbol || null;
-    if (isTrusteeCashActivity(activity, resolvedSymbol)) {
-      return;
-    }
     processedActivities.push({ activity, timestamp, dateKey, symbol: resolvedSymbol });
 
     const symbolId = Number(activity.symbolId);
@@ -25785,9 +25639,6 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       const providedPositions = isArchivedAccount(context.account)
         ? []
         : getPositionsForAccountFromSuperset(superset, accountId);
-      const endHoldingsBySymbol = shouldUseCurrentEndHoldingsForRange(superset, accountWindow.endDate)
-        ? buildEndHoldingsBySymbol(providedPositions)
-        : undefined;
       let activityContext = activityContextStore[accountId];
       if (!activityContext) {
         try {
@@ -25813,10 +25664,10 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
           displayEndKey: accountWindow.endDate,
           activityContext,
           providedPositions,
-          ...(endHoldingsBySymbol ? { endHoldingsBySymbol } : {}),
+          endHoldingsBySymbol: buildEndHoldingsBySymbol(providedPositions),
         });
         if (breakdown) {
-          perAccountResults.push({ accountId, breakdown, accountWindow });
+          perAccountResults.push({ accountId, breakdown });
         }
       } catch (breakdownError) {
         const message = breakdownError && breakdownError.message ? breakdownError.message : String(breakdownError);
@@ -25846,17 +25697,11 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
     };
   });
 
-  const rangeTotal = sumAccountRangeTotalPnlDeltas(superset, perAccountResults);
-  const canReconcileRangeBreakdown =
-    failureCount === 0 &&
-    rangeTotal.missingAccountIds.length === 0 &&
-    Number.isFinite(rangeTotal.totalPnlCad);
-
   const isAggregate = normalizedSelection.type !== 'account' && normalizedSelection.type !== 'default';
   let payload;
   if (isAggregate) {
     const aggregate = aggregateSymbolBreakdowns(perAccountResults.map((entry) => entry.breakdown));
-    payload = reconcileRangeBreakdown({
+    payload = {
       scope: scopeParam,
       startDate: startKey,
       endDate: endKey,
@@ -25867,10 +25712,10 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       fxEffectCad: Number.isFinite(aggregate.fxEffectCad) ? aggregate.fxEffectCad : undefined,
       asOf: aggregate.asOf || endKey,
       perAccount: perAccountPayload,
-    }, canReconcileRangeBreakdown ? rangeTotal.totalPnlCad : null);
+    };
   } else {
     const single = perAccountResults[0].breakdown || {};
-    payload = reconcileRangeBreakdown({
+    payload = {
       scope: scopeParam,
       startDate: startKey,
       endDate: endKey,
@@ -25881,11 +25726,7 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       fxEffectCad: Number.isFinite(single.fxEffectCad) ? single.fxEffectCad : undefined,
       asOf: single.endDate || endKey,
       perAccount: perAccountPayload,
-    }, canReconcileRangeBreakdown ? rangeTotal.totalPnlCad : null);
-  }
-  payload.breakdownReconciliationComplete = canReconcileRangeBreakdown;
-  if (rangeTotal.missingAccountIds.length) {
-    payload.breakdownReconciliationMissingAccounts = rangeTotal.missingAccountIds;
+    };
   }
 
   if (cacheKey) {
@@ -26125,12 +25966,6 @@ module.exports = {
     computeMigrationReconciledNetInvestedCapital,
     resolveRangeBreakdownWindowForAccount,
     getPositionsForAccountFromSuperset,
-    shouldUseCurrentEndHoldingsForRange,
-    getRangePointValueAtDate: getSeriesPointValueAtDate,
-    getRangeTotalPnlDelta,
-    sumAccountRangeTotalPnlDeltas,
-    reconcileRangeBreakdown,
-    isTrusteeCashActivity,
     buildProviderObservedReturnFromSeries,
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,

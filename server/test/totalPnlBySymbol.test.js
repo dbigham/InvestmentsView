@@ -6,7 +6,6 @@ const mod = await import('../src/index.js');
 const {
   computeTotalPnlBySymbol,
 } = mod;
-const { __test__ } = mod.default || mod;
 
 function makeContext(accountId, start, end, activities) {
   return {
@@ -135,42 +134,6 @@ test('opening-transfer positions contribute even without symbol activity', async
   const xyz = result.entries.find((entry) => entry.symbol === 'XYZ');
   assert.ok(xyz, 'opening-transfer position is present');
   assert.equal(xyz.totalPnlCad, 100);
-});
-
-test('trustee pseudo-cash is excluded from traded-symbol P&L', async () => {
-  assert.equal(
-    __test__.isTrusteeCashActivity({
-      symbol: '8200010.16',
-      description: 'U.S.DOLLARS (RSP TRUSTEE) EXCHANGE RATE 1.41927500',
-    }),
-    true
-  );
-
-  const account = { id: 'test:trustee-cash', number: 'test:trustee-cash' };
-  const login = { id: 'login' };
-  const start = '2025-10-01';
-  const end = '2025-10-31';
-  const ctx = makeContext(account.id, start, end, [
-    {
-      type: 'Transfers',
-      action: 'TFR',
-      symbol: '8200010.16',
-      quantity: 100,
-      netAmount: 100,
-      currency: 'USD',
-      description: 'U.S.DOLLARS (RSP TRUSTEE) EXCHANGE RATE 1.41927500',
-      tradeDate: '2025-10-10',
-    },
-  ]);
-  const result = await computeTotalPnlBySymbol(login, account, {
-    activityContext: ctx,
-    applyAccountCagrStartDate: false,
-    displayStartKey: start,
-    displayEndKey: end,
-    priceSeriesBySymbol: new Map(),
-  });
-
-  assert.equal(result.entries.some((entry) => entry.symbol === '8200010.16'), false);
 });
 
 test('transfer cash applied once per date', async () => {
