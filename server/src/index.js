@@ -2063,6 +2063,163 @@ function aggregateFundingSummariesForAccounts(fundingMap, accountIds) {
   return Object.keys(aggregate).length ? aggregate : null;
 }
 
+function resolveAccountTotalPnlSeries(seriesMap, accountId) {
+  if (!seriesMap || typeof seriesMap !== 'object' || !accountId) {
+    return null;
+  }
+  const container = seriesMap[accountId];
+  if (!container || typeof container !== 'object') {
+    return null;
+  }
+  if (container.all && typeof container.all === 'object') {
+    return container.all;
+  }
+  return Array.isArray(container.points) ? container : null;
+}
+
+function findPreMigrationSeriesPoint(series, migrationStartDate) {
+  if (!series || !Array.isArray(series.points) || !migrationStartDate) {
+    return null;
+  }
+  const priorPoints = series.points.filter((point) => {
+    if (!point || typeof point.date !== 'string' || point.date >= migrationStartDate) {
+      return false;
+    }
+    return Number.isFinite(Number(point.equityCad));
+  });
+  if (!priorPoints.length) {
+    return null;
+  }
+
+  // A closed source account often has a final zero-equity point on the
+  // transfer date. Use the last positive-equity point so the destination's
+  // opening transfer is not mistaken for a withdrawal from the household.
+  const positivePoints = priorPoints.filter((point) => Number(point.equityCad) > CASH_FLOW_EPSILON);
+  return positivePoints.length ? positivePoints[positivePoints.length - 1] : null;
+}
+
+function computeMigrationReconciledNetInvestedCapital({
+  fundingMap,
+  seriesMap,
+  accounts,
+  accountIds,
+}) {
+  if (!fundingMap || typeof fundingMap !== 'object' || !Array.isArray(accounts)) {
+    return null;
+  }
+
+  const requestedIds = new Set(
+    (Array.isArray(accountIds) ? accountIds : [])
+      .map((id) => (id === undefined || id === null ? '' : String(id).trim()))
+      .filter(Boolean)
+  );
+  if (!requestedIds.size) {
+    return null;
+  }
+
+  const accountById = new Map();
+  accounts.forEach((account) => {
+    if (!account || account.id === undefined || account.id === null) {
+      return;
+    }
+    const id = String(account.id).trim();
+    if (id) {
+      accountById.set(id, account);
+    }
+  });
+
+  const historicalByDestinationId = new Map();
+  accounts.forEach((account) => {
+    if (!account || !isClosedAccount(account)) {
+      return;
+    }
+    const destinationId = typeof account.migratedTo === 'string' ? account.migratedTo.trim() : '';
+    const destination = destinationId ? accountById.get(destinationId) : null;
+    if (!destinationId || !destination || isClosedAccount(destination)) {
+      return;
+    }
+    const id = account.id === undefined || account.id === null ? '' : String(account.id).trim();
+    if (!id) {
+      return;
+    }
+    if (historicalByDestinationId.has(destinationId)) {
+      // Multiple historical accounts pointing to one destination are
+      // ambiguous. Do not silently choose one.
+      historicalByDestinationId.set(destinationId, null);
+    } else {
+      historicalByDestinationId.set(destinationId, account);
+    }
+  });
+
+  let total = 0;
+  let fallbackAccountCount = 0;
+  let migrationPairCount = 0;
+  let reconciledAccountCount = 0;
+
+  requestedIds.forEach((accountId) => {
+    const account = accountById.get(accountId);
+    const funding = fundingMap[accountId];
+    const fallback = Number(funding?.netDeposits?.allTimeCad);
+    if (!account || !Number.isFinite(fallback)) {
+      return;
+    }
+
+    const historical = historicalByDestinationId.get(accountId) || null;
+    const destinationSeries = resolveAccountTotalPnlSeries(seriesMap, accountId);
+    const migrationStartDate =
+      typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
+        ? account.historyStartDate.trim().slice(0, 10)
+        : typeof destinationSeries?.displayStartDate === 'string' && destinationSeries.displayStartDate.trim()
+          ? destinationSeries.displayStartDate.trim().slice(0, 10)
+          : destinationSeries?.points?.[0]?.date || null;
+
+    if (!historical || !migrationStartDate || !destinationSeries?.points?.length) {
+      total += fallback;
+      fallbackAccountCount += 1;
+      return;
+    }
+
+    migrationPairCount += 1;
+    const historicalId = historical.id === undefined || historical.id === null ? '' : String(historical.id).trim();
+    const sourceSeries = resolveAccountTotalPnlSeries(seriesMap, historicalId);
+    const sourcePoint = findPreMigrationSeriesPoint(sourceSeries, migrationStartDate);
+    const destinationPoints = destinationSeries.points.filter(
+      (point) => point && typeof point.date === 'string' && point.date >= migrationStartDate
+    );
+    const firstDestinationPoint = destinationPoints[0];
+    const lastDestinationPoint = destinationPoints[destinationPoints.length - 1];
+    const sourceNetDeposits = Number(sourcePoint?.cumulativeNetDepositsCad);
+    const firstDestinationNetDeposits = Number(firstDestinationPoint?.cumulativeNetDepositsCad);
+    const lastDestinationNetDeposits = Number(lastDestinationPoint?.cumulativeNetDepositsCad);
+
+    if (
+      Number.isFinite(sourceNetDeposits) &&
+      Number.isFinite(firstDestinationNetDeposits) &&
+      Number.isFinite(lastDestinationNetDeposits)
+    ) {
+      total += sourceNetDeposits + (lastDestinationNetDeposits - firstDestinationNetDeposits);
+      reconciledAccountCount += 1;
+      return;
+    }
+
+    total += fallback;
+    fallbackAccountCount += 1;
+  });
+
+  if (!Number.isFinite(total) || reconciledAccountCount === 0) {
+    return null;
+  }
+
+  return {
+    combinedCad: total,
+    allTimeCad: total,
+    method: 'migration-spliced-household-basis',
+    migrationPairCount,
+    reconciledAccountCount,
+    fallbackAccountCount,
+  };
+}
+
 function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
   if (!totalPnlMap || typeof totalPnlMap !== 'object') {
     return null;
@@ -2784,6 +2941,28 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
         merged.periodEndDate = merged.periodEndDate || groupAllSeries.periodEndDate;
       }
       accountFunding[aggregateKey] = merged;
+      // The aggregate chart contains the reconstructed historical opening
+      // basis. Use that same series for annualization; aggregating only the
+      // current accounts' raw cash flows makes transferred balances look like
+      // recent deposits and can produce implausibly large XIRR values.
+      rebuildAggregateAnnualizedReturnFromSeries(
+        accountFunding[aggregateKey],
+        groupAllSeries,
+        aggregateKey
+      );
+    }
+
+    const migrationNetInvestedCapital = computeMigrationReconciledNetInvestedCapital({
+      fundingMap: superset.accountFundingSummaries,
+      seriesMap: superset.accountTotalPnlSeries,
+      accounts: superset.accounts,
+      accountIds: aggregateMetricAccountIds,
+    });
+    if (migrationNetInvestedCapital && accountFunding[aggregateKey]) {
+      accountFunding[aggregateKey] = {
+        ...accountFunding[aggregateKey],
+        netInvestedCapital: migrationNetInvestedCapital,
+      };
     }
 
     // Compute group-level since-display deltas by summing per-account since-display fields
@@ -7450,6 +7629,17 @@ function applyAccountSettingsOverrideToAccount(target, override) {
     }
   }
 
+  if (typeof override.migratedTo === 'string') {
+    const migratedTo = override.migratedTo.trim();
+    if (migratedTo) {
+      target.migratedTo = migratedTo;
+    } else if (Object.prototype.hasOwnProperty.call(target, 'migratedTo')) {
+      delete target.migratedTo;
+    }
+  } else if (Object.prototype.hasOwnProperty.call(override, 'migratedTo')) {
+    delete target.migratedTo;
+  }
+
   if (Object.prototype.hasOwnProperty.call(override, 'closed')) {
     const closed = parseBooleanEnv(override.closed, null);
     if (closed === true) {
@@ -11336,6 +11526,16 @@ function rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, accou
       };
   const returnBreakdown = computeReturnBreakdownFromCashFlows(cashFlows, endDate, rate);
   fundingSummary.returnBreakdown = returnBreakdown.length ? returnBreakdown : undefined;
+}
+
+function rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, accountKey) {
+  if (!fundingSummary || typeof fundingSummary !== 'object' || !totalPnlSeries) {
+    return;
+  }
+  rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, accountKey);
+  if (fundingSummary.annualizedReturn && typeof fundingSummary.annualizedReturn === 'object') {
+    fundingSummary.annualizedReturnAllTime = { ...fundingSummary.annualizedReturn };
+  }
 }
 
 function findProviderObservedStartDate(processedActivities) {
@@ -23839,6 +24039,11 @@ app.get('/api/summary', async function (req, res) {
                   currentAggregateNetDeposits
                 );
               }
+              rebuildAggregateAnnualizedReturnFromSeries(
+                aggregateFundingSummary,
+                aggregatedSeries,
+                aggregateSelectionKey
+              );
             }
             const aggregateCacheKey = buildTotalPnlSeriesCacheKey(aggregateSelectionKey, aggregateSeriesOptions);
             if (aggregateCacheKey) {
@@ -24119,6 +24324,15 @@ app.get('/api/summary', async function (req, res) {
           finalCurrentAggregateFunding.netDeposits
         );
       }
+      const migrationNetInvestedCapital = computeMigrationReconciledNetInvestedCapital({
+        fundingMap: accountFundingSummaries,
+        seriesMap: accountTotalPnlSeries,
+        accounts: selectedContexts.map((context) => context && context.account).filter(Boolean),
+        accountIds: Array.from(currentMetricAccountIds),
+      });
+      if (finalAggregateSummary && migrationNetInvestedCapital) {
+        finalAggregateSummary.netInvestedCapital = migrationNetInvestedCapital;
+      }
     }
 
     Object.values(accountFundingSummaries).forEach((entry) => {
@@ -24240,6 +24454,7 @@ app.get('/api/summary', async function (req, res) {
         brokerageName: account.brokerageName || null,
         institutionName: account.institutionName || null,
         name: account.name || null,
+        migratedTo: typeof account.migratedTo === 'string' ? account.migratedTo : null,
         type: account.type,
         status: account.status,
         archived: account.archived === true,
@@ -25612,6 +25827,8 @@ module.exports = {
     rebuildAnnualizedReturnFromSeries,
     applyOpeningFundingReconciliationToSummary,
     applyTotalPnlSeriesSummaryToFundingSummary,
+    rebuildAggregateAnnualizedReturnFromSeries,
+    computeMigrationReconciledNetInvestedCapital,
     buildProviderObservedReturnFromSeries,
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,

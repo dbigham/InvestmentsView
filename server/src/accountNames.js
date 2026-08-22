@@ -492,6 +492,19 @@ function applyHistoryStartDateSetting(target, key, value) {
   container.historyStartDate = normalized;
 }
 
+function applyMigratedToSetting(target, key, value) {
+  const container = ensureAccountSettingsEntry(target, key);
+  if (!container) {
+    return;
+  }
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized) {
+    delete container.migratedTo;
+    return;
+  }
+  container.migratedTo = normalized;
+}
+
 function applyClosedSetting(target, key, value) {
   const container = ensureAccountSettingsEntry(target, key);
   if (!container) {
@@ -1556,6 +1569,7 @@ const ACCOUNT_ENTRY_HINT_KEYS = new Set([
   'hidden',
   'ignored',
   'investmentAccount',
+  'migratedTo',
 ]);
 
 const PORTAL_ID_KEYS = [
@@ -1799,6 +1813,9 @@ function extractEntry(
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'historyStartDate')) {
       applyHistoryStartDateSetting(settingsTarget, resolvedKey, entry.historyStartDate);
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'migratedTo')) {
+      applyMigratedToSetting(settingsTarget, resolvedKey, entry.migratedTo);
     }
     if (Object.prototype.hasOwnProperty.call(entry, 'closed')) {
       applyClosedSetting(settingsTarget, resolvedKey, entry.closed);

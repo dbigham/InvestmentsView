@@ -1490,6 +1490,7 @@ export default function SummaryMetrics({
   deploymentSummary,
   pnl,
   fundingSummary,
+  netDepositsLabel,
   asOf,
   onRefresh,
   displayTotalEquity,
@@ -5669,7 +5670,7 @@ export default function SummaryMetrics({
             tone={cagrTone}
             onActivate={symbolMode ? null : (canShowReturnBreakdown ? onShowAnnualizedReturn : null)}
           />
-          {formattedNetDeposits && <MetricRow label="Net deposits" value={formattedNetDeposits} tone="neutral" />}
+          {formattedNetDeposits && <MetricRow label={netDepositsLabel} value={formattedNetDeposits} tone="neutral" />}
         </dl>
         {!hasActiveRangeSummary && (
           <dl className="equity-card__metric-column">
@@ -5819,6 +5820,7 @@ SummaryMetrics.propTypes = {
       note: PropTypes.string,
     }),
   }),
+  netDepositsLabel: PropTypes.string,
   asOf: PropTypes.string,
   onRefresh: PropTypes.func,
   displayTotalEquity: PropTypes.number,
@@ -6031,6 +6033,7 @@ SummaryMetrics.propTypes = {
 
 SummaryMetrics.defaultProps = {
   currencyOption: null,
+  netDepositsLabel: 'Net deposits',
   balances: null,
   deploymentSummary: null,
   asOf: null,

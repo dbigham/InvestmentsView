@@ -13096,9 +13096,17 @@ export default function App() {
     const historyStartDate = normalizeDate(selectedAccountFunding?.historyStartDate);
     const historyStartDateEstimated =
       selectedAccountFunding?.historyStartDateEstimated === true && Boolean(historyStartDate);
-    const serverNetDeposits = isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
-      ? selectedAccountFunding.netDeposits.combinedCad
-      : null;
+    const migrationNetInvestedCapital =
+      isAggregateSelection &&
+      selectedAccountFunding?.netInvestedCapital &&
+      typeof selectedAccountFunding.netInvestedCapital === 'object'
+        ? selectedAccountFunding.netInvestedCapital
+        : null;
+    const serverNetDeposits = isFiniteNumber(migrationNetInvestedCapital?.combinedCad)
+      ? migrationNetInvestedCapital.combinedCad
+      : isFiniteNumber(selectedAccountFunding?.netDeposits?.combinedCad)
+        ? selectedAccountFunding.netDeposits.combinedCad
+        : null;
     const serverTotalPnl = isFiniteNumber(selectedAccountFunding?.totalPnlSinceDisplayStartCad)
       ? selectedAccountFunding.totalPnlSinceDisplayStartCad
       : isFiniteNumber(selectedAccountFunding?.totalPnl?.combinedCad)
@@ -13206,11 +13214,13 @@ export default function App() {
       annualizedReturnStartDate: effectiveAnnualized.startDate,
     };
 
-    const allTimeNetDeposits = providerObservedPeriod
-      ? effectiveVariant.netDepositsCad
-      : isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
-      ? selectedAccountFunding.netDeposits.allTimeCad
-      : effectiveVariant.netDepositsCad;
+    const allTimeNetDeposits = isFiniteNumber(migrationNetInvestedCapital?.allTimeCad)
+      ? migrationNetInvestedCapital.allTimeCad
+      : providerObservedPeriod
+        ? effectiveVariant.netDepositsCad
+        : isFiniteNumber(selectedAccountFunding?.netDeposits?.allTimeCad)
+          ? selectedAccountFunding.netDeposits.allTimeCad
+          : effectiveVariant.netDepositsCad;
     const allTimeTotalPnl = providerObservedPeriod
       ? effectiveVariant.totalPnlCad
       : isFiniteNumber(selectedAccountFunding?.totalPnl?.allTimeCad)
@@ -13268,7 +13278,7 @@ export default function App() {
         cagrStartDate: rawCagrStartDate,
       },
     };
-  }, [selectedAccountFunding, activeCurrency]);
+  }, [selectedAccountFunding, activeCurrency, isAggregateSelection]);
 
   const cagrStartDate = fundingSummaryVariants?.metadata?.cagrStartDate || null;
 
@@ -18821,6 +18831,7 @@ export default function App() {
                 periodEndDate: asOf,
               };
             })() : effectiveFundingSummaryForDisplay}
+            netDepositsLabel={isAggregateSelection && !focusedSymbol ? 'Net invested' : 'Net deposits'}
             asOf={asOf}
             onRefresh={handleRefresh}
             displayTotalEquity={focusedSymbol ? symbolFilteredPositions.total : displayTotalEquity}
