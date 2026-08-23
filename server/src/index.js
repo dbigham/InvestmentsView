@@ -432,7 +432,9 @@ const totalPnlSeriesCacheStore = new Map();
 // totals that made Total P&L equal current equity minus raw deposits.
 // The symbol-total authority also matters here: bump this when a corrected
 // summary shape must not be served from an older pinned cache entry.
-const SUMMARY_CACHE_VERSION = 'funding-v10-successor-history';
+// Bump when the concrete-account cache payload changes between successor-only
+// and stitched Questrade + Wealthsimple history.
+const SUMMARY_CACHE_VERSION = 'funding-v11-successor-history';
 const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v7-migration-basis';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
@@ -641,7 +643,29 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
     }
 
     hasHistoricalBoundaryPoint = true;
-    const lastHistoricalPoint = historicalPoints[historicalPoints.length - 1];
+    // A predecessor may have a transfer-out snapshot on the configured
+    // handoff date. That snapshot is not the capital basis that should be
+    // carried into the successor; it is often close to zero after the assets
+    // have already been removed. When the boundary snapshot is an abrupt
+    // collapse, use the last point strictly before the handoff, which is also
+    // the basis used by migration net-invested-capital reconciliation. Keep a
+    // normal boundary snapshot when it is not a clear transfer-out artifact.
+    const preBoundaryHistoricalPoints = historicalPoints.filter(
+      (point) => point && typeof point.date === 'string' && point.date < boundary
+    );
+    const boundaryHistoricalPoint = historicalPoints[historicalPoints.length - 1];
+    const priorHistoricalPoint = preBoundaryHistoricalPoints[preBoundaryHistoricalPoints.length - 1];
+    const boundaryEquity = Number(boundaryHistoricalPoint?.equityCad);
+    const priorEquity = Number(priorHistoricalPoint?.equityCad);
+    const boundaryLooksLikeTransferOut =
+      boundaryHistoricalPoint?.date === boundary &&
+      Number.isFinite(priorEquity) &&
+      priorEquity > CASH_FLOW_EPSILON &&
+      (!Number.isFinite(boundaryEquity) || boundaryEquity <= priorEquity * 0.5);
+    const lastHistoricalPoint =
+      boundaryLooksLikeTransferOut && priorHistoricalPoint
+        ? priorHistoricalPoint
+        : boundaryHistoricalPoint;
     const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
     if (Number.isFinite(historicalPnl)) {
       pnlCarryForward += historicalPnl;
@@ -3376,13 +3400,28 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
       ? historicalIds
           .map((historicalId) => {
             const historicalContainer = accountTotalPnlSeries[String(historicalId).trim()];
-            const historicalSeries =
+            const historicalAccount = accountById.get(String(historicalId).trim()) || {
+              id: String(historicalId).trim(),
+              closed: true,
+              archived: true,
+            };
+            const historicalSeriesFromSuperset =
               historicalContainer && typeof historicalContainer === 'object'
                 ? historicalContainer.all || historicalContainer.cagr
                 : null;
-            const historicalAccount = accountById.get(String(historicalId).trim());
-            return historicalSeries && historicalAccount
-              ? { context: { account: historicalAccount }, series: historicalSeries }
+            const historicalSeries =
+              historicalSeriesFromSuperset ||
+              getArchivedTotalPnlSeriesForRequest(historicalAccount, {
+                applyAccountCagrStartDate: false,
+                allowStoredArchivedSeries: true,
+              });
+            return historicalSeries
+              ? {
+                  context: {
+                    account: historicalAccount,
+                  },
+                  series: historicalSeries,
+                }
               : null;
           })
           .filter(Boolean)
@@ -3634,6 +3673,60 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
   };
 
   return payload;
+}
+
+function summaryNeedsSuccessorHistoryRebuild(summary, normalizedSelection, historicalSource = null) {
+  if (!summary || !normalizedSelection || normalizedSelection.type !== 'account') {
+    return false;
+  }
+
+  const accountId =
+    typeof summary.resolvedAccountId === 'string' && summary.resolvedAccountId.trim()
+      ? summary.resolvedAccountId.trim()
+      : typeof normalizedSelection.requestedId === 'string'
+        ? normalizedSelection.requestedId.trim()
+        : '';
+  if (!accountId) {
+    return false;
+  }
+
+  const source = historicalSource && typeof historicalSource === 'object' ? historicalSource : summary;
+  const historicalBySuccessor =
+    source.historicalAccountIdsBySuccessor && typeof source.historicalAccountIdsBySuccessor === 'object'
+      ? source.historicalAccountIdsBySuccessor
+      : null;
+  if (!historicalBySuccessor || !Array.isArray(historicalBySuccessor[accountId]) || !historicalBySuccessor[accountId].length) {
+    return false;
+  }
+
+  const seriesContainer =
+    summary.accountTotalPnlSeries && typeof summary.accountTotalPnlSeries === 'object'
+      ? summary.accountTotalPnlSeries[accountId]
+      : null;
+  const series =
+    seriesContainer && typeof seriesContainer === 'object'
+      ? seriesContainer.all || seriesContainer.cagr
+      : null;
+
+  return Boolean(series && typeof series === 'object' && !series.stitchedFromHistorical);
+}
+
+function supersetHasSuccessorHistory(superset, normalizedSelection) {
+  if (!superset || !normalizedSelection || normalizedSelection.type !== 'account') {
+    return false;
+  }
+  const accountId =
+    typeof normalizedSelection.requestedId === 'string' ? normalizedSelection.requestedId.trim() : '';
+  const historicalBySuccessor =
+    superset.historicalAccountIdsBySuccessor && typeof superset.historicalAccountIdsBySuccessor === 'object'
+      ? superset.historicalAccountIdsBySuccessor
+      : null;
+  return Boolean(
+    accountId &&
+      historicalBySuccessor &&
+      Array.isArray(historicalBySuccessor[accountId]) &&
+      historicalBySuccessor[accountId].length
+  );
 }
 
 function getNewsModelPricing(modelName) {
@@ -23357,9 +23450,18 @@ app.get('/api/summary', async function (req, res) {
   }
 
   try {
+    if (normalizedSelection.type !== 'all') {
+      supersetEntry = getSupersetCacheEntry();
+    }
     if (!forceRefresh) {
       let cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
-      if (cached && cached.payload) {
+      const canUseCachedSummary =
+        !supersetHasSuccessorHistory(supersetEntry, normalizedSelection) &&
+        (!cached ||
+          !cached.payload ||
+          !supersetEntry ||
+          !summaryNeedsSuccessorHistoryRebuild(cached.payload, normalizedSelection, supersetEntry));
+      if (cached && cached.payload && canUseCachedSummary) {
         debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
           requestedId: normalizedSelection.requestedId,
         });
@@ -23367,7 +23469,6 @@ app.get('/api/summary', async function (req, res) {
       }
 
     if (normalizedSelection.type !== 'all') {
-      supersetEntry = getSupersetCacheEntry();
       if (supersetEntry) {
         const reinterpretedSelection = reinterpretSelectionWithSuperset(normalizedSelection, supersetEntry);
         if (reinterpretedSelection && reinterpretedSelection.cacheKey !== normalizedSelection.cacheKey) {
@@ -23383,7 +23484,13 @@ app.get('/api/summary', async function (req, res) {
             normalizedSelection.cacheKey = `${normalizedSelection.cacheKey}::includeNonInvestmentAccounts`;
           }
           cached = getSummaryCacheEntry(normalizedSelection.cacheKey);
-          if (cached && cached.payload) {
+          const canUseReinterpretedCachedSummary =
+            !supersetHasSuccessorHistory(supersetEntry, normalizedSelection) &&
+            (!cached ||
+              !cached.payload ||
+              !supersetEntry ||
+              !summaryNeedsSuccessorHistoryRebuild(cached.payload, normalizedSelection, supersetEntry));
+          if (cached && cached.payload && canUseReinterpretedCachedSummary) {
             debugSummaryCache('cache hit', normalizedSelection.cacheKey, {
               requestedId: normalizedSelection.requestedId,
             });
@@ -23394,19 +23501,42 @@ app.get('/api/summary', async function (req, res) {
 
       if (supersetEntry && supersetEntry.payload) {
         const derivationDetails = DEBUG_SUMMARY_CACHE ? {} : null;
-        const derived = deriveSummaryFromSuperset(supersetEntry, normalizedSelection, derivationDetails);
+        let derivationSuperset = supersetEntry;
+        if (
+          normalizedSelection.type === 'account' &&
+          cached &&
+          cached.payload &&
+          cached.payload.accountTotalPnlSeries &&
+          typeof cached.payload.accountTotalPnlSeries === 'object'
+        ) {
+          const cachedSeries = cached.payload.accountTotalPnlSeries[normalizedSelection.requestedId];
+          if (cachedSeries && typeof cachedSeries === 'object') {
+            derivationSuperset = {
+              ...supersetEntry,
+              accountTotalPnlSeries: {
+                ...(supersetEntry.accountTotalPnlSeries || {}),
+                [normalizedSelection.requestedId]: cachedSeries,
+              },
+            };
+          }
+        }
+        const derived = deriveSummaryFromSuperset(derivationSuperset, normalizedSelection, derivationDetails);
         if (derived) {
-          setSummaryCacheEntry(normalizedSelection.cacheKey, derived, {
-            requestedId: normalizedSelection.requestedId,
-            source: 'superset',
-            originalRequestedId: normalizedSelection.originalRequestedId || null,
-            cacheScope: manualRefreshKey ? { refreshKey: manualRefreshKey, pinned: true } : undefined,
-          });
-          debugSummaryCache('served from superset cache', normalizedSelection.cacheKey, {
-            requestedId: normalizedSelection.requestedId,
-            originalRequestedId: normalizedSelection.originalRequestedId || null,
-          });
-          return res.json(derived);
+          const derivedSeries = derived.accountTotalPnlSeries?.[normalizedSelection.requestedId]?.all;
+          const hasLinkedHistory = supersetHasSuccessorHistory(supersetEntry, normalizedSelection);
+          if (normalizedSelection.type !== 'account' || !hasLinkedHistory || derivedSeries) {
+            setSummaryCacheEntry(normalizedSelection.cacheKey, derived, {
+              requestedId: normalizedSelection.requestedId,
+              source: 'superset',
+              originalRequestedId: normalizedSelection.originalRequestedId || null,
+              cacheScope: manualRefreshKey ? { refreshKey: manualRefreshKey, pinned: true } : undefined,
+            });
+            debugSummaryCache('served from superset cache', normalizedSelection.cacheKey, {
+              requestedId: normalizedSelection.requestedId,
+              originalRequestedId: normalizedSelection.originalRequestedId || null,
+            });
+            return res.json(derived);
+          }
         }
         if (derivationDetails) {
           debugSummaryCache('superset derivation unavailable', normalizedSelection.cacheKey, {
@@ -24342,6 +24472,41 @@ app.get('/api/summary', async function (req, res) {
             'Failed to compute total P&L series for account ' + context.account.id + ':',
             message
           );
+        }
+
+        // If the provider/archive aggregate path could not assemble the linked
+        // predecessor, use the durable archived Questrade series directly. This
+        // keeps a direct account load on the same stitched-history basis as an
+        // account reached from All accounts, without another brokerage request.
+        if (
+          totalPnlSeries &&
+          !totalPnlSeriesWasStitched &&
+          historicalContextsForSelectedAccount.length > 0
+        ) {
+          const storedHistoricalResults = historicalContextsForSelectedAccount
+            .map((historicalContext) => {
+              const historicalSeries = getArchivedTotalPnlSeriesForRequest(
+                historicalContext.account,
+                {
+                  applyAccountCagrStartDate: false,
+                  allowStoredArchivedSeries: true,
+                }
+              );
+              return historicalSeries
+                ? { context: historicalContext, series: historicalSeries }
+                : null;
+            })
+            .filter(Boolean);
+          if (storedHistoricalResults.length > 0) {
+            const stitchedResult = stitchSuccessorSeriesResult(
+              { context, series: totalPnlSeries },
+              storedHistoricalResults
+            );
+            if (stitchedResult && stitchedResult.series && Array.isArray(stitchedResult.series.points)) {
+              totalPnlSeries = markStitchedSuccessorSeries(stitchedResult.series);
+              totalPnlSeriesWasStitched = true;
+            }
+          }
         }
 
         if (totalPnlSeries && totalPnlSeries.summary) {
@@ -27006,6 +27171,8 @@ module.exports = {
     resolveHistoricalAccountIdsForSuccessor,
     buildHistoricalAccountIdsBySuccessor,
     stitchSuccessorSeriesResult,
+    summaryNeedsSuccessorHistoryRebuild,
+    supersetHasSuccessorHistory,
     markStitchedSuccessorSeries,
     deriveCagrSeriesView,
     isCurrentSnapshotDate,

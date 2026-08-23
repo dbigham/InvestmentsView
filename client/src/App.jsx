@@ -3114,13 +3114,31 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
       return;
     }
     hasHistoricalBoundaryPoint = true;
+    // A predecessor can have a transfer-out snapshot on the successor's
+    // handoff date. That snapshot is not the capital basis to carry forward;
+    // it is often close to zero after the assets have already been removed.
+    // Match the server-side stitcher by using the last pre-handoff point when
+    // the boundary is an abrupt collapse, while preserving a normal boundary
+    // snapshot when it is not a transfer-out artifact.
+    const preBoundaryPoints = points.filter(
+      (point) => point && typeof point.date === 'string' && point.date < boundary
+    );
     const boundaryPoint = points[points.length - 1];
-    const historicalPnl = Number(boundaryPoint.totalPnlCad);
+    const priorPoint = preBoundaryPoints[preBoundaryPoints.length - 1];
+    const boundaryEquity = Number(boundaryPoint?.equityCad);
+    const priorEquity = Number(priorPoint?.equityCad);
+    const boundaryLooksLikeTransferOut =
+      boundaryPoint?.date === boundary &&
+      Number.isFinite(priorEquity) &&
+      priorEquity > 1e-6 &&
+      (!Number.isFinite(boundaryEquity) || boundaryEquity <= priorEquity * 0.5);
+    const lastHistoricalPoint = boundaryLooksLikeTransferOut && priorPoint ? priorPoint : boundaryPoint;
+    const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
     if (Number.isFinite(historicalPnl)) {
       pnlCarryForward += historicalPnl;
     }
-    const historicalEquity = Number(boundaryPoint.equityCad);
-    const historicalDeposits = Number(boundaryPoint.cumulativeNetDepositsCad);
+    const historicalEquity = Number(lastHistoricalPoint.equityCad);
+    const historicalDeposits = Number(lastHistoricalPoint.cumulativeNetDepositsCad);
     if (Number.isFinite(historicalEquity) && Number.isFinite(historicalDeposits)) {
       historicalEquityTotal += historicalEquity;
       historicalDepositsTotal += historicalDeposits;
@@ -3530,6 +3548,7 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
       destinationContainer && typeof destinationContainer === 'object'
         ? destinationContainer.all || destinationContainer.cagr
         : null;
+    const existingFunding = nextAccountFunding[successorId];
     const historicalSeriesList = historicalIds
       .map((historicalId) => {
         const container = totalPnlSeriesMap[String(historicalId).trim()];
@@ -3555,7 +3574,6 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
         },
       };
 
-      const existingFunding = nextAccountFunding[successorId];
       if (existingFunding) {
         const annualized = computeAnnualizedReturnFromSeriesPoints(stitchedSeries.points);
         const annualizedDetails = {

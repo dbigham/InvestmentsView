@@ -25,6 +25,22 @@ test('historical successor mapping follows explicit closed-account links only', 
   );
 });
 
+test('cached successor summaries are rebuilt when their series omits linked history', () => {
+  const selection = { type: 'account', requestedId: 'ws:successor' };
+  const base = {
+    resolvedAccountId: 'ws:successor',
+    historicalAccountIdsBySuccessor: { 'ws:successor': ['q:source'] },
+    accountTotalPnlSeries: {
+      'ws:successor': { all: { points: [{ date: '2026-07-02' }] } },
+    },
+  };
+
+  assert.equal(__test__.summaryNeedsSuccessorHistoryRebuild(base, selection), true);
+  assert.equal(__test__.supersetHasSuccessorHistory(base, selection), true);
+  base.accountTotalPnlSeries['ws:successor'].all.stitchedFromHistorical = true;
+  assert.equal(__test__.summaryNeedsSuccessorHistoryRebuild(base, selection), false);
+});
+
 test('successor series carries historical P&L and deposited-capital basis across the handoff', () => {
   const destinationResult = {
     context: {
@@ -126,6 +142,42 @@ test('successor points are rebased to the historical boundary when transfer snap
   assert.equal(stitched.series.points[1].totalPnlCad, 400);
   assert.equal(stitched.series.summary.totalPnlCad, 400);
   assert.equal(stitched.series.summary.netDepositsCad, 900);
+});
+
+test('successor stitch ignores a predecessor transfer-out snapshot at the handoff', () => {
+  const stitched = __test__.stitchSuccessorSeriesResult(
+    {
+      context: { account: { id: 'ws:successor', historyStartDate: '2026-07-02' } },
+      series: {
+        points: [
+          { date: '2026-07-02', equityCad: 300, cumulativeNetDepositsCad: -1600, totalPnlCad: 1900 },
+          { date: '2026-07-03', equityCad: 350, cumulativeNetDepositsCad: -1600, totalPnlCad: 1950 },
+        ],
+        summary: { totalPnlCad: 1950, totalPnlAllTimeCad: 1950, netDepositsCad: -1600 },
+      },
+    },
+    [
+      {
+        context: { account: { id: 'q:source', closed: true } },
+        series: {
+          points: [
+            { date: '2026-07-01', equityCad: 18000, cumulativeNetDepositsCad: 16000, totalPnlCad: 2000 },
+            { date: '2026-07-02', equityCad: 300, cumulativeNetDepositsCad: -1600, totalPnlCad: 1900 },
+          ],
+        },
+      },
+    ]
+  );
+
+  assert.equal(stitched.series.points[0].date, '2026-07-01');
+  assert.equal(stitched.series.points[1].date, '2026-07-02');
+  assert.equal(stitched.series.points[1].equityCad, 18000);
+  assert.equal(stitched.series.points[1].cumulativeNetDepositsCad, 16000);
+  assert.equal(stitched.series.points[1].totalPnlCad, 2000);
+  assert.equal(stitched.series.points[2].equityCad, 18050);
+  assert.equal(stitched.series.points[2].cumulativeNetDepositsCad, 16000);
+  assert.equal(stitched.series.points[2].totalPnlCad, 2050);
+  assert.equal(stitched.series.summary.netDepositsCad, 16000);
 });
 
 test('stitched successor metadata uses the reconstructed series start', () => {
