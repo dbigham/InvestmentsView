@@ -25,3 +25,18 @@ test('aggregate annualized return follows the reconstructed aggregate series', (
   assert.equal(fundingSummary.annualizedReturn.startDate, '2023-01-01');
   assert.equal(fundingSummary.annualizedReturn.asOf, '2024-01-01');
 });
+
+test('aggregate annualized return uses the chart-implied basis after P&L carry-forward', () => {
+  const fundingSummary = {};
+  const series = {
+    points: [
+      { date: '2023-01-01', equityCad: 100, cumulativeNetDepositsCad: 100, totalPnlCad: 0 },
+      { date: '2024-01-01', equityCad: 130, cumulativeNetDepositsCad: 120, totalPnlCad: 30 },
+    ],
+  };
+
+  __test__.rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, series, 'all');
+
+  assert.ok(Math.abs(fundingSummary.annualizedReturn.rate - 0.3) < 1e-6);
+  assert.equal(fundingSummary.annualizedReturn.startDate, '2023-01-01');
+});

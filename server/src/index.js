@@ -11856,7 +11856,31 @@ function rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, totalPnlSeri
   if (!fundingSummary || typeof fundingSummary !== 'object' || !totalPnlSeries) {
     return;
   }
-  rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, accountKey);
+
+  // The aggregate series may carry historical P&L across an explicit
+  // Questrade-to-Wealthsimple handoff even when the raw cumulative-deposit
+  // line cannot establish a matching boundary equity. In that case, using the
+  // raw deposit line for XIRR treats the carried P&L as unexplained capital
+  // and understates the return. The chart's own invested basis is equity less
+  // displayed Total P&L, so use that basis wherever both values are present.
+  const points = Array.isArray(totalPnlSeries.points)
+    ? totalPnlSeries.points.map((point) => {
+        const equityCad = Number(point?.equityCad);
+        const totalPnlCad = Number(point?.totalPnlCad);
+        if (Number.isFinite(equityCad) && Number.isFinite(totalPnlCad)) {
+          return {
+            ...point,
+            cumulativeNetDepositsCad: equityCad - totalPnlCad,
+          };
+        }
+        return point;
+      })
+    : totalPnlSeries.points;
+  const annualizationSeries = points === totalPnlSeries.points
+    ? totalPnlSeries
+    : { ...totalPnlSeries, points };
+
+  rebuildAnnualizedReturnFromSeries(fundingSummary, annualizationSeries, accountKey);
   if (fundingSummary.annualizedReturn && typeof fundingSummary.annualizedReturn === 'object') {
     fundingSummary.annualizedReturnAllTime = { ...fundingSummary.annualizedReturn };
   }
