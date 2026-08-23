@@ -180,6 +180,61 @@ test('successor stitch ignores a predecessor transfer-out snapshot at the handof
   assert.equal(stitched.series.summary.netDepositsCad, 16000);
 });
 
+test('successor stitch clips a sustained predecessor collapse before the handoff', () => {
+  const stitched = __test__.stitchSuccessorSeriesResult(
+    {
+      context: { account: { id: 'ws:successor', historyStartDate: '2026-07-10' } },
+      series: {
+        points: [
+          { date: '2026-07-10', equityCad: 4100, cumulativeNetDepositsCad: 4090, totalPnlCad: 10 },
+          { date: '2026-07-11', equityCad: 4200, cumulativeNetDepositsCad: 4090, totalPnlCad: 110 },
+        ],
+        summary: { totalPnlCad: 110, totalPnlAllTimeCad: 110, netDepositsCad: 4090 },
+      },
+    },
+    [
+      {
+        context: { account: { id: 'q:source', closed: true } },
+        series: {
+          points: [
+            { date: '2026-06-20', equityCad: 4300, cumulativeNetDepositsCad: 2800, totalPnlCad: 1500 },
+            { date: '2026-06-21', equityCad: 4292, cumulativeNetDepositsCad: 2793.51, totalPnlCad: 1498.49 },
+            { date: '2026-06-22', equityCad: 0, cumulativeNetDepositsCad: -1488.70, totalPnlCad: 1488.70 },
+            { date: '2026-07-10', equityCad: 1.39, cumulativeNetDepositsCad: -1488.70, totalPnlCad: 1490.09 },
+          ],
+        },
+      },
+    ]
+  );
+
+  assert.deepEqual(
+    stitched.series.points.map((point) => point.date),
+    ['2026-06-20', '2026-06-21', '2026-07-10', '2026-07-11']
+  );
+  assert.equal(stitched.series.points[2].equityCad, 4292);
+  assert.equal(stitched.series.points[2].cumulativeNetDepositsCad, 2793.51);
+  assert.ok(Math.abs(stitched.series.points[2].totalPnlCad - 1498.49) < 1e-9);
+  assert.ok(Math.abs(stitched.series.summary.netDepositsCad - 2793.51) < 1e-9);
+});
+
+test('successor stitch leaves the destination unchanged when predecessor history has no usable handoff', () => {
+  const destinationSeries = {
+    points: [{ date: '2026-06-29', equityCad: 45000, cumulativeNetDepositsCad: 45000, totalPnlCad: 0 }],
+    summary: { totalPnlCad: 0, netDepositsCad: 45000 },
+  };
+  const result = __test__.stitchSuccessorSeriesResult(
+    { context: { account: { id: 'ws:successor', historyStartDate: '2026-06-29' } }, series: destinationSeries },
+    [
+      {
+        context: { account: { id: 'q:source', closed: true } },
+        series: { points: [{ date: '2026-06-29', equityCad: 0, cumulativeNetDepositsCad: 0, totalPnlCad: 0 }] },
+      },
+    ]
+  );
+
+  assert.equal(result.series, destinationSeries);
+});
+
 test('stitched successor metadata uses the reconstructed series start', () => {
   const marked = __test__.markStitchedSuccessorSeries({
     periodStartDate: '2025-01-23',
@@ -214,6 +269,23 @@ test('CAGR view rebases a stitched series without changing its all-time history'
     equityCad: 200,
     cumulativeNetDepositsCad: 150,
   });
+});
+
+test('CAGR view adds a zero baseline when the configured start predates available points', () => {
+  const cagr = __test__.deriveCagrSeriesView(
+    {
+      periodStartDate: '2026-06-29',
+      points: [{ date: '2026-06-29', equityCad: 1000, cumulativeNetDepositsCad: 1000, totalPnlCad: 0 }],
+      summary: { totalPnlCad: 0, netDepositsCad: 1000 },
+    },
+    '2025-06-29'
+  );
+
+  assert.equal(cagr.periodStartDate, '2025-06-29');
+  assert.equal(cagr.displayStartDate, '2025-06-29');
+  assert.equal(cagr.points[0].date, '2025-06-29');
+  assert.equal(cagr.points[0].totalPnlCad, 0);
+  assert.equal(cagr.summary.displayStartTotals.equityCad, 0);
 });
 
 test('aggregate uses one reconstructed series for a migrated account pair', async () => {

@@ -434,8 +434,8 @@ const totalPnlSeriesCacheStore = new Map();
 // summary shape must not be served from an older pinned cache entry.
 // Bump when the concrete-account cache payload changes between successor-only
 // and stitched Questrade + Wealthsimple history.
-const SUMMARY_CACHE_VERSION = 'funding-v11-successor-history';
-const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v7-migration-basis';
+const SUMMARY_CACHE_VERSION = 'funding-v12-migration-basis-qa';
+const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v8-migration-basis-qa';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
 const rangeBreakdownCache = new Map();
@@ -596,6 +596,52 @@ function setAccountTotalPnlSeries(map, accountId, mode, series) {
   entry[mode] = series;
 }
 
+function resolveHistoricalTransferOutBasis(points, boundary) {
+  const usablePoints = Array.isArray(points)
+    ? points
+        .filter(
+          (point) =>
+            point &&
+            typeof point.date === 'string' &&
+            point.date <= boundary &&
+            Number.isFinite(Number(point.equityCad))
+        )
+        .sort((a, b) => a.date.localeCompare(b.date))
+    : [];
+  if (!usablePoints.length) {
+    return { basisPoint: null, cutoffDate: null };
+  }
+
+  // A closed predecessor can retain several days of post-transfer snapshots
+  // near zero. Treat a large, sustained collapse as the transfer-out artifact
+  // and use the last pre-collapse point as the migration basis. A temporary
+  // market drawdown is preserved because a later recovery invalidates this
+  // test.
+  for (let index = 1; index < usablePoints.length; index += 1) {
+    const priorPoint = usablePoints[index - 1];
+    const currentPoint = usablePoints[index];
+    const priorEquity = Number(priorPoint.equityCad);
+    const currentEquity = Number(currentPoint.equityCad);
+    const collapseThreshold = Math.max(100, Math.abs(priorEquity) * 0.25);
+    const looksLikeCollapse =
+      priorEquity > Math.max(100, CASH_FLOW_EPSILON) &&
+      currentEquity <= priorEquity * 0.5 &&
+      priorEquity - currentEquity >= collapseThreshold;
+    if (!looksLikeCollapse) {
+      continue;
+    }
+    const recovered = usablePoints.slice(index + 1).some((point) => {
+      const equity = Number(point.equityCad);
+      return Number.isFinite(equity) && equity >= priorEquity * 0.8;
+    });
+    if (!recovered) {
+      return { basisPoint: priorPoint, cutoffDate: priorPoint.date };
+    }
+  }
+
+  return { basisPoint: usablePoints[usablePoints.length - 1], cutoffDate: null };
+}
+
 function stitchSuccessorSeriesResult(destinationResult, historicalResults, boundaryOverride = null) {
   if (
     !destinationResult ||
@@ -643,29 +689,23 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
     }
 
     hasHistoricalBoundaryPoint = true;
-    // A predecessor may have a transfer-out snapshot on the configured
-    // handoff date. That snapshot is not the capital basis that should be
-    // carried into the successor; it is often close to zero after the assets
-    // have already been removed. When the boundary snapshot is an abrupt
-    // collapse, use the last point strictly before the handoff, which is also
-    // the basis used by migration net-invested-capital reconciliation. Keep a
-    // normal boundary snapshot when it is not a clear transfer-out artifact.
-    const preBoundaryHistoricalPoints = historicalPoints.filter(
-      (point) => point && typeof point.date === 'string' && point.date < boundary
+    const historicalBasis = resolveHistoricalTransferOutBasis(historicalPoints, boundary);
+    const lastHistoricalPoint = historicalBasis.basisPoint;
+    const historicalPointsForDisplay = historicalBasis.cutoffDate
+      ? historicalPoints.filter((point) => point.date <= historicalBasis.cutoffDate)
+      : historicalPoints;
+    if (!lastHistoricalPoint || !historicalPointsForDisplay.length) {
+      return;
+    }
+    const hasMeaningfulHistoricalPoint = historicalPointsForDisplay.some((point) =>
+      additivePointFields.some((field) => {
+        const value = Number(point[field]);
+        return Number.isFinite(value) && Math.abs(value) >= CASH_FLOW_EPSILON;
+      })
     );
-    const boundaryHistoricalPoint = historicalPoints[historicalPoints.length - 1];
-    const priorHistoricalPoint = preBoundaryHistoricalPoints[preBoundaryHistoricalPoints.length - 1];
-    const boundaryEquity = Number(boundaryHistoricalPoint?.equityCad);
-    const priorEquity = Number(priorHistoricalPoint?.equityCad);
-    const boundaryLooksLikeTransferOut =
-      boundaryHistoricalPoint?.date === boundary &&
-      Number.isFinite(priorEquity) &&
-      priorEquity > CASH_FLOW_EPSILON &&
-      (!Number.isFinite(boundaryEquity) || boundaryEquity <= priorEquity * 0.5);
-    const lastHistoricalPoint =
-      boundaryLooksLikeTransferOut && priorHistoricalPoint
-        ? priorHistoricalPoint
-        : boundaryHistoricalPoint;
+    if (!hasMeaningfulHistoricalPoint) {
+      return;
+    }
     const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
     if (Number.isFinite(historicalPnl)) {
       pnlCarryForward += historicalPnl;
@@ -679,7 +719,7 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
       hasCompleteHistoricalBoundaryBasis = false;
     }
 
-    historicalPoints
+    historicalPointsForDisplay
       .filter((point) => point && typeof point.date === 'string' && point.date < boundary)
       .forEach((point) => {
         const existing = historicalPointsByDate.get(point.date) || { date: point.date };
@@ -1601,6 +1641,9 @@ async function computeAggregateTotalPnlSeriesForContexts(
     points: combinedPoints,
     summary: summaryPayload,
   };
+  if (stitchedSuccessorIds.has(String(outputAccountId))) {
+    payload.stitchedFromHistorical = true;
+  }
 
   if (aggregatedIssues.size) {
     payload.issues = Array.from(aggregatedIssues);
@@ -2480,13 +2523,18 @@ function findPreMigrationSeriesPoint(series, migrationStartDate) {
     return null;
   }
   const priorPoints = series.points.filter((point) => {
-    if (!point || typeof point.date !== 'string' || point.date >= migrationStartDate) {
+    if (!point || typeof point.date !== 'string' || point.date > migrationStartDate) {
       return false;
     }
     return Number.isFinite(Number(point.equityCad));
   });
   if (!priorPoints.length) {
     return null;
+  }
+
+  const basis = resolveHistoricalTransferOutBasis(priorPoints, migrationStartDate);
+  if (basis.basisPoint && Number(basis.basisPoint.equityCad) > CASH_FLOW_EPSILON) {
+    return basis.basisPoint;
   }
 
   // A closed source account often has a final zero-equity point on the
@@ -3439,24 +3487,26 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
         { context: { account: successor }, series: destinationSeries },
         historicalResults
       );
-      const stitchedSeries = markStitchedSuccessorSeries(stitchedResult.series);
-      const cagrSeries = deriveCagrSeriesView(stitchedSeries, successor.cagrStartDate);
-      accountTotalPnlSeries[successorId] = {
-        ...(destinationContainer || {}),
-        all: stitchedSeries,
-        cagr: cagrSeries,
-      };
-
-      const existingFunding = accountFunding[successorId];
-      if (existingFunding) {
-        const stitchedFunding = {
-          ...existingFunding,
-          totalPnl: existingFunding.totalPnl ? { ...existingFunding.totalPnl } : undefined,
-          netDeposits: existingFunding.netDeposits ? { ...existingFunding.netDeposits } : undefined,
+      if (stitchedResult.series !== destinationSeries) {
+        const stitchedSeries = markStitchedSuccessorSeries(stitchedResult.series);
+        const cagrSeries = deriveCagrSeriesView(stitchedSeries, successor.cagrStartDate);
+        accountTotalPnlSeries[successorId] = {
+          ...(destinationContainer || {}),
+          all: stitchedSeries,
+          cagr: cagrSeries,
         };
-        applyStitchedSuccessorSeriesToFundingSummary(stitchedFunding, stitchedSeries, successor);
-        stitchedFunding.stitchedFromHistorical = true;
-        accountFunding[successorId] = stitchedFunding;
+
+        const existingFunding = accountFunding[successorId];
+        if (existingFunding) {
+          const stitchedFunding = {
+            ...existingFunding,
+            totalPnl: existingFunding.totalPnl ? { ...existingFunding.totalPnl } : undefined,
+            netDeposits: existingFunding.netDeposits ? { ...existingFunding.netDeposits } : undefined,
+          };
+          applyStitchedSuccessorSeriesToFundingSummary(stitchedFunding, stitchedSeries, successor);
+          stitchedFunding.stitchedFromHistorical = true;
+          accountFunding[successorId] = stitchedFunding;
+        }
       }
     }
   }
@@ -12176,6 +12226,36 @@ function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accoun
   const startIso = startDate.toISOString().slice(0, 10);
   const incompleteFlag = existingAnnualized && existingAnnualized.incomplete === true;
 
+  // A tiny opening snapshot is sometimes only a placeholder for a Questrade
+  // account whose meaningful funded history begins earlier than the configured
+  // CAGR display date. Annualizing from that placeholder produces absurd
+  // rates (for example, 18,000% on a small account). Preserve the provider's
+  // valid all-time return in this narrow case instead of treating the
+  // placeholder as invested capital.
+  const existingAllTime =
+    fundingSummary.annualizedReturnAllTime && typeof fundingSummary.annualizedReturnAllTime === 'object'
+      ? fundingSummary.annualizedReturnAllTime
+      : null;
+  const allTimeRate = Number(existingAllTime?.rate);
+  const endingEquity = Number(fundingSummary.totalEquityCad);
+  const nominalOpeningSnapshot =
+    startEquity > 0 &&
+    Number.isFinite(endingEquity) &&
+    endingEquity > 0 &&
+    startEquity <= Math.max(25, endingEquity * 0.01);
+  if (nominalOpeningSnapshot && Number.isFinite(allTimeRate)) {
+    fundingSummary.annualizedReturn = {
+      ...existingAllTime,
+      rate: allTimeRate,
+      method: existingAllTime.method || 'xirr',
+      startDate: existingAllTime.startDate || startIso,
+      asOf: existingAllTime.asOf || asOf || undefined,
+      incomplete: existingAllTime.incomplete || undefined,
+    };
+    fundingSummary.returnBreakdown = undefined;
+    return;
+  }
+
   if (Number.isFinite(rate)) {
     fundingSummary.annualizedReturn = {
       rate,
@@ -12626,23 +12706,40 @@ function deriveCagrSeriesView(series, cagrStartDate) {
   if (!displayStartPoint) {
     return series;
   }
+  const firstPoint = series.points.find((point) => point && typeof point.date === 'string');
+  const needsSyntheticBaseline = firstPoint && firstPoint.date > normalizedStart;
+  const baselinePoint = needsSyntheticBaseline
+    ? {
+        date: normalizedStart,
+        equityCad: 0,
+        cumulativeNetDepositsCad: 0,
+        totalPnlCad: 0,
+        totalPnlSinceDisplayStartCad: 0,
+        equitySinceDisplayStartCad: 0,
+        cumulativeNetDepositsSinceDisplayStartCad: 0,
+      }
+    : null;
+  const viewPoints = baselinePoint ? [baselinePoint, ...series.points] : series.points;
+  const effectiveDisplayStartPoint = baselinePoint || displayStartPoint;
 
   const displayStartTotals = {
-    totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
-      ? Number(displayStartPoint.totalPnlCad)
+    totalPnlCad: Number.isFinite(Number(effectiveDisplayStartPoint.totalPnlCad))
+      ? Number(effectiveDisplayStartPoint.totalPnlCad)
       : null,
-    equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
-      ? Number(displayStartPoint.equityCad)
+    equityCad: Number.isFinite(Number(effectiveDisplayStartPoint.equityCad))
+      ? Number(effectiveDisplayStartPoint.equityCad)
       : null,
-    cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
-      ? Number(displayStartPoint.cumulativeNetDepositsCad)
+    cumulativeNetDepositsCad: Number.isFinite(Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad))
+      ? Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad)
       : null,
   };
 
   return {
     ...series,
+    periodStartDate: needsSyntheticBaseline ? normalizedStart : series.periodStartDate,
     cagrStartDate: normalizedStart,
-    displayStartDate: displayStartPoint.date,
+    displayStartDate: needsSyntheticBaseline ? normalizedStart : displayStartPoint.date,
+    points: viewPoints,
     summary: {
       ...(series.summary && typeof series.summary === 'object' ? series.summary : {}),
       displayStartTotals,
@@ -12674,6 +12771,43 @@ function applyStitchedSuccessorSeriesToFundingSummary(fundingSummary, series, ac
     fundingSummary.cagrStartDate = account.cagrStartDate.trim().slice(0, 10);
   }
   rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, markedSeries, account && account.id);
+}
+
+function applyDirectCagrSeriesToFundingSummary(fundingSummary, series, account) {
+  if (!fundingSummary || !series) {
+    return;
+  }
+
+  const summary = series.summary && typeof series.summary === 'object' ? series.summary : null;
+  if (series.periodStartDate) {
+    fundingSummary.periodStartDate = series.periodStartDate;
+  }
+  if (series.periodEndDate) {
+    fundingSummary.periodEndDate = series.periodEndDate;
+  }
+  if (summary && Number.isFinite(summary.totalPnlSinceDisplayStartCad)) {
+    fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlSinceDisplayStartCad;
+  }
+  if (summary && summary.displayStartTotals) {
+    fundingSummary.displayStartTotals = summary.displayStartTotals;
+  }
+  if (account && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()) {
+    fundingSummary.cagrStartDate = account.cagrStartDate.trim().slice(0, 10);
+  }
+
+  // A direct account with an explicit CAGR start must not publish a reliable
+  // provider-period return as though it were the configured CAGR period. The
+  // direct CAGR series is the source of truth for the table labels and return;
+  // if it has no funded opening baseline, rebuildAnnualizedReturnFromSeries
+  // will deliberately leave the rate unavailable instead of relabelling a
+  // shorter provider-period rate.
+  fundingSummary.providerObservedReturn = undefined;
+  fundingSummary.estimatedHistoryReturn = undefined;
+  fundingSummary.historyStartDate = undefined;
+  fundingSummary.historyStartDateEstimated = undefined;
+  fundingSummary.cashFlowCoverageIncomplete = undefined;
+  fundingSummary.returnBreakdown = undefined;
+  rebuildAnnualizedReturnFromSeries(fundingSummary, series, account && account.id);
 }
 
 function parseDateOnlyString(value) {
@@ -17289,6 +17423,10 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   const historyStartIso = configuredHistoryStartDate
     ? formatDateOnly(configuredHistoryStartDate)
     : null;
+  const cagrStartDate =
+    options && options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
+      ? account.cagrStartDate.trim()
+      : null;
 
   // Choose a conservative series start: prefer the earliest available activity/crawl start so we can
   // compute a correct baseline even when a CAGR start date is applied.
@@ -17305,6 +17443,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   }
   if (historyStartIso) {
     candidateStarts.push(historyStartIso);
+  }
+  if (cagrStartDate) {
+    candidateStarts.push(cagrStartDate);
   }
   const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
   const nowIso = formatDateOnly(activityContext.now) || null;
@@ -17330,11 +17471,9 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
   if (!startDateIso) {
     startDateIso = netDepositsPeriodStart || crawlStartIso || nowIso;
   }
-  const cagrStartDate =
-    options && options.applyAccountCagrStartDate !== false && typeof account.cagrStartDate === 'string'
-      ? account.cagrStartDate.trim()
-      : null;
-  const displayStartIso = historyStartIso || cagrStartDate || startDateIso;
+  const displayStartIso = options && options.applyAccountCagrStartDate !== false
+    ? cagrStartDate || historyStartIso || startDateIso
+    : historyStartIso || cagrStartDate || startDateIso;
   const endDateIso =
     typeof options.endDate === 'string' && options.endDate.trim()
       ? options.endDate.trim()
@@ -24460,7 +24599,7 @@ app.get('/api/summary', async function (req, res) {
                 }
               }
             );
-            if (stitchedSeries) {
+            if (stitchedSeries && stitchedSeries.stitchedFromHistorical === true) {
               totalPnlSeries = markStitchedSuccessorSeries(stitchedSeries);
               totalPnlSeriesWasStitched = true;
             }
@@ -24502,7 +24641,12 @@ app.get('/api/summary', async function (req, res) {
               { context, series: totalPnlSeries },
               storedHistoricalResults
             );
-            if (stitchedResult && stitchedResult.series && Array.isArray(stitchedResult.series.points)) {
+            if (
+              stitchedResult &&
+              stitchedResult.series &&
+              stitchedResult.series !== totalPnlSeries &&
+              Array.isArray(stitchedResult.series.points)
+            ) {
               totalPnlSeries = markStitchedSuccessorSeries(stitchedResult.series);
               totalPnlSeriesWasStitched = true;
             }
@@ -24579,9 +24723,13 @@ app.get('/api/summary', async function (req, res) {
               setTotalPnlSeriesCacheEntry(allTimeCacheKey, totalPnlSeries);
             }
           }
-          const cagrSeries = totalPnlSeriesWasStitched
-            ? deriveCagrSeriesView(totalPnlSeries, context.account.cagrStartDate)
-            : totalPnlSeries;
+          const cagrSeries = deriveCagrSeriesView(totalPnlSeries, context.account.cagrStartDate);
+          if (!totalPnlSeriesWasStitched && context.account.cagrStartDate) {
+            const fundingSummary = accountFundingSummaries[context.account.id];
+            if (fundingSummary) {
+              applyDirectCagrSeriesToFundingSummary(fundingSummary, cagrSeries, context.account);
+            }
+          }
           if (totalPnlSeriesWasStitched) {
             const cagrCacheKey = buildTotalPnlSeriesCacheKey(context.account.id, {
               applyAccountCagrStartDate: true,
@@ -24594,7 +24742,11 @@ app.get('/api/summary', async function (req, res) {
             setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'all', totalPnlSeries);
             setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', cagrSeries);
           } else {
-            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
+            // The direct computation can still be filtered to a provider/history
+            // boundary (for example when the predecessor archive has no usable
+            // points).  Always publish the explicit CAGR view we just derived so
+            // its configured start date and synthetic baseline reach the UI.
+            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', cagrSeries);
           }
         }
       }
@@ -27166,8 +27318,11 @@ module.exports = {
     rebuildAnnualizedReturnFromSeries,
     applyOpeningFundingReconciliationToSummary,
     applyTotalPnlSeriesSummaryToFundingSummary,
+    applyDirectCagrSeriesToFundingSummary,
     rebuildAggregateAnnualizedReturnFromSeries,
     computeMigrationReconciledNetInvestedCapital,
+    resolveHistoricalTransferOutBasis,
+    rebuildAnnualizedReturnFromDisplayStart,
     resolveHistoricalAccountIdsForSuccessor,
     buildHistoricalAccountIdsBySuccessor,
     stitchSuccessorSeriesResult,

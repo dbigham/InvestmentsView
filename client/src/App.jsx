@@ -3105,6 +3105,40 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
   let hasHistoricalBoundaryPoint = false;
   let hasCompleteHistoricalBoundaryBasis = true;
 
+  const resolveTransferOutBasis = (points) => {
+    const usablePoints = points
+      .filter(
+        (point) =>
+          point &&
+          typeof point.date === 'string' &&
+          point.date <= boundary &&
+          Number.isFinite(Number(point.equityCad))
+      )
+      .sort((a, b) => a.date.localeCompare(b.date));
+    for (let index = 1; index < usablePoints.length; index += 1) {
+      const priorPoint = usablePoints[index - 1];
+      const currentPoint = usablePoints[index];
+      const priorEquity = Number(priorPoint.equityCad);
+      const currentEquity = Number(currentPoint.equityCad);
+      const collapseThreshold = Math.max(100, Math.abs(priorEquity) * 0.25);
+      const looksLikeCollapse =
+        priorEquity > 100 &&
+        currentEquity <= priorEquity * 0.5 &&
+        priorEquity - currentEquity >= collapseThreshold;
+      if (!looksLikeCollapse) {
+        continue;
+      }
+      const recovered = usablePoints.slice(index + 1).some((point) => Number(point.equityCad) >= priorEquity * 0.8);
+      if (!recovered) {
+        return {
+          basisPoint: priorPoint,
+          pointsForDisplay: usablePoints.filter((point) => point.date <= priorPoint.date),
+        };
+      }
+    }
+    return { basisPoint: usablePoints[usablePoints.length - 1], pointsForDisplay: usablePoints };
+  };
+
   historicalSeriesList.forEach((series) => {
     if (!series || !Array.isArray(series.points)) {
       return;
@@ -3114,25 +3148,19 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
       return;
     }
     hasHistoricalBoundaryPoint = true;
-    // A predecessor can have a transfer-out snapshot on the successor's
-    // handoff date. That snapshot is not the capital basis to carry forward;
-    // it is often close to zero after the assets have already been removed.
-    // Match the server-side stitcher by using the last pre-handoff point when
-    // the boundary is an abrupt collapse, while preserving a normal boundary
-    // snapshot when it is not a transfer-out artifact.
-    const preBoundaryPoints = points.filter(
-      (point) => point && typeof point.date === 'string' && point.date < boundary
+    const historicalBasis = resolveTransferOutBasis(points);
+    const lastHistoricalPoint = historicalBasis.basisPoint;
+    const pointsForDisplay = historicalBasis.pointsForDisplay;
+    const hasMeaningfulHistoricalPoint = pointsForDisplay.some((point) =>
+      ['equityCad', 'cumulativeNetDepositsCad', 'totalPnlCad', 'cadCash', 'usdCash', 'cadSecurityValue', 'usdSecurityValue']
+        .some((field) => {
+          const value = Number(point[field]);
+          return Number.isFinite(value) && Math.abs(value) >= 1e-6;
+        })
     );
-    const boundaryPoint = points[points.length - 1];
-    const priorPoint = preBoundaryPoints[preBoundaryPoints.length - 1];
-    const boundaryEquity = Number(boundaryPoint?.equityCad);
-    const priorEquity = Number(priorPoint?.equityCad);
-    const boundaryLooksLikeTransferOut =
-      boundaryPoint?.date === boundary &&
-      Number.isFinite(priorEquity) &&
-      priorEquity > 1e-6 &&
-      (!Number.isFinite(boundaryEquity) || boundaryEquity <= priorEquity * 0.5);
-    const lastHistoricalPoint = boundaryLooksLikeTransferOut && priorPoint ? priorPoint : boundaryPoint;
+    if (!lastHistoricalPoint || !pointsForDisplay.length || !hasMeaningfulHistoricalPoint) {
+      return;
+    }
     const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
     if (Number.isFinite(historicalPnl)) {
       pnlCarryForward += historicalPnl;
@@ -3146,7 +3174,7 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
       hasCompleteHistoricalBoundaryBasis = false;
     }
 
-    points
+    pointsForDisplay
       .filter((point) => point.date < boundary)
       .forEach((point) => {
         const existing = historicalByDate.get(point.date) || { date: point.date };
@@ -3188,6 +3216,12 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
     Number.isFinite(historicalDepositsTotal) &&
     Number.isFinite(destinationEquity) &&
     Number.isFinite(destinationDeposits);
+  const hasPnlAdjustment = Math.abs(pnlCarryForward) >= 1e-6;
+  const hasDepositAdjustment =
+    hasMatchingBoundaryEquity && Math.abs(historicalDepositsTotal - destinationDeposits) >= 1e-6;
+  if (!historicalByDate.size && !hasPnlAdjustment && !hasDepositAdjustment) {
+    return null;
+  }
 
   const adjustedDestinationPoints = destinationSeries.points
     .filter((point) => point && point.date >= boundary)
@@ -3297,21 +3331,38 @@ function deriveCagrSeriesView(series, cagrStartDate) {
   if (!displayStartPoint) {
     return series;
   }
+  const firstPoint = series.points.find((point) => point && typeof point.date === 'string');
+  const needsSyntheticBaseline = firstPoint && firstPoint.date > normalizedStart;
+  const baselinePoint = needsSyntheticBaseline
+    ? {
+        date: normalizedStart,
+        equityCad: 0,
+        cumulativeNetDepositsCad: 0,
+        totalPnlCad: 0,
+        totalPnlSinceDisplayStartCad: 0,
+        equitySinceDisplayStartCad: 0,
+        cumulativeNetDepositsSinceDisplayStartCad: 0,
+      }
+    : null;
+  const effectiveDisplayStartPoint = baselinePoint || displayStartPoint;
+
   return {
     ...series,
+    periodStartDate: needsSyntheticBaseline ? normalizedStart : series.periodStartDate,
     cagrStartDate: normalizedStart,
-    displayStartDate: displayStartPoint.date,
+    displayStartDate: needsSyntheticBaseline ? normalizedStart : displayStartPoint.date,
+    points: baselinePoint ? [baselinePoint, ...series.points] : series.points,
     summary: {
       ...(series.summary && typeof series.summary === 'object' ? series.summary : {}),
       displayStartTotals: {
-        totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
-          ? Number(displayStartPoint.totalPnlCad)
+        totalPnlCad: Number.isFinite(Number(effectiveDisplayStartPoint.totalPnlCad))
+          ? Number(effectiveDisplayStartPoint.totalPnlCad)
           : null,
-        equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
-          ? Number(displayStartPoint.equityCad)
+        equityCad: Number.isFinite(Number(effectiveDisplayStartPoint.equityCad))
+          ? Number(effectiveDisplayStartPoint.equityCad)
           : null,
-        cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
-          ? Number(displayStartPoint.cumulativeNetDepositsCad)
+        cumulativeNetDepositsCad: Number.isFinite(Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad))
+          ? Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad)
           : null,
       },
     },
