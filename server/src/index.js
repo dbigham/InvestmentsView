@@ -432,7 +432,7 @@ const totalPnlSeriesCacheStore = new Map();
 // totals that made Total P&L equal current equity minus raw deposits.
 // The symbol-total authority also matters here: bump this when a corrected
 // summary shape must not be served from an older pinned cache entry.
-const SUMMARY_CACHE_VERSION = 'funding-v9-symbol-opening-snapshot';
+const SUMMARY_CACHE_VERSION = 'funding-v10-successor-history';
 const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v7-migration-basis';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
@@ -592,6 +592,131 @@ function setAccountTotalPnlSeries(map, accountId, mode, series) {
     return;
   }
   entry[mode] = series;
+}
+
+function stitchSuccessorSeriesResult(destinationResult, historicalResults, boundaryOverride = null) {
+  if (
+    !destinationResult ||
+    !destinationResult.series ||
+    !Array.isArray(destinationResult.series.points) ||
+    !Array.isArray(historicalResults) ||
+    !historicalResults.length
+  ) {
+    return destinationResult;
+  }
+
+  const account = destinationResult.context && destinationResult.context.account;
+  const boundary =
+    typeof boundaryOverride === 'string' && boundaryOverride.trim()
+      ? boundaryOverride.trim().slice(0, 10)
+      : account && typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
+        ? account.historyStartDate.trim().slice(0, 10)
+        : destinationResult.series.points[0]?.date || null;
+  if (!boundary) {
+    return destinationResult;
+  }
+
+  let pnlCarryForward = 0;
+  let historicalEquityTotal = 0;
+  let historicalDepositsTotal = 0;
+  let hasCompleteHistoricalBoundaryBasis = true;
+  let hasHistoricalBoundaryPoint = false;
+
+  historicalResults.forEach((historicalResult) => {
+    const historicalPoints = Array.isArray(historicalResult?.series?.points)
+      ? historicalResult.series.points.filter((point) => point && point.date <= boundary)
+      : [];
+    if (!historicalPoints.length) {
+      return;
+    }
+
+    hasHistoricalBoundaryPoint = true;
+    const lastHistoricalPoint = historicalPoints[historicalPoints.length - 1];
+    const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
+    if (Number.isFinite(historicalPnl)) {
+      pnlCarryForward += historicalPnl;
+    }
+    const historicalEquity = Number(lastHistoricalPoint.equityCad);
+    const historicalDeposits = Number(lastHistoricalPoint.cumulativeNetDepositsCad);
+    if (Number.isFinite(historicalEquity) && Number.isFinite(historicalDeposits)) {
+      historicalEquityTotal += historicalEquity;
+      historicalDepositsTotal += historicalDeposits;
+    } else {
+      hasCompleteHistoricalBoundaryBasis = false;
+    }
+  });
+
+  if (!hasHistoricalBoundaryPoint || !Number.isFinite(pnlCarryForward)) {
+    return destinationResult;
+  }
+
+  const destinationBoundaryPoint = destinationResult.series.points.find(
+    (point) => point && typeof point.date === 'string' && point.date >= boundary
+  );
+  const destinationEquity = Number(destinationBoundaryPoint?.equityCad);
+  const destinationDeposits = Number(destinationBoundaryPoint?.cumulativeNetDepositsCad);
+  const boundaryEquityTolerance = Math.max(
+    1,
+    Math.max(Math.abs(historicalEquityTotal), Math.abs(destinationEquity)) * 0.005
+  );
+  const hasMatchingBoundaryEquity =
+    hasCompleteHistoricalBoundaryBasis &&
+    Number.isFinite(destinationEquity) &&
+    Number.isFinite(destinationDeposits) &&
+    Math.abs(historicalEquityTotal - destinationEquity) <= boundaryEquityTolerance;
+  const depositCarryForward = hasMatchingBoundaryEquity
+    ? historicalDepositsTotal - destinationDeposits
+    : 0;
+  const hasPnlAdjustment = Math.abs(pnlCarryForward) >= CASH_FLOW_EPSILON;
+  const hasDepositAdjustment =
+    hasMatchingBoundaryEquity && Math.abs(depositCarryForward) >= CASH_FLOW_EPSILON;
+  if (!hasPnlAdjustment && !hasDepositAdjustment) {
+    return destinationResult;
+  }
+
+  const adjustedPoints = destinationResult.series.points.map((point) => {
+    if (!point || typeof point.date !== 'string' || point.date < boundary) {
+      return point;
+    }
+    const totalPnl = Number(point.totalPnlCad);
+    const cumulativeNetDeposits = Number(point.cumulativeNetDepositsCad);
+    const adjustedPoint = { ...point };
+    if (Number.isFinite(totalPnl)) {
+      adjustedPoint.totalPnlCad = totalPnl + pnlCarryForward;
+    }
+    if (hasMatchingBoundaryEquity && Number.isFinite(cumulativeNetDeposits)) {
+      adjustedPoint.cumulativeNetDepositsCad = cumulativeNetDeposits + depositCarryForward;
+    }
+    return adjustedPoint;
+  });
+
+  const adjustedSummary =
+    destinationResult.series.summary && typeof destinationResult.series.summary === 'object'
+      ? { ...destinationResult.series.summary }
+      : null;
+  if (adjustedSummary) {
+    ['totalPnlCad', 'totalPnlAllTimeCad'].forEach((key) => {
+      if (Number.isFinite(adjustedSummary[key])) {
+        adjustedSummary[key] += pnlCarryForward;
+      }
+    });
+    if (hasMatchingBoundaryEquity) {
+      ['netDepositsCad', 'netDepositsAllTimeCad'].forEach((key) => {
+        if (Number.isFinite(adjustedSummary[key])) {
+          adjustedSummary[key] += depositCarryForward;
+        }
+      });
+    }
+  }
+
+  return {
+    ...destinationResult,
+    series: {
+      ...destinationResult.series,
+      points: adjustedPoints,
+      summary: adjustedSummary || destinationResult.series.summary,
+    },
+  };
 }
 
 async function computeAggregateTotalPnlSeriesForContexts(
@@ -826,105 +951,9 @@ async function computeAggregateTotalPnlSeriesForContexts(
       return result;
     }
     const historicalResults = historicalSeriesBySuccessorId.get(accountId) || [];
-    if (!historicalResults.length || !result.series || !Array.isArray(result.series.points)) {
-      return result;
-    }
-    const boundary =
-      typeof account.historyStartDate === 'string' && account.historyStartDate.trim()
-        ? account.historyStartDate.trim().slice(0, 10)
-        : result.series.points[0]?.date || null;
-    if (!boundary) {
-      return result;
-    }
-    let pnlCarryForward = 0;
-    let historicalEquityTotal = 0;
-    let historicalDepositsTotal = 0;
-    let hasCompleteHistoricalBoundaryBasis = true;
-    historicalResults.forEach((historicalResult) => {
-      const historicalPoints = Array.isArray(historicalResult.series.points)
-        ? historicalResult.series.points.filter((point) => point && point.date <= boundary)
-        : [];
-      if (!historicalPoints.length) {
-        return;
-      }
-      const lastHistoricalPoint = historicalPoints[historicalPoints.length - 1];
-      const historicalPnl = Number(lastHistoricalPoint.totalPnlCad);
-      if (Number.isFinite(historicalPnl)) {
-        pnlCarryForward += historicalPnl;
-      }
-      const historicalEquity = Number(lastHistoricalPoint.equityCad);
-      const historicalDeposits = Number(lastHistoricalPoint.cumulativeNetDepositsCad);
-      if (Number.isFinite(historicalEquity) && Number.isFinite(historicalDeposits)) {
-        historicalEquityTotal += historicalEquity;
-        historicalDepositsTotal += historicalDeposits;
-      } else {
-        hasCompleteHistoricalBoundaryBasis = false;
-      }
-    });
-    if (!Number.isFinite(pnlCarryForward) || Math.abs(pnlCarryForward) < CASH_FLOW_EPSILON) {
-      return result;
-    }
-    const destinationBoundaryPoint = result.series.points.find(
-      (point) => point && typeof point.date === 'string' && point.date >= boundary
-    );
-    const destinationEquity = Number(destinationBoundaryPoint?.equityCad);
-    const destinationDeposits = Number(destinationBoundaryPoint?.cumulativeNetDepositsCad);
-    const boundaryEquityTolerance = Math.max(
-      1,
-      Math.max(Math.abs(historicalEquityTotal), Math.abs(destinationEquity)) * 0.005
-    );
-    const hasMatchingBoundaryEquity =
-      hasCompleteHistoricalBoundaryBasis &&
-      Number.isFinite(destinationEquity) &&
-      Number.isFinite(destinationDeposits) &&
-      Math.abs(historicalEquityTotal - destinationEquity) <= boundaryEquityTolerance;
-    // When the source and destination hold the same symbol value at the handoff,
-    // the destination's opening position is a transferred investment, not a new
-    // external deposit. Rebase its cumulative deposits to the historical basis so
-    // the stitched P&L and the XIRR annualized return use the same cash-flow story.
-    const depositCarryForward = hasMatchingBoundaryEquity
-      ? historicalDepositsTotal - destinationDeposits
-      : 0;
-    const adjustedPoints = result.series.points.map((point) => {
-      if (!point || typeof point.date !== 'string' || point.date < boundary) {
-        return point;
-      }
-      const totalPnl = Number(point.totalPnlCad);
-      const cumulativeNetDeposits = Number(point.cumulativeNetDepositsCad);
-      const adjustedPoint = { ...point };
-      if (Number.isFinite(totalPnl)) {
-        adjustedPoint.totalPnlCad = totalPnl + pnlCarryForward;
-      }
-      if (hasMatchingBoundaryEquity && Number.isFinite(cumulativeNetDeposits)) {
-        adjustedPoint.cumulativeNetDepositsCad = cumulativeNetDeposits + depositCarryForward;
-      }
-      return adjustedPoint;
-    });
-    const adjustedSummary = result.series.summary && typeof result.series.summary === 'object'
-      ? { ...result.series.summary }
-      : null;
-    if (adjustedSummary) {
-      ['totalPnlCad', 'totalPnlAllTimeCad'].forEach((key) => {
-        if (Number.isFinite(adjustedSummary[key])) {
-          adjustedSummary[key] += pnlCarryForward;
-        }
-      });
-      if (hasMatchingBoundaryEquity) {
-        ['netDepositsCad', 'netDepositsAllTimeCad'].forEach((key) => {
-          if (Number.isFinite(adjustedSummary[key])) {
-            adjustedSummary[key] += depositCarryForward;
-          }
-        });
-      }
-    }
-    return {
-      ...result,
-      series: {
-        ...result.series,
-        points: adjustedPoints,
-        summary: adjustedSummary || result.series.summary,
-      },
-    };
+    return historicalResults.length
+      ? stitchSuccessorSeriesResult(result, historicalResults)
+      : result;
   });
 
   // Clip migrated historical series after successor stitching has captured
@@ -3097,6 +3126,21 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     ? Array.from(currentMetricAccountIds)
     : accountIds;
 
+  const historicalAccountIdsBySuccessor =
+    superset.historicalAccountIdsBySuccessor && typeof superset.historicalAccountIdsBySuccessor === 'object'
+      ? superset.historicalAccountIdsBySuccessor
+      : superset.payload?.historicalAccountIdsBySuccessor &&
+          typeof superset.payload.historicalAccountIdsBySuccessor === 'object'
+        ? superset.payload.historicalAccountIdsBySuccessor
+        : buildHistoricalAccountIdsBySuccessor(superset.accounts);
+  const displayOrderAccountIds = new Set(currentMetricAccountIds);
+  if (!isAggregateSelection && accountIds.length === 1) {
+    const historicalIds = historicalAccountIdsBySuccessor[accountIds[0]];
+    if (Array.isArray(historicalIds)) {
+      historicalIds.forEach((accountId) => displayOrderAccountIds.add(accountId));
+    }
+  }
+
   const decoratedPositions = Array.isArray(superset.decoratedPositions)
     ? superset.decoratedPositions.filter((position) =>
         position && currentMetricAccountIds.has(position.accountId || position.accountNumber)
@@ -3110,7 +3154,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     : [];
 
   const decoratedOrders = Array.isArray(superset.decoratedOrders)
-    ? superset.decoratedOrders.filter((order) => order && currentMetricAccountIds.has(order.accountId || order.accountNumber))
+    ? superset.decoratedOrders.filter((order) => order && displayOrderAccountIds.has(order.accountId || order.accountNumber))
     : [];
 
   const balancesRaw = aggregateMetricAccountIds
@@ -3374,6 +3418,7 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     accountTotalPnlBySymbol,
     accountTotalPnlBySymbolAll,
     accountTotalPnlSeries,
+    historicalAccountIdsBySuccessor,
     asOf: superset.asOf || new Date().toISOString(),
     usdToCadRate: superset.usdToCadRate || null,
     featureFlags: superset.payload?.featureFlags || null,
@@ -8153,6 +8198,68 @@ function isClosedAccount(account) {
   return !!(account && account.closed === true);
 }
 
+function resolveHistoricalAccountIdsForSuccessor(accounts, successorId) {
+  const normalizedSuccessorId =
+    successorId === undefined || successorId === null ? '' : String(successorId).trim();
+  if (!normalizedSuccessorId || !Array.isArray(accounts)) {
+    return [];
+  }
+
+  return accounts
+    .filter((account) => {
+      if (!account || !isClosedAccount(account) || !account.id) {
+        return false;
+      }
+      const migratedTo = typeof account.migratedTo === 'string' ? account.migratedTo.trim() : '';
+      return migratedTo === normalizedSuccessorId;
+    })
+    .map((account) => String(account.id).trim())
+    .filter(Boolean);
+}
+
+function buildHistoricalAccountIdsBySuccessor(accounts) {
+  const result = {};
+  if (!Array.isArray(accounts)) {
+    return result;
+  }
+
+  accounts.forEach((account) => {
+    if (!account || !isClosedAccount(account) || !account.id) {
+      return;
+    }
+    const successorId = typeof account.migratedTo === 'string' ? account.migratedTo.trim() : '';
+    if (!successorId) {
+      return;
+    }
+    const accountId = String(account.id).trim();
+    if (!accountId) {
+      return;
+    }
+    const historicalIds = Array.isArray(result[successorId]) ? result[successorId] : [];
+    if (!historicalIds.includes(accountId)) {
+      historicalIds.push(accountId);
+    }
+    result[successorId] = historicalIds;
+  });
+
+  return result;
+}
+
+function resolveHistoricalContextsForSuccessor(allAccounts, loginsById, successorId) {
+  const historicalIds = new Set(resolveHistoricalAccountIdsForSuccessor(allAccounts, successorId));
+  if (!historicalIds.size || !Array.isArray(allAccounts)) {
+    return [];
+  }
+
+  return allAccounts
+    .filter((account) => account && historicalIds.has(String(account.id).trim()))
+    .map((account) => {
+      const login = loginsById && account.loginId ? loginsById[account.loginId] : null;
+      return login ? { login, account } : null;
+    })
+    .filter(Boolean);
+}
+
 function normalizeLookupValue(value) {
   if (value === undefined || value === null) {
     return '';
@@ -12180,6 +12287,48 @@ function applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, totalPnlSeri
     rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, account.id);
   }
   applyOpeningFundingReconciliationToSummary(fundingSummary, summary);
+}
+
+function markStitchedSuccessorSeries(series) {
+  if (!series || typeof series !== 'object') {
+    return series;
+  }
+  const firstPoint = Array.isArray(series.points) ? series.points.find((point) => point && point.date) : null;
+  const historyStartDate =
+    typeof series.periodStartDate === 'string' && series.periodStartDate.trim()
+      ? series.periodStartDate.trim().slice(0, 10)
+      : firstPoint && typeof firstPoint.date === 'string'
+        ? firstPoint.date.slice(0, 10)
+        : null;
+  return {
+    ...series,
+    historyStartDate: historyStartDate || undefined,
+    historyStartDateEstimated: historyStartDate ? true : undefined,
+    stitchedFromHistorical: true,
+  };
+}
+
+function applyStitchedSuccessorSeriesToFundingSummary(fundingSummary, series, account) {
+  if (!fundingSummary || !series) {
+    return;
+  }
+
+  const markedSeries = markStitchedSuccessorSeries(series);
+  applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, markedSeries, account);
+  const summary = markedSeries.summary && typeof markedSeries.summary === 'object' ? markedSeries.summary : null;
+  if (summary && Number.isFinite(summary.totalPnlCad)) {
+    fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlCad;
+  }
+  if (markedSeries.periodStartDate) {
+    fundingSummary.periodStartDate = markedSeries.periodStartDate;
+    fundingSummary.originalPeriodStartDate = markedSeries.periodStartDate;
+    fundingSummary.historyStartDate = markedSeries.periodStartDate;
+    fundingSummary.historyStartDateEstimated = true;
+  }
+  if (markedSeries.periodEndDate) {
+    fundingSummary.periodEndDate = markedSeries.periodEndDate;
+  }
+  rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, markedSeries, account && account.id);
 }
 
 function parseDateOnlyString(value) {
@@ -22955,7 +23104,27 @@ app.get('/api/summary', async function (req, res) {
         }
       }
 
-      if (supersetEntry && supersetEntry.payload) {
+      const supersetSelectedAccount =
+        normalizedSelection.type === 'account' && supersetEntry && Array.isArray(supersetEntry.accounts)
+          ? supersetEntry.accounts.find((account) => {
+              if (!account) {
+                return false;
+              }
+              return (
+                String(account.id || '').trim() === String(normalizedSelection.requestedId || '').trim() ||
+                String(account.number || '').trim() === String(normalizedSelection.requestedId || '').trim()
+              );
+            })
+          : null;
+      const successorHasHistoricalSource = Boolean(
+        supersetSelectedAccount &&
+          !isClosedAccount(supersetSelectedAccount) &&
+          resolveHistoricalAccountIdsForSuccessor(
+            supersetEntry.accounts,
+            supersetSelectedAccount.id
+          ).length > 0
+      );
+      if (supersetEntry && supersetEntry.payload && !successorHasHistoricalSource) {
         const derivationDetails = DEBUG_SUMMARY_CACHE ? {} : null;
         const derived = deriveSummaryFromSuperset(supersetEntry, normalizedSelection, derivationDetails);
         if (derived) {
@@ -23244,6 +23413,26 @@ app.get('/api/summary', async function (req, res) {
         .filter(Boolean)
     );
 
+    const historicalAccountIdsBySuccessor = buildHistoricalAccountIdsBySuccessor(allAccounts);
+    const historicalContextsForSelectedAccount =
+      selectedContexts.length === 1 && !viewingAggregateAccounts && !isClosedAccount(selectedContexts[0]?.account)
+        ? resolveHistoricalContextsForSuccessor(
+            allAccounts,
+            loginsById,
+            selectedContexts[0]?.account?.id
+          )
+        : [];
+    const orderContexts = [...selectedContexts];
+    historicalContextsForSelectedAccount.forEach((historicalContext) => {
+      const historicalId = historicalContext?.account?.id;
+      if (
+        historicalId &&
+        !orderContexts.some((context) => context?.account?.id === historicalId)
+      ) {
+        orderContexts.push(historicalContext);
+      }
+    });
+
     const positionsPromise = Promise.all(
       selectedContexts.map(function (context) {
         return fetchPositionsForContext(context);
@@ -23352,10 +23541,10 @@ app.get('/api/summary', async function (req, res) {
       return position && currentMetricAccountIds.has(position.accountId);
     });
 
-    const orderFetchResults = selectedContexts.length
+    const orderFetchResults = orderContexts.length
       ? await mapWithConcurrency(
-          selectedContexts,
-          Math.min(MAX_ORDER_HISTORY_CONCURRENCY, selectedContexts.length),
+          orderContexts,
+          Math.min(MAX_ORDER_HISTORY_CONCURRENCY, orderContexts.length),
           async function (context) {
             if (context && context.account && isArchivedAccount(context.account)) {
               let activityContext = null;
@@ -23532,6 +23721,18 @@ app.get('/api/summary', async function (req, res) {
     const currentMetricOrders = dedupedOrders.filter(function (order) {
       return order && currentMetricAccountIds.has(order.accountId);
     });
+    const displayOrderAccountIds = new Set(currentMetricAccountIds);
+    if (!viewingAggregateAccounts) {
+      historicalContextsForSelectedAccount.forEach((context) => {
+        const accountId = context && context.account && context.account.id;
+        if (accountId) {
+          displayOrderAccountIds.add(accountId);
+        }
+      });
+    }
+    const displayOrders = dedupedOrders.filter(function (order) {
+      return order && displayOrderAccountIds.has(order.accountId);
+    });
 
     dedupedOrders.forEach(function (order) {
       if (!order || typeof order !== 'object') {
@@ -23602,7 +23803,7 @@ app.get('/api/summary', async function (req, res) {
       loginBucket.add(position.symbolId);
       symbolIdsByLogin.set(position.loginId, loginBucket);
     });
-    currentMetricOrders.forEach(function (order) {
+    displayOrders.forEach(function (order) {
       if (!order || !order.symbolId) {
         return;
       }
@@ -23612,7 +23813,7 @@ app.get('/api/summary', async function (req, res) {
     });
 
     const selectedContextsByLoginId = new Map();
-    selectedContexts.forEach(function (context) {
+    orderContexts.forEach(function (context) {
       const loginId = context && context.login && context.login.id ? context.login.id : null;
       if (!loginId) {
         return;
@@ -23699,7 +23900,7 @@ app.get('/api/summary', async function (req, res) {
       dividendYieldMap,
       { previousCloseMap }
     );
-    const decoratedOrders = decorateOrders(currentMetricOrders, symbolsMap, accountsMap);
+    const decoratedOrders = decorateOrders(displayOrders, symbolsMap, accountsMap);
     const pnl = mergePnL(decoratedPositions);
     const currentMetricBalances = selectedContexts.reduce(function (entries, context, index) {
       if (!context || !context.account || !currentMetricAccountIds.has(context.account.id)) {
@@ -23804,6 +24005,7 @@ app.get('/api/summary', async function (req, res) {
       }
 
       let totalPnlSeries = null;
+      let totalPnlSeriesWasStitched = false;
       if (accountFundingSummaries[context.account.id]) {
         try {
           const seriesOptions = {
@@ -23822,6 +24024,44 @@ app.get('/api/summary', async function (req, res) {
           );
           if (isArchivedAccount(context.account)) {
             totalPnlSeries = sanitizeArchivedTotalPnlSeries(totalPnlSeries);
+          }
+
+          if (historicalContextsForSelectedAccount.length > 0) {
+            const stitchedBalances = Object.assign({}, perAccountCombinedBalances);
+            historicalContextsForSelectedAccount.forEach((historicalContext) => {
+              const historicalId = historicalContext?.account?.id;
+              if (!historicalId || stitchedBalances[historicalId]) {
+                return;
+              }
+              const archivedSummary = getArchivedBalanceSummary(historicalContext.account);
+              if (archivedSummary) {
+                stitchedBalances[historicalId] = archivedSummary;
+              }
+            });
+            const stitchedContexts = [...historicalContextsForSelectedAccount, context];
+            const stitchedSeries = await computeAggregateTotalPnlSeriesForContexts(
+              stitchedContexts,
+              stitchedBalances,
+              {
+                applyAccountCagrStartDate: false,
+                positionsByAccountId,
+              },
+              context.account.id,
+              false,
+              async (ctx) => {
+                try {
+                  return await ensureAccountActivityContext(ctx, {
+                    allowSkippedProviderHistory: false,
+                  });
+                } catch (_) {
+                  return null;
+                }
+              }
+            );
+            if (stitchedSeries) {
+              totalPnlSeries = markStitchedSuccessorSeries(stitchedSeries);
+              totalPnlSeriesWasStitched = true;
+            }
           }
         } catch (seriesError) {
           const message =
@@ -23875,7 +24115,13 @@ app.get('/api/summary', async function (req, res) {
             if (summary.displayStartTotals) {
               fundingSummary.displayStartTotals = summary.displayStartTotals;
             }
-            if (shouldUseReconstructedArchivedEquity) {
+            if (totalPnlSeriesWasStitched) {
+              applyStitchedSuccessorSeriesToFundingSummary(
+                fundingSummary,
+                totalPnlSeries,
+                context.account
+              );
+            } else if (shouldUseReconstructedArchivedEquity) {
               rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, context.account.id);
             } else {
               rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
@@ -23888,7 +24134,20 @@ app.get('/api/summary', async function (req, res) {
           if (cacheKey) {
             setTotalPnlSeriesCacheEntry(cacheKey, totalPnlSeries);
           }
-          setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
+          if (totalPnlSeriesWasStitched) {
+            const allTimeCacheKey = buildTotalPnlSeriesCacheKey(context.account.id, {
+              applyAccountCagrStartDate: false,
+            });
+            if (allTimeCacheKey) {
+              setTotalPnlSeriesCacheEntry(allTimeCacheKey, totalPnlSeries);
+            }
+          }
+          if (totalPnlSeriesWasStitched) {
+            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'all', totalPnlSeries);
+            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
+          } else {
+            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
+          }
         }
       }
 
@@ -24714,6 +24973,7 @@ app.get('/api/summary', async function (req, res) {
             );
           }
         });
+
       }
 
       // Precompute per-account series for performance if enabled
@@ -24730,6 +24990,18 @@ app.get('/api/summary', async function (req, res) {
               console.warn('Failed to prepare activity for per-account series', context.account.id, msg);
             }
             try {
+              const existingAllSeries = accountTotalPnlSeries[context.account.id]?.all;
+              if (existingAllSeries && existingAllSeries.stitchedFromHistorical === true) {
+                setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', existingAllSeries);
+                if (accountFundingSummaries[context.account.id]) {
+                  applyStitchedSuccessorSeriesToFundingSummary(
+                    accountFundingSummaries[context.account.id],
+                    existingAllSeries,
+                    context.account
+                  );
+                }
+                return;
+              }
               const series = await computeTotalPnlSeries(
                 context.login,
                 context.account,
@@ -25252,6 +25524,7 @@ app.get('/api/summary', async function (req, res) {
       accountTotalPnlBySymbol,
       accountTotalPnlBySymbolAll,
       accountTotalPnlSeries,
+      historicalAccountIdsBySuccessor,
       accountNorbertJournals,
       accountFetchIssues: accountFetchIssues.length ? accountFetchIssues : undefined,
       featureFlags,
@@ -25381,7 +25654,10 @@ app.get('/api/summary', async function (req, res) {
         accountTotalPnlSeries,
         investmentModelEvaluations,
         decoratedPositions,
-        decoratedOrders,
+        // Keep the full order superset for later concrete successor views;
+        // deriveSummaryFromSuperset applies the account-specific display filter.
+        decoratedOrders: decorateOrders(dedupedOrders, symbolsMap, accountsMap),
+        historicalAccountIdsBySuccessor,
         flattenedPositions,
         accountNorbertJournals,
         balancesRawByAccountId,
@@ -26439,6 +26715,10 @@ module.exports = {
     applyTotalPnlSeriesSummaryToFundingSummary,
     rebuildAggregateAnnualizedReturnFromSeries,
     computeMigrationReconciledNetInvestedCapital,
+    resolveHistoricalAccountIdsForSuccessor,
+    buildHistoricalAccountIdsBySuccessor,
+    stitchSuccessorSeriesResult,
+    markStitchedSuccessorSeries,
     resolveRangeBreakdownWindowForAccount,
     getPositionsForAccountFromSuperset,
     mergeMissingCurrentPositionSymbolTotals,

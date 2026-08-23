@@ -9546,11 +9546,18 @@ export default function App() {
       return [];
     }
     const normalizedTarget = String(targetAccountId);
+    const historicalIds =
+      data?.historicalAccountIdsBySuccessor &&
+      typeof data.historicalAccountIdsBySuccessor === 'object' &&
+      Array.isArray(data.historicalAccountIdsBySuccessor[normalizedTarget])
+        ? data.historicalAccountIdsBySuccessor[normalizedTarget]
+        : [];
+    const allowedIds = new Set([normalizedTarget, ...historicalIds.map((id) => String(id))]);
     return rawOrders.filter((order) => {
       const orderAccountId = order && order.accountId ? String(order.accountId) : null;
-      return orderAccountId === normalizedTarget;
+      return orderAccountId && allowedIds.has(orderAccountId);
     });
-  }, [rawOrders, isAggregateSelection, selectedAccountInfo, accountsInView]);
+  }, [rawOrders, isAggregateSelection, selectedAccountInfo, accountsInView, data?.historicalAccountIdsBySuccessor]);
   const filteredOrdersForSelectedAccount = useMemo(() => {
     if (!ordersFilterQuery) {
       return ordersForSelectedAccount;
