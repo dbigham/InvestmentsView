@@ -6,6 +6,7 @@ const mod = await import('../src/index.js');
 const {
   computeTotalPnlBySymbol,
 } = mod;
+const { __test__ } = mod.default || mod;
 
 function makeContext(accountId, start, end, activities) {
   return {
@@ -134,6 +135,57 @@ test('opening-transfer positions contribute even without symbol activity', async
   const xyz = result.entries.find((entry) => entry.symbol === 'XYZ');
   assert.ok(xyz, 'opening-transfer position is present');
   assert.equal(xyz.totalPnlCad, 100);
+});
+
+test('opening-snapshot symbol totals can use a start date before the provider activity window', async () => {
+  const account = { id: 'test:opening-start-date', number: 'test:opening-start-date' };
+  const login = { id: 'login' };
+  const activityStart = '2025-10-30';
+  const start = '2025-10-01';
+  const end = '2025-10-31';
+  const ctx = makeContext(account.id, activityStart, end, []);
+  const priceSeries = new Map([
+    ['XYZ', new Map([[d(start), 100], [d(end), 110]])],
+  ]);
+
+  const result = await computeTotalPnlBySymbol(login, account, {
+    activityContext: ctx,
+    applyAccountCagrStartDate: false,
+    startDate: start,
+    providedPositions: [{ symbol: 'XYZ', currency: 'CAD', openQuantity: 10 }],
+    endHoldingsBySymbol: new Map([['XYZ', 10]]),
+    priceSeriesBySymbol: priceSeries,
+  });
+
+  const xyz = result.entries.find((entry) => entry.symbol === 'XYZ');
+  assert.ok(xyz, 'opening-snapshot position is present');
+  assert.equal(result.endDate, end);
+  assert.equal(xyz.totalPnlCad, 100);
+  assert.ok(Number.isFinite(xyz.annualizedReturn?.rate), 'annualized return uses the opening date');
+  assert.equal(xyz.annualizedReturn.startDate, start);
+});
+
+test('missing current-position symbol totals are merged without unrelated symbols', () => {
+  const merged = __test__.mergeMissingCurrentPositionSymbolTotals(
+    {
+      entries: [{ symbol: 'TSLA', totalPnlCad: 10 }],
+      entriesNoFx: [{ symbol: 'TSLA', totalPnlCad: 10 }],
+    },
+    {
+      entries: [
+        { symbol: 'SPCX', totalPnlCad: 20 },
+        { symbol: 'OTHER', totalPnlCad: 30 },
+      ],
+      entriesNoFx: [
+        { symbol: 'SPCX', totalPnlCad: 20 },
+        { symbol: 'OTHER', totalPnlCad: 30 },
+      ],
+    },
+    [{ symbol: 'SPCX' }]
+  );
+
+  assert.deepEqual(merged.entries.map((entry) => entry.symbol), ['TSLA', 'SPCX']);
+  assert.deepEqual(merged.entriesNoFx.map((entry) => entry.symbol), ['TSLA', 'SPCX']);
 });
 
 test('transfer cash applied once per date', async () => {

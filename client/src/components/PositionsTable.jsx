@@ -218,7 +218,7 @@ function resolveSymbolTotalPnlValue(symbolKey, accountId, symbolTotalPnlByAccoun
     const accountMap = symbolTotalPnlByAccountMap.get(accountKey);
     return accountMap?.get(symbolKey) ?? null;
   }
-  if (symbolTotalPnlByAccountMap.has('all')) {
+  if (!accountKey && symbolTotalPnlByAccountMap.has('all')) {
     const aggregateMap = symbolTotalPnlByAccountMap.get('all');
     return aggregateMap?.get(symbolKey) ?? null;
   }
@@ -342,6 +342,7 @@ function PositionsTable({
   accountsById = null,
   symbolAnnualizedMap = null,
   symbolAnnualizedByAccountMap = null,
+  allowSymbolAnnualizedFallback = false,
   symbolTotalPnlByAccountMap = null,
   focusedSymbolTotalPnlOverride = null,
   focusedSymbolKey = null,
@@ -475,7 +476,8 @@ function PositionsTable({
         normalizedTotalsKey,
         position?.accountId,
         symbolAnnualizedByAccountMap,
-        symbolAnnualizedMap
+        symbolAnnualizedMap,
+        allowSymbolAnnualizedFallback
       );
       const focusedOverride =
         focusedSymbolKey &&
@@ -531,6 +533,7 @@ function PositionsTable({
     aggregateMarketValue,
     symbolAnnualizedMap,
     symbolAnnualizedByAccountMap,
+    allowSymbolAnnualizedFallback,
     symbolTotalPnlByAccountMap,
     focusedSymbolKey,
     focusedSymbolTotalPnlOverride,
@@ -1712,6 +1715,7 @@ PositionsTable.propTypes = {
   accountsById: PropTypes.instanceOf(Map),
   symbolAnnualizedMap: PropTypes.instanceOf(Map),
   symbolAnnualizedByAccountMap: PropTypes.instanceOf(Map),
+  allowSymbolAnnualizedFallback: PropTypes.bool,
   symbolTotalPnlByAccountMap: PropTypes.instanceOf(Map),
   focusedSymbolTotalPnlOverride: PropTypes.number,
   focusedSymbolKey: PropTypes.string,
@@ -1744,6 +1748,7 @@ PositionsTable.defaultProps = {
   accountsById: null,
   symbolAnnualizedMap: null,
   symbolAnnualizedByAccountMap: null,
+  allowSymbolAnnualizedFallback: false,
   symbolTotalPnlByAccountMap: null,
   focusedSymbolTotalPnlOverride: null,
   focusedSymbolKey: null,

@@ -1,4 +1,10 @@
-export function resolveSymbolAnnualizedEntry(symbolKey, accountId, symbolAnnualizedByAccountMap, symbolAnnualizedMap) {
+export function resolveSymbolAnnualizedEntry(
+  symbolKey,
+  accountId,
+  symbolAnnualizedByAccountMap,
+  symbolAnnualizedMap,
+  allowScopedFallback = false
+) {
   if (!symbolKey) {
     return null;
   }
@@ -12,7 +18,7 @@ export function resolveSymbolAnnualizedEntry(symbolKey, accountId, symbolAnnuali
         return match;
       }
     }
-    if (symbolAnnualizedByAccountMap.has('all')) {
+    if (!accountKey && symbolAnnualizedByAccountMap.has('all')) {
       const aggregateMap = symbolAnnualizedByAccountMap.get('all');
       const match = aggregateMap?.get(symbolKey) ?? null;
       if (match) {
@@ -20,7 +26,10 @@ export function resolveSymbolAnnualizedEntry(symbolKey, accountId, symbolAnnuali
       }
     }
   }
-  if (symbolAnnualizedMap instanceof Map) {
+  if (!accountKey && symbolAnnualizedMap instanceof Map) {
+    return symbolAnnualizedMap.get(symbolKey) || null;
+  }
+  if (allowScopedFallback && symbolAnnualizedMap instanceof Map) {
     return symbolAnnualizedMap.get(symbolKey) || null;
   }
   return null;

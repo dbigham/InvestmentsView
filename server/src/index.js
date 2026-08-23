@@ -430,7 +430,9 @@ const totalPnlSeriesCacheStore = new Map();
 // Bump this whenever the shape or authority of a cached summary changes. In
 // particular, older entries may still contain the pre-reconciliation funding
 // totals that made Total P&L equal current equity minus raw deposits.
-const SUMMARY_CACHE_VERSION = 'funding-v8';
+// The symbol-total authority also matters here: bump this when a corrected
+// summary shape must not be served from an older pinned cache entry.
+const SUMMARY_CACHE_VERSION = 'funding-v9-symbol-opening-snapshot';
 const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v7-migration-basis';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
@@ -2993,6 +2995,51 @@ function buildEndHoldingsBySymbol(positions) {
     holdings.set(symbol, (holdings.get(symbol) || 0) + quantity);
   });
   return holdings;
+}
+
+function mergeMissingCurrentPositionSymbolTotals(primary, supplemental, positions) {
+  if (!primary || typeof primary !== 'object') {
+    return supplemental || null;
+  }
+  if (!supplemental || typeof supplemental !== 'object' || !Array.isArray(positions)) {
+    return primary;
+  }
+
+  const currentSymbols = new Set(
+    positions
+      .map((position) => normalizeSymbol(position?.symbol || position?.displaySymbol))
+      .filter(Boolean)
+  );
+  if (!currentSymbols.size) {
+    return primary;
+  }
+
+  const mergeEntries = (primaryEntries, supplementalEntries) => {
+    const result = Array.isArray(primaryEntries) ? primaryEntries.slice() : [];
+    const existingSymbols = new Set(
+      result.map((entry) => normalizeSymbol(entry?.symbol)).filter(Boolean)
+    );
+    (Array.isArray(supplementalEntries) ? supplementalEntries : []).forEach((entry) => {
+      const symbol = normalizeSymbol(entry?.symbol);
+      if (!symbol || !currentSymbols.has(symbol) || existingSymbols.has(symbol)) {
+        return;
+      }
+      result.push(entry);
+      existingSymbols.add(symbol);
+    });
+    return result;
+  };
+
+  const entries = mergeEntries(primary.entries, supplemental.entries);
+  const entriesNoFx = mergeEntries(primary.entriesNoFx, supplemental.entriesNoFx);
+  const merged = { ...primary };
+  if (entries.length) {
+    merged.entries = entries;
+  }
+  if (entriesNoFx.length) {
+    merged.entriesNoFx = entriesNoFx;
+  }
+  return merged;
 }
 
 function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) {
@@ -19233,11 +19280,21 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   }
 
   // Determine date window for price fetching
+  const requestedStartDate =
+    typeof options.startDate === 'string' && options.startDate.trim()
+      ? parseDateOnlyString(options.startDate.trim())
+      : null;
+  const requestedEndDate =
+    typeof options.endDate === 'string' && options.endDate.trim()
+      ? parseDateOnlyString(options.endDate.trim())
+      : null;
   const startDate =
+    requestedStartDate ||
     (activityContext.crawlStart instanceof Date && !Number.isNaN(activityContext.crawlStart.getTime())
       ? activityContext.crawlStart
       : activityContext.now) || new Date();
   const endDate =
+    requestedEndDate ||
     (activityContext.now instanceof Date && !Number.isNaN(activityContext.now.getTime())
       ? activityContext.now
       : new Date());
@@ -23825,12 +23882,49 @@ app.get('/api/summary', async function (req, res) {
           const current = endHoldingsBySymbol.has(key) ? endHoldingsBySymbol.get(key) : 0;
           endHoldingsBySymbol.set(key, current + qty);
         });
+        const currentPositions =
+          positionsByAccountId && Array.isArray(positionsByAccountId[context.account.id])
+            ? positionsByAccountId[context.account.id]
+            : [];
+        const symbolTotalsStartDate =
+          totalPnlSeries && typeof totalPnlSeries.periodStartDate === 'string'
+            ? totalPnlSeries.periodStartDate
+            : typeof context.account.historyStartDate === 'string'
+              ? context.account.historyStartDate
+              : null;
         // Align with CLI: rely on activity history only. Do not override final
         // quantities with positions here, as that can distort closed symbols' P&L
         // when history already captures the round trip accurately.
-        const symbolTotals = await computeTotalPnlBySymbol(context.login, context.account, {
+        let symbolTotals = await computeTotalPnlBySymbol(context.login, context.account, {
           activityContext: sharedActivityContext,
         });
+        const existingSymbolKeys = new Set(
+          (Array.isArray(symbolTotals?.entries) ? symbolTotals.entries : [])
+            .map((entry) => normalizeSymbol(entry?.symbol))
+            .filter(Boolean)
+        );
+        const hasMissingCurrentSymbols = currentPositions.some((position) => {
+          const symbol = normalizeSymbol(position?.symbol || position?.displaySymbol);
+          return symbol && !existingSymbolKeys.has(symbol);
+        });
+        if (
+          !isArchivedAccount(context.account) &&
+          !isClosedAccount(context.account) &&
+          currentPositions.length > 0 &&
+          hasMissingCurrentSymbols
+        ) {
+          const openingSnapshotTotals = await computeTotalPnlBySymbol(context.login, context.account, {
+            activityContext: sharedActivityContext,
+            providedPositions: currentPositions,
+            endHoldingsBySymbol,
+            startDate: symbolTotalsStartDate,
+          });
+          symbolTotals = mergeMissingCurrentPositionSymbolTotals(
+            symbolTotals,
+            openingSnapshotTotals,
+            currentPositions
+          );
+        }
         if (symbolTotals && Array.isArray(symbolTotals.entries)) {
           accountTotalPnlBySymbol[context.account.id] = {
             entries: symbolTotals.entries,
@@ -23840,10 +23934,38 @@ app.get('/api/summary', async function (req, res) {
           };
         }
         // Also compute a from-start variant (ignore account CAGR start)
-        const symbolTotalsAll = await computeTotalPnlBySymbol(context.login, context.account, {
+        let symbolTotalsAll = await computeTotalPnlBySymbol(context.login, context.account, {
           activityContext: sharedActivityContext,
           applyAccountCagrStartDate: false,
         });
+        const existingAllTimeSymbolKeys = new Set(
+          (Array.isArray(symbolTotalsAll?.entries) ? symbolTotalsAll.entries : [])
+            .map((entry) => normalizeSymbol(entry?.symbol))
+            .filter(Boolean)
+        );
+        const hasMissingAllTimeCurrentSymbols = currentPositions.some((position) => {
+          const symbol = normalizeSymbol(position?.symbol || position?.displaySymbol);
+          return symbol && !existingAllTimeSymbolKeys.has(symbol);
+        });
+        if (
+          !isArchivedAccount(context.account) &&
+          !isClosedAccount(context.account) &&
+          currentPositions.length > 0 &&
+          hasMissingAllTimeCurrentSymbols
+        ) {
+          const openingSnapshotTotalsAll = await computeTotalPnlBySymbol(context.login, context.account, {
+            activityContext: sharedActivityContext,
+            applyAccountCagrStartDate: false,
+            providedPositions: currentPositions,
+            endHoldingsBySymbol,
+            startDate: symbolTotalsStartDate,
+          });
+          symbolTotalsAll = mergeMissingCurrentPositionSymbolTotals(
+            symbolTotalsAll,
+            openingSnapshotTotalsAll,
+            currentPositions
+          );
+        }
         if (symbolTotalsAll && Array.isArray(symbolTotalsAll.entries)) {
           accountTotalPnlBySymbolAll[context.account.id] = {
             entries: symbolTotalsAll.entries,
@@ -26295,6 +26417,7 @@ module.exports = {
     computeMigrationReconciledNetInvestedCapital,
     resolveRangeBreakdownWindowForAccount,
     getPositionsForAccountFromSuperset,
+    mergeMissingCurrentPositionSymbolTotals,
     buildProviderObservedReturnFromSeries,
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,

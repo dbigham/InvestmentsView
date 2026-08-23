@@ -958,7 +958,7 @@ function resolveSymbolTotalPnlValue(symbolKey, accountId, symbolTotalPnlByAccoun
     const accountMap = symbolTotalPnlByAccountMap.get(accountKey);
     return accountMap?.get(symbolKey) ?? null;
   }
-  if (symbolTotalPnlByAccountMap.has('all')) {
+  if (!accountKey && symbolTotalPnlByAccountMap.has('all')) {
     const aggregateMap = symbolTotalPnlByAccountMap.get('all');
     return aggregateMap?.get(symbolKey) ?? null;
   }
@@ -3770,9 +3770,14 @@ function useSummaryData(accountNumber, refreshKey, includeNonInvestmentAccounts 
         fetchKey = 'default';
       }
     } else if (refreshChanged) {
-      fetchKey = 'all';
+      // A concrete account page does not need to rebuild the full aggregate
+      // superset just to refresh its table. The dedicated response still
+      // includes the account catalog, and avoids making a refresh wait on all
+      // accounts' historical SnapTrade work.
+      fetchKey = isConcreteAccountSelection ? normalizedAccount : 'all';
+      forceFetch = isConcreteAccountSelection;
     } else if (!supersetData) {
-      fetchKey = 'all';
+      fetchKey = isConcreteAccountSelection ? normalizedAccount : 'all';
     } else if (!initialData && normalizedAccount === 'all') {
       fetchKey = 'all';
     } else if (
@@ -19097,6 +19102,7 @@ export default function App() {
                 accountsById={accountsById}
                 symbolAnnualizedMap={symbolAnnualizedMapForPositions}
                 symbolAnnualizedByAccountMap={symbolAnnualizedByAccountMapForPositions}
+                allowSymbolAnnualizedFallback={!isAggregateSelection}
                 symbolTotalPnlByAccountMap={symbolTotalPnlByAccountMapForPositions}
                 focusedSymbolTotalPnlOverride={focusedSymbolTotalPnlOverride}
                 focusedSymbolKey={focusedSymbolKeyForPositions}
