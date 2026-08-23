@@ -3863,8 +3863,20 @@ export default function SummaryMetrics({
   const hasSelectionRange = Boolean(selectionRangeSummary);
   const activeRangeSummary = selectionRangeSummary || hoverRangeSummary;
   const hasActiveRangeSummary = Boolean(activeRangeSummary);
+  const chartTotalPnlValue =
+    !hasActiveRangeSummary &&
+    isTotalPnlMetric &&
+    applyDisplayStartDelta &&
+    Array.isArray(filteredTotalPnlSeries) &&
+    filteredTotalPnlSeries.length > 0 &&
+    Number.isFinite(filteredTotalPnlSeries[filteredTotalPnlSeries.length - 1]?.totalPnlDelta)
+      ? filteredTotalPnlSeries[filteredTotalPnlSeries.length - 1].totalPnlDelta
+      : null;
+  const usesChartTotalPnlValue = chartTotalPnlValue !== null;
   const displayTotalPnlValue = hasActiveRangeSummary
     ? activeRangeSummary?.totalPnlCad ?? null
+    : usesChartTotalPnlValue
+      ? chartTotalPnlValue
     : baseTotalPnlValue;
   const displayNetDepositsValue = hasActiveRangeSummary
     ? activeRangeSummary?.netDepositsCad ?? null
@@ -3997,6 +4009,7 @@ export default function SummaryMetrics({
   const totalPercent = formatPnlPercent(displayTotalPnlValue, totalPercentBaseValue);
   const providerHeadlineCumulativeRate =
     !hasActiveRangeSummary &&
+    !usesChartTotalPnlValue &&
     Number.isFinite(displayPeriodReturn?.cumulativeRate)
       ? displayPeriodReturn.cumulativeRate
       : null;
@@ -4005,7 +4018,10 @@ export default function SummaryMetrics({
 
   let totalExtraPercent = null;
   let totalExtraPercentTooltip = null;
-  if (providerHeadlineCumulativeRate !== null) {
+  if (usesChartTotalPnlValue && totalPercent) {
+    totalExtraPercent = `(${totalPercent})`;
+    totalExtraPercentTooltip = 'Fallback calculation: Total P&L divided by cost basis.';
+  } else if (providerHeadlineCumulativeRate !== null) {
     totalExtraPercent = `(${formatSignedPercent(providerHeadlineCumulativeRate * 100, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
