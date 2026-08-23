@@ -3079,6 +3079,227 @@ function summaryRepresentsAllAccounts(summary) {
   return normalizedAccountIds.every((accountId) => filteredSet.has(accountId));
 }
 
+function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, historyStartDate) {
+  if (
+    !destinationSeries ||
+    !Array.isArray(destinationSeries.points) ||
+    !destinationSeries.points.length ||
+    !Array.isArray(historicalSeriesList) ||
+    !historicalSeriesList.length
+  ) {
+    return null;
+  }
+
+  const boundary =
+    typeof historyStartDate === 'string' && historyStartDate.trim()
+      ? historyStartDate.trim().slice(0, 10)
+      : destinationSeries.points[0]?.date || null;
+  if (!boundary) {
+    return null;
+  }
+
+  const historicalByDate = new Map();
+  let pnlCarryForward = 0;
+  let historicalEquityTotal = 0;
+  let historicalDepositsTotal = 0;
+  let hasHistoricalBoundaryPoint = false;
+  let hasCompleteHistoricalBoundaryBasis = true;
+
+  historicalSeriesList.forEach((series) => {
+    if (!series || !Array.isArray(series.points)) {
+      return;
+    }
+    const points = series.points.filter((point) => point && point.date <= boundary);
+    if (!points.length) {
+      return;
+    }
+    hasHistoricalBoundaryPoint = true;
+    const boundaryPoint = points[points.length - 1];
+    const historicalPnl = Number(boundaryPoint.totalPnlCad);
+    if (Number.isFinite(historicalPnl)) {
+      pnlCarryForward += historicalPnl;
+    }
+    const historicalEquity = Number(boundaryPoint.equityCad);
+    const historicalDeposits = Number(boundaryPoint.cumulativeNetDepositsCad);
+    if (Number.isFinite(historicalEquity) && Number.isFinite(historicalDeposits)) {
+      historicalEquityTotal += historicalEquity;
+      historicalDepositsTotal += historicalDeposits;
+    } else {
+      hasCompleteHistoricalBoundaryBasis = false;
+    }
+
+    points
+      .filter((point) => point.date < boundary)
+      .forEach((point) => {
+        const existing = historicalByDate.get(point.date) || { date: point.date };
+        ['equityCad', 'cumulativeNetDepositsCad', 'totalPnlCad', 'cadCash', 'usdCash', 'cadSecurityValue', 'usdSecurityValue']
+          .forEach((field) => {
+            const value = Number(point[field]);
+            if (Number.isFinite(value)) {
+              existing[field] = (Number.isFinite(existing[field]) ? existing[field] : 0) + value;
+            }
+          });
+        historicalByDate.set(point.date, existing);
+      });
+  });
+
+  if (!hasHistoricalBoundaryPoint || !Number.isFinite(pnlCarryForward)) {
+    return null;
+  }
+
+  const destinationBoundaryPoint = destinationSeries.points.find(
+    (point) => point && typeof point.date === 'string' && point.date >= boundary
+  );
+  const destinationEquity = Number(destinationBoundaryPoint?.equityCad);
+  const destinationDeposits = Number(destinationBoundaryPoint?.cumulativeNetDepositsCad);
+  const boundaryEquityTolerance = Math.max(
+    1,
+    Math.max(Math.abs(historicalEquityTotal), Math.abs(destinationEquity)) * 0.005
+  );
+  const hasMatchingBoundaryEquity =
+    hasCompleteHistoricalBoundaryBasis &&
+    Number.isFinite(destinationEquity) &&
+    Number.isFinite(destinationDeposits) &&
+    Math.abs(historicalEquityTotal - destinationEquity) <= boundaryEquityTolerance;
+  const depositCarryForward = hasMatchingBoundaryEquity
+    ? historicalDepositsTotal - destinationDeposits
+    : 0;
+  const canRebaseToHistoricalBoundary =
+    hasCompleteHistoricalBoundaryBasis &&
+    Number.isFinite(historicalEquityTotal) &&
+    Number.isFinite(historicalDepositsTotal) &&
+    Number.isFinite(destinationEquity) &&
+    Number.isFinite(destinationDeposits);
+
+  const adjustedDestinationPoints = destinationSeries.points
+    .filter((point) => point && point.date >= boundary)
+    .map((point) => {
+      const adjusted = { ...point };
+      if (Number.isFinite(Number(adjusted.totalPnlCad))) {
+        adjusted.totalPnlCad = Number(adjusted.totalPnlCad) + pnlCarryForward;
+      }
+      if (hasMatchingBoundaryEquity && Number.isFinite(Number(adjusted.cumulativeNetDepositsCad))) {
+        adjusted.cumulativeNetDepositsCad = Number(adjusted.cumulativeNetDepositsCad) + depositCarryForward;
+      }
+      if (canRebaseToHistoricalBoundary) {
+        const relativeEquity = Number(adjusted.equityCad) - destinationEquity;
+        const relativeDeposits = Number(point.cumulativeNetDepositsCad) - destinationDeposits;
+        const rebasedEquity = historicalEquityTotal + relativeEquity;
+        const rebasedDeposits = historicalDepositsTotal + relativeDeposits;
+        if (Number.isFinite(rebasedEquity) && Number.isFinite(rebasedDeposits)) {
+          adjusted.equityCad = rebasedEquity;
+          adjusted.cumulativeNetDepositsCad = rebasedDeposits;
+          const rebasedPnl = rebasedEquity - rebasedDeposits;
+          adjusted.totalPnlCad = Math.abs(rebasedPnl) < 1e-6 ? 0 : rebasedPnl;
+        }
+      }
+      // Recompute display-relative deltas from the stitched absolute values;
+      // the destination's cached deltas use its successor-only baseline.
+      delete adjusted.totalPnlSinceDisplayStartCad;
+      delete adjusted.equitySinceDisplayStartCad;
+      delete adjusted.cumulativeNetDepositsSinceDisplayStartCad;
+      return adjusted;
+    });
+
+  const adjustedSummary =
+    destinationSeries.summary && typeof destinationSeries.summary === 'object'
+      ? { ...destinationSeries.summary }
+      : {};
+  if (Number.isFinite(Number(adjustedSummary.totalPnlCad))) {
+    adjustedSummary.totalPnlCad = Number(adjustedSummary.totalPnlCad) + pnlCarryForward;
+    adjustedSummary.totalPnlAllTimeCad = adjustedSummary.totalPnlCad;
+  }
+  if (hasMatchingBoundaryEquity && Number.isFinite(Number(adjustedSummary.netDepositsCad))) {
+    adjustedSummary.netDepositsCad = Number(adjustedSummary.netDepositsCad) + depositCarryForward;
+    adjustedSummary.netDepositsAllTimeCad = adjustedSummary.netDepositsCad;
+  }
+
+  const historicalPoints = Array.from(historicalByDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+  const points = [...historicalPoints, ...adjustedDestinationPoints].sort((a, b) => a.date.localeCompare(b.date));
+  if (!points.length) {
+    return null;
+  }
+
+  if (canRebaseToHistoricalBoundary && adjustedDestinationPoints.length) {
+    const lastAdjustedPoint = adjustedDestinationPoints[adjustedDestinationPoints.length - 1];
+    if (Number.isFinite(lastAdjustedPoint?.totalPnlCad)) {
+      adjustedSummary.totalPnlCad = lastAdjustedPoint.totalPnlCad;
+      adjustedSummary.totalPnlAllTimeCad = lastAdjustedPoint.totalPnlCad;
+    }
+    if (Number.isFinite(lastAdjustedPoint?.cumulativeNetDepositsCad)) {
+      adjustedSummary.netDepositsCad = lastAdjustedPoint.cumulativeNetDepositsCad;
+      adjustedSummary.netDepositsAllTimeCad = lastAdjustedPoint.cumulativeNetDepositsCad;
+    }
+  }
+
+  const displayStartPoint = historicalPoints[0] || points[0];
+
+  return {
+    ...destinationSeries,
+    periodStartDate: historicalPoints[0]?.date || destinationSeries.periodStartDate || boundary,
+    displayStartDate: displayStartPoint?.date || destinationSeries.displayStartDate || boundary,
+    periodEndDate: points[points.length - 1]?.date || destinationSeries.periodEndDate,
+    historyStartDate: historicalPoints[0]?.date || destinationSeries.periodStartDate || boundary,
+    historyStartDateEstimated: true,
+    stitchedFromHistorical: true,
+    points,
+    summary: {
+      ...adjustedSummary,
+      displayStartTotals: displayStartPoint
+        ? {
+            totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
+              ? Number(displayStartPoint.totalPnlCad)
+              : null,
+            equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
+              ? Number(displayStartPoint.equityCad)
+              : null,
+            cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
+              ? Number(displayStartPoint.cumulativeNetDepositsCad)
+              : null,
+          }
+        : destinationSeries.summary?.displayStartTotals,
+    },
+  };
+}
+
+function deriveCagrSeriesView(series, cagrStartDate) {
+  if (!series || typeof series !== 'object' || !Array.isArray(series.points)) {
+    return series;
+  }
+  const normalizedStart =
+    typeof cagrStartDate === 'string' && cagrStartDate.trim()
+      ? cagrStartDate.trim().slice(0, 10)
+      : null;
+  if (!normalizedStart) {
+    return series;
+  }
+  const displayStartPoint = series.points.find(
+    (point) => point && typeof point.date === 'string' && point.date >= normalizedStart
+  );
+  if (!displayStartPoint) {
+    return series;
+  }
+  return {
+    ...series,
+    cagrStartDate: normalizedStart,
+    displayStartDate: displayStartPoint.date,
+    summary: {
+      ...(series.summary && typeof series.summary === 'object' ? series.summary : {}),
+      displayStartTotals: {
+        totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
+          ? Number(displayStartPoint.totalPnlCad)
+          : null,
+        equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
+          ? Number(displayStartPoint.equityCad)
+          : null,
+        cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
+          ? Number(displayStartPoint.cumulativeNetDepositsCad)
+          : null,
+      },
+    },
+  };
+}
+
 function deriveSummaryFromSuperset(baseData, selectionKey) {
   if (!baseData || typeof baseData !== 'object') {
     return null;
@@ -3292,6 +3513,83 @@ function deriveSummaryFromSuperset(baseData, selectionKey) {
       }
     } else if (normalizedKey === 'all' && totalPnlSeriesMap['all']) {
       nextTotalPnlSeriesMap['all'] = totalPnlSeriesMap['all'];
+    }
+  }
+
+  if (!isAccountGroupSelection(normalizedKey) && orderedAccountIds.length === 1 && nextTotalPnlSeriesMap) {
+    const successorId = orderedAccountIds[0];
+    const successor = allAccounts.find((account) => String(account?.id).trim() === successorId);
+    const historicalIds =
+      baseData.historicalAccountIdsBySuccessor &&
+      typeof baseData.historicalAccountIdsBySuccessor === 'object' &&
+      Array.isArray(baseData.historicalAccountIdsBySuccessor[successorId])
+        ? baseData.historicalAccountIdsBySuccessor[successorId]
+        : [];
+    const destinationContainer = nextTotalPnlSeriesMap[successorId];
+    const destinationSeries =
+      destinationContainer && typeof destinationContainer === 'object'
+        ? destinationContainer.all || destinationContainer.cagr
+        : null;
+    const historicalSeriesList = historicalIds
+      .map((historicalId) => {
+        const container = totalPnlSeriesMap[String(historicalId).trim()];
+        return container && typeof container === 'object' ? container.all || container.cagr : null;
+      })
+      .filter(Boolean);
+    const stitchedSeries =
+      successor &&
+      !successor.closed &&
+      destinationSeries &&
+      !destinationSeries.stitchedFromHistorical
+        ? stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, successor.historyStartDate)
+        : null;
+
+    if (stitchedSeries) {
+      const cagrSeries = deriveCagrSeriesView(stitchedSeries, successor.cagrStartDate);
+      nextTotalPnlSeriesMap = {
+        ...nextTotalPnlSeriesMap,
+        [successorId]: {
+          ...(destinationContainer || {}),
+          all: stitchedSeries,
+          cagr: cagrSeries,
+        },
+      };
+
+      const existingFunding = nextAccountFunding[successorId];
+      if (existingFunding) {
+        const annualized = computeAnnualizedReturnFromSeriesPoints(stitchedSeries.points);
+        const annualizedDetails = {
+          rate: Number.isFinite(annualized?.rate) ? annualized.rate : null,
+          method: 'xirr',
+          asOf: annualized?.endDate || stitchedSeries.periodEndDate || null,
+          startDate: annualized?.startDate || stitchedSeries.periodStartDate || null,
+          incomplete: annualized?.incomplete === true,
+        };
+        nextAccountFunding = {
+          ...nextAccountFunding,
+          [successorId]: {
+            ...existingFunding,
+            totalPnl: {
+              ...(existingFunding.totalPnl || {}),
+              combinedCad: stitchedSeries.summary?.totalPnlCad,
+              allTimeCad: stitchedSeries.summary?.totalPnlAllTimeCad,
+            },
+            netDeposits: {
+              ...(existingFunding.netDeposits || {}),
+              combinedCad: stitchedSeries.summary?.netDepositsCad,
+              allTimeCad: stitchedSeries.summary?.netDepositsAllTimeCad,
+            },
+            totalPnlSinceDisplayStartCad: stitchedSeries.summary?.totalPnlCad,
+            periodStartDate: stitchedSeries.periodStartDate,
+            originalPeriodStartDate: stitchedSeries.periodStartDate,
+            historyStartDate: stitchedSeries.periodStartDate,
+            historyStartDateEstimated: true,
+            annualizedReturn: annualizedDetails,
+            annualizedReturnAllTime: annualizedDetails,
+            stitchedFromHistorical: true,
+          },
+        };
+      }
     }
   }
 
@@ -3640,6 +3938,9 @@ function needsDedicatedSnapTradeSummary(summary, accountKey) {
       : null;
   if (!funding || typeof funding !== 'object') {
     return true;
+  }
+  if (funding.stitchedFromHistorical === true) {
+    return false;
   }
   if (funding.openingFundingReconciled !== true) {
     return true;
@@ -13284,6 +13585,8 @@ export default function App() {
     const rawCagrStartDate =
       typeof selectedAccountFunding?.cagrStartDate === 'string' && selectedAccountFunding.cagrStartDate.trim()
         ? selectedAccountFunding.cagrStartDate.trim()
+        : typeof selectedAccountInfo?.cagrStartDate === 'string' && selectedAccountInfo.cagrStartDate.trim()
+          ? selectedAccountInfo.cagrStartDate.trim()
         : null;
 
     return {
@@ -13293,7 +13596,7 @@ export default function App() {
         cagrStartDate: rawCagrStartDate,
       },
     };
-  }, [selectedAccountFunding, activeCurrency, isAggregateSelection]);
+  }, [selectedAccountFunding, selectedAccountInfo?.cagrStartDate, activeCurrency, isAggregateSelection]);
 
   const cagrStartDate = fundingSummaryVariants?.metadata?.cagrStartDate || null;
 
@@ -13325,7 +13628,7 @@ export default function App() {
         ? fundingSummaryVariants.effective.historyStartDate
         : providerStart;
     const providerStartLabel = chartStart ? formatDate(chartStart) : null;
-    if (providerStartLabel && providerStartLabel !== '?') {
+    if (!cagrStartDate && providerStartLabel && providerStartLabel !== '?') {
       return [{ value: 'all', label: `Since ${providerStartLabel}` }];
     }
     const options = [];
@@ -13349,7 +13652,10 @@ export default function App() {
         options.push({ value: 'all', label: 'From start' });
       }
     } else {
-      options.push({ value: 'all', label: 'From start' });
+      options.push({
+        value: 'all',
+        label: providerStartLabel && providerStartLabel !== '?' ? `Since ${providerStartLabel}` : 'From start',
+      });
     }
     return options;
   }, [fundingSummaryVariants, cagrStartDate]);

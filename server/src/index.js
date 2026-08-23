@@ -621,6 +621,16 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
   let historicalDepositsTotal = 0;
   let hasCompleteHistoricalBoundaryBasis = true;
   let hasHistoricalBoundaryPoint = false;
+  const historicalPointsByDate = new Map();
+  const additivePointFields = [
+    'equityCad',
+    'cumulativeNetDepositsCad',
+    'totalPnlCad',
+    'cadCash',
+    'usdCash',
+    'cadSecurityValue',
+    'usdSecurityValue',
+  ];
 
   historicalResults.forEach((historicalResult) => {
     const historicalPoints = Array.isArray(historicalResult?.series?.points)
@@ -644,6 +654,19 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
     } else {
       hasCompleteHistoricalBoundaryBasis = false;
     }
+
+    historicalPoints
+      .filter((point) => point && typeof point.date === 'string' && point.date < boundary)
+      .forEach((point) => {
+        const existing = historicalPointsByDate.get(point.date) || { date: point.date };
+        additivePointFields.forEach((field) => {
+          const value = Number(point[field]);
+          if (Number.isFinite(value)) {
+            existing[field] = (Number.isFinite(existing[field]) ? existing[field] : 0) + value;
+          }
+        });
+        historicalPointsByDate.set(point.date, existing);
+      });
   });
 
   if (!hasHistoricalBoundaryPoint || !Number.isFinite(pnlCarryForward)) {
@@ -667,16 +690,22 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
   const depositCarryForward = hasMatchingBoundaryEquity
     ? historicalDepositsTotal - destinationDeposits
     : 0;
+  const canRebaseToHistoricalBoundary =
+    hasCompleteHistoricalBoundaryBasis &&
+    Number.isFinite(historicalEquityTotal) &&
+    Number.isFinite(historicalDepositsTotal) &&
+    Number.isFinite(destinationEquity) &&
+    Number.isFinite(destinationDeposits);
   const hasPnlAdjustment = Math.abs(pnlCarryForward) >= CASH_FLOW_EPSILON;
   const hasDepositAdjustment =
     hasMatchingBoundaryEquity && Math.abs(depositCarryForward) >= CASH_FLOW_EPSILON;
-  if (!hasPnlAdjustment && !hasDepositAdjustment) {
+  if (!historicalPointsByDate.size && !hasPnlAdjustment && !hasDepositAdjustment) {
     return destinationResult;
   }
 
   const adjustedPoints = destinationResult.series.points.map((point) => {
     if (!point || typeof point.date !== 'string' || point.date < boundary) {
-      return point;
+      return null;
     }
     const totalPnl = Number(point.totalPnlCad);
     const cumulativeNetDeposits = Number(point.cumulativeNetDepositsCad);
@@ -687,8 +716,35 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
     if (hasMatchingBoundaryEquity && Number.isFinite(cumulativeNetDeposits)) {
       adjustedPoint.cumulativeNetDepositsCad = cumulativeNetDeposits + depositCarryForward;
     }
+    if (canRebaseToHistoricalBoundary) {
+      const relativeEquity = Number(adjustedPoint.equityCad) - destinationEquity;
+      const relativeDeposits = cumulativeNetDeposits - destinationDeposits;
+      const rebasedEquity = historicalEquityTotal + relativeEquity;
+      const rebasedDeposits = historicalDepositsTotal + relativeDeposits;
+      if (Number.isFinite(rebasedEquity) && Number.isFinite(rebasedDeposits)) {
+        adjustedPoint.equityCad = rebasedEquity;
+        adjustedPoint.cumulativeNetDepositsCad = rebasedDeposits;
+        const rebasedPnl = rebasedEquity - rebasedDeposits;
+        adjustedPoint.totalPnlCad = Math.abs(rebasedPnl) < CASH_FLOW_EPSILON ? 0 : rebasedPnl;
+      }
+    }
+    // These fields are deltas from the destination's original display
+    // baseline. Recompute them from the reconstructed absolute values in the
+    // chart layer instead of carrying the successor-only deltas across the
+    // historical handoff.
+    delete adjustedPoint.totalPnlSinceDisplayStartCad;
+    delete adjustedPoint.equitySinceDisplayStartCad;
+    delete adjustedPoint.cumulativeNetDepositsSinceDisplayStartCad;
     return adjustedPoint;
-  });
+  }).filter(Boolean);
+
+  const historicalPoints = Array.from(historicalPointsByDate.values()).sort((a, b) =>
+    a.date.localeCompare(b.date)
+  );
+  const combinedPoints = [...historicalPoints, ...adjustedPoints].sort((a, b) =>
+    a.date.localeCompare(b.date)
+  );
+  const displayStartPoint = historicalPoints[0] || combinedPoints[0] || null;
 
   const adjustedSummary =
     destinationResult.series.summary && typeof destinationResult.series.summary === 'object'
@@ -707,14 +763,61 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
         }
       });
     }
+
+    // The stitched points are now one reconstructed history, so the all-time
+    // summary must use that same basis. The destination's provider-native
+    // all-time value may include a different opening-funding story and would
+    // otherwise make the client snap the final chart point to an unrelated
+    // amount.
+    if (Number.isFinite(adjustedSummary.totalPnlCad)) {
+      adjustedSummary.totalPnlAllTimeCad = adjustedSummary.totalPnlCad;
+    }
+    if (Number.isFinite(adjustedSummary.netDepositsCad)) {
+      adjustedSummary.netDepositsAllTimeCad = adjustedSummary.netDepositsCad;
+    }
+    if (canRebaseToHistoricalBoundary && adjustedPoints.length) {
+      const lastAdjustedPoint = adjustedPoints[adjustedPoints.length - 1];
+      if (Number.isFinite(lastAdjustedPoint?.totalPnlCad)) {
+        adjustedSummary.totalPnlCad = lastAdjustedPoint.totalPnlCad;
+        adjustedSummary.totalPnlAllTimeCad = lastAdjustedPoint.totalPnlCad;
+      }
+      if (Number.isFinite(lastAdjustedPoint?.cumulativeNetDepositsCad)) {
+        adjustedSummary.netDepositsCad = lastAdjustedPoint.cumulativeNetDepositsCad;
+        adjustedSummary.netDepositsAllTimeCad = lastAdjustedPoint.cumulativeNetDepositsCad;
+      }
+    }
   }
 
   return {
     ...destinationResult,
     series: {
       ...destinationResult.series,
-      points: adjustedPoints,
-      summary: adjustedSummary || destinationResult.series.summary,
+      periodStartDate:
+        historicalPoints[0]?.date || destinationResult.series.periodStartDate || boundary,
+      displayStartDate:
+        displayStartPoint?.date || destinationResult.series.displayStartDate || boundary,
+      periodEndDate:
+        combinedPoints[combinedPoints.length - 1]?.date || destinationResult.series.periodEndDate,
+      historyStartDate:
+        historicalPoints[0]?.date || destinationResult.series.periodStartDate || boundary,
+      historyStartDateEstimated: true,
+      points: combinedPoints,
+      summary: {
+        ...(adjustedSummary || destinationResult.series.summary || {}),
+        displayStartTotals: displayStartPoint
+          ? {
+              totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
+                ? Number(displayStartPoint.totalPnlCad)
+                : null,
+              equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
+                ? Number(displayStartPoint.equityCad)
+                : null,
+              cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
+                ? Number(displayStartPoint.cumulativeNetDepositsCad)
+                : null,
+            }
+          : destinationResult.series.summary?.displayStartTotals,
+      },
     },
   };
 }
@@ -750,6 +853,14 @@ async function computeAggregateTotalPnlSeriesForContexts(
           typeof activityContext === 'object' &&
           activityContext.fingerprint === 'provider-history-skipped';
         const cacheKey = buildTotalPnlSeriesCacheKey(context.account.id, options);
+        const providedSeriesMap = options && options.providedSeriesByAccountId;
+        const providedSeries =
+          providedSeriesMap && typeof providedSeriesMap === 'object'
+            ? providedSeriesMap[context.account.id]
+            : null;
+        if (providedSeries && Array.isArray(providedSeries.points)) {
+          return { context, series: providedSeries };
+        }
         const cached =
           !usesSkippedProviderHistory && cacheKey ? getTotalPnlSeriesCacheEntry(cacheKey) : null;
         if (cached) {
@@ -944,6 +1055,7 @@ async function computeAggregateTotalPnlSeriesForContexts(
       historicalSeriesBySuccessorId.set(successorId, list);
     }
   });
+  const stitchedSuccessorIds = new Set();
   successfulSeries = successfulSeries.map((result) => {
     const account = result && result.context && result.context.account;
     const accountId = account && account.id ? String(account.id) : '';
@@ -951,14 +1063,20 @@ async function computeAggregateTotalPnlSeriesForContexts(
       return result;
     }
     const historicalResults = historicalSeriesBySuccessorId.get(accountId) || [];
-    return historicalResults.length
-      ? stitchSuccessorSeriesResult(result, historicalResults)
-      : result;
+    if (!historicalResults.length) {
+      return result;
+    }
+    const stitched = stitchSuccessorSeriesResult(result, historicalResults);
+    if (stitched !== result && stitched.series !== result.series) {
+      stitchedSuccessorIds.add(accountId);
+    }
+    return stitched;
   });
 
   // Clip migrated historical series after successor stitching has captured
-  // their terminal P&L. This is deliberately done before aggregation so the
-  // old account contributes history without becoming a current balance.
+  // their terminal P&L. This keeps an unpaired historical source from being
+  // carried forward as a current balance; paired sources are removed below
+  // because their successor owns the reconstructed history.
   successfulSeries = successfulSeries.map((result) => {
     const account = result && result.context && result.context.account;
     const successorId = account && account.migratedTo ? String(account.migratedTo).trim() : '';
@@ -989,6 +1107,24 @@ async function computeAggregateTotalPnlSeriesForContexts(
         points,
       },
     };
+  });
+
+  // A stitched successor now owns the predecessor's historical contribution.
+  // Do not add the closed source series again, or migrated accounts will be
+  // double-counted in All accounts during the period before the handoff.
+  let intentionallyExcludedHistoricalSeriesCount = 0;
+  successfulSeries = successfulSeries.filter((result) => {
+    const account = result && result.context && result.context.account;
+    const successorId = account && account.migratedTo ? String(account.migratedTo).trim() : '';
+    if (
+      successorId &&
+      stitchedSuccessorIds.has(successorId) &&
+      (isArchivedAccount(account) || isClosedAccount(account))
+    ) {
+      intentionallyExcludedHistoricalSeriesCount += 1;
+      return false;
+    }
+    return true;
   });
 
   const contributesCurrentAggregateSummary = (result) => {
@@ -1195,7 +1331,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
     }
   });
 
-  if (successfulSeries.length !== targetContexts.length || hadAccountFetchFailure) {
+  if (
+    successfulSeries.length + intentionallyExcludedHistoricalSeriesCount !== targetContexts.length ||
+    hadAccountFetchFailure
+  ) {
     aggregatedIssues.add('aggregate-partial-data');
   }
 
@@ -1276,8 +1415,10 @@ async function computeAggregateTotalPnlSeriesForContexts(
   if (lastPoint && typeof lastPoint === 'object') {
     const summaryCoverageCount = successfulSeries.filter(contributesCurrentAggregateSummary).length;
     const lastPointIsCurrent = !aggregatedEnd || lastPoint.date === aggregatedEnd;
+    const canUseLatestAggregateSummary =
+      lastPointIsCurrent && !isWeekendDateKey(lastPoint.date);
     const hasCompleteSummaryCoverage =
-      lastPointIsCurrent &&
+      canUseLatestAggregateSummary &&
       summaryCoverageCount > 0 &&
       summaryCounts.totalEquityCad === summaryCoverageCount &&
       summaryCounts.netDepositsCad === summaryCoverageCount &&
@@ -1358,8 +1499,12 @@ async function computeAggregateTotalPnlSeriesForContexts(
   const lastCombinedPoint = combinedPoints[combinedPoints.length - 1] || null;
   const summaryCoverageCount = successfulSeries.filter(contributesCurrentAggregateSummary).length;
   const lastCombinedPointIsCurrent = !aggregatedEnd || lastCombinedPoint?.date === aggregatedEnd;
-  const hasCompleteSummaryCoverage =
+  const canUseLatestAggregateSummary =
     lastCombinedPointIsCurrent &&
+    Boolean(lastCombinedPoint) &&
+    !isWeekendDateKey(lastCombinedPoint.date);
+  const hasCompleteSummaryCoverage =
+    canUseLatestAggregateSummary &&
     summaryCoverageCount > 0 &&
     summaryCounts.totalEquityCad === summaryCoverageCount &&
     summaryCounts.netDepositsCad === summaryCoverageCount &&
@@ -3213,6 +3358,69 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
       accountTotalPnlSeries[accountId] = superset.accountTotalPnlSeries[accountId];
     }
   });
+
+  // A concrete successor can be served directly from the already-warmed
+  // superset. Reconstruct its historical chart from the cached predecessor
+  // series instead of forcing a second live account-summary request during a
+  // normal account switch. Manual refreshes still take the dedicated path.
+  if (!isAggregateSelection && accountIds.length === 1) {
+    const successorId = String(accountIds[0]).trim();
+    const successor = accountById.get(successorId);
+    const historicalIds = historicalAccountIdsBySuccessor[successorId];
+    const destinationContainer = accountTotalPnlSeries[successorId];
+    const destinationSeries =
+      destinationContainer && typeof destinationContainer === 'object'
+        ? destinationContainer.all || destinationContainer.cagr
+        : null;
+    const historicalResults = Array.isArray(historicalIds)
+      ? historicalIds
+          .map((historicalId) => {
+            const historicalContainer = accountTotalPnlSeries[String(historicalId).trim()];
+            const historicalSeries =
+              historicalContainer && typeof historicalContainer === 'object'
+                ? historicalContainer.all || historicalContainer.cagr
+                : null;
+            const historicalAccount = accountById.get(String(historicalId).trim());
+            return historicalSeries && historicalAccount
+              ? { context: { account: historicalAccount }, series: historicalSeries }
+              : null;
+          })
+          .filter(Boolean)
+      : [];
+
+    if (
+      successor &&
+      !isClosedAccount(successor) &&
+      destinationSeries &&
+      Array.isArray(destinationSeries.points) &&
+      !destinationSeries.stitchedFromHistorical &&
+      historicalResults.length
+    ) {
+      const stitchedResult = stitchSuccessorSeriesResult(
+        { context: { account: successor }, series: destinationSeries },
+        historicalResults
+      );
+      const stitchedSeries = markStitchedSuccessorSeries(stitchedResult.series);
+      const cagrSeries = deriveCagrSeriesView(stitchedSeries, successor.cagrStartDate);
+      accountTotalPnlSeries[successorId] = {
+        ...(destinationContainer || {}),
+        all: stitchedSeries,
+        cagr: cagrSeries,
+      };
+
+      const existingFunding = accountFunding[successorId];
+      if (existingFunding) {
+        const stitchedFunding = {
+          ...existingFunding,
+          totalPnl: existingFunding.totalPnl ? { ...existingFunding.totalPnl } : undefined,
+          netDeposits: existingFunding.netDeposits ? { ...existingFunding.netDeposits } : undefined,
+        };
+        applyStitchedSuccessorSeriesToFundingSummary(stitchedFunding, stitchedSeries, successor);
+        stitchedFunding.stitchedFromHistorical = true;
+        accountFunding[successorId] = stitchedFunding;
+      }
+    }
+  }
 
   const aggregateKey =
     normalizedSelection.type === 'group'
@@ -12308,6 +12516,47 @@ function markStitchedSuccessorSeries(series) {
   };
 }
 
+function deriveCagrSeriesView(series, cagrStartDate) {
+  if (!series || typeof series !== 'object' || !Array.isArray(series.points)) {
+    return series;
+  }
+  const normalizedStart =
+    typeof cagrStartDate === 'string' && cagrStartDate.trim()
+      ? cagrStartDate.trim().slice(0, 10)
+      : null;
+  if (!normalizedStart) {
+    return series;
+  }
+  const displayStartPoint = series.points.find(
+    (point) => point && typeof point.date === 'string' && point.date >= normalizedStart
+  );
+  if (!displayStartPoint) {
+    return series;
+  }
+
+  const displayStartTotals = {
+    totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
+      ? Number(displayStartPoint.totalPnlCad)
+      : null,
+    equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
+      ? Number(displayStartPoint.equityCad)
+      : null,
+    cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
+      ? Number(displayStartPoint.cumulativeNetDepositsCad)
+      : null,
+  };
+
+  return {
+    ...series,
+    cagrStartDate: normalizedStart,
+    displayStartDate: displayStartPoint.date,
+    summary: {
+      ...(series.summary && typeof series.summary === 'object' ? series.summary : {}),
+      displayStartTotals,
+    },
+  };
+}
+
 function applyStitchedSuccessorSeriesToFundingSummary(fundingSummary, series, account) {
   if (!fundingSummary || !series) {
     return;
@@ -12327,6 +12576,9 @@ function applyStitchedSuccessorSeriesToFundingSummary(fundingSummary, series, ac
   }
   if (markedSeries.periodEndDate) {
     fundingSummary.periodEndDate = markedSeries.periodEndDate;
+  }
+  if (account && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()) {
+    fundingSummary.cagrStartDate = account.cagrStartDate.trim().slice(0, 10);
   }
   rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, markedSeries, account && account.id);
 }
@@ -16875,6 +17127,26 @@ function isHistoryPnlRebaseDate(account, dateKey) {
   );
 }
 
+function isCurrentSnapshotDate(pointDate, snapshotDateKey) {
+  return (
+    typeof pointDate === 'string' &&
+    pointDate.trim().slice(0, 10) ===
+      (typeof snapshotDateKey === 'string' ? snapshotDateKey.trim().slice(0, 10) : '')
+  );
+}
+
+function isWeekendDateKey(dateKey) {
+  if (typeof dateKey !== 'string' || !dateKey.trim()) {
+    return false;
+  }
+  const date = parseDateOnlyString(dateKey.trim().slice(0, 10));
+  if (!date) {
+    return false;
+  }
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
+}
+
 async function computeTotalPnlSeries(login, account, perAccountCombinedBalances, options = {}) {
   if (!account || !account.id) {
     return null;
@@ -17548,7 +17820,6 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
       usdRatesByDate: options.usdRatesByDate,
     }
   );
-
   const holdings = seededHoldings || new Map();
   const cashByCurrency = seededCash || new Map();
   const usdRateCache = new Map();
@@ -17732,8 +18003,8 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     }
 
     const equityCad = Number.isFinite(snapshot.equityCad) ? snapshot.equityCad : null;
+    const previousPoint = points.length ? points[points.length - 1] : null;
     if (isHistoryPnlRebaseDate(account, dateKey) && Number.isFinite(equityCad)) {
-      const previousPoint = points.length ? points[points.length - 1] : null;
       const targetPnlCad = previousPoint && Number.isFinite(previousPoint.totalPnlCad)
         ? previousPoint.totalPnlCad
         : 0;
@@ -17950,7 +18221,13 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     const canTrustSnapshotComparison =
       !conversionIncomplete &&
       missingPriceSymbols.size === 0;
-    if (!hasFundingToday && isLatestPointToday && canTrustSnapshotComparison && Number.isFinite(lastPointEquity)) {
+    if (
+      !hasFundingToday &&
+      isLatestPointToday &&
+      !isWeekendDateKey(lastPointDate) &&
+      canTrustSnapshotComparison &&
+      Number.isFinite(lastPointEquity)
+    ) {
       const equityDelta = summaryEquity - lastPointEquity;
       const lastPointDateObject = parseDateOnlyString(lastPointDate) || null;
       let snapshotUsdRate = Number(lastPoint?.usdToCadRate);
@@ -18163,7 +18440,13 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     const adjustedNetDeposits = Number.isFinite(summaryNetDepositsAllTime)
       ? summaryNetDepositsAllTime
       : summaryNetDeposits;
-    if (lastPoint && Number.isFinite(summaryEquity) && Number.isFinite(adjustedNetDeposits)) {
+    if (
+      lastPoint &&
+      isCurrentSnapshotDate(lastPoint.date, todayDateKey) &&
+      !isWeekendDateKey(lastPoint.date) &&
+      Number.isFinite(summaryEquity) &&
+      Number.isFinite(adjustedNetDeposits)
+    ) {
       lastPoint.equityCad = summaryEquity;
       lastPoint.cumulativeNetDepositsCad = adjustedNetDeposits;
       const adjustedPnl = summaryEquity - adjustedNetDeposits;
@@ -18196,9 +18479,14 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         missingPriceSymbols.size === 0 &&
         fallbackPriceSymbols.size === 0 &&
         !conversionIncomplete;
+      const lastPointIsCurrentDate = isCurrentSnapshotDate(last.date, todayDateKey);
+      const canApplyCurrentSnapshotToLastPoint =
+        lastPointIsCurrentDate &&
+        !isWeekendDateKey(last.date);
       if (snapTradeDivergenceIsMaterial) {
         issues.add('current-snapshot-diverges-from-reconstruction');
       } else if (
+        canApplyCurrentSnapshotToLastPoint &&
         Number.isFinite(summaryEquity) &&
         canReconcileCurrentSnapshot
       ) {
@@ -18208,7 +18496,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         } else if (effectiveSummaryPnl !== null) {
           last.totalPnlCad = effectiveSummaryPnl;
         }
-      } else if (effectiveSummaryPnl !== null && canReconcileCurrentSnapshot) {
+      } else if (canApplyCurrentSnapshotToLastPoint && effectiveSummaryPnl !== null && canReconcileCurrentSnapshot) {
         last.totalPnlCad = effectiveSummaryPnl;
         if (Number.isFinite(last.cumulativeNetDepositsCad)) {
           last.equityCad = effectiveSummaryPnl + last.cumulativeNetDepositsCad;
@@ -23104,27 +23392,7 @@ app.get('/api/summary', async function (req, res) {
         }
       }
 
-      const supersetSelectedAccount =
-        normalizedSelection.type === 'account' && supersetEntry && Array.isArray(supersetEntry.accounts)
-          ? supersetEntry.accounts.find((account) => {
-              if (!account) {
-                return false;
-              }
-              return (
-                String(account.id || '').trim() === String(normalizedSelection.requestedId || '').trim() ||
-                String(account.number || '').trim() === String(normalizedSelection.requestedId || '').trim()
-              );
-            })
-          : null;
-      const successorHasHistoricalSource = Boolean(
-        supersetSelectedAccount &&
-          !isClosedAccount(supersetSelectedAccount) &&
-          resolveHistoricalAccountIdsForSuccessor(
-            supersetEntry.accounts,
-            supersetSelectedAccount.id
-          ).length > 0
-      );
-      if (supersetEntry && supersetEntry.payload && !successorHasHistoricalSource) {
+      if (supersetEntry && supersetEntry.payload) {
         const derivationDetails = DEBUG_SUMMARY_CACHE ? {} : null;
         const derived = deriveSummaryFromSuperset(supersetEntry, normalizedSelection, derivationDetails);
         if (derived) {
@@ -24039,12 +24307,16 @@ app.get('/api/summary', async function (req, res) {
               }
             });
             const stitchedContexts = [...historicalContextsForSelectedAccount, context];
+            const providedSeriesByAccountId = !context.account.cagrStartDate
+              ? { [context.account.id]: totalPnlSeries }
+              : undefined;
             const stitchedSeries = await computeAggregateTotalPnlSeriesForContexts(
               stitchedContexts,
               stitchedBalances,
               {
                 applyAccountCagrStartDate: false,
                 positionsByAccountId,
+                providedSeriesByAccountId,
               },
               context.account.id,
               false,
@@ -24142,9 +24414,20 @@ app.get('/api/summary', async function (req, res) {
               setTotalPnlSeriesCacheEntry(allTimeCacheKey, totalPnlSeries);
             }
           }
+          const cagrSeries = totalPnlSeriesWasStitched
+            ? deriveCagrSeriesView(totalPnlSeries, context.account.cagrStartDate)
+            : totalPnlSeries;
+          if (totalPnlSeriesWasStitched) {
+            const cagrCacheKey = buildTotalPnlSeriesCacheKey(context.account.id, {
+              applyAccountCagrStartDate: true,
+            });
+            if (cagrCacheKey) {
+              setTotalPnlSeriesCacheEntry(cagrCacheKey, cagrSeries);
+            }
+          }
           if (totalPnlSeriesWasStitched) {
             setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'all', totalPnlSeries);
-            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
+            setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', cagrSeries);
           } else {
             setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', totalPnlSeries);
           }
@@ -24947,17 +25230,18 @@ app.get('/api/summary', async function (req, res) {
               ? ctx.account.cagrStartDate.trim()
               : null;
 
-          if (cagrStart && !entry.cagr) {
+          if (cagrStart && entry.all && entry.all.stitchedFromHistorical === true) {
+            // A stitched all-time series needs a separate CAGR view. Reusing
+            // the all-time object here makes the chart ignore cagrStartDate.
+            entry.cagr = deriveCagrSeriesView(entry.all, cagrStart);
+          } else if (cagrStart && !entry.cagr) {
             // Prefer cached CAGR series if present
             const cagrKey = buildTotalPnlSeriesCacheKey(accountId, { applyAccountCagrStartDate: true });
             const cachedCagr = cagrKey ? getTotalPnlSeriesCacheEntry(cagrKey) : null;
             if (cachedCagr) {
               entry.cagr = cachedCagr;
             } else if (entry.all) {
-              // Derive a minimal CAGR variant by annotating the all-time series
-              // with a displayStartDate. Points are reused as-is which is sufficient
-              // for the deployment chart in the UI and avoids any new API calls.
-              entry.cagr = Object.assign({}, entry.all, { displayStartDate: cagrStart });
+              entry.cagr = deriveCagrSeriesView(entry.all, cagrStart);
             }
           }
 
@@ -24992,7 +25276,11 @@ app.get('/api/summary', async function (req, res) {
             try {
               const existingAllSeries = accountTotalPnlSeries[context.account.id]?.all;
               if (existingAllSeries && existingAllSeries.stitchedFromHistorical === true) {
-                setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', existingAllSeries);
+                const cagrSeries = deriveCagrSeriesView(
+                  existingAllSeries,
+                  context.account.cagrStartDate
+                );
+                setAccountTotalPnlSeries(accountTotalPnlSeries, context.account.id, 'cagr', cagrSeries);
                 if (accountFundingSummaries[context.account.id]) {
                   applyStitchedSuccessorSeriesToFundingSummary(
                     accountFundingSummaries[context.account.id],
@@ -26719,6 +27007,9 @@ module.exports = {
     buildHistoricalAccountIdsBySuccessor,
     stitchSuccessorSeriesResult,
     markStitchedSuccessorSeries,
+    deriveCagrSeriesView,
+    isCurrentSnapshotDate,
+    isWeekendDateKey,
     resolveRangeBreakdownWindowForAccount,
     getPositionsForAccountFromSuperset,
     mergeMissingCurrentPositionSymbolTotals,
@@ -26726,6 +27017,7 @@ module.exports = {
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,
     findProviderObservedStartDate,
+    computeAggregateTotalPnlSeriesForContexts,
     normalizeSnapTradePosition,
     decoratePositions,
     mergePnL,

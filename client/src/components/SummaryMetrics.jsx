@@ -827,6 +827,25 @@ function alignTotalPnlSeriesToSummary(series, targetTotal, displayStartDate) {
   return adjusted;
 }
 
+function isCurrentWeekendSeriesEndpoint(series, asOf, fallbackEndDate = null) {
+  if (!Array.isArray(series) || !series.length) {
+    return false;
+  }
+  const lastDateKey = normalizeSeriesDateKey(series[series.length - 1]?.date);
+  const asOfDateKey = normalizeSeriesDateKey(asOf);
+  const fallbackEndDateKey = normalizeSeriesDateKey(fallbackEndDate);
+  const currentDateKey = asOfDateKey || fallbackEndDateKey;
+  if (!lastDateKey || !currentDateKey || lastDateKey !== currentDateKey) {
+    return false;
+  }
+  const lastDate = parseDateOnly(lastDateKey);
+  if (!lastDate) {
+    return false;
+  }
+  const dayOfWeek = lastDate.getUTCDay();
+  return dayOfWeek === 0 || dayOfWeek === 6;
+}
+
 function InfoTooltip({ label, text }) {
   const tooltipId = useId();
   return (
@@ -1578,7 +1597,13 @@ export default function SummaryMetrics({
     fundingSummary.historyStartDate.trim()
       ? formatDate(fundingSummary.historyStartDate)
       : null;
-  const chartStartLabel = inferredHistoryStartLabel || reliableProviderStartLabel;
+  const seriesDisplayStartLabel =
+    totalPnlSeries &&
+    typeof totalPnlSeries.displayStartDate === 'string' &&
+    totalPnlSeries.displayStartDate.trim()
+      ? formatDate(totalPnlSeries.displayStartDate)
+      : null;
+  const chartStartLabel = seriesDisplayStartLabel || inferredHistoryStartLabel || reliableProviderStartLabel;
 
   // Local timeframe for the Total P&L chart (Since inception by default)
   const TIMEFRAME_BUTTONS = useMemo(
@@ -2611,7 +2636,16 @@ export default function SummaryMetrics({
       : Number.isFinite(baseTotalPnlValue)
         ? baseTotalPnlValue
         : null;
-    return alignTotalPnlSeriesToSummary(baseSeries, targetTotal, totalPnlSeries.displayStartDate);
+    const preserveReconstructedWeekendEndpoint = isCurrentWeekendSeriesEndpoint(
+      baseSeries,
+      asOf,
+      totalPnlSeries.periodEndDate
+    );
+    return alignTotalPnlSeriesToSummary(
+      baseSeries,
+      preserveReconstructedWeekendEndpoint ? null : targetTotal,
+      totalPnlSeries.displayStartDate
+    );
   }, [
     totalPnlSeries,
     effectiveTotalPnlPoints,
@@ -2619,6 +2653,7 @@ export default function SummaryMetrics({
     chartTimeframe,
     baseTotalPnlValue,
     shouldUseNoFxSeries,
+    asOf,
   ]);
 
   const fullTotalPnlSeries = useMemo(() => {
@@ -2634,13 +2669,23 @@ export default function SummaryMetrics({
       : Number.isFinite(baseTotalPnlValue)
         ? baseTotalPnlValue
         : null;
-    return alignTotalPnlSeriesToSummary(baseSeries, targetTotal, totalPnlSeries.displayStartDate);
+    const preserveReconstructedWeekendEndpoint = isCurrentWeekendSeriesEndpoint(
+      baseSeries,
+      asOf,
+      totalPnlSeries.periodEndDate
+    );
+    return alignTotalPnlSeriesToSummary(
+      baseSeries,
+      preserveReconstructedWeekendEndpoint ? null : targetTotal,
+      totalPnlSeries.displayStartDate
+    );
   }, [
     totalPnlSeries,
     effectiveTotalPnlPoints,
     effectiveDisplayStartTotals,
     baseTotalPnlValue,
     shouldUseNoFxSeries,
+    asOf,
   ]);
 
   const priceChartSeries = useMemo(() => {
