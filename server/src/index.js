@@ -7310,52 +7310,72 @@ function coerceQuoteSummaryNumber(value) {
   return null;
 }
 
-function resolveQuoteTimestamp(quote) {
-  if (!quote || typeof quote !== 'object') {
+function coerceQuoteTimestampMillis(raw) {
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+    return raw.getTime();
+  }
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
     return null;
   }
-  const fields = ['regularMarketTime', 'postMarketTime', 'preMarketTime'];
-  for (const field of fields) {
-    const raw = quote[field];
-    if (!raw) {
-      continue;
-    }
-    if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
-      return raw.toISOString();
-    }
-    const numeric = Number(raw);
-    if (Number.isFinite(numeric) && numeric > 0) {
-      const timestamp = numeric > 10_000_000_000 ? numeric : numeric * 1000;
-      const date = new Date(timestamp);
-      if (!Number.isNaN(date.getTime())) {
-        return date.toISOString();
-      }
-    }
-  }
-  return null;
+  const timestamp = numeric > 10_000_000_000 ? numeric : numeric * 1000;
+  return Number.isNaN(new Date(timestamp).getTime()) ? null : timestamp;
 }
 
-function extractQuotePrice(quote) {
+function resolveCurrentQuoteCandidate(quote) {
   if (!quote || typeof quote !== 'object') {
     return null;
   }
-  const candidates = [
-    quote.regularMarketPrice,
-    quote.postMarketPrice,
-    quote.preMarketPrice,
+  const sessionCandidates = [
+    { price: quote.regularMarketPrice, timestamp: quote.regularMarketTime, session: 'regular' },
+    { price: quote.postMarketPrice, timestamp: quote.postMarketTime, session: 'post' },
+    { price: quote.preMarketPrice, timestamp: quote.preMarketTime, session: 'pre' },
+  ];
+  const validSessionCandidates = sessionCandidates
+    .map((candidate, index) => ({
+      price: coerceQuoteNumber(candidate.price),
+      timestampMs: coerceQuoteTimestampMillis(candidate.timestamp),
+      session: candidate.session,
+      index,
+    }))
+    .filter((candidate) => Number.isFinite(candidate.price) && candidate.price > 0);
+  const timestampedCandidates = validSessionCandidates.filter((candidate) =>
+    Number.isFinite(candidate.timestampMs)
+  );
+  if (timestampedCandidates.length > 0) {
+    timestampedCandidates.sort((a, b) => b.timestampMs - a.timestampMs || a.index - b.index);
+    return timestampedCandidates[0];
+  }
+  if (validSessionCandidates.length > 0) {
+    return validSessionCandidates[0];
+  }
+
+  const fallbackCandidates = [
     quote.bid,
     quote.ask,
     quote.regularMarketDayHigh,
     quote.regularMarketDayLow,
     quote.previousClose,
   ];
-  for (const candidate of candidates) {
-    const price = coerceQuoteNumber(candidate);
+  for (const fallback of fallbackCandidates) {
+    const price = coerceQuoteNumber(fallback);
     if (Number.isFinite(price) && price > 0) {
-      return price;
+      return { price, timestampMs: null, session: 'fallback' };
     }
   }
   return null;
+}
+
+function resolveQuoteTimestamp(quote) {
+  const candidate = resolveCurrentQuoteCandidate(quote);
+  return candidate && Number.isFinite(candidate.timestampMs)
+    ? new Date(candidate.timestampMs).toISOString()
+    : null;
+}
+
+function extractQuotePrice(quote) {
+  const candidate = resolveCurrentQuoteCandidate(quote);
+  return candidate ? candidate.price : null;
 }
 
 function resolveQuoteChangePercent(quote, price, previousClose) {
@@ -27305,6 +27325,8 @@ module.exports = {
     buildActivityPriceHistoryFallback,
     inferSymbolCurrency,
     normalizeYahooChartResponse,
+    extractQuotePrice,
+    resolveQuoteTimestamp,
     resolveYahooSymbol,
     fetchYahooHistoricalDirect,
     fetchSymbolPriceHistory,

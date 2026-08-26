@@ -96,6 +96,7 @@ import {
   computeReserveValueAcrossCurrencies,
   mergeAuthoritativeUsdToCadRate,
 } from './utils/currencyRates';
+import { applyLivePriceToSymbolPnlSeries } from './utils/liveSymbolPnlSeries';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 import {
@@ -5204,8 +5205,10 @@ function applyPriceSnapshotsToPositions(positions, priceSnapshots) {
     const priceChanged = existingPrice === null || Math.abs(existingPrice - overridePrice) > 1e-9;
     const dayChanged = coerceNumber(position.dayPnl) !== nextDayPnl;
     const openChanged = coerceNumber(position.openPnl) !== nextOpenPnl;
+    const nextPriceAsOf = typeof snapshot.asOf === 'string' && snapshot.asOf ? snapshot.asOf : null;
+    const freshnessChanged = nextPriceAsOf !== null && position.priceAsOf !== nextPriceAsOf;
 
-    if (!priceChanged && !dayChanged && !openChanged) {
+    if (!priceChanged && !dayChanged && !openChanged && !freshnessChanged) {
       return position;
     }
 
@@ -5217,7 +5220,7 @@ function applyPriceSnapshotsToPositions(positions, priceSnapshots) {
       dayPnl: nextDayPnl,
       openPnl: nextOpenPnl,
       isRealTime: true,
-      priceAsOf: snapshot.asOf || null,
+      priceAsOf: nextPriceAsOf || position.priceAsOf || null,
     };
   });
 
@@ -7699,6 +7702,7 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
         totalCostBaseWeight: 0,
         currentPriceAccumulator: 0,
         currentPriceWeight: 0,
+        priceAsOf: null,
         isRealTime: Boolean(position?.isRealTime),
         rowId: `all:${symbolKey}`,
         key: symbolKey,
@@ -7748,6 +7752,13 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
       const weight = Math.abs(quantity);
       group.currentPriceAccumulator += currentPrice * weight;
       group.currentPriceWeight += weight;
+    }
+    if (position?.priceAsOf) {
+      const candidateTime = Date.parse(position.priceAsOf);
+      const currentTime = group.priceAsOf ? Date.parse(group.priceAsOf) : Number.NaN;
+      if (Number.isFinite(candidateTime) && (!Number.isFinite(currentTime) || candidateTime > currentTime)) {
+        group.priceAsOf = position.priceAsOf;
+      }
     }
 
     let bucket = group.currencyBuckets.get(currency);
@@ -7897,6 +7908,7 @@ function aggregatePositionsBySymbol(positions, { currencyRates, baseCurrency = '
       openQuantity: group.openQuantity,
       averageEntryPrice,
       currentPrice,
+      priceAsOf: group.priceAsOf,
       currentMarketValue,
       currency: displayCurrency,
       totalCost: totalCost ?? null,
@@ -18235,7 +18247,13 @@ export default function App() {
   const selectedSymbolTotalPnlSeries = useMemo(() => {
     if (!focusedSymbol || !selectedAccountKey) return null;
     if (doesSeriesMatchFocus(totalPnlSeriesState) && totalPnlSeriesState.status === 'success') {
-      return totalPnlSeriesState.data || null;
+      return applyLivePriceToSymbolPnlSeries(totalPnlSeriesState.data || null, {
+        positions: positionsWithShare,
+        symbol: normalizedFocusedPriceSymbol || normalizedFocusedSymbolKey || focusedSymbol,
+        currencyRates,
+        baseCurrency,
+        asOf,
+      });
     }
     return null;
   }, [
@@ -18243,6 +18261,12 @@ export default function App() {
     selectedAccountKey,
     totalPnlSeriesState,
     doesSeriesMatchFocus,
+    positionsWithShare,
+    normalizedFocusedPriceSymbol,
+    normalizedFocusedSymbolKey,
+    currencyRates,
+    baseCurrency,
+    asOf,
   ]);
 
   // For symbol charts, start on the first date the symbol is actually held
