@@ -96,7 +96,14 @@ import {
   computeReserveValueAcrossCurrencies,
   mergeAuthoritativeUsdToCadRate,
 } from './utils/currencyRates';
-import { applyLivePriceToSymbolPnlSeries } from './utils/liveSymbolPnlSeries';
+import {
+  applyLivePortfolioSnapshotToPnlSeries,
+  applyLivePriceToSymbolPnlSeries,
+  computeAccountSeriesExternalFlowCad,
+  computeLivePositionValueDeltaCad,
+  computeSeriesDayPnlCad,
+  resolveLatestMarketDateKey,
+} from './utils/liveSymbolPnlSeries';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 import {
@@ -13884,6 +13891,96 @@ export default function App() {
     excludedSymbolsSeriesState.data,
   ]);
 
+  const liveAggregateMarketDateKey = useMemo(
+    () => resolveLatestMarketDateKey(positionsWithShare, asOf),
+    [positionsWithShare, asOf]
+  );
+
+  const liveAggregateQuoteDeltaCad = useMemo(() => {
+    if (selectedAccountKey !== 'all' || symbolExclusionActive) {
+      return null;
+    }
+    return computeLivePositionValueDeltaCad(basePositions, rawPositions, {
+      currencyRates,
+      baseCurrency,
+    });
+  }, [
+    selectedAccountKey,
+    symbolExclusionActive,
+    basePositions,
+    rawPositions,
+    currencyRates,
+    baseCurrency,
+  ]);
+
+  const liveAggregateTotalEquityCad = useMemo(() => {
+    if (selectedAccountKey !== 'all' || !Number.isFinite(liveAggregateQuoteDeltaCad)) {
+      return null;
+    }
+    const providerEquityCad = resolveDisplayTotalEquity(balances);
+    return Number.isFinite(providerEquityCad)
+      ? providerEquityCad + liveAggregateQuoteDeltaCad
+      : null;
+  }, [selectedAccountKey, balances, liveAggregateQuoteDeltaCad]);
+
+  const liveAggregateExternalFlowCad = useMemo(() => {
+    if (
+      selectedAccountKey !== 'all' ||
+      symbolExclusionActive ||
+      !liveAggregateMarketDateKey
+    ) {
+      return null;
+    }
+    const liveAccountIds = Array.from(new Set(
+      basePositions.map((position) => String(position?.accountId || '').trim()).filter(Boolean)
+    ));
+    return computeAccountSeriesExternalFlowCad(data?.accountTotalPnlSeries, {
+      accountIds: accountsInView,
+      requiredAccountIds: liveAccountIds,
+      marketDateKey: liveAggregateMarketDateKey,
+    });
+  }, [
+    selectedAccountKey,
+    symbolExclusionActive,
+    liveAggregateMarketDateKey,
+    basePositions,
+    data?.accountTotalPnlSeries,
+    accountsInView,
+  ]);
+
+  const liveFilteredSelectedAccountTotalPnlSeries = useMemo(() => {
+    if (selectedAccountKey !== 'all' || symbolExclusionActive) {
+      return filteredSelectedAccountTotalPnlSeries;
+    }
+    return applyLivePortfolioSnapshotToPnlSeries(filteredSelectedAccountTotalPnlSeries, {
+      totalEquityCad: liveAggregateTotalEquityCad,
+      externalFlowCad: liveAggregateExternalFlowCad,
+      currentCapitalCad: fundingSummaryVariants?.allTime?.netDepositsCad,
+      positions: positionsWithShare,
+      asOf,
+    });
+  }, [
+    selectedAccountKey,
+    symbolExclusionActive,
+    filteredSelectedAccountTotalPnlSeries,
+    liveAggregateTotalEquityCad,
+    liveAggregateExternalFlowCad,
+    fundingSummaryVariants?.allTime?.netDepositsCad,
+    positionsWithShare,
+    asOf,
+  ]);
+
+  const liveAggregateDayPnlCad = useMemo(
+    () => computeSeriesDayPnlCad(
+      liveFilteredSelectedAccountTotalPnlSeries,
+      liveAggregateMarketDateKey
+    ),
+    [liveFilteredSelectedAccountTotalPnlSeries, liveAggregateMarketDateKey]
+  );
+
+  const hasLiveAggregateSeriesAdjustment =
+    liveFilteredSelectedAccountTotalPnlSeries !== filteredSelectedAccountTotalPnlSeries;
+
   const filteredSelectedTotalPnlSeriesStatus = useMemo(() => {
     if (!symbolExclusionActive) {
       return selectedTotalPnlSeriesStatus;
@@ -13974,13 +14071,13 @@ export default function App() {
   ]);
 
   const filteredFundingSummaryForDisplay = useMemo(() => {
-    if (!symbolExclusionActive) {
+    if (!symbolExclusionActive && !hasLiveAggregateSeriesAdjustment) {
       return fundingSummaryForDisplay;
     }
     const baseSummary = fundingSummaryForDisplay && typeof fundingSummaryForDisplay === 'object'
       ? { ...fundingSummaryForDisplay }
       : {};
-    const seriesSummary = filteredSelectedAccountTotalPnlSeries?.summary;
+    const seriesSummary = liveFilteredSelectedAccountTotalPnlSeries?.summary;
     if (!seriesSummary || typeof seriesSummary !== 'object') {
       if (!fundingSummaryForDisplay || typeof fundingSummaryForDisplay !== 'object') {
         return fundingSummaryForDisplay;
@@ -13996,7 +14093,7 @@ export default function App() {
       }
       return applySeriesAnnualizedToFundingSummary(
         nextSummary,
-        filteredSelectedAccountTotalPnlSeries?.points
+        liveFilteredSelectedAccountTotalPnlSeries?.points
       );
     }
 
@@ -14054,31 +14151,32 @@ export default function App() {
       baseSummary.displayStartTotals = seriesSummary.displayStartTotals;
     }
     if (
-      typeof filteredSelectedAccountTotalPnlSeries?.periodStartDate === 'string' &&
-      filteredSelectedAccountTotalPnlSeries.periodStartDate
+      typeof liveFilteredSelectedAccountTotalPnlSeries?.periodStartDate === 'string' &&
+      liveFilteredSelectedAccountTotalPnlSeries.periodStartDate
     ) {
-      baseSummary.periodStartDate = filteredSelectedAccountTotalPnlSeries.periodStartDate;
+      baseSummary.periodStartDate = liveFilteredSelectedAccountTotalPnlSeries.periodStartDate;
     }
     if (
-      typeof filteredSelectedAccountTotalPnlSeries?.periodEndDate === 'string' &&
-      filteredSelectedAccountTotalPnlSeries.periodEndDate
+      typeof liveFilteredSelectedAccountTotalPnlSeries?.periodEndDate === 'string' &&
+      liveFilteredSelectedAccountTotalPnlSeries.periodEndDate
     ) {
-      baseSummary.periodEndDate = filteredSelectedAccountTotalPnlSeries.periodEndDate;
+      baseSummary.periodEndDate = liveFilteredSelectedAccountTotalPnlSeries.periodEndDate;
     }
     return applySeriesAnnualizedToFundingSummary(
       baseSummary,
-      filteredSelectedAccountTotalPnlSeries?.points
+      liveFilteredSelectedAccountTotalPnlSeries?.points
     );
   }, [
     symbolExclusionActive,
+    hasLiveAggregateSeriesAdjustment,
     fundingSummaryForDisplay,
-    filteredSelectedAccountTotalPnlSeries,
+    liveFilteredSelectedAccountTotalPnlSeries,
     selectedTotalPnlMode,
     excludedTotalPnlFallbackCad,
     excludedPositionTotalsCad.marketValue,
   ]);
 
-  const effectiveFundingSummaryForDisplay = symbolExclusionActive
+  const effectiveFundingSummaryForDisplay = symbolExclusionActive || hasLiveAggregateSeriesAdjustment
     ? filteredFundingSummaryForDisplay
     : fundingSummaryForDisplay;
 
@@ -14304,12 +14402,21 @@ export default function App() {
       }
       return coerceNumber(activeBalancesForDisplay?.marketValue);
     }
+    if (selectedAccountKey === 'all' && Number.isFinite(liveAggregateTotalEquityCad)) {
+      return liveAggregateTotalEquityCad;
+    }
     const canonical = resolveDisplayTotalEquity(balances);
     if (canonical !== null) {
       return canonical;
     }
     return coerceNumber(activeBalancesForDisplay?.totalEquity);
-  }, [symbolExclusionActive, activeBalancesForDisplay, balances]);
+  }, [
+    symbolExclusionActive,
+    selectedAccountKey,
+    liveAggregateTotalEquityCad,
+    activeBalancesForDisplay,
+    balances,
+  ]);
   const unbilledEarningsCad =
     earningsSummary && Number.isFinite(earningsSummary.unbilledCad)
       ? earningsSummary.unbilledCad
@@ -14465,7 +14572,14 @@ export default function App() {
 
   const activePnlForDisplay = useMemo(() => {
     if (!symbolExclusionActive || !activeCurrency) {
-      return activePnl;
+      const useLiveAggregateCadDayPnl =
+        selectedAccountKey === 'all' &&
+        activeCurrency?.scope === 'combined' &&
+        normalizeSymbolKey(activeCurrency?.currency) === baseCurrency &&
+        Number.isFinite(liveAggregateDayPnlCad);
+      return useLiveAggregateCadDayPnl
+        ? { ...activePnl, dayPnl: liveAggregateDayPnlCad }
+        : activePnl;
     }
     const targetCurrency = activeCurrency.currency || baseCurrency;
     const excludedDayPnl = convertAmountToCurrency(
@@ -14522,6 +14636,8 @@ export default function App() {
     currencyRates,
     baseCurrency,
     effectiveFundingSummaryForDisplay,
+    selectedAccountKey,
+    liveAggregateDayPnlCad,
   ]);
 
   const heatmapMarketValue = useMemo(() => {
@@ -19334,7 +19450,7 @@ export default function App() {
             totalPnlRangeOptions={focusedSymbol ? [] : totalPnlRangeOptions}
             selectedTotalPnlRange={focusedSymbol ? null : totalPnlRange}
             onTotalPnlRangeChange={focusedSymbol ? null : handleTotalPnlRangeChange}
-            totalPnlSeries={focusedSymbol ? selectedSymbolTotalPnlSeriesForChart : filteredSelectedAccountTotalPnlSeries}
+            totalPnlSeries={focusedSymbol ? selectedSymbolTotalPnlSeriesForChart : liveFilteredSelectedAccountTotalPnlSeries}
             totalPnlSeriesStatus={focusedSymbol ? selectedSymbolTotalPnlSeriesStatus : filteredSelectedTotalPnlSeriesStatus}
             totalPnlSeriesError={focusedSymbol ? selectedSymbolTotalPnlSeriesError : filteredSelectedTotalPnlSeriesError}
             symbolPriceSeries={

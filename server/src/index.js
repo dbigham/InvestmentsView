@@ -2666,6 +2666,153 @@ function computeMigrationReconciledNetInvestedCapital({
   };
 }
 
+function computeSeriesExternalFlowCadAtDate(series, dateKey) {
+  if (!series || !Array.isArray(series.points) || !dateKey) {
+    return null;
+  }
+  const currentIndex = series.points.findLastIndex(
+    (point) => typeof point?.date === 'string' && point.date.slice(0, 10) === dateKey
+  );
+  if (currentIndex <= 0) {
+    return null;
+  }
+  const currentCapital = Number(series.points[currentIndex]?.cumulativeNetDepositsCad);
+  if (!Number.isFinite(currentCapital)) {
+    return null;
+  }
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const point = series.points[index];
+    const pointDateKey = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
+    const priorCapital = Number(point?.cumulativeNetDepositsCad);
+    if (pointDateKey && pointDateKey !== dateKey && Number.isFinite(priorCapital)) {
+      return currentCapital - priorCapital;
+    }
+  }
+  return null;
+}
+
+function computeAccountSeriesExternalFlowCadAtDate(seriesMap, accountIds, dateKey) {
+  if (!seriesMap || typeof seriesMap !== 'object' || !dateKey) {
+    return null;
+  }
+  const uniqueAccountIds = Array.from(new Set(
+    (Array.isArray(accountIds) ? accountIds : [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  ));
+  let total = 0;
+  let count = 0;
+  uniqueAccountIds.forEach((accountId) => {
+    const container = seriesMap[accountId];
+    const series = container?.all || container?.cagr ||
+      (Array.isArray(container?.points) ? container : null);
+    const flow = computeSeriesExternalFlowCadAtDate(series, dateKey);
+    if (!Number.isFinite(flow)) {
+      return;
+    }
+    total += flow;
+    count += 1;
+  });
+  return count > 0 ? total : null;
+}
+
+function applyMigrationReconciledCapitalBasisToSeries({
+  aggregateSeries,
+  fundingMap,
+  seriesMap,
+  accounts,
+  accountIds,
+}) {
+  if (!aggregateSeries || !Array.isArray(aggregateSeries.points) || !aggregateSeries.points.length) {
+    return aggregateSeries;
+  }
+  const targetCapital = computeMigrationReconciledNetInvestedCapital({
+    fundingMap,
+    seriesMap,
+    accounts,
+    accountIds,
+  });
+  if (!targetCapital || !Number.isFinite(targetCapital.combinedCad)) {
+    return aggregateSeries;
+  }
+
+  const originalLastPoint = aggregateSeries.points[aggregateSeries.points.length - 1];
+  const originalCurrentCapital = Number(originalLastPoint?.cumulativeNetDepositsCad);
+  if (!Number.isFinite(originalCurrentCapital)) {
+    return aggregateSeries;
+  }
+
+  let priorPoint = null;
+  for (let index = aggregateSeries.points.length - 2; index >= 0; index -= 1) {
+    const point = aggregateSeries.points[index];
+    if (typeof point?.date === 'string' && point.date.slice(0, 10) !== String(originalLastPoint.date).slice(0, 10)) {
+      priorPoint = point;
+      break;
+    }
+  }
+  const priorCapital = Number(priorPoint?.cumulativeNetDepositsCad);
+  const lastDateKey = typeof originalLastPoint?.date === 'string'
+    ? originalLastPoint.date.slice(0, 10)
+    : null;
+  const verifiedCurrentFlowCad = computeAccountSeriesExternalFlowCadAtDate(
+    seriesMap,
+    accountIds,
+    lastDateKey
+  );
+
+  // Preserve the aggregate builder's historical cash-flow deltas, but anchor
+  // the day before the endpoint to authoritative current capital less the
+  // verified current-day external flow. This prevents a migration/account-
+  // coverage change from masquerading as a deposit on the final day.
+  const openingCapitalAdjustmentCad =
+    Number.isFinite(priorCapital) && Number.isFinite(verifiedCurrentFlowCad)
+      ? targetCapital.combinedCad - verifiedCurrentFlowCad - priorCapital
+      : targetCapital.combinedCad - originalCurrentCapital;
+  const points = aggregateSeries.points.map((point) => {
+    const equityCad = Number(point?.equityCad);
+    const originalCapital = Number(point?.cumulativeNetDepositsCad);
+    if (!Number.isFinite(equityCad) || !Number.isFinite(originalCapital)) {
+      return point;
+    }
+    const cumulativeNetDepositsCad = originalCapital + openingCapitalAdjustmentCad;
+    return {
+      ...point,
+      cumulativeNetDepositsCad,
+      totalPnlCad: equityCad - cumulativeNetDepositsCad,
+    };
+  });
+  const adjustedLastPoint = points[points.length - 1];
+  if (adjustedLastPoint && Number.isFinite(Number(adjustedLastPoint.equityCad))) {
+    adjustedLastPoint.cumulativeNetDepositsCad = targetCapital.combinedCad;
+    adjustedLastPoint.totalPnlCad = Number(adjustedLastPoint.equityCad) - targetCapital.combinedCad;
+  }
+  const lastPoint = points[points.length - 1];
+  if (!lastPoint || !Number.isFinite(lastPoint.totalPnlCad)) {
+    return aggregateSeries;
+  }
+
+  const summary = aggregateSeries.summary && typeof aggregateSeries.summary === 'object'
+    ? {
+        ...aggregateSeries.summary,
+        totalEquityCad: lastPoint.equityCad,
+        netDepositsCad: lastPoint.cumulativeNetDepositsCad,
+        netDepositsAllTimeCad: lastPoint.cumulativeNetDepositsCad,
+        totalPnlCad: lastPoint.totalPnlCad,
+        totalPnlAllTimeCad: lastPoint.totalPnlCad,
+      }
+    : aggregateSeries.summary;
+  const issues = Array.isArray(aggregateSeries.issues) ? [...aggregateSeries.issues] : [];
+  if (!issues.includes('migration-reconciled-opening-capital')) {
+    issues.push('migration-reconciled-opening-capital');
+  }
+  return {
+    ...aggregateSeries,
+    points,
+    summary,
+    issues,
+  };
+}
+
 function aggregateTotalPnlEntries(totalPnlMap, accountIds) {
   if (!totalPnlMap || typeof totalPnlMap !== 'object') {
     return null;
@@ -14684,8 +14831,8 @@ function buildNetDepositsCacheKey(login, account, perAccountCombinedBalances, op
   const accountId = account.id ? String(account.id) : account.number ? String(account.number) : 'unknown-account';
   const tradingDay =
     typeof activityContext.nowIsoString === 'string'
-      ? activityContext.nowIsoString.slice(0, 10)
-      : formatDateOnly(activityContext.now || new Date());
+      ? getTorontoDateKey(activityContext.nowIsoString)
+      : getTorontoDateKey(activityContext.now || new Date());
   if (!tradingDay) {
     return null;
   }
@@ -15904,9 +16051,9 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
   }
 
   let normalizedPeriodStart = null;
-  let normalizedPeriodEnd = formatDateOnly(now);
+  let normalizedPeriodEnd = getTorontoDateKey(now);
   if (!normalizedPeriodEnd && typeof nowIsoString === 'string' && nowIsoString.trim()) {
-    normalizedPeriodEnd = nowIsoString.slice(0, 10);
+    normalizedPeriodEnd = getTorontoDateKey(nowIsoString);
   }
 
   if (Array.isArray(effectiveCashFlows)) {
@@ -17468,7 +17615,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     candidateStarts.push(cagrStartDate);
   }
   const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
-  const nowIso = formatDateOnly(activityContext.now) || null;
+  const nowIso = getTorontoDateKey(activityContext.now) || null;
   if (!candidateStarts.length) {
     if (crawlStartIso) {
       candidateStarts.push(crawlStartIso);
@@ -18459,7 +18606,7 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
     issues.add('current-balance-snapshot-missing');
   }
 
-  const todayDateKey = nowIso || formatDateOnly(new Date());
+  const todayDateKey = nowIso || getTorontoDateKey(new Date());
   let pendingDepositCad = null;
   if (points.length && Number.isFinite(summaryEquity)) {
     const lastPoint = points[points.length - 1];
@@ -19140,7 +19287,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       candidates.push(netDepositsPeriodStart);
     }
     const crawlStartIso = formatDateOnly(activityContext.crawlStart) || null;
-    const nowIso = formatDateOnly(activityContext.now) || null;
+    const nowIso = getTorontoDateKey(activityContext.now) || null;
     if (!candidates.length) {
       if (crawlStartIso) candidates.push(crawlStartIso);
       if (nowIso) candidates.push(nowIso);
@@ -25279,7 +25426,7 @@ app.get('/api/summary', async function (req, res) {
 
       if (aggregateTotals.cashFlowsCad.length > 0) {
         const aggregateAsOf = new Date().toISOString();
-        const aggregatePeriodEnd = aggregateAsOf.slice(0, 10);
+        const aggregatePeriodEnd = getTorontoDateKey(aggregateAsOf);
         let aggregatePeriodStartDate = null;
         for (const entry of aggregateTotals.cashFlowsCad) {
           const entryDate = parseCashFlowEntryDate(entry);
@@ -25721,6 +25868,38 @@ app.get('/api/summary', async function (req, res) {
       });
       if (finalAggregateSummary && migrationNetInvestedCapital) {
         finalAggregateSummary.netInvestedCapital = migrationNetInvestedCapital;
+        const aggregateSeries = resolveAccountTotalPnlSeries(
+          accountTotalPnlSeries,
+          finalAggregateSelectionKey
+        );
+        const reconciledAggregateSeries = applyMigrationReconciledCapitalBasisToSeries({
+          aggregateSeries,
+          fundingMap: accountFundingSummaries,
+          seriesMap: accountTotalPnlSeries,
+          accounts: selectedContexts.map((context) => context && context.account).filter(Boolean),
+          accountIds: Array.from(currentMetricAccountIds),
+        });
+        if (reconciledAggregateSeries && reconciledAggregateSeries !== aggregateSeries) {
+          setAccountTotalPnlSeries(
+            accountTotalPnlSeries,
+            finalAggregateSelectionKey,
+            'all',
+            reconciledAggregateSeries
+          );
+          const reconciledSummary = reconciledAggregateSeries.summary;
+          if (reconciledSummary && typeof reconciledSummary === 'object') {
+            finalAggregateSummary.totalPnl = {
+              combinedCad: reconciledSummary.totalPnlCad,
+              allTimeCad: reconciledSummary.totalPnlAllTimeCad,
+            };
+            finalAggregateSummary.totalEquityCad = reconciledSummary.totalEquityCad;
+          }
+          rebuildAggregateAnnualizedReturnFromSeries(
+            finalAggregateSummary,
+            reconciledAggregateSeries,
+            finalAggregateSelectionKey
+          );
+        }
       }
     }
 
@@ -27343,6 +27522,8 @@ module.exports = {
     applyDirectCagrSeriesToFundingSummary,
     rebuildAggregateAnnualizedReturnFromSeries,
     computeMigrationReconciledNetInvestedCapital,
+    applyMigrationReconciledCapitalBasisToSeries,
+    getTorontoDateKey,
     resolveHistoricalTransferOutBasis,
     rebuildAnnualizedReturnFromDisplayStart,
     resolveHistoricalAccountIdsForSuccessor,

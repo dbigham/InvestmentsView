@@ -26,6 +26,292 @@ function addDelta(value, delta) {
   return Number.isFinite(Number(value)) ? Number(value) + delta : value;
 }
 
+export function resolveLatestMarketDateKey(positions, asOf) {
+  let latestTimestamp = null;
+  if (Array.isArray(positions)) {
+    positions.forEach((position) => {
+      const timestamp = new Date(position?.priceAsOf).getTime();
+      if (Number.isFinite(timestamp) && (latestTimestamp === null || timestamp > latestTimestamp)) {
+        latestTimestamp = timestamp;
+      }
+    });
+  }
+  if (latestTimestamp === null) {
+    const asOfTimestamp = asOf ? new Date(asOf).getTime() : Number.NaN;
+    latestTimestamp = Number.isFinite(asOfTimestamp) ? asOfTimestamp : null;
+  }
+  return latestTimestamp === null ? null : marketDateKey(latestTimestamp);
+}
+
+export function computeSeriesDayPnlCad(series, marketDateKeyValue) {
+  if (!series || !Array.isArray(series.points) || !marketDateKeyValue) {
+    return null;
+  }
+  const currentIndex = series.points.findLastIndex((point) =>
+    typeof point?.date === 'string' && point.date.slice(0, 10) === marketDateKeyValue
+  );
+  if (currentIndex <= 0) {
+    return null;
+  }
+  const currentPnlCad = Number(series.points[currentIndex]?.totalPnlCad);
+  if (!Number.isFinite(currentPnlCad)) {
+    return null;
+  }
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const point = series.points[index];
+    const pointDateKey = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
+    const priorPnlCad = Number(point?.totalPnlCad);
+    if (pointDateKey && pointDateKey !== marketDateKeyValue && Number.isFinite(priorPnlCad)) {
+      return currentPnlCad - priorPnlCad;
+    }
+  }
+  return null;
+}
+
+function computeSeriesExternalFlowCad(series, marketDateKeyValue) {
+  if (!series || !Array.isArray(series.points) || !marketDateKeyValue) {
+    return null;
+  }
+  const currentIndex = series.points.findLastIndex((point) =>
+    typeof point?.date === 'string' && point.date.slice(0, 10) === marketDateKeyValue
+  );
+  if (currentIndex <= 0) {
+    return null;
+  }
+  const currentDepositsCad = Number(series.points[currentIndex]?.cumulativeNetDepositsCad);
+  if (!Number.isFinite(currentDepositsCad)) {
+    return null;
+  }
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const point = series.points[index];
+    const pointDateKey = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
+    const priorDepositsCad = Number(point?.cumulativeNetDepositsCad);
+    if (pointDateKey && pointDateKey !== marketDateKeyValue && Number.isFinite(priorDepositsCad)) {
+      return currentDepositsCad - priorDepositsCad;
+    }
+  }
+  return null;
+}
+
+export function computeAccountSeriesExternalFlowCad(
+  seriesMap,
+  { accountIds = [], requiredAccountIds = [], marketDateKey: marketDateKeyValue } = {}
+) {
+  if (!seriesMap || typeof seriesMap !== 'object' || !marketDateKeyValue) {
+    return null;
+  }
+  const normalizedAccountIds = Array.from(new Set(accountIds.map((value) => String(value || '').trim()).filter(Boolean)));
+  const required = new Set(
+    requiredAccountIds.map((value) => String(value || '').trim()).filter(Boolean)
+  );
+  const covered = new Set();
+  let total = 0;
+  let count = 0;
+  normalizedAccountIds.forEach((accountId) => {
+    const container = seriesMap[accountId];
+    const series = container?.all || container?.cagr ||
+      (Array.isArray(container?.points) ? container : null);
+    const externalFlowCad = computeSeriesExternalFlowCad(series, marketDateKeyValue);
+    if (!Number.isFinite(externalFlowCad)) {
+      return;
+    }
+    total += externalFlowCad;
+    count += 1;
+    covered.add(accountId);
+  });
+  if (!count || Array.from(required).some((accountId) => !covered.has(accountId))) {
+    return null;
+  }
+  return total;
+}
+
+export function computeLivePositionValueDeltaCad(
+  basePositions,
+  livePositions,
+  { currencyRates, baseCurrency = 'CAD', isExcluded = () => false } = {}
+) {
+  if (!Array.isArray(basePositions) || !Array.isArray(livePositions)) {
+    return null;
+  }
+  const normalizedBase = normalizeSymbol(baseCurrency) || 'CAD';
+  const totals = (positions) => {
+    const result = new Map();
+    positions.forEach((position) => {
+      if (!position || isExcluded(position)) {
+        return;
+      }
+      const currency = normalizeSymbol(position.currency || normalizedBase) || normalizedBase;
+      const accountId = String(position.accountId || position.accountNumber || '').trim();
+      const symbol = normalizeSymbol(position.symbol);
+      if (!accountId || !symbol) {
+        return;
+      }
+      let marketValue = Number(position.currentMarketValue);
+      if (!Number.isFinite(marketValue)) {
+        const price = Number(position.currentPrice);
+        const quantity = Number(position.openQuantity);
+        marketValue = Number.isFinite(price) && Number.isFinite(quantity) ? price * quantity : Number.NaN;
+      }
+      if (!Number.isFinite(marketValue)) {
+        return;
+      }
+      const key = `${accountId}\u0000${symbol}\u0000${currency}`;
+      result.set(key, (result.get(key) || 0) + marketValue);
+    });
+    return result;
+  };
+  const baseTotals = totals(basePositions);
+  const liveTotals = totals(livePositions);
+  const keys = new Set([...baseTotals.keys(), ...liveTotals.keys()]);
+  let deltaCad = 0;
+  for (const key of keys) {
+    const currency = key.split('\u0000').at(-1);
+    const rate = currency === normalizedBase ? 1 : Number(currencyRates?.get(currency));
+    if (!Number.isFinite(rate) || rate <= 0) {
+      return null;
+    }
+    deltaCad += ((liveTotals.get(key) || 0) - (baseTotals.get(key) || 0)) * rate;
+  }
+  return deltaCad;
+}
+
+export function applyLivePortfolioSnapshotToPnlSeries(
+  series,
+  { totalEquityCad, externalFlowCad, currentCapitalCad, positions = [], asOf = null } = {}
+) {
+  if (!series || !Array.isArray(series.points) || series.points.length < 2) {
+    return series;
+  }
+  const liveEquityCad = Number(totalEquityCad);
+  const liveExternalFlowCad = Number(externalFlowCad);
+  if (!Number.isFinite(liveEquityCad) || !Number.isFinite(liveExternalFlowCad)) {
+    return series;
+  }
+
+  const lastPointIndex = series.points.length - 1;
+  const lastPoint = series.points[lastPointIndex];
+  const lastDateKey = typeof lastPoint?.date === 'string' ? lastPoint.date.slice(0, 10) : null;
+  if (!lastDateKey || resolveLatestMarketDateKey(positions, asOf) !== lastDateKey) {
+    return series;
+  }
+
+  const historicalEquityCad = Number(lastPoint?.equityCad);
+  const historicalDepositsCad = Number(lastPoint?.cumulativeNetDepositsCad);
+  const historicalPnlCad = Number(lastPoint?.totalPnlCad);
+  let priorPointIndex = -1;
+  for (let index = series.points.length - 2; index >= 0; index -= 1) {
+    const point = series.points[index];
+    const pointDateKey = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
+    if (pointDateKey && pointDateKey !== lastDateKey) {
+      priorPointIndex = index;
+      break;
+    }
+  }
+  const priorPoint = priorPointIndex >= 0 ? series.points[priorPointIndex] : null;
+  const priorEquityCad = Number(priorPoint?.equityCad);
+  const priorDepositsCad = Number(priorPoint?.cumulativeNetDepositsCad);
+  const priorPnlCad = Number(priorPoint?.totalPnlCad);
+  if (
+    !Number.isFinite(historicalEquityCad) ||
+    !Number.isFinite(historicalDepositsCad) ||
+    !Number.isFinite(historicalPnlCad) ||
+    !Number.isFinite(priorEquityCad) ||
+    !Number.isFinite(priorDepositsCad) ||
+    !Number.isFinite(priorPnlCad)
+  ) {
+    return series;
+  }
+
+  const authoritativeCapitalCad = Number(currentCapitalCad);
+  const hasAuthoritativeCapital = Number.isFinite(authoritativeCapitalCad);
+  const openingCapitalAdjustmentCad = hasAuthoritativeCapital
+    ? authoritativeCapitalCad - liveExternalFlowCad - priorDepositsCad
+    : 0;
+  const calibratedPoints = Math.abs(openingCapitalAdjustmentCad) < 1e-9
+    ? series.points
+    : series.points.map((point) => {
+        const equityCad = Number(point?.equityCad);
+        const depositsCad = Number(point?.cumulativeNetDepositsCad);
+        if (!Number.isFinite(equityCad) || !Number.isFinite(depositsCad)) {
+          return point;
+        }
+        const cumulativeNetDepositsCad = depositsCad + openingCapitalAdjustmentCad;
+        return {
+          ...point,
+          cumulativeNetDepositsCad,
+          totalPnlCad: equityCad - cumulativeNetDepositsCad,
+        };
+      });
+  const calibratedLastPoint = calibratedPoints[lastPointIndex];
+  const calibratedPriorPoint = calibratedPoints[priorPointIndex];
+  const calibratedHistoricalPnlCad = Number(calibratedLastPoint?.totalPnlCad);
+  const calibratedPriorPnlCad = Number(calibratedPriorPoint?.totalPnlCad);
+  if (!Number.isFinite(calibratedHistoricalPnlCad) || !Number.isFinite(calibratedPriorPnlCad)) {
+    return series;
+  }
+
+  const liveDayPnlCad = liveEquityCad - priorEquityCad - liveExternalFlowCad;
+  const liveDepositsCad = hasAuthoritativeCapital
+    ? authoritativeCapitalCad
+    : priorDepositsCad + liveExternalFlowCad;
+  const livePnlCad = hasAuthoritativeCapital
+    ? liveEquityCad - liveDepositsCad
+    : calibratedPriorPnlCad + liveDayPnlCad;
+  const equityDeltaCad = liveEquityCad - historicalEquityCad;
+  const calibratedHistoricalDepositsCad = historicalDepositsCad + openingCapitalAdjustmentCad;
+  const depositsDeltaCad = liveDepositsCad - calibratedHistoricalDepositsCad;
+  const pnlDeltaCad = livePnlCad - calibratedHistoricalPnlCad;
+  if (
+    Math.abs(equityDeltaCad) < 1e-9 &&
+    Math.abs(depositsDeltaCad) < 1e-9 &&
+    Math.abs(pnlDeltaCad) < 1e-9 &&
+    Math.abs(openingCapitalAdjustmentCad) < 1e-9
+  ) {
+    return series;
+  }
+
+  const nextLastPoint = {
+    ...calibratedLastPoint,
+    equityCad: liveEquityCad,
+    cumulativeNetDepositsCad: liveDepositsCad,
+    totalPnlCad: livePnlCad,
+    equitySinceDisplayStartCad: addDelta(lastPoint.equitySinceDisplayStartCad, equityDeltaCad),
+    cumulativeNetDepositsSinceDisplayStartCad: addDelta(
+      lastPoint.cumulativeNetDepositsSinceDisplayStartCad,
+      depositsDeltaCad
+    ),
+    totalPnlSinceDisplayStartCad: addDelta(lastPoint.totalPnlSinceDisplayStartCad, pnlDeltaCad),
+  };
+  const nextSummary = series.summary && typeof series.summary === 'object'
+    ? {
+        ...series.summary,
+        totalEquityCad: liveEquityCad,
+        totalPnlCad: livePnlCad,
+        totalPnlAllTimeCad: livePnlCad,
+        ...(hasAuthoritativeCapital
+          ? {
+              netDepositsCad: liveDepositsCad,
+              netDepositsAllTimeCad: liveDepositsCad,
+            }
+          : {}),
+        totalEquitySinceDisplayStartCad: addDelta(
+          series.summary.totalEquitySinceDisplayStartCad,
+          equityDeltaCad
+        ),
+        totalPnlSinceDisplayStartCad: addDelta(
+          series.summary.totalPnlSinceDisplayStartCad,
+          pnlDeltaCad
+        ),
+      }
+    : series.summary;
+
+  return {
+    ...series,
+    points: [...calibratedPoints.slice(0, -1), nextLastPoint],
+    summary: nextSummary,
+  };
+}
+
 export function applyLivePriceToSymbolPnlSeries(
   series,
   { positions = [], symbol, currencyRates, baseCurrency = 'CAD', asOf = null } = {}

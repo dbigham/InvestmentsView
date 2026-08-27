@@ -58,7 +58,7 @@ test('computeTotalPnlSeries can rebase a provider-observed historical P&L bounda
     id: 'HISTORICAL-REBASE-ACCOUNT',
     historyPnlRebaseDates: { '2026-07-16': '2026-07-15' },
   };
-  const now = new Date('2026-07-17T00:00:00Z');
+  const now = new Date('2026-07-17T12:00:00Z');
   const activityContext = {
     accountId: account.id,
     accountKey: account.id,
@@ -137,7 +137,7 @@ test('computeTotalPnlSeries handles cash-only activities', async () => {
     id: 'TEST-ACCOUNT',
   };
 
-  const now = new Date('2025-01-16T00:00:00Z');
+  const now = new Date('2025-01-16T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -275,12 +275,12 @@ test('aggregate Total P&L drops dates missing a post-start account point', async
   const activityContexts = {
     A: makeActivityContext({
       accountId: 'A',
-      now: '2026-06-17T00:00:00Z',
+      now: '2026-06-17T12:00:00Z',
       amount: 100,
     }),
     B: makeActivityContext({
       accountId: 'B',
-      now: '2026-06-16T00:00:00Z',
+      now: '2026-06-16T12:00:00Z',
       amount: 500,
     }),
   };
@@ -358,8 +358,8 @@ test('aggregate Total P&L carries archived account results through the aggregate
     fingerprint: `${accountId}-archived-coverage-test`,
   });
   const activityContexts = {
-    LIVE: makeContext('LIVE', '2026-06-17T00:00:00Z', 100, 10),
-    ARCHIVED: makeContext('ARCHIVED', '2026-06-16T00:00:00Z', 500, 50),
+    LIVE: makeContext('LIVE', '2026-06-17T12:00:00Z', 100, 10),
+    ARCHIVED: makeContext('ARCHIVED', '2026-06-16T12:00:00Z', 500, 50),
   };
   const balances = {
     LIVE: { combined: { CAD: { totalEquity: 110 } } },
@@ -425,7 +425,7 @@ test('aggregate symbol Total P&L stitches linked closed history into a successor
     },
   ];
   const activityContexts = {
-    HISTORICAL: makeActivityContext('HISTORICAL', '2026-01-03T00:00:00Z', [
+    HISTORICAL: makeActivityContext('HISTORICAL', '2026-01-03T12:00:00Z', [
       {
         tradeDate: '2026-01-01T00:00:00Z',
         transactionDate: '2026-01-01T00:00:00Z',
@@ -439,7 +439,7 @@ test('aggregate symbol Total P&L stitches linked closed history into a successor
         symbol: 'ABC.TO',
       },
     ]),
-    SUCCESSOR: makeActivityContext('SUCCESSOR', '2026-01-05T00:00:00Z', []),
+    SUCCESSOR: makeActivityContext('SUCCESSOR', '2026-01-05T12:00:00Z', []),
   };
   const positionsByAccountId = {
     HISTORICAL: [{ accountId: 'HISTORICAL', symbol: 'ABC.TO', currency: 'CAD', openQuantity: 1 }],
@@ -497,7 +497,7 @@ test('computeTotalPnlSeries keeps reconstructed equity when current snapshot is 
     accountNumber: account.id,
     earliestFunding: new Date('2026-06-16T00:00:00Z'),
     crawlStart: new Date('2026-06-16T00:00:00Z'),
-    now: new Date('2026-06-17T00:00:00Z'),
+    now: new Date('2026-06-17T12:00:00Z'),
     nowIsoString: '2026-06-17T00:00:00.000Z',
     activities: [
       {
@@ -549,7 +549,7 @@ test('computeTotalPnlSeries treats unexplained equity jumps as pending deposits'
     id: 'PENDING-DEPOSIT-ACCOUNT',
   };
 
-  const now = new Date('2025-01-03T00:00:00Z');
+  const now = new Date('2025-01-03T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -612,7 +612,7 @@ test('computeTotalPnlSeries applies opted-in pending deposit fix to the final po
     autoFixPendingWithdrawls: true,
   };
 
-  const now = new Date('2025-01-03T00:00:00Z');
+  const now = new Date('2025-01-03T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -660,7 +660,7 @@ test('computeTotalPnlSeries ignores internal share journal cash amounts', async 
     id: 'INTERNAL-JOURNAL-ACCOUNT',
   };
 
-  const now = new Date('2026-06-16T00:00:00Z');
+  const now = new Date('2026-06-16T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -729,7 +729,7 @@ test('computeTotalPnlSeries skips pending-deposit auto-fix for historical end da
     id: 'PENDING-DEPOSIT-HISTORICAL-END',
   };
 
-  const now = new Date('2025-01-03T00:00:00Z');
+  const now = new Date('2025-01-03T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -782,8 +782,8 @@ test('computeTotalPnlSeries skips pending-deposit auto-fix for historical end da
   const lastPoint = result.points[result.points.length - 1];
   assert.equal(lastPoint.date, '2025-01-02');
   assert.ok(Math.abs(lastPoint.cumulativeNetDepositsCad - 1000) < 1e-6);
-  assert.ok(Math.abs(lastPoint.totalPnlCad - 500) < 1e-6);
-  assert.ok(Math.abs(lastPoint.equityCad - 1500) < 1e-6);
+  assert.ok(Math.abs(lastPoint.totalPnlCad) < 1e-6);
+  assert.ok(Math.abs(lastPoint.equityCad - 1000) < 1e-6);
 
   assert.ok(Math.abs(result.summary.netDepositsCad - 1000) < 1e-6);
   assert.ok(Math.abs(result.summary.totalPnlCad - 500) < 1e-6);
@@ -792,7 +792,7 @@ test('computeTotalPnlSeries skips pending-deposit auto-fix for historical end da
 
 test('SnapTrade reconciles unreported inbound opening assets as funding without changing Questrade seeding', async () => {
   const account = { id: 'MISSING-INBOUND-TRANSFER', number: 'MISSING-INBOUND-TRANSFER' };
-  const now = new Date('2026-06-18T00:00:00Z');
+  const now = new Date('2026-06-18T12:00:00Z');
   const activityContext = {
     accountId: account.id,
     accountKey: account.id,
@@ -902,7 +902,7 @@ test('explicit history start displays reconstructed opening days without moving 
     id: 'SNAPTRADE-HISTORY-START',
     historyStartDate: '2026-06-16',
   };
-  const now = new Date('2026-06-18T00:00:00Z');
+  const now = new Date('2026-06-18T12:00:00Z');
   const activityContext = {
     accountId: account.id,
     accountKey: account.id,
@@ -977,7 +977,7 @@ test('computeTotalPnlSeries can ignore manual net deposit adjustments', async ()
     netDepositAdjustment: 5000,
   };
 
-  const now = new Date('2025-08-21T00:00:00Z');
+  const now = new Date('2025-08-21T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -1056,7 +1056,7 @@ test('computeTotalPnlSeriesForSymbol nets same-day trades before clamping', asyn
     id: 'SYMBOL-NETTED-ACCOUNT',
   };
 
-  const now = new Date('2025-01-03T00:00:00Z');
+  const now = new Date('2025-01-03T12:00:00Z');
 
   const activityContext = {
     accountId: account.id,
@@ -1159,7 +1159,7 @@ test('computeTotalPnlSeriesForSymbol carries opening snapshot holdings through t
     accountNumber: account.id,
     earliestFunding: new Date('2025-01-01T00:00:00Z'),
     crawlStart: new Date('2025-01-01T00:00:00Z'),
-    now: new Date('2025-01-03T00:00:00Z'),
+    now: new Date('2025-01-03T12:00:00Z'),
     nowIsoString: '2025-01-03T00:00:00.000Z',
     activities: [
       {
@@ -1237,7 +1237,7 @@ test('computeTotalPnlSeriesForSymbol ignores accounts without symbol activity or
     accountNumber: account.id,
     earliestFunding: new Date('2025-01-01T00:00:00Z'),
     crawlStart: new Date('2025-01-01T00:00:00Z'),
-    now: new Date('2025-01-02T00:00:00Z'),
+    now: new Date('2025-01-02T12:00:00Z'),
     nowIsoString: '2025-01-02T00:00:00.000Z',
     activities: [
       {

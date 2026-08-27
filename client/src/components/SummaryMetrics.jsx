@@ -2300,10 +2300,10 @@ export default function SummaryMetrics({
     typeof onShowAnnualizedReturn === 'function' &&
     Array.isArray(fundingSummary?.returnBreakdown);
 
-  const safeTotalEquity = Number.isFinite(totalEquity)
-    ? totalEquity
-    : Number.isFinite(fundingSummary?.totalEquityCad)
-      ? fundingSummary.totalEquityCad
+  const safeTotalEquity = Number.isFinite(fundingSummary?.totalEquityCad)
+    ? fundingSummary.totalEquityCad
+    : Number.isFinite(totalEquity)
+      ? totalEquity
       : null;
 
   const basePeriodStartDate = usesProviderPeriodReturn
@@ -5735,7 +5735,7 @@ export default function SummaryMetrics({
         </dl>
         {!hasActiveRangeSummary && (
           <dl className="equity-card__metric-column">
-            <MetricRow label="Total equity" value={formatMoney(totalEquity)} tone="neutral" />
+            <MetricRow label="Total equity" value={formatMoney(safeTotalEquity)} tone="neutral" />
             <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
             {!symbolMode && (
               <MetricRow
