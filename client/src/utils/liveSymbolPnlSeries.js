@@ -175,6 +175,30 @@ export function computeLivePositionValueDeltaCad(
   return deltaCad;
 }
 
+export function computeSeriesEquityBasisAdjustmentCad(series) {
+  if (!series || !Array.isArray(series.points) || !series.points.length) {
+    return null;
+  }
+  const point = series.points[series.points.length - 1];
+  const equityCad = Number(point?.equityCad);
+  const cadCash = Number(point?.cadCash);
+  const usdCash = Number(point?.usdCash);
+  const cadSecurityValue = Number(point?.cadSecurityValue);
+  const usdSecurityValue = Number(point?.usdSecurityValue);
+  const usdToCadRate = Number(point?.usdToCadRate);
+  if (
+    !Number.isFinite(equityCad) ||
+    !Number.isFinite(cadCash) ||
+    !Number.isFinite(usdCash) ||
+    !Number.isFinite(cadSecurityValue) ||
+    !Number.isFinite(usdSecurityValue) ||
+    !Number.isFinite(usdToCadRate)
+  ) {
+    return null;
+  }
+  return equityCad - cadCash - cadSecurityValue - (usdCash + usdSecurityValue) * usdToCadRate;
+}
+
 export function applyLivePortfolioSnapshotToPnlSeries(
   series,
   { totalEquityCad, externalFlowCad, currentCapitalCad, positions = [], asOf = null } = {}
@@ -222,7 +246,11 @@ export function applyLivePortfolioSnapshotToPnlSeries(
     return series;
   }
 
-  const authoritativeCapitalCad = Number(currentCapitalCad);
+  const hasCapitalCandidate =
+    currentCapitalCad !== null &&
+    currentCapitalCad !== undefined &&
+    currentCapitalCad !== '';
+  const authoritativeCapitalCad = hasCapitalCandidate ? Number(currentCapitalCad) : Number.NaN;
   const hasAuthoritativeCapital = Number.isFinite(authoritativeCapitalCad);
   const openingCapitalAdjustmentCad = hasAuthoritativeCapital
     ? authoritativeCapitalCad - liveExternalFlowCad - priorDepositsCad
@@ -261,6 +289,21 @@ export function applyLivePortfolioSnapshotToPnlSeries(
   const calibratedHistoricalDepositsCad = historicalDepositsCad + openingCapitalAdjustmentCad;
   const depositsDeltaCad = liveDepositsCad - calibratedHistoricalDepositsCad;
   const pnlDeltaCad = livePnlCad - calibratedHistoricalPnlCad;
+  const displayStartTotals = series.summary?.displayStartTotals;
+  const optionalNumber = (value) =>
+    value === null || value === undefined || value === '' ? Number.NaN : Number(value);
+  const displayStartEquityCad = optionalNumber(displayStartTotals?.equityCad);
+  const displayStartDepositsCad = optionalNumber(displayStartTotals?.cumulativeNetDepositsCad);
+  const displayStartPnlCad = optionalNumber(displayStartTotals?.totalPnlCad);
+  const liveEquitySinceDisplayStartCad = Number.isFinite(displayStartEquityCad)
+    ? liveEquityCad - displayStartEquityCad
+    : addDelta(lastPoint.equitySinceDisplayStartCad, equityDeltaCad);
+  const liveDepositsSinceDisplayStartCad = Number.isFinite(displayStartDepositsCad)
+    ? liveDepositsCad - displayStartDepositsCad
+    : addDelta(lastPoint.cumulativeNetDepositsSinceDisplayStartCad, depositsDeltaCad);
+  const livePnlSinceDisplayStartCad = Number.isFinite(displayStartPnlCad)
+    ? livePnlCad - displayStartPnlCad
+    : addDelta(lastPoint.totalPnlSinceDisplayStartCad, pnlDeltaCad);
   if (
     Math.abs(equityDeltaCad) < 1e-9 &&
     Math.abs(depositsDeltaCad) < 1e-9 &&
@@ -275,12 +318,9 @@ export function applyLivePortfolioSnapshotToPnlSeries(
     equityCad: liveEquityCad,
     cumulativeNetDepositsCad: liveDepositsCad,
     totalPnlCad: livePnlCad,
-    equitySinceDisplayStartCad: addDelta(lastPoint.equitySinceDisplayStartCad, equityDeltaCad),
-    cumulativeNetDepositsSinceDisplayStartCad: addDelta(
-      lastPoint.cumulativeNetDepositsSinceDisplayStartCad,
-      depositsDeltaCad
-    ),
-    totalPnlSinceDisplayStartCad: addDelta(lastPoint.totalPnlSinceDisplayStartCad, pnlDeltaCad),
+    equitySinceDisplayStartCad: liveEquitySinceDisplayStartCad,
+    cumulativeNetDepositsSinceDisplayStartCad: liveDepositsSinceDisplayStartCad,
+    totalPnlSinceDisplayStartCad: livePnlSinceDisplayStartCad,
   };
   const nextSummary = series.summary && typeof series.summary === 'object'
     ? {
@@ -294,14 +334,8 @@ export function applyLivePortfolioSnapshotToPnlSeries(
               netDepositsAllTimeCad: liveDepositsCad,
             }
           : {}),
-        totalEquitySinceDisplayStartCad: addDelta(
-          series.summary.totalEquitySinceDisplayStartCad,
-          equityDeltaCad
-        ),
-        totalPnlSinceDisplayStartCad: addDelta(
-          series.summary.totalPnlSinceDisplayStartCad,
-          pnlDeltaCad
-        ),
+        totalEquitySinceDisplayStartCad: liveEquitySinceDisplayStartCad,
+        totalPnlSinceDisplayStartCad: livePnlSinceDisplayStartCad,
       }
     : series.summary;
 

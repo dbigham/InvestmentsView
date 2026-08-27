@@ -6,6 +6,7 @@ import {
   applyLivePriceToSymbolPnlSeries,
   computeAccountSeriesExternalFlowCad,
   computeLivePositionValueDeltaCad,
+  computeSeriesEquityBasisAdjustmentCad,
   resolveLatestMarketDateKey,
 } from './liveSymbolPnlSeries.js';
 
@@ -161,6 +162,40 @@ test('reconciles today\'s aggregate point from live equity and verified flows', 
   assert.equal(updated.points.at(-1).totalPnlCad - updated.points[0].totalPnlCad, 5264);
 });
 
+test('does not treat a null authoritative capital as zero for an individual account', () => {
+  const series = {
+    displayStartDate: '2025-04-30',
+    points: [
+      { date: '2026-08-25', equityCad: 140922, cumulativeNetDepositsCad: 134437, totalPnlCad: 6485 },
+      { date: '2026-08-26', equityCad: 140150, cumulativeNetDepositsCad: 134437, totalPnlCad: 5713 },
+    ],
+    summary: {
+      totalEquityCad: 140150,
+      totalPnlCad: 5713,
+      totalPnlAllTimeCad: 5713,
+      totalPnlSinceDisplayStartCad: -8362,
+      displayStartTotals: {
+        equityCad: 38170,
+        cumulativeNetDepositsCad: 44167,
+        totalPnlCad: -5997,
+      },
+    },
+  };
+  const updated = applyLivePortfolioSnapshotToPnlSeries(series, {
+    totalEquityCad: 141986,
+    externalFlowCad: 0,
+    currentCapitalCad: null,
+    asOf: '2026-08-26T22:30:00Z',
+  });
+
+  assert.deepEqual(updated.points.map((point) => point.cumulativeNetDepositsCad), [134437, 134437]);
+  assert.equal(updated.points.at(-1).totalPnlCad, 7549);
+  assert.equal(updated.points.at(-1).totalPnlCad - updated.points[0].totalPnlCad, 1064);
+  assert.equal(updated.points.at(-1).totalPnlSinceDisplayStartCad, 13546);
+  assert.equal(updated.summary.totalPnlSinceDisplayStartCad, 13546);
+  assert.equal(updated.summary.totalEquitySinceDisplayStartCad, 103816);
+});
+
 test('preserves today\'s deposits when reconciling live aggregate equity', () => {
   const series = {
     points: [
@@ -292,4 +327,22 @@ test('adds only the incremental live quote value in CAD', () => {
   assert.equal(computeLivePositionValueDeltaCad(basePositions, livePositions, {
     currencyRates: new Map([['CAD', 1], ['USD', 1.4]]),
   }), 9);
+});
+
+test('recovers a stitched successor equity-basis adjustment from the final series point', () => {
+  const series = {
+    points: [{
+      date: '2026-08-26',
+      equityCad: 140150.35366932326,
+      cadCash: 3.1600000000034925,
+      usdCash: 0.37999999999919964,
+      cadSecurityValue: 26.598952242279054,
+      usdSecurityValue: 99818.56431404724,
+      usdToCadRate: 1.3862,
+    }],
+  };
+
+  assert.ok(
+    Math.abs(computeSeriesEquityBasisAdjustmentCad(series) - 1751.5741089486692) < 1e-9
+  );
 });
