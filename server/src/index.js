@@ -809,6 +809,7 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
     a.date.localeCompare(b.date)
   );
   const displayStartPoint = historicalPoints[0] || combinedPoints[0] || null;
+  const finalPoint = combinedPoints[combinedPoints.length - 1] || null;
 
   const adjustedSummary =
     destinationResult.series.summary && typeof destinationResult.series.summary === 'object'
@@ -848,6 +849,23 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
       if (Number.isFinite(lastAdjustedPoint?.cumulativeNetDepositsCad)) {
         adjustedSummary.netDepositsCad = lastAdjustedPoint.cumulativeNetDepositsCad;
         adjustedSummary.netDepositsAllTimeCad = lastAdjustedPoint.cumulativeNetDepositsCad;
+      }
+    }
+    if (displayStartPoint && finalPoint) {
+      const displayStartPnlCad = Number(displayStartPoint.totalPnlCad);
+      const finalPnlCad = Number(finalPoint.totalPnlCad);
+      const displayStartEquityCad = Number(displayStartPoint.equityCad);
+      const finalEquityCad = Number(finalPoint.equityCad);
+      const displayStartDepositsCad = Number(displayStartPoint.cumulativeNetDepositsCad);
+      const finalDepositsCad = Number(finalPoint.cumulativeNetDepositsCad);
+      if (Number.isFinite(displayStartPnlCad) && Number.isFinite(finalPnlCad)) {
+        adjustedSummary.totalPnlSinceDisplayStartCad = finalPnlCad - displayStartPnlCad;
+      }
+      if (Number.isFinite(displayStartEquityCad) && Number.isFinite(finalEquityCad)) {
+        adjustedSummary.totalEquitySinceDisplayStartCad = finalEquityCad - displayStartEquityCad;
+      }
+      if (Number.isFinite(displayStartDepositsCad) && Number.isFinite(finalDepositsCad)) {
+        adjustedSummary.netDepositsSinceDisplayStartCad = finalDepositsCad - displayStartDepositsCad;
       }
     }
   }
@@ -2601,6 +2619,7 @@ function computeMigrationReconciledNetInvestedCapital({
   let fallbackAccountCount = 0;
   let migrationPairCount = 0;
   let reconciledAccountCount = 0;
+  let reconciliationStartDate = null;
 
   requestedIds.forEach((accountId) => {
     const account = accountById.get(accountId);
@@ -2645,6 +2664,9 @@ function computeMigrationReconciledNetInvestedCapital({
     ) {
       total += sourceNetDeposits + (lastDestinationNetDeposits - firstDestinationNetDeposits);
       reconciledAccountCount += 1;
+      if (!reconciliationStartDate || migrationStartDate < reconciliationStartDate) {
+        reconciliationStartDate = migrationStartDate;
+      }
       return;
     }
 
@@ -2663,6 +2685,7 @@ function computeMigrationReconciledNetInvestedCapital({
     migrationPairCount,
     reconciledAccountCount,
     fallbackAccountCount,
+    reconciliationStartDate,
   };
 }
 
@@ -2768,10 +2791,23 @@ function applyMigrationReconciledCapitalBasisToSeries({
     Number.isFinite(priorCapital) && Number.isFinite(verifiedCurrentFlowCad)
       ? targetCapital.combinedCad - verifiedCurrentFlowCad - priorCapital
       : targetCapital.combinedCad - originalCurrentCapital;
+  const reconciliationStartDate =
+    typeof targetCapital.reconciliationStartDate === 'string'
+      ? targetCapital.reconciliationStartDate.slice(0, 10)
+      : null;
   const points = aggregateSeries.points.map((point) => {
     const equityCad = Number(point?.equityCad);
     const originalCapital = Number(point?.cumulativeNetDepositsCad);
     if (!Number.isFinite(equityCad) || !Number.isFinite(originalCapital)) {
+      return point;
+    }
+    const pointDate = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
+    // The aggregate series already has the correct contributor-based capital
+    // before the first linked migration. The reconciliation adjustment exists
+    // only to align the post-migration/current-account basis with today's
+    // migration-spliced Net invested value. Applying it before that boundary
+    // retroactively shifts otherwise-correct historical P&L.
+    if (reconciliationStartDate && pointDate && pointDate < reconciliationStartDate) {
       return point;
     }
     const cumulativeNetDepositsCad = originalCapital + openingCapitalAdjustmentCad;
@@ -12934,6 +12970,22 @@ function deriveCagrSeriesView(series, cagrStartDate) {
       ? Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad)
       : null,
   };
+  const lastPoint = viewPoints[viewPoints.length - 1] || null;
+  const summary = series.summary && typeof series.summary === 'object' ? series.summary : {};
+  const nextSummary = { ...summary, displayStartTotals };
+  const finalPnlCad = Number(lastPoint?.totalPnlCad);
+  const finalEquityCad = Number(lastPoint?.equityCad);
+  const finalDepositsCad = Number(lastPoint?.cumulativeNetDepositsCad);
+  if (Number.isFinite(displayStartTotals.totalPnlCad) && Number.isFinite(finalPnlCad)) {
+    nextSummary.totalPnlSinceDisplayStartCad = finalPnlCad - displayStartTotals.totalPnlCad;
+  }
+  if (Number.isFinite(displayStartTotals.equityCad) && Number.isFinite(finalEquityCad)) {
+    nextSummary.totalEquitySinceDisplayStartCad = finalEquityCad - displayStartTotals.equityCad;
+  }
+  if (Number.isFinite(displayStartTotals.cumulativeNetDepositsCad) && Number.isFinite(finalDepositsCad)) {
+    nextSummary.netDepositsSinceDisplayStartCad =
+      finalDepositsCad - displayStartTotals.cumulativeNetDepositsCad;
+  }
 
   return {
     ...series,
@@ -12941,10 +12993,7 @@ function deriveCagrSeriesView(series, cagrStartDate) {
     cagrStartDate: normalizedStart,
     displayStartDate: needsSyntheticBaseline ? normalizedStart : displayStartPoint.date,
     points: viewPoints,
-    summary: {
-      ...(series.summary && typeof series.summary === 'object' ? series.summary : {}),
-      displayStartTotals,
-    },
+    summary: nextSummary,
   };
 }
 
@@ -12956,8 +13005,22 @@ function applyStitchedSuccessorSeriesToFundingSummary(fundingSummary, series, ac
   const markedSeries = markStitchedSuccessorSeries(series);
   applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, markedSeries, account);
   const summary = markedSeries.summary && typeof markedSeries.summary === 'object' ? markedSeries.summary : null;
-  if (summary && Number.isFinite(summary.totalPnlCad)) {
+  const displaySeries =
+    account && typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
+      ? deriveCagrSeriesView(markedSeries, account.cagrStartDate)
+      : markedSeries;
+  const displaySummary =
+    displaySeries.summary && typeof displaySeries.summary === 'object' ? displaySeries.summary : null;
+  if (displaySummary && Number.isFinite(displaySummary.totalPnlSinceDisplayStartCad)) {
+    fundingSummary.totalPnlSinceDisplayStartCad = displaySummary.totalPnlSinceDisplayStartCad;
+  } else if (summary && Number.isFinite(summary.totalPnlCad)) {
     fundingSummary.totalPnlSinceDisplayStartCad = summary.totalPnlCad;
+  }
+  if (displaySummary && Number.isFinite(displaySummary.totalEquitySinceDisplayStartCad)) {
+    fundingSummary.totalEquitySinceDisplayStartCad = displaySummary.totalEquitySinceDisplayStartCad;
+  }
+  if (displaySummary?.displayStartTotals) {
+    fundingSummary.displayStartTotals = displaySummary.displayStartTotals;
   }
   if (markedSeries.periodStartDate) {
     fundingSummary.periodStartDate = markedSeries.periodStartDate;

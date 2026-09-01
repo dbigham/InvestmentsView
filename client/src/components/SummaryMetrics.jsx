@@ -1841,17 +1841,35 @@ export default function SummaryMetrics({
     ? `(${formatNumber(deploymentSummary.reservePercent, percentDisplayOptions)}%)`
     : null;
 
-  const isAggregateTotalPnlSeries =
-    !symbolMode &&
-    typeof totalPnlSeries?.accountId === 'string' &&
-    (totalPnlSeries.accountId === 'all' || totalPnlSeries.accountId.startsWith('group:'));
-  const seriesTotalPnlValue = Number.isFinite(totalPnlSeries?.summary?.totalPnlCad)
-    ? totalPnlSeries.summary.totalPnlCad
+  const lastTotalPnlSeriesPoint = Array.isArray(totalPnlSeries?.points)
+    ? totalPnlSeries.points[totalPnlSeries.points.length - 1]
     : null;
-  // Aggregate series points contain the reconstructed period-by-period P&L.
-  // Use that same summary value for the chart endpoint instead of replacing
-  // the final point with the separate all-time funding total.
-  const baseTotalPnlValue = isAggregateTotalPnlSeries && seriesTotalPnlValue !== null
+  const seriesDisplayStartPnlCandidate = totalPnlSeries?.summary?.displayStartTotals?.totalPnlCad;
+  const seriesFinalPnlCandidate = lastTotalPnlSeriesPoint?.totalPnlCad;
+  const seriesDisplayStartPnlCad =
+    seriesDisplayStartPnlCandidate === null ||
+    seriesDisplayStartPnlCandidate === undefined ||
+    seriesDisplayStartPnlCandidate === ''
+      ? Number.NaN
+      : Number(seriesDisplayStartPnlCandidate);
+  const seriesFinalPnlCad =
+    seriesFinalPnlCandidate === null ||
+    seriesFinalPnlCandidate === undefined ||
+    seriesFinalPnlCandidate === ''
+      ? Number.NaN
+      : Number(seriesFinalPnlCandidate);
+  const seriesTotalPnlValue =
+    totalPnlSeries?.displayStartDate &&
+    Number.isFinite(seriesDisplayStartPnlCad) &&
+    Number.isFinite(seriesFinalPnlCad)
+      ? seriesFinalPnlCad - seriesDisplayStartPnlCad
+      : Number.isFinite(totalPnlSeries?.summary?.totalPnlCad)
+        ? totalPnlSeries.summary.totalPnlCad
+        : null;
+  // A reconstructed series owns the chart period and endpoint. Derive its
+  // displayed total from the plotted points so stale provider-period funding
+  // metadata cannot snap the final point to a different baseline.
+  const baseTotalPnlValue = !symbolMode && seriesTotalPnlValue !== null
     ? seriesTotalPnlValue
     : Number.isFinite(fundingSummary?.totalPnlCad)
       ? fundingSummary.totalPnlCad
@@ -3925,7 +3943,8 @@ export default function SummaryMetrics({
     reliableProviderStartLabel ||
     (basePeriodStartDate ? formatDate(basePeriodStartDate) : null);
   const providerPeriodSuffix = providerPeriodStartLabel ? ` since ${providerPeriodStartLabel}` : '';
-  const totalPnlPeriodStartLabel = inferredHistoryStartLabel || providerPeriodStartLabel;
+  const totalPnlPeriodStartLabel =
+    seriesDisplayStartLabel || inferredHistoryStartLabel || providerPeriodStartLabel;
   const totalPnlPeriodSuffix = totalPnlPeriodStartLabel ? ` since ${totalPnlPeriodStartLabel}` : '';
   const returnMetricLabel = showProviderCumulativeFallback
     ? `Observed return${providerPeriodSuffix}`
@@ -3994,9 +4013,16 @@ export default function SummaryMetrics({
 
   const formattedTotal = formatSignedMoney(displayTotalPnlValue);
   const totalTone = classifyPnL(displayTotalPnlValue);
+  const isIndividualTotalPnlSeries =
+    !symbolMode &&
+    typeof totalPnlSeries?.accountId === 'string' &&
+    totalPnlSeries.accountId !== 'all' &&
+    !totalPnlSeries.accountId.startsWith('group:');
   const totalPnlMetricLabel =
-    usesProviderPeriodReturn && !hasActiveRangeSummary
-      ? `Total P&L${totalPnlPeriodSuffix}`
+    isIndividualTotalPnlSeries && !hasActiveRangeSummary && chartStartLabel
+      ? `Total P&L since ${chartStartLabel}`
+      : usesProviderPeriodReturn && !hasActiveRangeSummary
+        ? `Total P&L${totalPnlPeriodSuffix}`
       : 'Total P&L';
   const formattedNetDeposits =
     displayNetDepositsValue !== null ? formatMoney(displayNetDepositsValue) : null;

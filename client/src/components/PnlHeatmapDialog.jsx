@@ -1684,6 +1684,23 @@ export default function PnlHeatmapDialog({
                   percentDisplay && metricKey !== 'totalPnl'
                     ? `${metricLabel}: ${pnlDisplay} (${percentDisplay})`
                     : `${metricLabel}: ${pnlDisplay}`;
+                const openPnlLine = (() => {
+                  if (metricMode !== 'day') {
+                    return null;
+                  }
+                  const openPnl = resolveMetricValue(node.positionDetail, 'openPnl');
+                  const openPnlPercent = computePercentChange(node.positionDetail, 'openPnl');
+                  const openPnlDisplay = formatSignedMoney(openPnl);
+                  const openPnlPercentDisplay = isFiniteNumber(openPnlPercent)
+                    ? formatSignedPercent(openPnlPercent, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })
+                    : null;
+                  return openPnlPercentDisplay
+                    ? `Open P&L: ${openPnlDisplay} (${openPnlPercentDisplay})`
+                    : `Open P&L: ${openPnlDisplay}`;
+                })();
                 const styleTwoLine = isStyleTwo
                   ? node.metricValue > 0 && styleTwoTotals.positive > 0
                     ? `Share of total gain: ${styleTwoDisplay}`
@@ -1721,6 +1738,7 @@ export default function PnlHeatmapDialog({
                     ? `${node.displaySymbol || node.symbol} — ${node.description}`
                     : node.displaySymbol || node.symbol,
                   pnlLine,
+                  openPnlLine,
                   priceLine,
                   !isStyleTwo && shareLabel
                     ? metricKey === 'totalPnl'

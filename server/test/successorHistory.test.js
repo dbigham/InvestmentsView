@@ -103,6 +103,9 @@ test('successor series carries historical P&L and deposited-capital basis across
   assert.equal(stitched.series.summary.totalPnlAllTimeCad, 200);
   assert.equal(stitched.series.summary.netDepositsCad, 900);
   assert.equal(stitched.series.summary.netDepositsAllTimeCad, 900);
+  assert.equal(stitched.series.summary.totalPnlSinceDisplayStartCad, 100);
+  assert.equal(stitched.series.summary.totalEquitySinceDisplayStartCad, 100);
+  assert.equal(stitched.series.summary.netDepositsSinceDisplayStartCad, 0);
 });
 
 test('current snapshots are not applied to an older market-day point', () => {
@@ -269,6 +272,9 @@ test('CAGR view rebases a stitched series without changing its all-time history'
     equityCad: 200,
     cumulativeNetDepositsCad: 150,
   });
+  assert.equal(cagr.summary.totalPnlSinceDisplayStartCad, 10);
+  assert.equal(cagr.summary.totalEquitySinceDisplayStartCad, 10);
+  assert.equal(cagr.summary.netDepositsSinceDisplayStartCad, 0);
 });
 
 test('CAGR view adds a zero baseline when the configured start predates available points', () => {

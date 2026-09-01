@@ -411,7 +411,7 @@ export default function InvestEvenlyDialog({ plan, onClose, copyToClipboard, onA
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Open account in Questrade
+                Open account in {plan.accountPortalName || 'brokerage'}
               </a>
             )}
           </div>
@@ -814,6 +814,7 @@ InvestEvenlyDialog.propTypes = {
     accountNumber: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     accountLabel: PropTypes.string,
     accountUrl: PropTypes.string,
+    accountPortalName: PropTypes.string,
     skipCadPurchases: PropTypes.bool,
     skipUsdPurchases: PropTypes.bool,
     supportsCadPurchaseToggle: PropTypes.bool,

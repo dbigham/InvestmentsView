@@ -61,7 +61,12 @@ import QuestradeLoginDialog from './components/QuestradeLoginDialog';
 import QuestradeRefreshTokenDialog from './components/QuestradeRefreshTokenDialog';
 import AccountStructureDialog from './components/AccountStructureDialog';
 import GivingDialog from './components/GivingDialog';
-import { formatCopyNumber, truncateDescription } from './components/investPlanUtils';
+import {
+  computePurchaseAllocation,
+  formatCopyNumber,
+  truncateDescription,
+} from './components/investPlanUtils';
+import { resolveAccountMetadataKey } from './utils/accountMetadata';
 import {
   formatMoney,
   formatNumber,
@@ -72,7 +77,12 @@ import {
 } from './utils/formatters';
 import { copyTextToClipboard } from './utils/clipboard';
 import { openChatGpt } from './utils/chat';
-import { buildAccountSummaryUrl, openAccountSummary } from './utils/questrade';
+import {
+  buildAccountSummaryUrl,
+  isWealthsimpleAccount,
+  openAccountSummary,
+  resolveAccountPortalName,
+} from './utils/questrade';
 import { resolveSymbolAnnualizedEntry } from './utils/annualized.js';
 import {
   buildAccountViewUrl,
@@ -837,22 +847,6 @@ function isAggregateAccountSelection(value) {
 
 function isAggregateSummaryRequestKey(value) {
   return value === 'default' || isAggregateAccountSelection(value);
-}
-
-function resolveAccountMetadataKey(account) {
-  if (!account || typeof account !== 'object') {
-    return null;
-  }
-  const number =
-    account.number !== undefined && account.number !== null ? String(account.number).trim() : '';
-  if (number) {
-    return number;
-  }
-  const id = account.id !== undefined && account.id !== null ? String(account.id).trim() : '';
-  if (id) {
-    return id;
-  }
-  return null;
 }
 
 function resolveGroupMetadataKey(group) {
@@ -3294,6 +3288,35 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
   }
 
   const displayStartPoint = historicalPoints[0] || points[0];
+  const finalPoint = points[points.length - 1] || null;
+  const displayStartTotals = displayStartPoint
+    ? {
+        totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
+          ? Number(displayStartPoint.totalPnlCad)
+          : null,
+        equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
+          ? Number(displayStartPoint.equityCad)
+          : null,
+        cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
+          ? Number(displayStartPoint.cumulativeNetDepositsCad)
+          : null,
+      }
+    : destinationSeries.summary?.displayStartTotals;
+  if (displayStartTotals && finalPoint) {
+    const finalPnlCad = Number(finalPoint.totalPnlCad);
+    const finalEquityCad = Number(finalPoint.equityCad);
+    const finalDepositsCad = Number(finalPoint.cumulativeNetDepositsCad);
+    if (Number.isFinite(displayStartTotals.totalPnlCad) && Number.isFinite(finalPnlCad)) {
+      adjustedSummary.totalPnlSinceDisplayStartCad = finalPnlCad - displayStartTotals.totalPnlCad;
+    }
+    if (Number.isFinite(displayStartTotals.equityCad) && Number.isFinite(finalEquityCad)) {
+      adjustedSummary.totalEquitySinceDisplayStartCad = finalEquityCad - displayStartTotals.equityCad;
+    }
+    if (Number.isFinite(displayStartTotals.cumulativeNetDepositsCad) && Number.isFinite(finalDepositsCad)) {
+      adjustedSummary.netDepositsSinceDisplayStartCad =
+        finalDepositsCad - displayStartTotals.cumulativeNetDepositsCad;
+    }
+  }
 
   return {
     ...destinationSeries,
@@ -3306,19 +3329,7 @@ function stitchConcreteSuccessorSeries(destinationSeries, historicalSeriesList, 
     points,
     summary: {
       ...adjustedSummary,
-      displayStartTotals: displayStartPoint
-        ? {
-            totalPnlCad: Number.isFinite(Number(displayStartPoint.totalPnlCad))
-              ? Number(displayStartPoint.totalPnlCad)
-              : null,
-            equityCad: Number.isFinite(Number(displayStartPoint.equityCad))
-              ? Number(displayStartPoint.equityCad)
-              : null,
-            cumulativeNetDepositsCad: Number.isFinite(Number(displayStartPoint.cumulativeNetDepositsCad))
-              ? Number(displayStartPoint.cumulativeNetDepositsCad)
-              : null,
-          }
-        : destinationSeries.summary?.displayStartTotals,
+      displayStartTotals,
     },
   };
 }
@@ -3353,28 +3364,43 @@ function deriveCagrSeriesView(series, cagrStartDate) {
         cumulativeNetDepositsSinceDisplayStartCad: 0,
       }
     : null;
+  const viewPoints = baselinePoint ? [baselinePoint, ...series.points] : series.points;
   const effectiveDisplayStartPoint = baselinePoint || displayStartPoint;
+  const displayStartTotals = {
+    totalPnlCad: Number.isFinite(Number(effectiveDisplayStartPoint.totalPnlCad))
+      ? Number(effectiveDisplayStartPoint.totalPnlCad)
+      : null,
+    equityCad: Number.isFinite(Number(effectiveDisplayStartPoint.equityCad))
+      ? Number(effectiveDisplayStartPoint.equityCad)
+      : null,
+    cumulativeNetDepositsCad: Number.isFinite(Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad))
+      ? Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad)
+      : null,
+  };
+  const lastPoint = viewPoints[viewPoints.length - 1] || null;
+  const nextSummary = series.summary && typeof series.summary === 'object' ? { ...series.summary } : {};
+  nextSummary.displayStartTotals = displayStartTotals;
+  const finalPnlCad = Number(lastPoint?.totalPnlCad);
+  const finalEquityCad = Number(lastPoint?.equityCad);
+  const finalDepositsCad = Number(lastPoint?.cumulativeNetDepositsCad);
+  if (Number.isFinite(displayStartTotals.totalPnlCad) && Number.isFinite(finalPnlCad)) {
+    nextSummary.totalPnlSinceDisplayStartCad = finalPnlCad - displayStartTotals.totalPnlCad;
+  }
+  if (Number.isFinite(displayStartTotals.equityCad) && Number.isFinite(finalEquityCad)) {
+    nextSummary.totalEquitySinceDisplayStartCad = finalEquityCad - displayStartTotals.equityCad;
+  }
+  if (Number.isFinite(displayStartTotals.cumulativeNetDepositsCad) && Number.isFinite(finalDepositsCad)) {
+    nextSummary.netDepositsSinceDisplayStartCad =
+      finalDepositsCad - displayStartTotals.cumulativeNetDepositsCad;
+  }
 
   return {
     ...series,
     periodStartDate: needsSyntheticBaseline ? normalizedStart : series.periodStartDate,
     cagrStartDate: normalizedStart,
     displayStartDate: needsSyntheticBaseline ? normalizedStart : displayStartPoint.date,
-    points: baselinePoint ? [baselinePoint, ...series.points] : series.points,
-    summary: {
-      ...(series.summary && typeof series.summary === 'object' ? series.summary : {}),
-      displayStartTotals: {
-        totalPnlCad: Number.isFinite(Number(effectiveDisplayStartPoint.totalPnlCad))
-          ? Number(effectiveDisplayStartPoint.totalPnlCad)
-          : null,
-        equityCad: Number.isFinite(Number(effectiveDisplayStartPoint.equityCad))
-          ? Number(effectiveDisplayStartPoint.equityCad)
-          : null,
-        cumulativeNetDepositsCad: Number.isFinite(Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad))
-          ? Number(effectiveDisplayStartPoint.cumulativeNetDepositsCad)
-          : null,
-      },
-    },
+    points: viewPoints,
+    summary: nextSummary,
   };
 }
 
@@ -5951,6 +5977,7 @@ function buildInvestEvenlyPlan({
   skipUsdPurchases = false,
   targetProportions = null,
   useTargetProportions = false,
+  supportsCadFractionalShares = false,
 }) {
   if (!Array.isArray(positions) || positions.length === 0) {
     return null;
@@ -6132,41 +6159,10 @@ function buildInvestEvenlyPlan({
   let totalCadNeeded = 0;
   let totalUsdNeeded = 0;
 
-  const USD_SHARE_PRECISION = 4;
+  const FRACTIONAL_SHARE_PRECISION = 4;
+  const cadSharePrecision = supportsCadFractionalShares ? FRACTIONAL_SHARE_PRECISION : 0;
   const usdRate = currencyRates?.get('USD');
   const hasUsdRate = Number.isFinite(usdRate) && usdRate > 0;
-
-  const computePurchaseAllocation = (targetAmount, currency, price) => {
-    let shares = 0;
-    let spentCurrency = 0;
-    let note = '';
-
-    if (price > 0 && targetAmount > 0) {
-      if (currency === 'CAD') {
-        shares = Math.floor(targetAmount / price);
-        spentCurrency = shares * price;
-        if (shares === 0) {
-          note = 'Insufficient for 1 share';
-        }
-      } else {
-        const factor = Math.pow(10, USD_SHARE_PRECISION);
-        shares = Math.floor((targetAmount / price) * factor) / factor;
-        spentCurrency = shares * price;
-        if (shares === 0) {
-          note = 'Insufficient for minimum fractional share';
-        }
-      }
-    }
-
-    if (!Number.isFinite(shares)) {
-      shares = 0;
-    }
-    if (!Number.isFinite(spentCurrency) || spentCurrency < 0) {
-      spentCurrency = 0;
-    }
-
-    return { shares, spentCurrency, note };
-  };
 
   activePositions.forEach((position) => {
     const symbol = String(position.symbol).trim();
@@ -6197,10 +6193,11 @@ function buildInvestEvenlyPlan({
       targetCurrencyAmount = 0;
     }
 
+    const sharePrecision = currency === 'CAD' ? cadSharePrecision : FRACTIONAL_SHARE_PRECISION;
     const { shares, spentCurrency, note } = computePurchaseAllocation(
       targetCurrencyAmount,
-      currency,
-      price
+      price,
+      sharePrecision
     );
 
     if (currency === 'CAD') {
@@ -6216,7 +6213,7 @@ function buildInvestEvenlyPlan({
       amount: spentCurrency,
       targetAmount: targetCurrencyAmount,
       shares,
-      sharePrecision: currency === 'CAD' ? 0 : USD_SHARE_PRECISION,
+      sharePrecision,
       price,
       note: note || null,
       weight: Number.isFinite(allocationWeight) ? allocationWeight : 0,
@@ -6364,8 +6361,8 @@ function buildInvestEvenlyPlan({
 
     const { shares, spentCurrency, note } = computePurchaseAllocation(
       scaledTarget,
-      purchase.currency,
-      purchase.price
+      purchase.price,
+      purchase.sharePrecision
     );
 
     purchase.amount = spentCurrency;
@@ -6466,8 +6463,11 @@ function buildInvestEvenlyPlan({
   plan.purchases.forEach((purchase) => {
     const shareDigits =
       purchase.currency === 'CAD'
-        ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
-        : { minimumFractionDigits: USD_SHARE_PRECISION, maximumFractionDigits: USD_SHARE_PRECISION };
+        ? { minimumFractionDigits: cadSharePrecision, maximumFractionDigits: cadSharePrecision }
+        : {
+            minimumFractionDigits: FRACTIONAL_SHARE_PRECISION,
+            maximumFractionDigits: FRACTIONAL_SHARE_PRECISION,
+          };
     const formattedAmount = `${formatMoney(purchase.amount)} ${purchase.currency}`;
     const formattedShares = formatNumber(purchase.shares, shareDigits);
     const formattedPrice =
@@ -16404,6 +16404,7 @@ export default function App() {
         null;
       const accountNumber = selectedAccountInfo?.number || null;
       const accountUrl = buildAccountSummaryUrl(selectedAccountInfo);
+      const accountPortalName = resolveAccountPortalName(selectedAccountInfo);
       const contextLabel =
         accountName || accountNumber || (isAggregateSelection ? aggregateAccountLabel : null);
 
@@ -16413,6 +16414,7 @@ export default function App() {
         accountNumber: accountNumber || null,
         accountLabel: contextLabel || null,
         accountUrl: accountUrl || null,
+        accountPortalName: accountPortalName || null,
         accountKey: selectedAccountKey || null,
       };
     },
@@ -16458,6 +16460,7 @@ export default function App() {
       cashOverrides: null,
       targetProportions: selectedAccountTargetProportions,
       useTargetProportions: false,
+      supportsCadFractionalShares: isWealthsimpleAccount(selectedAccountInfo),
     };
 
     const plan = buildInvestEvenlyPlan(planInputs);
@@ -16480,6 +16483,7 @@ export default function App() {
     baseCurrency,
     enhancePlanWithAccountContext,
     selectedAccountTargetProportions,
+    selectedAccountInfo,
   ]);
 
   const handleSellFractionalShares = useCallback(() => {

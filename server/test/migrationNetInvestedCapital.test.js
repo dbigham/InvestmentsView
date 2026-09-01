@@ -49,6 +49,7 @@ test('migration-spliced household basis follows an explicit Questrade-to-Wealths
     migrationPairCount: 1,
     reconciledAccountCount: 1,
     fallbackAccountCount: 1,
+    reconciliationStartDate: '2026-06-29',
   });
 });
 
@@ -113,7 +114,7 @@ test('migration-aware aggregate history preserves cash-flow deltas and reconcile
       totalPnlCad: point.totalPnlCad,
     })),
     [
-      { date: '2026-06-28', cumulativeNetDepositsCad: 1250, totalPnlCad: 50 },
+      { date: '2026-06-28', cumulativeNetDepositsCad: 1200, totalPnlCad: 100 },
       { date: '2026-06-29', cumulativeNetDepositsCad: 1250, totalPnlCad: 75 },
       { date: '2026-08-22', cumulativeNetDepositsCad: 1750, totalPnlCad: 300 },
     ]

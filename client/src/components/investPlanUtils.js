@@ -1,4 +1,4 @@
-import { formatMoney, formatNumber } from '../utils/formatters';
+import { formatMoney, formatNumber } from '../utils/formatters.js';
 
 const DEFAULT_DESCRIPTION_CHAR_LIMIT = 21;
 const JOURNALLING_URL = 'https://my.questrade.com/clients/en/my_requests/journalling.aspx';
@@ -33,6 +33,31 @@ export function formatShareDisplay(shares, precision) {
   }
   const digits = Math.max(0, Number.isFinite(precision) ? precision : 0);
   return formatNumber(shares, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+export function computePurchaseAllocation(targetAmount, price, sharePrecision = 0) {
+  const precision = Math.max(0, Number.isFinite(sharePrecision) ? sharePrecision : 0);
+  let shares = 0;
+  let spentCurrency = 0;
+  let note = '';
+
+  if (price > 0 && targetAmount > 0) {
+    const factor = Math.pow(10, precision);
+    shares = Math.floor((targetAmount / price) * factor) / factor;
+    spentCurrency = shares * price;
+    if (shares === 0) {
+      note = precision > 0 ? 'Insufficient for minimum fractional share' : 'Insufficient for 1 share';
+    }
+  }
+
+  if (!Number.isFinite(shares)) {
+    shares = 0;
+  }
+  if (!Number.isFinite(spentCurrency) || spentCurrency < 0) {
+    spentCurrency = 0;
+  }
+
+  return { shares, spentCurrency, note };
 }
 
 export function truncateDescription(value, limit = DEFAULT_DESCRIPTION_CHAR_LIMIT) {
