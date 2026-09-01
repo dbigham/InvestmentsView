@@ -115,6 +115,7 @@ import {
   computeSeriesDayPnlCad,
   resolveLatestMarketDateKey,
 } from './utils/liveSymbolPnlSeries';
+import { isCurrentProjectionAccount, isProjectableEquity } from './utils/projectionAccounts';
 import './App.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 import {
@@ -19952,13 +19953,13 @@ export default function App() {
             if (selectedAccount === 'all') {
               const proj = [];
               accountsById.forEach((acc, rawId) => {
-                if (!acc) return;
+                if (!isCurrentProjectionAccount(acc)) return;
                 const accountId = rawId && String(rawId).trim();
                 if (!accountId) return;
                 const fund = accountFunding[accountId] || null;
                 const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
                 const rate = Number.isFinite(acc?.projectionGrowthPercent) ? acc.projectionGrowthPercent / 100 : 0;
-                if (equity > 0) proj.push({ equity, rate });
+                if (isProjectableEquity(equity)) proj.push({ equity, rate });
               });
               return proj;
             }
@@ -19974,7 +19975,7 @@ export default function App() {
               visited.add(cur);
               const accountsForGroup = accountsByGroupName.get(cur) || [];
               accountsForGroup.forEach((acc) => {
-                if (acc && acc.id) members.add(String(acc.id));
+                if (isCurrentProjectionAccount(acc) && acc.id) members.add(String(acc.id));
               });
               const children = accountGroupChildrenMap.get(cur);
               if (children && children.size) {
@@ -19989,7 +19990,7 @@ export default function App() {
               const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;
               const acc = accountsById.get(accountId) || null;
               const rate = Number.isFinite(acc?.projectionGrowthPercent) ? acc.projectionGrowthPercent / 100 : 0;
-              if (equity > 0) proj.push({ equity, rate });
+              if (isProjectableEquity(equity)) proj.push({ equity, rate });
             });
             return proj;
           })()}
@@ -19998,7 +19999,7 @@ export default function App() {
             if (selectedAccount === 'all') {
               const accountNodes = [];
               accountsById.forEach((account, rawId) => {
-                if (!account) return;
+                if (!isCurrentProjectionAccount(account)) return;
                 const accountId = rawId && String(rawId).trim();
                 if (!accountId) return;
                 const fund = accountFunding[accountId] || null;
@@ -20040,7 +20041,7 @@ export default function App() {
               // Direct account members of this group
               const accounts = (accountsByGroupName.get(groupKey) || [])
                 .map((acc) => {
-                  if (!acc || acc.id === undefined || acc.id === null) return null;
+                  if (!isCurrentProjectionAccount(acc) || acc.id === undefined || acc.id === null) return null;
                   const id = String(acc.id).trim();
                   const fund = accountFunding[id] || null;
                   const equity = Number.isFinite(fund?.totalEquityCad) ? fund.totalEquityCad : 0;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types';
 import { getTotalPnlSeries, setAccountMetadata } from '../api/questrade';
 import { formatDate, formatMoney, formatNumber } from '../utils/formatters';
+import { isProjectableEquity } from '../utils/projectionAccounts';
 import { buildRetirementModel as buildSharedRetirementModel, summarizeAtRetirementYear as summarizeAtRetirementYearShared } from '../../../shared/retirementModel.js';
 
 const CHART_WIDTH = 680;
@@ -724,7 +725,7 @@ export default function ProjectionDialog({
     if (Array.isArray(groupProjectionAccounts) && groupProjectionAccounts.length) {
       return groupProjectionAccounts
         .map((e) => ({ equity: Number(e?.equity) || 0, rate: Number(e?.rate) || 0 }))
-        .filter((e) => e.equity > 0);
+        .filter((entry) => isProjectableEquity(entry.equity));
     }
     if (!Array.isArray(childAccounts)) return [];
     return childAccounts
@@ -733,7 +734,7 @@ export default function ProjectionDialog({
         equity: Number.isFinite(c.totalEquityCad) ? c.totalEquityCad : 0,
         rate: Number.isFinite(c.projectionGrowthPercent) ? c.projectionGrowthPercent / 100 : 0,
       }))
-      .filter((e) => e.equity > 0);
+      .filter((entry) => isProjectableEquity(entry.equity));
   }, [childAccounts, groupProjectionAccounts]);
 
   const projectionSeries = useMemo(() => {
@@ -765,7 +766,7 @@ export default function ProjectionDialog({
             if (Array.isArray(node.children)) node.children.forEach(walk);
           };
           walk(projectionTree);
-          const filtered = leaves.filter((l) => (Number.isFinite(l.equity) ? l.equity : 0) > 0);
+          const filtered = leaves.filter((leaf) => isProjectableEquity(leaf.equity));
           if (filtered.length) {
             return filtered.map((leaf) => ({
               monthlyRate: Math.pow(1 + (Number(leaf.rate) || 0), 1 / 12) - 1,
@@ -989,7 +990,7 @@ export default function ProjectionDialog({
         if (node.kind === 'account') {
           if (includedById.get(node.id) === false) return;
           const eq = Number(node.equity) || 0;
-          if (Number.isFinite(eq) && eq > 0) sum += eq;
+          if (Number.isFinite(eq)) sum += eq;
           return;
         }
         if (Array.isArray(node.children)) node.children.forEach(walk);
