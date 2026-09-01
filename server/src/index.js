@@ -8716,6 +8716,40 @@ function isClosedAccount(account) {
   return !!(account && account.closed === true);
 }
 
+function shouldSkipSnapTradeActivityHistory(account) {
+  if (!account || getLoginProvider(account) !== BROKER_PROVIDER_SNAPTRADE || account.fundingDate) {
+    return false;
+  }
+  const transactions =
+    account.syncStatus && typeof account.syncStatus.transactions === 'object'
+      ? account.syncStatus.transactions
+      : null;
+  if (!transactions) {
+    return false;
+  }
+  const initialSyncCompleted =
+    transactions.initial_sync_completed ?? transactions.initialSyncCompleted;
+  if (initialSyncCompleted !== true) {
+    return false;
+  }
+  const firstTransactionDate =
+    transactions.first_transaction_date ?? transactions.firstTransactionDate;
+  return (
+    firstTransactionDate === null ||
+    firstTransactionDate === undefined ||
+    (typeof firstTransactionDate === 'string' && !firstTransactionDate.trim())
+  );
+}
+
+function isClosedEmptySnapTradeAccount(account) {
+  const providerStatus =
+    account && typeof account.status === 'string' ? account.status.trim().toLowerCase() : '';
+  return (
+    (isClosedAccount(account) || providerStatus === 'closed') &&
+    shouldSkipSnapTradeActivityHistory(account)
+  );
+}
+
 function resolveHistoricalAccountIdsForSuccessor(accounts, successorId) {
   const normalizedSuccessorId =
     successorId === undefined || successorId === null ? '' : String(successorId).trim();
@@ -14983,6 +15017,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
   }
 
   const { fallbackMonths = 12 } = options;
+  const skipProviderActivityHistory = shouldSkipSnapTradeActivityHistory(account);
   const providerFundingDate =
     isSnapTradeLogin(activityLogin) && account && account.fundingDate
       ? account.fundingDate
@@ -14991,12 +15026,14 @@ async function buildAccountActivityContext(login, account, options = {}) {
     options.cachedEarliestFunding || !providerFundingDate
       ? options
       : { ...options, cachedEarliestFunding: providerFundingDate };
-  const earliestFunding = await discoverEarliestFundingDate(
-    activityLogin,
-    accountApiId,
-    activityCacheAccountKey,
-    discoveryOptions
-  );
+  const earliestFunding = skipProviderActivityHistory
+    ? null
+    : await discoverEarliestFundingDate(
+        activityLogin,
+        accountApiId,
+        activityCacheAccountKey,
+        discoveryOptions
+      );
   const now = new Date();
   const nowIsoString = now.toISOString();
 
@@ -15009,14 +15046,16 @@ async function buildAccountActivityContext(login, account, options = {}) {
     ? { complete: true, reportedTotals: true, windows: 0 }
     : null;
 
-  const activitiesRaw = await fetchActivitiesRange(
-    activityLogin,
-    accountApiId,
-    crawlStart,
-    now,
-    activityCacheAccountKey,
-    activityCoverage ? { ...options, activityCoverage } : options
-  );
+  const activitiesRaw = skipProviderActivityHistory
+    ? []
+    : await fetchActivitiesRange(
+        activityLogin,
+        accountApiId,
+        crawlStart,
+        now,
+        activityCacheAccountKey,
+        activityCoverage ? { ...options, activityCoverage } : options
+      );
   const activities = dedupeActivities(activitiesRaw);
   const fetchBookValueTransferPrice = options.offlineOnly === true
     ? async function fetchOfflineBookValueTransferPrice(_activity, symbol, dateKey) {
@@ -24090,6 +24129,16 @@ app.get('/api/summary', async function (req, res) {
       );
     }
 
+    if (viewingAggregateAccounts) {
+      // SnapTrade can surface newly discovered closed accounts whose completed
+      // transaction sync explicitly reports no history. Keep them in the
+      // account catalog, but do not make a live aggregate initialize work for
+      // accounts that cannot contribute current or historical values.
+      selectedAccounts = selectedAccounts.filter(
+        (account) => !isClosedEmptySnapTradeAccount(account)
+      );
+    }
+
     if (viewingAccountGroup) {
       resolvedAccountId = selectedAccountGroup.id;
     } else if (viewingAllAccountsRequest) {
@@ -27511,6 +27560,8 @@ module.exports = {
     fetchSymbolPriceHistory,
     resolveRetryAfterMs,
     resolveSnapTradeResponseCacheTtl,
+    shouldSkipSnapTradeActivityHistory,
+    isClosedEmptySnapTradeAccount,
     isSnapTradeCashRefundActivity,
     isFundingActivity,
     filterCashFlowsAfterDisplayStart,

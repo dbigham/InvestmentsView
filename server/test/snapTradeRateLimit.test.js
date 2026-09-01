@@ -21,6 +21,85 @@ test('SnapTrade response cache uses the recommended holdings and activity window
   assert.equal(__test__.resolveSnapTradeResponseCacheTtl('/accounts/example/balances', 'POST'), 0);
 });
 
+test('completed empty SnapTrade accounts skip activity-history discovery', () => {
+  const emptyAccount = {
+    provider: 'snaptrade',
+    fundingDate: null,
+    syncStatus: {
+      transactions: {
+        initial_sync_completed: true,
+        first_transaction_date: null,
+      },
+    },
+  };
+
+  assert.equal(__test__.shouldSkipSnapTradeActivityHistory(emptyAccount), true);
+  assert.equal(
+    __test__.shouldSkipSnapTradeActivityHistory({
+      ...emptyAccount,
+      fundingDate: '2026-08-31',
+    }),
+    false
+  );
+  assert.equal(
+    __test__.shouldSkipSnapTradeActivityHistory({
+      ...emptyAccount,
+      syncStatus: {
+        transactions: {
+          initial_sync_completed: true,
+          first_transaction_date: '2026-08-31',
+        },
+      },
+    }),
+    false
+  );
+  assert.equal(
+    __test__.shouldSkipSnapTradeActivityHistory({
+      ...emptyAccount,
+      syncStatus: {
+        transactions: {
+          initial_sync_completed: false,
+          first_transaction_date: null,
+        },
+      },
+    }),
+    false
+  );
+  assert.equal(
+    __test__.shouldSkipSnapTradeActivityHistory({ ...emptyAccount, provider: 'questrade' }),
+    false
+  );
+});
+
+test('only closed empty SnapTrade accounts are omitted from live aggregates', () => {
+  const emptyAccount = {
+    provider: 'snaptrade',
+    fundingDate: null,
+    syncStatus: {
+      transactions: {
+        initial_sync_completed: true,
+        first_transaction_date: null,
+      },
+    },
+  };
+
+  assert.equal(__test__.isClosedEmptySnapTradeAccount({ ...emptyAccount, status: 'closed' }), true);
+  assert.equal(__test__.isClosedEmptySnapTradeAccount({ ...emptyAccount, status: 'open' }), false);
+  assert.equal(
+    __test__.isClosedEmptySnapTradeAccount({
+      ...emptyAccount,
+      status: 'closed',
+      syncStatus: {
+        transactions: {
+          initial_sync_completed: true,
+          first_transaction_date: '2026-08-31',
+        },
+      },
+    }),
+    false
+  );
+});
+
 test('SnapTrade cash refunds accept currency-qualified cash symbols', () => {
   const refund = {
     source: 'snaptrade',
