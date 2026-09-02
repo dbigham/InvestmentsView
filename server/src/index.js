@@ -1517,14 +1517,27 @@ async function computeAggregateTotalPnlSeriesForContexts(
     if (summaryEquity !== null) {
       lastPoint.equityCad = summaryEquity;
     }
-    if (summaryDeposits !== null) {
-      lastPoint.cumulativeNetDepositsCad = summaryDeposits;
-    }
-    if (summaryPnl !== null) {
+    if (summaryEquity !== null && summaryPnl !== null) {
       lastPoint.totalPnlCad = summaryPnl;
-    } else if (summaryEquity !== null && summaryDeposits !== null) {
-      const derivedPnl = summaryEquity - summaryDeposits;
-      lastPoint.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+      const derivedDeposits = summaryEquity - summaryPnl;
+      lastPoint.cumulativeNetDepositsCad =
+        Math.abs(derivedDeposits) < CASH_FLOW_EPSILON ? 0 : derivedDeposits;
+      if (
+        summaryDeposits !== null &&
+        Math.abs(summaryDeposits - derivedDeposits) >= CASH_FLOW_EPSILON
+      ) {
+        aggregatedIssues.add('aggregate-summary-net-deposits-reconciled');
+      }
+    } else {
+      if (summaryDeposits !== null) {
+        lastPoint.cumulativeNetDepositsCad = summaryDeposits;
+      }
+      if (summaryPnl !== null) {
+        lastPoint.totalPnlCad = summaryPnl;
+      } else if (summaryEquity !== null && summaryDeposits !== null) {
+        const derivedPnl = summaryEquity - summaryDeposits;
+        lastPoint.totalPnlCad = Math.abs(derivedPnl) < CASH_FLOW_EPSILON ? 0 : derivedPnl;
+      }
     }
     if (Number.isFinite(summaryTotals.reserveValueCad)) {
       lastPoint.reserveValueCad = summaryTotals.reserveValueCad;
@@ -1591,32 +1604,38 @@ async function computeAggregateTotalPnlSeriesForContexts(
     summaryCounts.totalEquityCad === summaryCoverageCount &&
     summaryCounts.netDepositsCad === summaryCoverageCount &&
     summaryCounts.totalPnlCad === summaryCoverageCount;
+  const reconciledLastPnlCad = Number.isFinite(lastCombinedPoint?.totalPnlCad)
+    ? lastCombinedPoint.totalPnlCad
+    : null;
+  const reconciledLastDepositsCad = Number.isFinite(lastCombinedPoint?.cumulativeNetDepositsCad)
+    ? lastCombinedPoint.cumulativeNetDepositsCad
+    : null;
   const summaryPayload = {
-    totalPnlCad: hasCompleteSummaryCoverage
-      ? summaryTotals.totalPnlCad
-      : Number.isFinite(lastCombinedPoint?.totalPnlCad)
-        ? lastCombinedPoint.totalPnlCad
+    totalPnlCad: reconciledLastPnlCad !== null
+      ? reconciledLastPnlCad
+      : hasCompleteSummaryCoverage
+        ? summaryTotals.totalPnlCad
         : null,
     totalPnlAllTimeCad:
-      hasCompleteSummaryCoverage && summaryCounts.totalPnlAllTimeCad > 0
-        ? summaryTotals.totalPnlAllTimeCad
-        : hasCompleteSummaryCoverage && summaryCounts.totalPnlCad > 0
-          ? summaryTotals.totalPnlCad
-          : Number.isFinite(lastCombinedPoint?.totalPnlCad)
-            ? lastCombinedPoint.totalPnlCad
+      reconciledLastPnlCad !== null
+        ? reconciledLastPnlCad
+        : hasCompleteSummaryCoverage && summaryCounts.totalPnlAllTimeCad > 0
+          ? summaryTotals.totalPnlAllTimeCad
+          : hasCompleteSummaryCoverage && summaryCounts.totalPnlCad > 0
+            ? summaryTotals.totalPnlCad
             : null,
-    netDepositsCad: hasCompleteSummaryCoverage
-      ? summaryTotals.netDepositsCad
-      : Number.isFinite(lastCombinedPoint?.cumulativeNetDepositsCad)
-        ? lastCombinedPoint.cumulativeNetDepositsCad
+    netDepositsCad: reconciledLastDepositsCad !== null
+      ? reconciledLastDepositsCad
+      : hasCompleteSummaryCoverage
+        ? summaryTotals.netDepositsCad
         : null,
     netDepositsAllTimeCad:
-      hasCompleteSummaryCoverage && summaryCounts.netDepositsAllTimeCad > 0
-        ? summaryTotals.netDepositsAllTimeCad
-        : hasCompleteSummaryCoverage && summaryCounts.netDepositsCad > 0
-          ? summaryTotals.netDepositsCad
-          : Number.isFinite(lastCombinedPoint?.cumulativeNetDepositsCad)
-            ? lastCombinedPoint.cumulativeNetDepositsCad
+      reconciledLastDepositsCad !== null
+        ? reconciledLastDepositsCad
+        : hasCompleteSummaryCoverage && summaryCounts.netDepositsAllTimeCad > 0
+          ? summaryTotals.netDepositsAllTimeCad
+          : hasCompleteSummaryCoverage && summaryCounts.netDepositsCad > 0
+            ? summaryTotals.netDepositsCad
             : null,
     totalEquityCad: hasCompleteSummaryCoverage
       ? summaryTotals.totalEquityCad
@@ -2795,19 +2814,36 @@ function applyMigrationReconciledCapitalBasisToSeries({
     typeof targetCapital.reconciliationStartDate === 'string'
       ? targetCapital.reconciliationStartDate.slice(0, 10)
       : null;
+  const hasPreReconciliationHistory = Boolean(
+    reconciliationStartDate &&
+      aggregateSeries.points.some((point) => {
+        const pointDate = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
+        return pointDate && pointDate < reconciliationStartDate;
+      })
+  );
+  if (
+    hasPreReconciliationHistory &&
+    Math.abs(openingCapitalAdjustmentCad) >= CASH_FLOW_EPSILON
+  ) {
+    // An all-time aggregate already has a contributor-derived capital and P&L
+    // path before the first migration. Applying a newly inferred opening basis
+    // only from the migration boundary would turn that accounting difference
+    // into a fictitious investment gain or loss. Keep the stitched series as
+    // the authority; reconciliation is still safe for windows that begin on or
+    // after the migration boundary.
+    const issues = Array.isArray(aggregateSeries.issues) ? [...aggregateSeries.issues] : [];
+    if (!issues.includes('migration-capital-reconciliation-skipped-discontinuity')) {
+      issues.push('migration-capital-reconciliation-skipped-discontinuity');
+    }
+    return {
+      ...aggregateSeries,
+      issues,
+    };
+  }
   const points = aggregateSeries.points.map((point) => {
     const equityCad = Number(point?.equityCad);
     const originalCapital = Number(point?.cumulativeNetDepositsCad);
     if (!Number.isFinite(equityCad) || !Number.isFinite(originalCapital)) {
-      return point;
-    }
-    const pointDate = typeof point?.date === 'string' ? point.date.slice(0, 10) : null;
-    // The aggregate series already has the correct contributor-based capital
-    // before the first linked migration. The reconciliation adjustment exists
-    // only to align the post-migration/current-account basis with today's
-    // migration-spliced Net invested value. Applying it before that boundary
-    // retroactively shifts otherwise-correct historical P&L.
-    if (reconciliationStartDate && pointDate && pointDate < reconciliationStartDate) {
       return point;
     }
     const cumulativeNetDepositsCad = originalCapital + openingCapitalAdjustmentCad;
@@ -25979,7 +26015,6 @@ app.get('/api/summary', async function (req, res) {
         accountIds: Array.from(currentMetricAccountIds),
       });
       if (finalAggregateSummary && migrationNetInvestedCapital) {
-        finalAggregateSummary.netInvestedCapital = migrationNetInvestedCapital;
         const aggregateSeries = resolveAccountTotalPnlSeries(
           accountTotalPnlSeries,
           finalAggregateSelectionKey
@@ -25992,6 +26027,16 @@ app.get('/api/summary', async function (req, res) {
           accountIds: Array.from(currentMetricAccountIds),
         });
         if (reconciledAggregateSeries && reconciledAggregateSeries !== aggregateSeries) {
+          const reconciliationSkipped =
+            Array.isArray(reconciledAggregateSeries.issues) &&
+            reconciledAggregateSeries.issues.includes(
+              'migration-capital-reconciliation-skipped-discontinuity'
+            );
+          if (reconciliationSkipped) {
+            delete finalAggregateSummary.netInvestedCapital;
+          } else {
+            finalAggregateSummary.netInvestedCapital = migrationNetInvestedCapital;
+          }
           setAccountTotalPnlSeries(
             accountTotalPnlSeries,
             finalAggregateSelectionKey,
@@ -26005,6 +26050,15 @@ app.get('/api/summary', async function (req, res) {
               allTimeCad: reconciledSummary.totalPnlAllTimeCad,
             };
             finalAggregateSummary.totalEquityCad = reconciledSummary.totalEquityCad;
+            if (reconciliationSkipped && Number.isFinite(reconciledSummary.netDepositsCad)) {
+              finalAggregateSummary.netDeposits = {
+                ...(finalAggregateSummary.netDeposits || {}),
+                combinedCad: reconciledSummary.netDepositsCad,
+                allTimeCad: Number.isFinite(reconciledSummary.netDepositsAllTimeCad)
+                  ? reconciledSummary.netDepositsAllTimeCad
+                  : reconciledSummary.netDepositsCad,
+              };
+            }
           }
           rebuildAggregateAnnualizedReturnFromSeries(
             finalAggregateSummary,

@@ -201,14 +201,26 @@ export function computeSeriesEquityBasisAdjustmentCad(series) {
 
 export function applyLivePortfolioSnapshotToPnlSeries(
   series,
-  { totalEquityCad, externalFlowCad, currentCapitalCad, positions = [], asOf = null } = {}
+  {
+    totalEquityCad,
+    externalFlowCad,
+    dayPnlCad,
+    currentCapitalCad,
+    positions = [],
+    asOf = null,
+  } = {}
 ) {
   if (!series || !Array.isArray(series.points) || series.points.length < 2) {
     return series;
   }
+  const optionalNumber = (value) =>
+    value === null || value === undefined || value === '' ? Number.NaN : Number(value);
   const liveEquityCad = Number(totalEquityCad);
-  const liveExternalFlowCad = Number(externalFlowCad);
-  if (!Number.isFinite(liveEquityCad) || !Number.isFinite(liveExternalFlowCad)) {
+  const liveExternalFlowCad = optionalNumber(externalFlowCad);
+  const providerDayPnlCad = optionalNumber(dayPnlCad);
+  const hasExternalFlow = Number.isFinite(liveExternalFlowCad);
+  const hasProviderDayPnl = Number.isFinite(providerDayPnlCad);
+  if (!Number.isFinite(liveEquityCad) || (!hasExternalFlow && !hasProviderDayPnl)) {
     return series;
   }
 
@@ -252,46 +264,28 @@ export function applyLivePortfolioSnapshotToPnlSeries(
     currentCapitalCad !== '';
   const authoritativeCapitalCad = hasCapitalCandidate ? Number(currentCapitalCad) : Number.NaN;
   const hasAuthoritativeCapital = Number.isFinite(authoritativeCapitalCad);
-  const openingCapitalAdjustmentCad = hasAuthoritativeCapital
-    ? authoritativeCapitalCad - liveExternalFlowCad - priorDepositsCad
-    : 0;
-  const calibratedPoints = Math.abs(openingCapitalAdjustmentCad) < 1e-9
-    ? series.points
-    : series.points.map((point) => {
-        const equityCad = Number(point?.equityCad);
-        const depositsCad = Number(point?.cumulativeNetDepositsCad);
-        if (!Number.isFinite(equityCad) || !Number.isFinite(depositsCad)) {
-          return point;
-        }
-        const cumulativeNetDepositsCad = depositsCad + openingCapitalAdjustmentCad;
-        return {
-          ...point,
-          cumulativeNetDepositsCad,
-          totalPnlCad: equityCad - cumulativeNetDepositsCad,
-        };
-      });
-  const calibratedLastPoint = calibratedPoints[lastPointIndex];
-  const calibratedPriorPoint = calibratedPoints[priorPointIndex];
-  const calibratedHistoricalPnlCad = Number(calibratedLastPoint?.totalPnlCad);
-  const calibratedPriorPnlCad = Number(calibratedPriorPoint?.totalPnlCad);
-  if (!Number.isFinite(calibratedHistoricalPnlCad) || !Number.isFinite(calibratedPriorPnlCad)) {
-    return series;
-  }
-
-  const liveDayPnlCad = liveEquityCad - priorEquityCad - liveExternalFlowCad;
-  const liveDepositsCad = hasAuthoritativeCapital
-    ? authoritativeCapitalCad
-    : priorDepositsCad + liveExternalFlowCad;
-  const livePnlCad = hasAuthoritativeCapital
-    ? liveEquityCad - liveDepositsCad
-    : calibratedPriorPnlCad + liveDayPnlCad;
+  const liveDayPnlCad = hasProviderDayPnl
+    ? providerDayPnlCad
+    : liveEquityCad - priorEquityCad - liveExternalFlowCad;
+  // A provider-reported day P&L is the best continuity anchor when an account
+  // first appears today and therefore has no prior point from which to prove an
+  // external flow. Do not turn a reconstructed opening-capital difference into
+  // a one-day market loss; derive only today's capital from equity minus the
+  // continuous P&L series instead.
+  const livePnlCad = hasProviderDayPnl
+    ? priorPnlCad + liveDayPnlCad
+    : hasAuthoritativeCapital
+      ? liveEquityCad - authoritativeCapitalCad
+      : priorPnlCad + liveDayPnlCad;
+  const liveDepositsCad = hasProviderDayPnl
+    ? liveEquityCad - livePnlCad
+    : hasAuthoritativeCapital
+      ? authoritativeCapitalCad
+      : priorDepositsCad + liveExternalFlowCad;
   const equityDeltaCad = liveEquityCad - historicalEquityCad;
-  const calibratedHistoricalDepositsCad = historicalDepositsCad + openingCapitalAdjustmentCad;
-  const depositsDeltaCad = liveDepositsCad - calibratedHistoricalDepositsCad;
-  const pnlDeltaCad = livePnlCad - calibratedHistoricalPnlCad;
+  const depositsDeltaCad = liveDepositsCad - historicalDepositsCad;
+  const pnlDeltaCad = livePnlCad - historicalPnlCad;
   const displayStartTotals = series.summary?.displayStartTotals;
-  const optionalNumber = (value) =>
-    value === null || value === undefined || value === '' ? Number.NaN : Number(value);
   const displayStartEquityCad = optionalNumber(displayStartTotals?.equityCad);
   const displayStartDepositsCad = optionalNumber(displayStartTotals?.cumulativeNetDepositsCad);
   const displayStartPnlCad = optionalNumber(displayStartTotals?.totalPnlCad);
@@ -307,14 +301,13 @@ export function applyLivePortfolioSnapshotToPnlSeries(
   if (
     Math.abs(equityDeltaCad) < 1e-9 &&
     Math.abs(depositsDeltaCad) < 1e-9 &&
-    Math.abs(pnlDeltaCad) < 1e-9 &&
-    Math.abs(openingCapitalAdjustmentCad) < 1e-9
+    Math.abs(pnlDeltaCad) < 1e-9
   ) {
     return series;
   }
 
   const nextLastPoint = {
-    ...calibratedLastPoint,
+    ...lastPoint,
     equityCad: liveEquityCad,
     cumulativeNetDepositsCad: liveDepositsCad,
     totalPnlCad: livePnlCad,
@@ -341,7 +334,7 @@ export function applyLivePortfolioSnapshotToPnlSeries(
 
   return {
     ...series,
-    points: [...calibratedPoints.slice(0, -1), nextLastPoint],
+    points: [...series.points.slice(0, -1), nextLastPoint],
     summary: nextSummary,
   };
 }

@@ -13966,6 +13966,16 @@ export default function App() {
     accountsInView,
   ]);
 
+  const liveAggregateProviderDayPnlCad = useMemo(
+    () => convertCombinedPnl(
+      positionPnlSummaries.perCurrency,
+      currencyRates,
+      baseCurrency,
+      baseCurrency
+    ).dayPnl,
+    [positionPnlSummaries, currencyRates, baseCurrency]
+  );
+
   const liveFilteredSelectedAccountTotalPnlSeries = useMemo(() => {
     if (!selectedAccountKey || symbolExclusionActive) {
       return filteredSelectedAccountTotalPnlSeries;
@@ -13973,6 +13983,7 @@ export default function App() {
     return applyLivePortfolioSnapshotToPnlSeries(filteredSelectedAccountTotalPnlSeries, {
       totalEquityCad: liveAggregateTotalEquityCad,
       externalFlowCad: liveAggregateExternalFlowCad,
+      dayPnlCad: liveAggregateProviderDayPnlCad,
       currentCapitalCad:
         selectedAccountKey === 'all'
           ? fundingSummaryVariants?.allTime?.netDepositsCad
@@ -13986,6 +13997,7 @@ export default function App() {
     filteredSelectedAccountTotalPnlSeries,
     liveAggregateTotalEquityCad,
     liveAggregateExternalFlowCad,
+    liveAggregateProviderDayPnlCad,
     fundingSummaryVariants?.allTime?.netDepositsCad,
     positionsWithShare,
     asOf,

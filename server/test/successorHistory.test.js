@@ -382,3 +382,44 @@ test('aggregate keeps a reconstructed weekend point instead of applying a live s
     lastPoint.cumulativeNetDepositsCad + lastPoint.totalPnlCad
   );
 });
+
+test('aggregate preserves stitched current P&L and derives its matching net deposits', async () => {
+  const account = { id: 'ws:current-invariant' };
+  const series = {
+    periodStartDate: '2026-09-01',
+    periodEndDate: '2026-09-02',
+    points: [
+      { date: '2026-09-01', equityCad: 1000, cumulativeNetDepositsCad: 900, totalPnlCad: 100 },
+      { date: '2026-09-02', equityCad: 1000, cumulativeNetDepositsCad: 900, totalPnlCad: 100 },
+    ],
+    summary: {
+      totalEquityCad: 850,
+      netDepositsCad: 900,
+      totalPnlCad: 100,
+    },
+  };
+
+  const aggregate = await __test__.computeAggregateTotalPnlSeriesForContexts(
+    [{ account }],
+    {},
+    {
+      applyAccountCagrStartDate: false,
+      providedSeriesByAccountId: { [account.id]: series },
+    }
+  );
+
+  const lastPoint = aggregate.points[aggregate.points.length - 1];
+  assert.equal(lastPoint.equityCad, 850);
+  assert.equal(lastPoint.cumulativeNetDepositsCad, 750);
+  assert.equal(lastPoint.totalPnlCad, 100);
+  assert.equal(aggregate.summary.totalEquityCad, 850);
+  assert.equal(aggregate.summary.netDepositsCad, 750);
+  assert.equal(aggregate.summary.netDepositsAllTimeCad, 750);
+  assert.equal(aggregate.summary.totalPnlCad, 100);
+  assert.equal(aggregate.summary.totalPnlAllTimeCad, 100);
+  assert.equal(
+    lastPoint.equityCad,
+    lastPoint.cumulativeNetDepositsCad + lastPoint.totalPnlCad
+  );
+  assert.ok(aggregate.issues.includes('aggregate-summary-net-deposits-reconciled'));
+});

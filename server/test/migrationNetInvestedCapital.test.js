@@ -53,7 +53,7 @@ test('migration-spliced household basis follows an explicit Questrade-to-Wealths
   });
 });
 
-test('migration-aware aggregate history preserves cash-flow deltas and reconciles opening capital', () => {
+test('migration-aware aggregate history rejects a discontinuous opening-capital adjustment', () => {
   const result = __test__.applyMigrationReconciledCapitalBasisToSeries({
     aggregateSeries: {
       points: [
@@ -115,13 +115,84 @@ test('migration-aware aggregate history preserves cash-flow deltas and reconcile
     })),
     [
       { date: '2026-06-28', cumulativeNetDepositsCad: 1200, totalPnlCad: 100 },
-      { date: '2026-06-29', cumulativeNetDepositsCad: 1250, totalPnlCad: 75 },
-      { date: '2026-08-22', cumulativeNetDepositsCad: 1750, totalPnlCad: 300 },
+      { date: '2026-06-29', cumulativeNetDepositsCad: 1200, totalPnlCad: 125 },
+      { date: '2026-08-22', cumulativeNetDepositsCad: 1700, totalPnlCad: 350 },
     ]
   );
-  assert.equal(result.summary.netDepositsAllTimeCad, 1750);
-  assert.equal(result.summary.totalPnlAllTimeCad, 300);
-  assert.ok(result.issues.includes('migration-reconciled-opening-capital'));
+  assert.equal(result.summary.netDepositsAllTimeCad, 1700);
+  assert.equal(result.summary.totalPnlAllTimeCad, 350);
+  assert.ok(result.issues.includes('migration-capital-reconciliation-skipped-discontinuity'));
+  assert.ok(!result.issues.includes('migration-reconciled-opening-capital'));
+});
+
+test('migration-aware aggregate history does not create the June-to-July P&L cliff', () => {
+  const result = __test__.applyMigrationReconciledCapitalBasisToSeries({
+    aggregateSeries: {
+      points: [
+        {
+          date: '2026-06-21',
+          equityCad: 1011215.96,
+          cumulativeNetDepositsCad: 829243.71,
+          totalPnlCad: 181972.25,
+        },
+        {
+          date: '2026-07-10',
+          equityCad: 1076256.33,
+          cumulativeNetDepositsCad: 895346.04,
+          totalPnlCad: 180910.29,
+        },
+        {
+          date: '2026-09-02',
+          equityCad: 1068491.76,
+          cumulativeNetDepositsCad: 898806.33,
+          totalPnlCad: 169685.43,
+        },
+      ],
+      summary: {
+        totalEquityCad: 1068491.76,
+        netDepositsCad: 898806.33,
+        netDepositsAllTimeCad: 898806.33,
+        totalPnlCad: 169685.43,
+        totalPnlAllTimeCad: 169685.43,
+      },
+    },
+    fundingMap: {
+      wsCore: { netDeposits: { allTimeCad: 1028859.24 } },
+    },
+    seriesMap: {
+      qCore: {
+        all: {
+          points: [
+            { date: '2026-06-28', equityCad: 1028859.24, cumulativeNetDepositsCad: 1028859.24 },
+            { date: '2026-06-29', equityCad: 0, cumulativeNetDepositsCad: 0 },
+          ],
+        },
+      },
+      wsCore: {
+        all: {
+          points: [
+            { date: '2026-06-29', equityCad: 1028859.24, cumulativeNetDepositsCad: 1028859.24 },
+            { date: '2026-09-02', equityCad: 1068491.76, cumulativeNetDepositsCad: 1028859.24 },
+          ],
+        },
+      },
+    },
+    accounts: [
+      { id: 'qCore', migratedTo: 'wsCore', closed: true },
+      { id: 'wsCore', historyStartDate: '2026-06-29' },
+    ],
+    accountIds: ['wsCore'],
+  });
+
+  assert.deepEqual(
+    result.points.map((point) => ({ date: point.date, totalPnlCad: point.totalPnlCad })),
+    [
+      { date: '2026-06-21', totalPnlCad: 181972.25 },
+      { date: '2026-07-10', totalPnlCad: 180910.29 },
+      { date: '2026-09-02', totalPnlCad: 169685.43 },
+    ]
+  );
+  assert.ok(result.issues.includes('migration-capital-reconciliation-skipped-discontinuity'));
 });
 
 test('migration-aware aggregate history removes a false final-day capital jump', () => {

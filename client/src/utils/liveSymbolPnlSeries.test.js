@@ -222,7 +222,7 @@ test('preserves today\'s deposits when reconciling live aggregate equity', () =>
   assert.equal(updated.points.at(-1).totalPnlCad - updated.points[0].totalPnlCad, 5264);
 });
 
-test('reconciles a stale aggregate series to authoritative current capital without changing cash-flow deltas', () => {
+test('reconciles current capital without shifting historical P&L', () => {
   const series = {
     points: [
       { date: '2026-08-24', equityCad: 1000, cumulativeNetDepositsCad: 800, totalPnlCad: 200 },
@@ -252,21 +252,53 @@ test('reconciles a stale aggregate series to authoritative current capital witho
 
   assert.deepEqual(
     updated.points.map((point) => point.cumulativeNetDepositsCad),
-    [900, 1000, 1000]
+    [800, 900, 1000]
   );
   assert.equal(
     updated.points[1].cumulativeNetDepositsCad - updated.points[0].cumulativeNetDepositsCad,
     100
   );
-  assert.deepEqual(updated.points.map((point) => point.totalPnlCad), [100, 100, 250]);
+  assert.deepEqual(updated.points.map((point) => point.totalPnlCad), [200, 200, 250]);
   assert.equal(updated.summary.totalEquityCad, 1250);
   assert.equal(updated.summary.netDepositsCad, 1000);
   assert.equal(updated.summary.netDepositsAllTimeCad, 1000);
   assert.equal(updated.summary.totalPnlCad, 250);
   assert.equal(updated.summary.totalPnlAllTimeCad, 250);
   assert.equal(updated.summary.totalEquityCad - updated.summary.netDepositsAllTimeCad, 250);
-  assert.equal(updated.points.at(-1).totalPnlCad - updated.points[1].totalPnlCad, 150);
-  assert.equal(updated.points.at(-1).cumulativeNetDepositsSinceDisplayStartCad, 100);
+  assert.equal(updated.points.at(-1).totalPnlCad - updated.points[1].totalPnlCad, 50);
+  assert.equal(updated.points.at(-1).cumulativeNetDepositsSinceDisplayStartCad, 200);
+});
+
+test('uses provider day P&L when a new account prevents flow continuity', () => {
+  const series = {
+    points: [
+      { date: '2026-09-01', equityCad: 1200, cumulativeNetDepositsCad: 1000, totalPnlCad: 200 },
+      { date: '2026-09-02', equityCad: 1250, cumulativeNetDepositsCad: 1100, totalPnlCad: 150 },
+    ],
+    summary: {
+      totalEquityCad: 1250,
+      netDepositsCad: 1100,
+      netDepositsAllTimeCad: 1100,
+      totalPnlCad: 150,
+      totalPnlAllTimeCad: 150,
+    },
+  };
+  const updated = applyLivePortfolioSnapshotToPnlSeries(series, {
+    totalEquityCad: 1250,
+    externalFlowCad: null,
+    dayPnlCad: 25,
+    currentCapitalCad: 1100,
+    positions: [{ priceAsOf: '2026-09-02T15:00:00.000Z' }],
+    asOf: '2026-09-02T15:00:00.000Z',
+  });
+
+  assert.deepEqual(updated.points.map((point) => point.totalPnlCad), [200, 225]);
+  assert.deepEqual(
+    updated.points.map((point) => point.cumulativeNetDepositsCad),
+    [1000, 1025]
+  );
+  assert.equal(updated.summary.totalPnlCad, 225);
+  assert.equal(updated.summary.netDepositsCad, 1025);
 });
 
 test('does not reconcile aggregate equity against a stale series date', () => {
