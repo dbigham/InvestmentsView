@@ -398,7 +398,8 @@ function buildChartFloatingLabelStyle(point) {
   const maxAnchor = CHART_HEIGHT - PADDING.bottom - 8;
   anchorY = Math.min(maxAnchor, Math.max(minAnchor, anchorY));
   const topPercent = Math.max(4, Math.min(96, (anchorY / CHART_HEIGHT) * 100));
-  return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: 'translate(-50%, -100%)' };
+  const horizontalOffset = leftPercent > 80 ? '-100%' : leftPercent < 20 ? '0%' : '-50%';
+  return { left: `${leftPercent}%`, top: `${topPercent}%`, transform: `translate(${horizontalOffset}, -100%)` };
 }
 
 function isValidDate(value) {
@@ -5180,53 +5181,73 @@ export default function SummaryMetrics({
               <span className="equity-card__value-spinner" role="status" aria-label="Updating total equity" />
             ) : null}
           </p>
-          {usdToCadRate !== null && (
-            <p className="equity-card__subtext">
-              <a
-                className="equity-card__subtext-link"
-                href="https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=usd%20=%20?%20cad"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <span className="equity-card__subtext-value">
-                  {`USD → CAD: ${formatNumber(usdToCadRate, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 3,
-                  })}`}
-                </span>
-              </a>
-            </p>
-          )}
-          {showQqqTemperature && (
-            <p className="equity-card__subtext">
-              {typeof onShowInvestmentModel === 'function' ? (
-                <>
-                  <button
-                    type="button"
-                    className="equity-card__subtext-button"
-                    onClick={onShowInvestmentModel}
-                    disabled={qqqStatus === 'loading'}
-                    {...qqqButtonContextProps}
+          <div className="equity-card__context">
+            {usdToCadRate !== null && (
+              <p className="equity-card__subtext">
+                <a
+                  className="equity-card__subtext-link"
+                  href="https://www.google.ca/search?sourceid=chrome-psyapi2&ion=1&espv=2&ie=UTF-8&q=usd%20=%20?%20cad"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <span className="equity-card__subtext-value">
+                    {`USD → CAD: ${formatNumber(usdToCadRate, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 3,
+                    })}`}
+                  </span>
+                </a>
+              </p>
+            )}
+            {showQqqTemperature && (
+              <p className="equity-card__subtext">
+                {typeof onShowInvestmentModel === 'function' ? (
+                  <>
+                    <button
+                      type="button"
+                      className="equity-card__subtext-button"
+                      onClick={onShowInvestmentModel}
+                      disabled={qqqStatus === 'loading'}
+                      {...qqqButtonContextProps}
+                    >
+                      <span className="equity-card__subtext-value">{qqqLabel}</span>
+                    </button>
+                    <span className="visually-hidden" role="status" aria-live="polite">
+                      {qqqLabel}
+                    </span>
+                  </>
+                ) : (
+                  <span
+                    className="equity-card__subtext-value"
+                    role="status"
+                    aria-live="polite"
+                    {...qqqLabelContextProps}
                   >
-                    <span className="equity-card__subtext-value">{qqqLabel}</span>
-                  </button>
-                  <span className="visually-hidden" role="status" aria-live="polite">
                     {qqqLabel}
                   </span>
-                </>
-              ) : (
-                <span
-                  className="equity-card__subtext-value"
-                  role="status"
-                  aria-live="polite"
-                  {...qqqLabelContextProps}
-                >
-                  {qqqLabel}
-                </span>
-              )}
-            </p>
-          )}
+                )}
+              </p>
+            )}
+          </div>
         </div>
+        <dl className="equity-card__highlights" aria-label="Key returns">
+          {!hasActiveRangeSummary && (
+            <MetricRow
+              label="Today's P&L"
+              value={formattedToday}
+              extra={dayPercent ? `(${dayPercent})` : null}
+              tone={todayTone}
+              onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
+            />
+          )}
+          <MetricRow
+            label={returnMetricLabelNode}
+            tooltip={returnMetricExplanation ? null : 'The equivalent constant yearly rate (with compounding) that gets from start value to today.'}
+            value={formattedCagr}
+            tone={cagrTone}
+            onActivate={symbolMode ? null : (canShowReturnBreakdown ? onShowAnnualizedReturn : null)}
+          />
+        </dl>
         <div className="equity-card__actions">
           {onShowPeople && (
             <button
@@ -5620,200 +5641,205 @@ export default function SummaryMetrics({
         </div>
       )}
 
-      {/* Timeframe selector for the chart */}
-      {showTotalPnlChart && (
-        <div
-          className="equity-card__chip-row equity-card__chip-row--timeframe"
-          role="group"
-          aria-label={`${chartMetricLabel} timeframe`}
-        >
-          {TIMEFRAME_BUTTONS.map((option) => {
-            const isActive = chartTimeframe === option.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className={isActive ? 'active' : ''}
-                onClick={() => setChartTimeframe(option.value)}
-                aria-pressed={isActive}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <div className="equity-card__view-controls">
+        {/* Timeframe selector for the chart */}
+        {showTotalPnlChart && (
+          <div
+            className="equity-card__chip-row equity-card__chip-row--timeframe"
+            role="group"
+            aria-label={`${chartMetricLabel} timeframe`}
+          >
+            {TIMEFRAME_BUTTONS.map((option) => {
+              const isActive = chartTimeframe === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={isActive ? 'active' : ''}
+                  onClick={() => setChartTimeframe(option.value)}
+                  aria-pressed={isActive}
+                  aria-label={option.label}
+                >
+                  {option.value === 'ALL' ? (
+                    <>
+                      <span className="equity-card__timeframe-long">{option.label}</span>
+                      <span className="equity-card__timeframe-short" aria-hidden="true">All</span>
+                    </>
+                  ) : option.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
-      {currencyOptions.length > 0 && !symbolMode && (
-        <div className="equity-card__chip-row" role="group" aria-label="Currency views">
-          {currencyOptions.map((option) => {
-            const isActive = currencyOption?.value === option.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className={isActive ? 'active' : ''}
-                onClick={() => onCurrencyChange(option.value)}
-                aria-pressed={isActive}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
+        {currencyOptions.length > 0 && !symbolMode && (
+          <div className="equity-card__chip-row" role="group" aria-label="Currency views">
+            {currencyOptions.map((option) => {
+              const isActive = currencyOption?.value === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={isActive ? 'active' : ''}
+                  onClick={() => onCurrencyChange(option.value)}
+                  aria-pressed={isActive}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <div className="equity-card__metrics">
-        <dl className="equity-card__metric-column">
-          {!hasActiveRangeSummary && (
-            <MetricRow
-              label="Today's P&L"
-              value={formattedToday}
-              extra={dayPercent ? `(${dayPercent})` : null}
-              tone={todayTone}
-              onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('day') : null)}
-            />
-          )}
-          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
-            <MetricRow
-              label={todayEarningsLabelNode}
-              value={todayEarningsValueNode}
-              tone={todayEarningsTone}
-              onActivate={refreshEarningsAction}
-              valueClassName={earningsValueClassName}
-            />
-          )}
-          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
-            <MetricRow
-              label="Week's Earnings"
-              value={formattedWeekEarnings}
-              tone={weekEarningsTone}
-              onActivate={refreshEarningsAction}
-              valueClassName={earningsValueClassName}
-            />
-          )}
-          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
-            <MetricRow
-              label={yearlyEarningsLabelNode}
-              value={yearlyEarningsValueNode}
-              tone={yearlyEarningsTone}
-              onActivate={refreshEarningsAction}
-              valueClassName={earningsValueClassName}
-            />
-          )}
-          {!hasActiveRangeSummary && !symbolMode && givingSummary && (
-            <MetricRow
-              label={`${givingYear} Giving`}
-              value={formattedGiving}
-              tone="neutral"
-              onActivate={onShowGiving || null}
-              valueClassName={givingValueClassName}
-            />
-          )}
-          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
-            <MetricRow
-              label={projectedEarningsLabel}
-              value={formattedProjectedYearlyEarnings}
-              tone={projectedYearlyEarningsTone}
-              onActivate={refreshEarningsAction}
-              valueClassName={earningsValueClassName}
-            />
-          )}
-          {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
-            <MetricRow
-              label="Unbilled Earnings"
-              value={formattedUnbilledEarnings}
-              tone={unbilledEarningsTone}
-              onActivate={refreshEarningsAction}
-              valueClassName={earningsValueClassName}
-            />
-          )}
-          {!hasActiveRangeSummary && (
-            <MetricRow
-              label="Open P&L"
-              value={formattedOpen}
-              extra={openPercent ? `(${openPercent})` : null}
-              tone={openTone}
-              onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null)}
-            />
-          )}
-          <MetricRow
-            label={totalPnlMetricLabel}
-            value={formattedTotal}
-            extra={totalExtraPercent}
-            extraTooltip={totalExtraPercentTooltip}
-            tone={totalTone}
-            className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
-            onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('total') : onShowTotalPnl)}
-            onContextMenuRequest={handleTotalContextMenuRequest}
-            contextMenuOpen={totalMenuState.open}
-          />
-          {!symbolMode && (selectionRangeLabelNode || hoverRangeLabelNode || totalPnlRangeNode)}
-          {!symbolMode && totalDetailBlock}
-          <MetricRow
-            label={returnMetricLabelNode}
-            tooltip={returnMetricExplanation ? null : 'The equivalent constant yearly rate (with compounding) that gets from start value to today.'}
-            value={formattedCagr}
-            tone={cagrTone}
-            onActivate={symbolMode ? null : (canShowReturnBreakdown ? onShowAnnualizedReturn : null)}
-          />
-          {formattedNetDeposits && <MetricRow label={netDepositsLabel} value={formattedNetDeposits} tone="neutral" />}
-        </dl>
-        {!hasActiveRangeSummary && (
+        <section className="equity-card__metric-group" aria-label="Performance">
+          <h3 className="equity-card__group-title">Performance</h3>
           <dl className="equity-card__metric-column">
-            <MetricRow label="Total equity" value={formatMoney(safeTotalEquity)} tone="neutral" />
-            <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
-            {!symbolMode && (
+            {!hasActiveRangeSummary && (
               <MetricRow
-                label="Cash"
-                value={formatMoney(cash)}
-                tone="neutral"
-                onActivate={onShowCashBreakdown || null}
+                label="Open P&L"
+                value={formattedOpen}
+                extra={openPercent ? `(${openPercent})` : null}
+                tone={openTone}
+                onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('open') : null)}
               />
             )}
-            {showDeploymentBreakdown && (
-              <MetricRow
-                label="Deployed"
-                value={formatMoney(deployedValue)}
-                extra={deployedPercentLabel}
-                tone="neutral"
-                onActivate={onAdjustDeployment}
-              />
-            )}
-            {showDeploymentBreakdown && (
-              <MetricRow
-                label="Reserve"
-                value={formatMoney(reserveValue)}
-                extra={reservePercentLabel}
-                tone="neutral"
-                onActivate={onAdjustDeployment}
-              />
-            )}
-            {showOtherAssetsMetrics && Number.isFinite(otherAssetsHomeCad) && (
-              <MetricRow
-                label="Home"
-                value={formatMoney(otherAssetsHomeCad)}
-                tone="neutral"
-                onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('homeCad') : null}
-              />
-            )}
-            {showOtherAssetsMetrics && Number.isFinite(otherAssetsVehiclesCad) && (
-              <MetricRow
-                label="Vehicles"
-                value={formatMoney(otherAssetsVehiclesCad)}
-                tone="neutral"
-                onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('vehiclesCad') : null}
-              />
-            )}
-            {showOtherAssetsMetrics && Number.isFinite(otherAssetsOtherCad) && (
-              <MetricRow
-                label="Other assets"
-                value={formatMoney(otherAssetsOtherCad)}
-                tone="neutral"
-                onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('otherAssetsCad') : null}
-              />
-            )}
+            <MetricRow
+              label={totalPnlMetricLabel}
+              value={formattedTotal}
+              extra={totalExtraPercent}
+              extraTooltip={totalExtraPercentTooltip}
+              tone={totalTone}
+              className={hasDetailLines ? 'equity-card__metric-row--total-with-details' : ''}
+              onActivate={symbolMode ? null : (onShowPnlBreakdown ? () => onShowPnlBreakdown('total') : onShowTotalPnl)}
+              onContextMenuRequest={handleTotalContextMenuRequest}
+              contextMenuOpen={totalMenuState.open}
+            />
+            {!symbolMode && (selectionRangeLabelNode || hoverRangeLabelNode || totalPnlRangeNode)}
+            {!symbolMode && totalDetailBlock}
+            {formattedNetDeposits && <MetricRow label={netDepositsLabel} value={formattedNetDeposits} tone="neutral" />}
           </dl>
+        </section>
+        {!hasActiveRangeSummary && !symbolMode && (earningsSummary || givingSummary) && (
+          <section className="equity-card__metric-group" aria-label="Earnings and giving">
+            <h3 className="equity-card__group-title">Earnings &amp; giving</h3>
+            <dl className="equity-card__metric-column">
+              {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+                <MetricRow
+                  label={todayEarningsLabelNode}
+                  value={todayEarningsValueNode}
+                  tone={todayEarningsTone}
+                  onActivate={refreshEarningsAction}
+                  valueClassName={earningsValueClassName}
+                />
+              )}
+              {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+                <MetricRow
+                  label="Week's Earnings"
+                  value={formattedWeekEarnings}
+                  tone={weekEarningsTone}
+                  onActivate={refreshEarningsAction}
+                  valueClassName={earningsValueClassName}
+                />
+              )}
+              {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+                <MetricRow
+                  label={yearlyEarningsLabelNode}
+                  value={yearlyEarningsValueNode}
+                  tone={yearlyEarningsTone}
+                  onActivate={refreshEarningsAction}
+                  valueClassName={earningsValueClassName}
+                />
+              )}
+              {!hasActiveRangeSummary && !symbolMode && givingSummary && (
+                <MetricRow
+                  label={`${givingYear} Giving`}
+                  value={formattedGiving}
+                  tone="neutral"
+                  onActivate={onShowGiving || null}
+                  valueClassName={givingValueClassName}
+                />
+              )}
+              {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+                <MetricRow
+                  label={projectedEarningsLabel}
+                  value={formattedProjectedYearlyEarnings}
+                  tone={projectedYearlyEarningsTone}
+                  onActivate={refreshEarningsAction}
+                  valueClassName={earningsValueClassName}
+                />
+              )}
+              {!hasActiveRangeSummary && !symbolMode && earningsSummary && (
+                <MetricRow
+                  label="Unbilled Earnings"
+                  value={formattedUnbilledEarnings}
+                  tone={unbilledEarningsTone}
+                  onActivate={refreshEarningsAction}
+                  valueClassName={earningsValueClassName}
+                />
+              )}
+            </dl>
+          </section>
+        )}
+        {!hasActiveRangeSummary && (
+          <section className="equity-card__metric-group" aria-label="Balances and assets">
+            <h3 className="equity-card__group-title">Balances &amp; assets</h3>
+            <dl className="equity-card__metric-column">
+              <MetricRow label="Total equity" value={formatMoney(safeTotalEquity)} tone="neutral" />
+              <MetricRow label="Market value" value={formatMoney(marketValue)} tone="neutral" />
+              {!symbolMode && (
+                <MetricRow
+                  label="Cash"
+                  value={formatMoney(cash)}
+                  tone="neutral"
+                  onActivate={onShowCashBreakdown || null}
+                />
+              )}
+              {showDeploymentBreakdown && (
+                <MetricRow
+                  label="Deployed"
+                  value={formatMoney(deployedValue)}
+                  extra={deployedPercentLabel}
+                  tone="neutral"
+                  onActivate={onAdjustDeployment}
+                />
+              )}
+              {showDeploymentBreakdown && (
+                <MetricRow
+                  label="Reserve"
+                  value={formatMoney(reserveValue)}
+                  extra={reservePercentLabel}
+                  tone="neutral"
+                  onActivate={onAdjustDeployment}
+                />
+              )}
+              {showOtherAssetsMetrics && Number.isFinite(otherAssetsHomeCad) && (
+                <MetricRow
+                  label="Home"
+                  value={formatMoney(otherAssetsHomeCad)}
+                  tone="neutral"
+                  onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('homeCad') : null}
+                />
+              )}
+              {showOtherAssetsMetrics && Number.isFinite(otherAssetsVehiclesCad) && (
+                <MetricRow
+                  label="Vehicles"
+                  value={formatMoney(otherAssetsVehiclesCad)}
+                  tone="neutral"
+                  onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('vehiclesCad') : null}
+                />
+              )}
+              {showOtherAssetsMetrics && Number.isFinite(otherAssetsOtherCad) && (
+                <MetricRow
+                  label="Other assets"
+                  value={formatMoney(otherAssetsOtherCad)}
+                  tone="neutral"
+                  onActivate={editOtherAssetsAction ? () => editOtherAssetsAction('otherAssetsCad') : null}
+                />
+              )}
+            </dl>
+          </section>
         )}
       </div>
 

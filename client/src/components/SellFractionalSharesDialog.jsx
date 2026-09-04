@@ -295,12 +295,12 @@ export default function SellFractionalSharesDialog({ plan, onClose, copyToClipbo
               Resolve fractional shares
             </h2>
             <p className="invest-plan-dialog__account">
-              {plan?.sellCount || 0} sells, {plan?.buyCount || 0} buys across {accounts.length} accounts
+              {plan?.sellCount || 0} sells, {plan?.buyCount || 0} buys across {accounts.length} {accounts.length === 1 ? 'account' : 'accounts'}
               {plan?.reserveTradeCount > 0 ? `, plus ${plan.reserveTradeCount} reserve sells first` : ''}
             </p>
           </div>
           <button type="button" className="invest-plan-dialog__close" onClick={onClose} aria-label="Close dialog">
-            x
+            ×
           </button>
         </header>
 

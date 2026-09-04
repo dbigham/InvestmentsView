@@ -197,12 +197,14 @@ export default function AnnualizedReturnDialog({
                         className={`return-breakdown-list__percent return-breakdown-list__percent--${periodTone}`}
                         title="Total return"
                       >
+                        <span className="return-breakdown-list__caption">Total return</span>
                         {periodPercentDisplay}
                       </span>
                       <span
                         className={`return-breakdown-list__percent return-breakdown-list__percent--${annualizedToneEntry}`}
                         title="Annualized"
                       >
+                        <span className="return-breakdown-list__caption">Annualized</span>
                         {annualizedDisplay}
                       </span>
                     </dd>

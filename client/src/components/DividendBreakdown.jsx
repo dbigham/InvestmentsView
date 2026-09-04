@@ -192,7 +192,7 @@ function DividendBreakdown({ summary, variant }) {
                     <td className="dividends-table__cell dividends-table__cell--symbol">
                       <div className="dividends-table__symbol">{symbolLabel}</div>
                       {entry.description ? (
-                        <div className="dividends-table__description">{entry.description}</div>
+                        <div className="dividends-table__description" title={entry.description}>{entry.description}</div>
                       ) : null}
                       {rawSymbolLabel && rawSymbolLabel !== symbolLabel ? (
                         <div className="dividends-table__raw">Source code{rawSymbols.length > 1 ? 's' : ''}: {rawSymbolLabel}</div>

@@ -29,6 +29,12 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function fitTileFontSize(preferredSize, text, characterWidth) {
+  // Container-relative width keeps labels inside narrow tiles on small screens.
+  const widthLimit = 85 / Math.max(4, String(text).length * characterWidth);
+  return `min(${preferredSize}px, ${widthLimit}cqw)`;
+}
+
 function computePercentChange(position, metricKey) {
   const metricValue = isFiniteNumber(position[metricKey]) ? position[metricKey] : 0;
 
@@ -432,9 +438,9 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
   });
 }
 
-const NEUTRAL_COLOR = '#404656';
-const POSITIVE_COLOR = '#00ff00';
-const NEGATIVE_COLOR = '#ff0000';
+const NEUTRAL_COLOR = '#56615b';
+const POSITIVE_COLOR = '#24764e';
+const NEGATIVE_COLOR = '#bd454d';
 
 function parseHexColor(color) {
   const normalized = color.replace('#', '');
@@ -1610,8 +1616,8 @@ export default function PnlHeatmapDialog({
                 const resolvedIntensity = clamp(percentIntensity, 0, 1);
                 const backgroundColor = isStyleTwo
                   ? node.metricValue >= 0
-                    ? '#2f8f2f'
-                    : '#b23b3b'
+                    ? POSITIVE_COLOR
+                    : NEGATIVE_COLOR
                   : resolveTileColor(percentChangeValue, resolvedIntensity);
                 const textColor = 'rgba(255, 255, 255, 0.98)';
                 const pnlDisplay = formatSignedMoney(node.metricValue);
@@ -1781,13 +1787,13 @@ export default function PnlHeatmapDialog({
                   >
                     <span
                       className="pnl-heatmap-board__symbol"
-                      style={{ fontSize: `${symbolFontSize}px`, lineHeight: 1 }}
+                      style={{ fontSize: fitTileFontSize(symbolFontSize, node.displaySymbol || node.symbol, 0.72), lineHeight: 1 }}
                     >
                       {node.displaySymbol || node.symbol}
                     </span>
                     <span
                       className="pnl-heatmap-board__value"
-                      style={{ fontSize: `${percentFontSize}px`, lineHeight: 1 }}
+                      style={{ fontSize: fitTileFontSize(percentFontSize, detailDisplay, 0.65), lineHeight: 1 }}
                     >
                       {detailDisplay}
                     </span>
@@ -1921,4 +1927,3 @@ PnlHeatmapDialog.defaultProps = {
   onClearRange: null,
   onRetryRange: null,
 };
-

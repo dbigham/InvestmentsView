@@ -164,6 +164,9 @@ export default function AccountStructureDialog({
   accountGroups,
   groupRelations,
   initialEntries,
+  loading,
+  loadError,
+  onRetry,
   onSave,
   onClose,
 }) {
@@ -413,7 +416,7 @@ export default function AccountStructureDialog({
   }, [groupDrafts]);
 
   const handleSave = useCallback(async () => {
-    if (status.saving) {
+    if (status.saving || loading || loadError) {
       return;
     }
     const validationError = validateGroups();
@@ -461,7 +464,7 @@ export default function AccountStructureDialog({
       const message = error && error.message ? error.message : 'Failed to save changes.';
       setStatus({ saving: false, error: message, success: null });
     }
-  }, [status.saving, validateGroups, groupDrafts, ordering, accountById, groupNameByKey, onSave]);
+  }, [status.saving, loading, loadError, validateGroups, groupDrafts, ordering, accountById, groupNameByKey, onSave, onClose]);
 
   const groupTree = useMemo(() => buildGroupTree(groupDrafts), [groupDrafts]);
   const rootAccounts = useMemo(() => buildRootAccounts(), [buildRootAccounts]);
@@ -592,6 +595,14 @@ export default function AccountStructureDialog({
           <div className="account-structure-dialog__header-spacer" />
         </header>
         <div className="account-structure-dialog__body">
+          {loading ? (
+            <div className="account-structure-dialog__status" role="status">Loading accounts…</div>
+          ) : loadError ? (
+            <div className="account-structure-dialog__status account-structure-dialog__status--error" role="alert">
+              <p>{loadError}</p>
+              {onRetry && <button type="button" className="account-structure-dialog__button" onClick={onRetry}>Try again</button>}
+            </div>
+          ) : null}
           {status.error ? (
             <div className="account-structure-dialog__status account-structure-dialog__status--error">
               {status.error}
@@ -602,41 +613,43 @@ export default function AccountStructureDialog({
               {status.success}
             </div>
           ) : null}
-          <div className="account-structure-dialog__toolbar">
-            <div className="account-structure-dialog__add-group">
-              <input
-                className="account-structure-dialog__input"
-                value={newGroupName}
-                onChange={(event) => setNewGroupName(event.target.value)}
-                placeholder="New group name"
-              />
-              <button
-                type="button"
-                className="account-structure-dialog__button"
-                onClick={handleAddGroup}
-                disabled={!newGroupName.trim()}
-              >
-                Add group
-              </button>
-              <button
-                type="button"
-                className="account-structure-dialog__help-button"
-                onClick={() => setShowGroupHelp(true)}
-                aria-label="Learn about account groups"
-              >
-                ?
-              </button>
+          <div hidden={loading || Boolean(loadError)}>
+            <div className="account-structure-dialog__toolbar">
+              <div className="account-structure-dialog__add-group">
+                <input
+                  className="account-structure-dialog__input"
+                  value={newGroupName}
+                  onChange={(event) => setNewGroupName(event.target.value)}
+                  placeholder="New group name"
+                />
+                <button
+                  type="button"
+                  className="account-structure-dialog__button"
+                  onClick={handleAddGroup}
+                  disabled={!newGroupName.trim()}
+                >
+                  Add group
+                </button>
+                <button
+                  type="button"
+                  className="account-structure-dialog__help-button"
+                  onClick={() => setShowGroupHelp(true)}
+                  aria-label="Learn about account groups"
+                >
+                  ?
+                </button>
+              </div>
             </div>
-          </div>
-          <div className="account-structure-dialog__table">
-            <div className="account-structure-dialog__row account-structure-dialog__row--header">
-              <div className="account-structure-dialog__cell account-structure-dialog__cell--label">Type</div>
-              <div className="account-structure-dialog__cell">Label</div>
-              <div className="account-structure-dialog__cell">Parent group</div>
-              <div className="account-structure-dialog__cell account-structure-dialog__cell--actions">Order</div>
+            <div className="account-structure-dialog__table">
+              <div className="account-structure-dialog__row account-structure-dialog__row--header">
+                <div className="account-structure-dialog__cell account-structure-dialog__cell--label">Type</div>
+                <div className="account-structure-dialog__cell">Label</div>
+                <div className="account-structure-dialog__cell">Parent group</div>
+                <div className="account-structure-dialog__cell account-structure-dialog__cell--actions">Order</div>
+              </div>
+              {groupTree.map((group) => renderGroupNode(group, 0))}
+              {rootAccounts.map((account) => renderAccountRow(account, 0))}
             </div>
-            {groupTree.map((group) => renderGroupNode(group, 0))}
-            {rootAccounts.map((account) => renderAccountRow(account, 0))}
           </div>
         </div>
         <footer className="account-structure-dialog__footer">
@@ -647,7 +660,7 @@ export default function AccountStructureDialog({
             type="button"
             className="account-structure-dialog__button account-structure-dialog__button--primary"
             onClick={handleSave}
-            disabled={status.saving}
+            disabled={status.saving || loading || Boolean(loadError)}
           >
             {status.saving ? 'Saving...' : 'Save changes'}
           </button>
@@ -711,6 +724,9 @@ AccountStructureDialog.propTypes = {
   ),
   groupRelations: PropTypes.object,
   initialEntries: PropTypes.arrayOf(PropTypes.object),
+  loading: PropTypes.bool,
+  loadError: PropTypes.string,
+  onRetry: PropTypes.func,
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
 };
@@ -720,4 +736,7 @@ AccountStructureDialog.defaultProps = {
   accountGroups: [],
   groupRelations: {},
   initialEntries: [],
+  loading: false,
+  loadError: null,
+  onRetry: null,
 };

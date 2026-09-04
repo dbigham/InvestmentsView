@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import { formatDateTime } from '../utils/formatters';
 
 const PROVIDER_QUESTRADE = 'questrade';
 const PROVIDER_SNAPTRADE = 'snaptrade';
@@ -495,7 +496,7 @@ export default function QuestradeLoginDialog({
                         <span className="login-setup-dialog__list-label">{resolveLoginDisplay(login)}</span>
                         <span className="login-setup-dialog__list-meta">{resolveProviderLabel(login)}</span>
                         {login.updatedAt ? (
-                          <span className="login-setup-dialog__list-meta">Updated {login.updatedAt}</span>
+                          <span className="login-setup-dialog__list-meta" title={login.updatedAt}>Updated {formatDateTime(login.updatedAt)}</span>
                         ) : null}
                         {loginProvider === PROVIDER_SNAPTRADE && login.hasCustomCredentials ? (
                           <span className="login-setup-dialog__list-meta">Custom SnapTrade credentials</span>

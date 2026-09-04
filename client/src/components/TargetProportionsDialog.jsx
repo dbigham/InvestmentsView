@@ -369,6 +369,7 @@ export default function TargetProportionsDialog({
                                 <input
                                   type="text"
                                   inputMode="decimal"
+                                  aria-label={`${position.symbol} target percentage`}
                                   className={
                                     rowHasError
                                       ? 'target-proportions-table__input target-proportions-table__input--error'

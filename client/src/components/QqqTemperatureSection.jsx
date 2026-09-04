@@ -312,6 +312,7 @@ export default function QqqTemperatureSection({
   const displayRangeEnd = chartMetrics ? chartMetrics.rangeEnd : data?.rangeEnd;
   const resolvedTitle = title || (modelName ? 'Investment Model' : 'QQQ temperature');
   const generatedId = useId();
+  const rangeId = `qqq-temperature-range-${generatedId}`;
   const headingId = modelName
     ? `investment-model-heading-${generatedId}`
     : `qqq-temperature-heading-${generatedId}`;
@@ -789,11 +790,11 @@ export default function QqqTemperatureSection({
       )}
 
       <div className="qqq-section__controls">
-        <label className="qqq-section__control-label" htmlFor="qqq-temperature-range">
+        <label className="qqq-section__control-label" htmlFor={rangeId}>
           Time frame
         </label>
         <select
-          id="qqq-temperature-range"
+          id={rangeId}
           className="qqq-section__control-select"
           value={timeframe}
           onChange={(event) => setTimeframe(event.target.value)}

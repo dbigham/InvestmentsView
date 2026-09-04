@@ -119,6 +119,8 @@ import {
 } from './utils/liveSymbolPnlSeries';
 import { isCurrentProjectionAccount, isProjectableEquity } from './utils/projectionAccounts';
 import './App.css';
+import './Dashboard.css';
+import './AppPolish.css';
 import deploymentDisplay from '../../shared/deploymentDisplay.js';
 import {
   getSymbolGroupByKey,
@@ -18989,6 +18991,10 @@ export default function App() {
       ) : null}
       <main className={summaryMainClassName}>
         <header className="page-header">
+          <div className="page-header__identity">
+            <span className="page-header__eyebrow">Investments View</span>
+            <h1 className="page-header__title">Portfolio overview</h1>
+          </div>
           <GlobalSearch
             symbols={searchSymbols}
             currentSymbols={positions}
@@ -20189,6 +20195,9 @@ export default function App() {
           accountGroups={accountStructureContext.accountGroups}
           groupRelations={accountStructureContext.groupRelations}
           initialEntries={accountStructureState.entries}
+          loading={accountStructureState.status === 'loading' || accountStructureContext.status === 'loading'}
+          loadError={accountStructureState.error || accountStructureContext.error}
+          onRetry={loadAccountStructureData}
           onSave={handleSaveAccountStructure}
           onClose={handleCloseAccountStructureDialog}
         />

@@ -1244,43 +1244,45 @@ export default function ProjectionDialog({
             </div>
 
             <div className="pnl-dialog__controls" style={{ gap: '12px', alignItems: 'center' }}>
-              <label className="pnl-dialog__control-label" htmlFor="projection-timeframe">Show</label>
-              <div className="select-control" ref={selectRef}>
-                <button
-                  id="projection-timeframe"
-                  type="button"
-                  className="select-control__button"
-                  onClick={(event) => {
-                    const menu = event.currentTarget.nextSibling;
-                    if (menu) menu.classList.toggle('select-control__list--open');
-                  }}
-                >
-                  {PROJECTION_TIMEFRAME_OPTIONS.find((o) => o.value === timeframeYears)?.label || 'Select timeframe'}
-                  <span aria-hidden="true" className="select-control__chevron" />
-                </button>
-                <ul className="select-control__list" role="listbox">
-                  {PROJECTION_TIMEFRAME_OPTIONS.map((option) => (
-                    <li key={option.value}>
-                      <button
-                        type="button"
-                        className={option.value === timeframeYears ? 'select-control__option select-control__option--selected' : 'select-control__option'}
-                        onClick={() => {
-                          setTimeframeYears(option.value);
-                          const container = document.getElementById('projection-timeframe')?.nextSibling;
-                          if (container) container.classList.remove('select-control__list--open');
-                        }}
-                        role="option"
-                        aria-selected={option.value === timeframeYears}
-                      >
-                        {option.label}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+              <div className="projection-dialog__control-group">
+                <label className="pnl-dialog__control-label" htmlFor="projection-timeframe">Show</label>
+                <div className="select-control" ref={selectRef}>
+                  <button
+                    id="projection-timeframe"
+                    type="button"
+                    className="select-control__button"
+                    onClick={(event) => {
+                      const menu = event.currentTarget.nextSibling;
+                      if (menu) menu.classList.toggle('select-control__list--open');
+                    }}
+                  >
+                    {PROJECTION_TIMEFRAME_OPTIONS.find((o) => o.value === timeframeYears)?.label || 'Select timeframe'}
+                    <span aria-hidden="true" className="select-control__chevron" />
+                  </button>
+                  <ul className="select-control__list" role="listbox">
+                    {PROJECTION_TIMEFRAME_OPTIONS.map((option) => (
+                      <li key={option.value}>
+                        <button
+                          type="button"
+                          className={option.value === timeframeYears ? 'select-control__option select-control__option--selected' : 'select-control__option'}
+                          onClick={() => {
+                            setTimeframeYears(option.value);
+                            const container = document.getElementById('projection-timeframe')?.nextSibling;
+                            if (container) container.classList.remove('select-control__list--open');
+                          }}
+                          role="option"
+                          aria-selected={option.value === timeframeYears}
+                        >
+                          {option.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
 
               {retirementModel.supported && (
-                <>
+                <div className="projection-dialog__control-group">
                   <label className="pnl-dialog__control-label" htmlFor="projection-retirement-age">Retirement age</label>
                   <input
                     id="projection-retirement-age"
@@ -1319,27 +1321,29 @@ export default function ProjectionDialog({
                         : undefined,
                     }}
                   />
-                </>
+                </div>
               )}
 
               {!isGroupView && (
                 <>
-                  <label className="pnl-dialog__control-label" htmlFor="projection-rate">Growth</label>
-                  <input
-                    id="projection-rate"
-                    type="text"
-                    inputMode="decimal"
-                    className="text-input"
-                    value={rateInput}
-                    onChange={(e) => {
-                      setRateInput(e.target.value);
-                      setDidEdit(true);
-                    }}
-                    placeholder="e.g. 8"
-                    aria-describedby="projection-rate-suffix"
-                    style={{ width: '64px' }}
-                  />
-                  <span id="projection-rate-suffix">%</span>
+                  <div className="projection-dialog__control-group">
+                    <label className="pnl-dialog__control-label" htmlFor="projection-rate">Growth</label>
+                    <input
+                      id="projection-rate"
+                      type="text"
+                      inputMode="decimal"
+                      className="pnl-dialog__number-input"
+                      value={rateInput}
+                      onChange={(e) => {
+                        setRateInput(e.target.value);
+                        setDidEdit(true);
+                      }}
+                      placeholder="e.g. 8"
+                      aria-describedby="projection-rate-suffix"
+                      style={{ width: '64px' }}
+                    />
+                    <span id="projection-rate-suffix">%</span>
+                  </div>
 
                   {typeof onEstimateFutureCagr === 'function' && (
                     <button
@@ -1515,7 +1519,7 @@ export default function ProjectionDialog({
                       y2={tick.y}
                     />
                     <text x={CHART_WIDTH - PADDING.right + 8} y={tick.y + 3} className="pnl-dialog__axis-label" textAnchor="start">
-                      {formatMoney(tick.value, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      {formatMoneyCompact(tick.value)}
                     </text>
                     <line
                       className="qqq-section__line qqq-section__line--guide"
@@ -1576,7 +1580,7 @@ export default function ProjectionDialog({
               {hoverPoint && (
                 <div
                   className="qqq-section__chart-label"
-                  style={{ position: 'absolute', left: `${hoverPoint.leftPercent}%`, top: `${hoverPoint.topPercent}%`, transform: 'translate(-50%, -100%)' }}
+                  style={{ position: 'absolute', left: `${hoverPoint.leftPercent}%`, top: `${hoverPoint.topPercent}%`, transform: `translate(${hoverPoint.leftPercent > 80 ? '-100%' : hoverPoint.leftPercent < 20 ? '0%' : '-50%'}, -100%)` }}
                 >
                   <span className="pnl-dialog__label-amount">{hoverPoint.amount}</span>
                   <span className="pnl-dialog__label-delta">{hoverPoint.yearsLabel}</span>
@@ -1587,7 +1591,7 @@ export default function ProjectionDialog({
               {milestoneMarkers.map((m) => (
                 <div
                   key={`label-${m.date}`}
-                  className="qqq-section__chart-label"
+                  className="qqq-section__chart-label projection-dialog__milestone-label"
                   style={{ position: 'absolute', left: `${m.leftPercent}%`, top: `${m.topPercent}%`, transform: 'translate(-50%, -100%)' }}
                 >
                   <span className="pnl-dialog__label-amount">{m.label}</span>

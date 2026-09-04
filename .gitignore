@@ -28,6 +28,7 @@ yarn-error.log*
 Plan.md
 
 # Local run artifacts
+output/design-review/
 server-run-*.log
 .codex-logs/
 temp_block.txt

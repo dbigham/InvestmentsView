@@ -982,7 +982,23 @@ export default function GlobalSearch({
           aria-controls={open ? listboxId : undefined}
           aria-autocomplete="list"
           role="combobox"
+          aria-label={placeholder}
+          aria-activedescendant={open && highlightedIndex >= 0 && highlightedIndex < results.length ? `${baseId}-opt-${highlightedIndex}` : undefined}
         />
+        {query && (
+          <button
+            type="button"
+            className="global-search__clear"
+            aria-label="Clear search"
+            onClick={() => {
+              setQuery('');
+              setOpen(false);
+              inputRef.current?.focus();
+            }}
+          >
+            ×
+          </button>
+        )}
       </div>
       {open && results.length > 0 && (
         <ul className="global-search__list" role="listbox" id={listboxId} ref={listRef}>
@@ -1010,9 +1026,9 @@ export default function GlobalSearch({
                     <div className="global-search__main">
                       <div className="global-search__label">
                         {item.label}
-                        {item.kind === 'symbol' ? <span className="global-search__badge">SYM</span> : null}
-                        {item.kind === 'nav' ? <span className="global-search__badge">NAV</span> : null}
-                        {item.kind === 'account' ? <span className="global-search__badge">ACCT</span> : null}
+                        {item.kind === 'symbol' ? <span className="global-search__badge">Symbol</span> : null}
+                        {item.kind === 'nav' ? <span className="global-search__badge">Page</span> : null}
+                        {item.kind === 'account' ? <span className="global-search__badge">Account</span> : null}
                         {item.kind === 'group' ? <span className="global-search__badge">GROUP</span> : null}
                         {item.kind === 'action' ? <span className="global-search__badge">ACTION</span> : null}
                         {item.kind === 'symbol-action' ? (
@@ -1021,7 +1037,7 @@ export default function GlobalSearch({
                         {item.kind === 'growth-curves' ? (
                           <span className="global-search__badge">CURVE</span>
                         ) : null}
-                        {item.kind === 'template' ? <span className="global-search__badge">TPL</span> : null}
+                        {item.kind === 'template' ? <span className="global-search__badge">Shortcut</span> : null}
                       </div>
                       {item.sublabel ? (
                         <div className="global-search__sublabel">{item.sublabel}</div>

@@ -55,7 +55,7 @@ export default function TodoSummary({ items, onSelectItem }) {
   };
 
   return (
-    <section className={`todo-card${collapsed ? ' todo-card--collapsed' : ''}`} aria-labelledby={resolvedHeadingId}>
+    <section className={`todo-card${collapsed ? ' todo-card--collapsed' : ''}${safeItems.length === 1 ? ' todo-card--single' : ''}`} aria-labelledby={resolvedHeadingId}>
       <header className="todo-card__header">
         <button
           type="button"
@@ -66,7 +66,7 @@ export default function TodoSummary({ items, onSelectItem }) {
           disabled={!collapsible}
         >
           <span id={resolvedHeadingId} className="todo-card__title">
-            TODOs
+            To review
           </span>
           <span className="todo-card__count" aria-live="polite">
             {countLabel}
