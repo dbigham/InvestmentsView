@@ -199,6 +199,26 @@ export function computeSeriesEquityBasisAdjustmentCad(series) {
   return equityCad - cadCash - cadSecurityValue - (usdCash + usdSecurityValue) * usdToCadRate;
 }
 
+export function shouldApplyLiveSeriesToFundingSummary({
+  isAggregateSelection = false,
+  symbolExclusionActive = false,
+} = {}) {
+  // The aggregate funding summary is the authoritative household capital
+  // basis. A live chart overlay may estimate today's P&L for continuity, but
+  // back-solving capital from that estimate must not replace Net invested.
+  return symbolExclusionActive || !isAggregateSelection;
+}
+
+export function shouldApplyLivePortfolioSnapshotToSeries({
+  isAggregateSelection = false,
+  symbolExclusionActive = false,
+} = {}) {
+  // Aggregate series already reconcile the complete account universe and the
+  // authoritative current endpoint on the server. Re-anchoring them a few
+  // seconds later from provider day P&L can double-apply today's movement.
+  return !isAggregateSelection && !symbolExclusionActive;
+}
+
 export function applyLivePortfolioSnapshotToPnlSeries(
   series,
   {

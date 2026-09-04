@@ -77,8 +77,13 @@ function sanitizeSymbolForFilename(symbolKey) {
   return safe || 'symbol';
 }
 
-function getSymbolCacheFilePath(symbolKey) {
-  return path.join(CACHE_DIR, `${sanitizeSymbolForFilename(symbolKey)}.json`);
+function normalizeSeriesType(options) {
+  return options && options.seriesType === 'raw' ? 'raw' : 'adjusted';
+}
+
+function getSymbolCacheFilePath(symbolKey, seriesType) {
+  const suffix = seriesType === 'raw' ? '.raw' : '';
+  return path.join(CACHE_DIR, `${sanitizeSymbolForFilename(symbolKey)}${suffix}.json`);
 }
 
 function normalizeRanges(ranges) {
@@ -120,21 +125,24 @@ function normalizeRanges(ranges) {
   return merged;
 }
 
-function loadSymbolCache(symbol) {
+function loadSymbolCache(symbol, options = {}) {
   const symbolKey = normalizeSymbol(symbol);
   if (!symbolKey) {
     return null;
   }
-  if (symbolCache.has(symbolKey)) {
-    return symbolCache.get(symbolKey);
+  const seriesType = normalizeSeriesType(options);
+  const cacheKey = `${symbolKey}|${seriesType}`;
+  if (symbolCache.has(cacheKey)) {
+    return symbolCache.get(cacheKey);
   }
   const cache = {
     symbolKey,
+    seriesType,
     prices: new Map(),
     ranges: [],
     dirty: false,
   };
-  const filePath = getSymbolCacheFilePath(symbolKey);
+  const filePath = getSymbolCacheFilePath(symbolKey, seriesType);
   try {
     if (fs.existsSync(filePath)) {
       const raw = fs.readFileSync(filePath, 'utf-8');
@@ -158,7 +166,7 @@ function loadSymbolCache(symbol) {
   } catch (_) {
     // ignore cache read errors
   }
-  symbolCache.set(symbolKey, cache);
+  symbolCache.set(cacheKey, cache);
   return cache;
 }
 
@@ -180,15 +188,19 @@ function persistSymbolCache(cache) {
       ranges: cache.ranges,
       prices,
     };
-    fs.writeFileSync(getSymbolCacheFilePath(cache.symbolKey), JSON.stringify(payload, null, 2), 'utf-8');
+    fs.writeFileSync(
+      getSymbolCacheFilePath(cache.symbolKey, cache.seriesType),
+      JSON.stringify(payload, null, 2),
+      'utf-8'
+    );
     cache.dirty = false;
   } catch (_) {
     // ignore cache write errors
   }
 }
 
-function cacheYahooPriceSeries(symbol, startKey, endKey, entries) {
-  const cache = loadSymbolCache(symbol);
+function cacheYahooPriceSeries(symbol, startKey, endKey, entries, options = {}) {
+  const cache = loadSymbolCache(symbol, options);
   if (!cache) {
     return;
   }
@@ -237,8 +249,8 @@ function cacheYahooPriceSeries(symbol, startKey, endKey, entries) {
   }
 }
 
-function getCachedYahooPriceSeries(symbol, startKey, endKey) {
-  const cache = loadSymbolCache(symbol);
+function getCachedYahooPriceSeries(symbol, startKey, endKey, options = {}) {
+  const cache = loadSymbolCache(symbol, options);
   if (!cache) {
     return { hit: false };
   }

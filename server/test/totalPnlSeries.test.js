@@ -324,6 +324,94 @@ test('aggregate Total P&L drops dates missing a post-start account point', async
   assert.ok(result.issues.includes('aggregate-partial-summary-coverage'));
 });
 
+// If provider account discovery fails, the supplied contexts are not the full
+// account universe. Returning their sum would make every missing account look
+// like a sudden investment loss in the All accounts chart.
+test('aggregate Total P&L rejects an incomplete account universe', async () => {
+  const contexts = [
+    { login: { id: 'login-1' }, account: { id: 'A', number: 'A' } },
+  ];
+  const activityContext = {
+    accountId: 'A',
+    accountKey: 'A',
+    accountNumber: 'A',
+    earliestFunding: new Date('2026-07-01T00:00:00Z'),
+    crawlStart: new Date('2026-07-01T00:00:00Z'),
+    now: new Date('2026-07-16T12:00:00Z'),
+    nowIsoString: '2026-07-16T12:00:00.000Z',
+    activities: [{
+      tradeDate: '2026-07-01T00:00:00Z',
+      type: 'Deposits',
+      action: 'CON',
+      currency: 'CAD',
+      netAmount: 100,
+      grossAmount: 100,
+    }],
+    fingerprint: 'incomplete-account-universe-test',
+  };
+
+  const result = await computeAggregateTotalPnlSeriesForContexts(
+    contexts,
+    { A: { combined: { CAD: { totalEquity: 110 } } } },
+    { applyAccountCagrStartDate: false },
+    'all',
+    true,
+    () => activityContext
+  );
+
+  assert.equal(result, null);
+});
+
+test('aggregate Total P&L rejects failed or materially missing account series', () => {
+  const liveAccount = { id: 'live' };
+  const emptyCashAccount = { id: 'cash' };
+  const migratedAccount = { id: 'historical', migratedTo: 'successor', closed: true };
+  const balances = {
+    live: {
+      combined: {
+        CAD: { currency: 'CAD', totalEquity: 125000 },
+      },
+    },
+  };
+
+  assert.equal(
+    __test__.shouldRejectAggregateForIncompleteSeries(
+      [{ context: { account: liveAccount }, error: new Error('temporary provider failure') }],
+      balances
+    ),
+    true
+  );
+  assert.equal(
+    __test__.shouldRejectAggregateForIncompleteSeries(
+      [{ context: { account: liveAccount }, series: null }],
+      balances
+    ),
+    true
+  );
+  assert.equal(
+    __test__.shouldRejectAggregateForIncompleteSeries(
+      [{ context: { account: migratedAccount }, series: null }],
+      {}
+    ),
+    true
+  );
+  assert.equal(
+    __test__.shouldRejectAggregateForIncompleteSeries(
+      [{ context: { account: emptyCashAccount }, series: null }],
+      {}
+    ),
+    false
+  );
+  assert.equal(
+    __test__.shouldRejectAggregateForIncompleteSeries(
+      [{ context: { account: liveAccount }, series: null }],
+      balances,
+      { symbol: 'QQQ' }
+    ),
+    false
+  );
+});
+
 test('aggregate Total P&L carries archived account results through the aggregate end date', async () => {
   const contexts = [
     { login: { id: 'login-1' }, account: { id: 'LIVE', number: 'LIVE' } },
@@ -895,6 +983,91 @@ test('SnapTrade reconciles unreported inbound opening assets as funding without 
   assert.equal(questradeSeries.summary.netDepositsCad, 1000);
   assert.equal(questradeSeries.summary.totalPnlCad, 320);
   assert.equal(questradeSeries.points.at(-1).equityCad, 1320);
+});
+
+test('SnapTrade treats a material current balance reconstruction gap as capital instead of current-day P&L', async () => {
+  const account = {
+    id: 'PARTIAL-CURRENT-SNAPSHOT',
+    number: 'PARTIAL-CURRENT-SNAPSHOT',
+    historyStartDate: '2026-06-17',
+  };
+  const now = new Date('2026-06-18T12:00:00Z');
+  const activityContext = {
+    accountId: account.id,
+    accountKey: account.id,
+    accountNumber: account.number,
+    earliestFunding: new Date('2026-06-16T00:00:00Z'),
+    crawlStart: new Date('2026-06-16T00:00:00Z'),
+    now,
+    nowIsoString: now.toISOString(),
+    offlineOnly: true,
+    providerActivityCoverageComplete: true,
+    activities: [
+      {
+        tradeDate: '2026-06-16T00:00:00Z',
+        type: 'CONTRIBUTION',
+        action: 'CONTRIBUTION',
+        currency: 'CAD',
+        netAmount: 1000,
+        grossAmount: 1000,
+      },
+      {
+        tradeDate: '2026-06-17T00:00:00Z',
+        type: 'Trades',
+        action: 'Buy',
+        currency: 'CAD',
+        netAmount: -1000,
+        grossAmount: -1000,
+        quantity: 10,
+        symbol: 'XYZ.TO',
+      },
+    ],
+    fingerprint: 'partial-current-snapshot',
+  };
+  const balances = {
+    [account.id]: {
+      combined: { CAD: { totalEquity: 1720 } },
+      perCurrency: { CAD: { totalEquity: 1720, marketValue: 1720, cash: 0 } },
+    },
+  };
+  const providedPositions = [
+    {
+      accountId: account.id,
+      symbol: 'XYZ.TO',
+      currency: 'CAD',
+      openQuantity: 12,
+      currentPrice: 110,
+      currentMarketValue: 1320,
+    },
+  ];
+  const priceSeriesBySymbol = new Map([
+    ['XYZ.TO', new Map([
+      ['2026-06-16', 100],
+      ['2026-06-17', 100],
+      ['2026-06-18', 110],
+    ])],
+  ]);
+
+  const result = await computeTotalPnlSeries(
+    { id: 'snap-login', provider: 'wealthsimple' },
+    account,
+    balances,
+    {
+      activityContext,
+      applyAccountCagrStartDate: false,
+      providedPositions,
+      priceSeriesBySymbol,
+    }
+  );
+
+  assert.equal(result.points.at(-1).equityCad, 1720);
+  assert.equal(result.points.at(-1).cumulativeNetDepositsCad, 1600);
+  assert.equal(result.points.at(-1).totalPnlCad, 120);
+  assert.equal(result.summary.totalEquityCad, 1720);
+  assert.equal(result.summary.netDepositsCad, 1600);
+  assert.equal(result.summary.totalPnlCad, 120);
+  assert.ok(result.issues.includes('current-snapshot-diverges-from-reconstruction'));
+  assert.ok(result.issues.includes('current-snapshot-capital-reconciled'));
 });
 
 test('explicit history start displays reconstructed opening days without moving the provider boundary', async () => {

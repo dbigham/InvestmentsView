@@ -125,6 +125,117 @@ test('migration-aware aggregate history rejects a discontinuous opening-capital 
   assert.ok(!result.issues.includes('migration-reconciled-opening-capital'));
 });
 
+// A cached All accounts response must preserve the aggregate accepted by the
+// full summary pipeline. Recomputing from account fragments can restore a
+// migration basis that the full pipeline rejected and make Net invested jump.
+test('cache-derived aggregate preserves the vetted net invested basis', () => {
+  const accounts = [
+    { id: 'qCore', migratedTo: 'wsCore', closed: true },
+    { id: 'wsCore', historyStartDate: '2026-06-29' },
+    { id: 'wsUnpaired', historyStartDate: '2026-06-01' },
+  ];
+  const accountFundingSummaries = {
+    qCore: {
+      netDeposits: { combinedCad: 1000, allTimeCad: 1000 },
+      totalPnl: { combinedCad: 0, allTimeCad: 0 },
+      totalEquityCad: 1000,
+    },
+    wsCore: {
+      netDeposits: { combinedCad: 1500, allTimeCad: 1500 },
+      totalPnl: { combinedCad: 100, allTimeCad: 100 },
+      totalEquityCad: 1600,
+    },
+    wsUnpaired: {
+      netDeposits: { combinedCad: 250, allTimeCad: 250 },
+      totalPnl: { combinedCad: 100, allTimeCad: 100 },
+      totalEquityCad: 350,
+    },
+    all: {
+      netDeposits: { combinedCad: 1700, allTimeCad: 1700 },
+      totalPnl: { combinedCad: 250, allTimeCad: 250 },
+      totalEquityCad: 1950,
+    },
+  };
+  const accountTotalPnlSeries = {
+    qCore: {
+      all: {
+        points: [
+          { date: '2026-06-28', equityCad: 1000, cumulativeNetDepositsCad: 1000 },
+          { date: '2026-06-29', equityCad: 0, cumulativeNetDepositsCad: 0 },
+        ],
+      },
+    },
+    wsCore: {
+      all: {
+        points: [
+          { date: '2026-06-29', equityCad: 1000, cumulativeNetDepositsCad: 1000 },
+          { date: '2026-08-22', equityCad: 1600, cumulativeNetDepositsCad: 1500 },
+        ],
+      },
+    },
+    wsUnpaired: {
+      all: {
+        points: [
+          { date: '2026-06-01', equityCad: 250, cumulativeNetDepositsCad: 250 },
+          { date: '2026-08-22', equityCad: 350, cumulativeNetDepositsCad: 250 },
+        ],
+      },
+    },
+  };
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
+  const result = __test__.deriveSummaryFromSuperset(
+    {
+      accounts,
+      accountsById,
+      allAccountIds: accounts.map((account) => account.id),
+      accountFundingSummaries,
+      accountTotalPnlSeries,
+      perAccountCombinedBalances: {},
+      balancesRawByAccountId: new Map(),
+      accountDividendSummaries: {},
+      accountTotalPnlBySymbol: {},
+      accountTotalPnlBySymbolAll: {},
+      investmentModelEvaluations: {},
+      decoratedPositions: [],
+      flattenedPositions: [],
+      decoratedOrders: [],
+      accountsByNumber: new Map(),
+      historicalAccountIdsBySuccessor: { wsCore: ['qCore'] },
+      payload: {},
+      asOf: '2026-08-22T20:00:00.000Z',
+    },
+    { type: 'all', requestedId: 'all' }
+  );
+
+  assert.equal(result.accountFunding.all.netDeposits.combinedCad, 1700);
+  assert.equal(result.accountFunding.all.totalPnl.combinedCad, 250);
+  assert.equal(result.accountFunding.all.totalEquityCad, 1950);
+  assert.equal(result.accountFunding.all.netInvestedCapital, undefined);
+});
+
+// Aggregate totals cannot be trusted when even one provider failed to return
+// its account universe. A concrete account can still use its archived fallback.
+test('aggregate summaries reject incomplete provider account coverage', () => {
+  const issues = [{ loginId: 'provider-login', message: 'timeout' }];
+
+  assert.equal(
+    __test__.shouldRejectSummaryForAccountFetchIssues({ type: 'all' }, issues),
+    true
+  );
+  assert.equal(
+    __test__.shouldRejectSummaryForAccountFetchIssues({ type: 'group' }, issues),
+    true
+  );
+  assert.equal(
+    __test__.shouldRejectSummaryForAccountFetchIssues({ type: 'account' }, issues),
+    false
+  );
+  assert.equal(
+    __test__.shouldRejectSummaryForAccountFetchIssues({ type: 'all' }, []),
+    false
+  );
+});
+
 test('migration-aware aggregate history does not create the June-to-July P&L cliff', () => {
   const result = __test__.applyMigrationReconciledCapitalBasisToSeries({
     aggregateSeries: {

@@ -1,6 +1,26 @@
 {
   "gifts": [
     {
+      "id": "4a04dbae-f69a-4571-bd73-a5f80b46abae",
+      "date": "2026-09-03",
+      "organization": "Hearts for Ethiopia",
+      "amountCad": 4000,
+      "taxClaimable": true,
+      "note": "General Donation",
+      "createdAt": "2026-09-03T00:06:54.226Z",
+      "updatedAt": "2026-09-03T00:06:54.226Z"
+    },
+    {
+      "id": "35247e31-98c4-4705-8f40-4cbfa4696db1",
+      "date": "2026-09-03",
+      "organization": "The Gathering Church",
+      "amountCad": 425,
+      "taxClaimable": true,
+      "note": "",
+      "createdAt": "2026-09-03T00:11:51.680Z",
+      "updatedAt": "2026-09-03T00:11:51.680Z"
+    },
+    {
       "id": "debe0f01-21a1-4d43-a8dd-dba6cd95b09b",
       "date": "2026-07-06",
       "organization": "WMB",
@@ -291,5 +311,5 @@
       "updatedAt": "2026-06-15T12:17:29.027Z"
     }
   ],
-  "updatedAt": "2026-08-22T12:54:12.866Z"
+  "updatedAt": "2026-09-03T00:11:51.683Z"
 }

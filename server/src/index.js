@@ -904,6 +904,44 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
   };
 }
 
+function shouldRejectAggregateForIncompleteSeries(
+  seriesResults,
+  perAccountCombinedBalances,
+  { symbol = null } = {}
+) {
+  if (!Array.isArray(seriesResults) || !seriesResults.length) {
+    return true;
+  }
+
+  return seriesResults.some((result) => {
+    if (!result || result.error) {
+      return true;
+    }
+    if (result.series) {
+      return false;
+    }
+
+    // A missing whole-account series is material when the account still has a
+    // balance or owns historical migration data. Publishing the remaining
+    // accounts would turn the omitted capital/P&L into a large chart move.
+    // Symbol-filtered series may legitimately be absent when the account never
+    // held that symbol, so only explicit computation errors reject those.
+    if (symbol) {
+      return false;
+    }
+    const account = result.context && result.context.account;
+    const accountId = account && account.id;
+    const cadBalance = accountId
+      ? findAccountCadBalance(accountId, perAccountCombinedBalances)
+      : null;
+    const balanceValue = extractCadMarketValue(cadBalance);
+    return (
+      (Number.isFinite(balanceValue) && Math.abs(balanceValue) >= CASH_FLOW_EPSILON) ||
+      Boolean(account && (isArchivedAccount(account) || isClosedAccount(account) || account.migratedTo))
+    );
+  });
+}
+
 async function computeAggregateTotalPnlSeriesForContexts(
   targetContexts,
   perAccountCombinedBalances,
@@ -1004,6 +1042,18 @@ async function computeAggregateTotalPnlSeriesForContexts(
       }
     }
   );
+
+  // A provider/account-series failure means the inputs are not the complete
+  // account universe. Summing the remaining series would turn missing accounts
+  // into a fictitious portfolio loss, so leave the prior complete chart intact.
+  if (
+    hadAccountFetchFailure ||
+    shouldRejectAggregateForIncompleteSeries(seriesResults, perAccountCombinedBalances, {
+      symbol: symbolParam,
+    })
+  ) {
+    return null;
+  }
 
   let successfulSeries = seriesResults.filter((result) => result && result.series);
   if (!successfulSeries.length) {
@@ -1204,6 +1254,14 @@ async function computeAggregateTotalPnlSeriesForContexts(
       (isArchivedAccount(account) || isClosedAccount(account))
     ) {
       intentionallyExcludedHistoricalSeriesCount += 1;
+      return false;
+    }
+    // An unpaired closed account is absent from the current funding summary.
+    // Including its reconstructed series in the historical aggregate would
+    // carry its terminal P&L until yesterday and then drop it at the live
+    // endpoint. Linked predecessors are retained through their successor's
+    // stitched series; an orphaned closed account must stay out of both bases.
+    if (account && isClosedAccount(account) && !successorId) {
       return false;
     }
     return true;
@@ -3272,6 +3330,13 @@ function resolveAccountIdsForSelection(superset, normalizedSelection) {
   return [];
 }
 
+function shouldRejectSummaryForAccountFetchIssues(normalizedSelection, accountFetchIssues) {
+  if (!normalizedSelection || !Array.isArray(accountFetchIssues) || accountFetchIssues.length === 0) {
+    return false;
+  }
+  return normalizedSelection.type === 'all' || normalizedSelection.type === 'group';
+}
+
 function buildContextFromSupersetAccount(superset, accountId) {
   if (!superset || !accountId) {
     return null;
@@ -3740,12 +3805,34 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
           : null;
 
   if (aggregateKey) {
-    const aggregateFunding = aggregateFundingSummariesForAccounts(
-      superset.accountFundingSummaries,
-      aggregateMetricAccountIds
-    );
+    // The full summary pipeline may reject a migration-spliced capital basis
+    // when it would introduce a discontinuity. Preserve that vetted aggregate
+    // in cache-derived responses instead of rebuilding it from account pieces
+    // and accidentally restoring the rejected basis.
+    const precomputedAggregateFunding =
+      superset.accountFundingSummaries &&
+      superset.accountFundingSummaries[aggregateKey] &&
+      typeof superset.accountFundingSummaries[aggregateKey] === 'object'
+        ? superset.accountFundingSummaries[aggregateKey]
+        : null;
+    const aggregateFunding =
+      precomputedAggregateFunding ||
+      aggregateFundingSummariesForAccounts(
+        superset.accountFundingSummaries,
+        aggregateMetricAccountIds
+      );
     if (aggregateFunding) {
-      accountFunding[aggregateKey] = aggregateFunding;
+      accountFunding[aggregateKey] = {
+        ...aggregateFunding,
+        netDeposits:
+          aggregateFunding.netDeposits && typeof aggregateFunding.netDeposits === 'object'
+            ? { ...aggregateFunding.netDeposits }
+            : aggregateFunding.netDeposits,
+        totalPnl:
+          aggregateFunding.totalPnl && typeof aggregateFunding.totalPnl === 'object'
+            ? { ...aggregateFunding.totalPnl }
+            : aggregateFunding.totalPnl,
+      };
     }
 
     const aggregateDividends = aggregateDividendSummaries(
@@ -3815,19 +3902,6 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
         groupAllSeries,
         aggregateKey
       );
-    }
-
-    const migrationNetInvestedCapital = computeMigrationReconciledNetInvestedCapital({
-      fundingMap: superset.accountFundingSummaries,
-      seriesMap: superset.accountTotalPnlSeries,
-      accounts: superset.accounts,
-      accountIds: aggregateMetricAccountIds,
-    });
-    if (migrationNetInvestedCapital && accountFunding[aggregateKey]) {
-      accountFunding[aggregateKey] = {
-        ...accountFunding[aggregateKey],
-        netInvestedCapital: migrationNetInvestedCapital,
-      };
     }
 
     // Compute group-level since-display deltas by summing per-account since-display fields
@@ -4423,13 +4497,20 @@ function normalizeYahooChartResponse(payload) {
     .map((timestamp, index) => {
       const timestampNumber = Number(timestamp);
       const date = Number.isFinite(timestampNumber) ? new Date(timestampNumber * 1000) : null;
-      const price = Number.isFinite(Number(adjustedCloses[index]))
-        ? Number(adjustedCloses[index])
-        : Number(closes[index]);
-      if (!(date instanceof Date) || Number.isNaN(date.getTime()) || !Number.isFinite(price) || price <= 0) {
+      const close = Number(closes[index]);
+      const adjClose = Number(adjustedCloses[index]);
+      if (
+        !(date instanceof Date) ||
+        Number.isNaN(date.getTime()) ||
+        (!Number.isFinite(close) && !Number.isFinite(adjClose))
+      ) {
         return null;
       }
-      return { date, adjClose: price };
+      return {
+        date,
+        close: Number.isFinite(close) && close > 0 ? close : undefined,
+        adjClose: Number.isFinite(adjClose) && adjClose > 0 ? adjClose : undefined,
+      };
     })
     .filter(Boolean);
 }
@@ -16826,12 +16907,16 @@ function normalizeYahooHistoricalEntries(history) {
       if (!(entryDate instanceof Date) || Number.isNaN(entryDate.getTime())) {
         return null;
       }
-      const adjClose = Number(entry.adjClose);
       const close = Number(entry.close);
-      const price = Number.isFinite(adjClose)
-        ? adjClose
-        : Number.isFinite(close)
-          ? close
+      const adjClose = Number(entry.adjClose);
+      // Account holdings are reconstructed from dated share quantities, so they
+      // must be valued with the close that was actually quoted on that date.
+      // Adjusted closes can rewrite earlier prices before a broker has posted the
+      // corresponding split activity, temporarily creating large false P&L moves.
+      const price = Number.isFinite(close)
+        ? close
+        : Number.isFinite(adjClose)
+          ? adjClose
           : Number.NaN;
       if (!Number.isFinite(price) || price <= 0) {
         return null;
@@ -16840,6 +16925,49 @@ function normalizeYahooHistoricalEntries(history) {
     })
     .filter(Boolean)
     .sort((a, b) => a.date - b.date);
+}
+
+function mergeObservedPriceHistory(yahooHistory, cachedPoints, startDate, exclusiveEnd) {
+  const mergedByDate = new Map();
+  const addEntry = (entry, preferEntry) => {
+    const parsedDate =
+      entry && typeof entry.date === 'string'
+        ? parseDateOnlyString(entry.date) || new Date(`${entry.date}T00:00:00Z`)
+        : entry?.date instanceof Date
+          ? entry.date
+          : null;
+    const priceValue = Number(entry?.price);
+    if (!(parsedDate instanceof Date) || Number.isNaN(parsedDate.getTime())) {
+      return;
+    }
+    const timestamp = parsedDate.getTime();
+    if (timestamp < startDate.getTime() || timestamp >= exclusiveEnd.getTime()) {
+      return;
+    }
+    if (!Number.isFinite(priceValue) || priceValue <= 0) {
+      return;
+    }
+    const dateKey = formatDateOnly(parsedDate);
+    if (dateKey && (preferEntry || !mergedByDate.has(dateKey))) {
+      mergedByDate.set(dateKey, { date: parsedDate, price: priceValue });
+    }
+  };
+
+  (Array.isArray(yahooHistory) ? yahooHistory : []).forEach((entry) => addEntry(entry, false));
+  // These values were captured before Yahoo later rewrote its historical series
+  // for a split. Prefer the observed close so the valuation basis remains aligned
+  // with the share quantities that the broker reported on that date.
+  (Array.isArray(cachedPoints) ? cachedPoints : []).forEach((entry) => addEntry(entry, true));
+  return Array.from(mergedByDate.values()).sort((left, right) => left.date - right.date);
+}
+
+function mergeObservedPriceCache(symbol, history, startDate, exclusiveEnd) {
+  const normalizedSymbol = normalizeSymbol(symbol) || symbol;
+  if (!normalizedSymbol) {
+    return Array.isArray(history) ? history : [];
+  }
+  const cachedSeries = readPriceSeriesCache(normalizedSymbol);
+  return mergeObservedPriceHistory(history, cachedSeries?.points, startDate, exclusiveEnd);
 }
 
 function normalizeQuestradeCandles(candles) {
@@ -16968,7 +17096,7 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
         return null;
       })();
       if (Array.isArray(covering) && covering.length) {
-        return covering;
+        return mergeObservedPriceCache(candidate, covering, startDate, exclusiveEnd);
       }
     } catch (_) { /* ignore */ }
     // Reuse in-memory cached normalized history when available
@@ -16976,15 +17104,17 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
       const cacheKey = getPriceHistoryCacheKey(candidate, startDateKey, endDateKey);
       const cached = getCachedPriceHistory(cacheKey);
       if (cached && cached.hit && Array.isArray(cached.value) && cached.value.length > 0) {
-        return cached.value;
+        return mergeObservedPriceCache(candidate, cached.value, startDate, exclusiveEnd);
       } else if (cached && cached.hit) {
         priceHistoryCache.delete(cacheKey);
       }
     } catch (_) { /* ignore cache errors */ }
     try {
-      const cachedSeries = getCachedYahooPriceSeries(candidate, startDateKey, endDateKey);
+      const cachedSeries = getCachedYahooPriceSeries(candidate, startDateKey, endDateKey, {
+        seriesType: 'raw',
+      });
       if (cachedSeries.hit && Array.isArray(cachedSeries.value) && cachedSeries.value.length > 0) {
-        return cachedSeries.value;
+        return mergeObservedPriceCache(candidate, cachedSeries.value, startDate, exclusiveEnd);
       }
     } catch (_) { /* ignore cache errors */ }
     let history = null;
@@ -17019,7 +17149,9 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
         }
       } catch (_) { /* ignore cache errors */ }
       try {
-        cacheYahooPriceSeries(candidate, startDateKey, endDateKey, normalized);
+        cacheYahooPriceSeries(candidate, startDateKey, endDateKey, normalized, {
+          seriesType: 'raw',
+        });
       } catch (_) { /* ignore cache errors */ }
       break;
     }
@@ -17125,48 +17257,24 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
       setCachedPriceHistory(cacheKey, normalized);
     }
     if (cachedCandidate) {
-      cacheYahooPriceSeries(cachedCandidate, startDateKey, endDateKey, normalized);
+      cacheYahooPriceSeries(cachedCandidate, startDateKey, endDateKey, normalized, {
+        seriesType: 'raw',
+      });
     }
   }
 
-  if (!normalized.length && normalizedSymbolKey) {
+  if (normalizedSymbolKey) {
     try {
-      const cachedSeries = readPriceSeriesCache(normalizedSymbolKey);
-      if (cachedSeries && Array.isArray(cachedSeries.points) && cachedSeries.points.length) {
-        normalized = cachedSeries.points
-          .map((point) => {
-            const parsedDate =
-              point && typeof point.date === 'string'
-                ? parseDateOnlyString(point.date) || new Date(`${point.date}T00:00:00Z`)
-                : point?.date instanceof Date
-                  ? point.date
-                  : null;
-            const priceValue = Number(point?.price);
-            return {
-              date: parsedDate,
-              price: priceValue,
-            };
-          })
-          .filter((entry) => {
-            if (!(entry.date instanceof Date) || Number.isNaN(entry.date.getTime())) {
-              return false;
-            }
-            const time = entry.date.getTime();
-            if (time < startDate.getTime() || time > exclusiveEnd.getTime()) {
-              return false;
-            }
-            return Number.isFinite(entry.price) && entry.price > 0;
-          })
-          .sort((a, b) => a.date.getTime() - b.date.getTime());
-        if (normalized.length) {
-          try {
-            const cacheKey = getPriceHistoryCacheKey(normalizedSymbolKey, startDateKey, endDateKey);
-            if (cacheKey) {
-              setCachedPriceHistory(cacheKey, normalized);
-            }
-          } catch (_) {
-            // ignore cache write errors
-          }
+      normalized = mergeObservedPriceCache(
+        normalizedSymbolKey,
+        normalized,
+        startDate,
+        exclusiveEnd
+      );
+      if (normalized.length) {
+        const cacheKey = getPriceHistoryCacheKey(normalizedSymbolKey, startDateKey, endDateKey);
+        if (cacheKey) {
+          setCachedPriceHistory(cacheKey, normalized);
         }
       }
     } catch (cacheError) {
@@ -19022,6 +19130,27 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
         !isWeekendDateKey(last.date);
       if (snapTradeDivergenceIsMaterial) {
         issues.add('current-snapshot-diverges-from-reconstruction');
+        if (
+          canApplyCurrentSnapshotToLastPoint &&
+          Number.isFinite(summaryEquity) &&
+          Number.isFinite(last.totalPnlCad) &&
+          Number.isFinite(last.cumulativeNetDepositsCad)
+        ) {
+          // SnapTrade can expose a newly arrived account balance before all of
+          // the positions or transfer activity needed to reconstruct that
+          // balance are available. Keep the reconstructable P&L continuous and
+          // classify the unexplained snapshot value as capital, rather than
+          // presenting the entire balance gap as today's market profit.
+          const reconciledNetDeposits = summaryEquity - last.totalPnlCad;
+          last.equityCad = summaryEquity;
+          last.cumulativeNetDepositsCad =
+            Math.abs(reconciledNetDeposits) < CASH_FLOW_EPSILON ? 0 : reconciledNetDeposits;
+          summaryNetDeposits = last.cumulativeNetDepositsCad;
+          summaryNetDepositsAllTime = last.cumulativeNetDepositsCad;
+          summaryTotalPnl = last.totalPnlCad;
+          summaryTotalPnlAllTime = last.totalPnlCad;
+          issues.add('current-snapshot-capital-reconciled');
+        }
       } else if (
         canApplyCurrentSnapshotToLastPoint &&
         Number.isFinite(summaryEquity) &&
@@ -24096,6 +24225,17 @@ app.get('/api/summary', async function (req, res) {
       })
     );
 
+    // An aggregate is only meaningful when every configured provider supplied
+    // its account universe. Returning a 503 lets the client retain its previous
+    // complete snapshot instead of replacing Net invested with a partial sum.
+    if (shouldRejectSummaryForAccountFetchIssues(normalizedSelection, accountFetchIssues)) {
+      return res.status(503).json({
+        message: 'All accounts is temporarily unavailable because an account provider did not respond.',
+        code: 'INCOMPLETE_ACCOUNT_UNIVERSE',
+        accountFetchIssues,
+      });
+    }
+
     const defaultAccount = findDefaultAccount(accountCollections, configuredDefaultKey);
 
     let allAccounts = accountCollections.flatMap(function (entry) {
@@ -26801,25 +26941,12 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       let hadAccountFetchFailure = false;
 
       const superset = getSupersetCacheEntry();
-      if (symbolParam && superset && Array.isArray(superset.accounts) && superset.accounts.length) {
-        // Build contexts from superset (no provider calls)
+      if (superset && Array.isArray(superset.accounts) && superset.accounts.length) {
+        // The accounts summary already resolved the complete provider account
+        // universe used by the page. Reuse it for every aggregate request so a
+        // transient provider failure cannot make accounts disappear mid-chart.
         contexts = superset.accounts
-          .map((acc) => {
-            const login = getLoginById(acc.loginId);
-            if (!login) return null;
-            const normalizedAccount = Object.assign({}, acc, {
-              id: acc.id,
-              number: acc.number,
-              accountNumber: acc.number,
-              loginId: login.id,
-            });
-            const accountWithOverrides = applyAccountSettingsOverrides(normalizedAccount, login);
-            const effectiveAccount = Object.assign({}, accountWithOverrides, {
-              id: acc.id,
-              number: accountWithOverrides.number || acc.number,
-            });
-            return { login, account: effectiveAccount };
-          })
+          .map((account) => buildContextFromSupersetAccount(superset, account && account.id))
           .filter(Boolean);
       } else {
         // Fallback: fetch from provider
@@ -26963,34 +27090,35 @@ app.get('/api/accounts/:accountKey/total-pnl-series', async function (req, res) 
       }
 
       // Per-account balances: reuse superset cache when available for symbol queries; otherwise fetch as before
-      let perAccountCombinedBalances = {};
-      if (symbolParam && superset && superset.perAccountCombinedBalances) {
-        perAccountCombinedBalances = superset.perAccountCombinedBalances || {};
-      } else {
-        const aggregateOptionsForCache = { ...aggregateOptions };
-        const cacheStatuses = targetContexts.map((context) => {
-          const key = buildTotalPnlSeriesCacheKey(context.account.id, aggregateOptionsForCache);
-          const hit = key ? getTotalPnlSeriesCacheEntry(key) : null;
-          return { context, key, hit };
-        });
-        const missing = cacheStatuses.filter((e) => !e.hit).map((e) => e.context);
-        if (missing.length > 0) {
-          const balancesResults = await Promise.all(
-            missing.map((context) => fetchBalancesForContext(context))
-          );
-          balancesResults.forEach((balancesRaw, index) => {
-            const context = missing[index];
-            if (!context) {
-              return;
-            }
-            const summary = isArchivedAccount(context.account)
-              ? getArchivedBalanceSummary(context.account)
-              : summarizeAccountBalances(balancesRaw) || balancesRaw;
-            if (summary) {
-              perAccountCombinedBalances[context.account.id] = summary;
-            }
-          });
+      const perAccountCombinedBalances =
+        superset && superset.perAccountCombinedBalances
+          ? { ...superset.perAccountCombinedBalances }
+          : {};
+      const aggregateOptionsForCache = { ...aggregateOptions };
+      const missingBalanceContexts = targetContexts.filter((context) => {
+        const accountId = context && context.account && context.account.id;
+        if (!accountId || perAccountCombinedBalances[accountId]) {
+          return false;
         }
+        const key = buildTotalPnlSeriesCacheKey(accountId, aggregateOptionsForCache);
+        return !(key && getTotalPnlSeriesCacheEntry(key));
+      });
+      if (missingBalanceContexts.length > 0) {
+        const balancesResults = await Promise.all(
+          missingBalanceContexts.map((context) => fetchBalancesForContext(context))
+        );
+        balancesResults.forEach((balancesRaw, index) => {
+          const context = missingBalanceContexts[index];
+          if (!context) {
+            return;
+          }
+          const summary = isArchivedAccount(context.account)
+            ? getArchivedBalanceSummary(context.account)
+            : summarizeAccountBalances(balancesRaw) || balancesRaw;
+          if (summary) {
+            perAccountCombinedBalances[context.account.id] = summary;
+          }
+        });
       }
 
       const aggregateKey = isGroupKey ? rawAccountKey : 'all';
@@ -27670,6 +27798,8 @@ module.exports = {
     buildActivityPriceHistoryFallback,
     inferSymbolCurrency,
     normalizeYahooChartResponse,
+    normalizeYahooHistoricalEntries,
+    mergeObservedPriceHistory,
     extractQuotePrice,
     resolveQuoteTimestamp,
     resolveYahooSymbol,
@@ -27706,6 +27836,9 @@ module.exports = {
     resolveRangeBreakdownWindowForAccount,
     getPositionsForAccountFromSuperset,
     mergeMissingCurrentPositionSymbolTotals,
+    deriveSummaryFromSuperset,
+    shouldRejectSummaryForAccountFetchIssues,
+    shouldRejectAggregateForIncompleteSeries,
     buildProviderObservedReturnFromSeries,
     buildProviderObservedHeadlineSeries,
     computeDailyNetDeposits,

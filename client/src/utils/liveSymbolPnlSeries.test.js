@@ -8,7 +8,52 @@ import {
   computeLivePositionValueDeltaCad,
   computeSeriesEquityBasisAdjustmentCad,
   resolveLatestMarketDateKey,
+  shouldApplyLivePortfolioSnapshotToSeries,
+  shouldApplyLiveSeriesToFundingSummary,
 } from './liveSymbolPnlSeries.js';
+
+// All accounts Net invested is an accounting basis supplied by the server.
+// A live chart continuity estimate must not back-solve and replace that basis.
+test('does not apply a live aggregate series estimate to the funding card', () => {
+  assert.equal(
+    shouldApplyLiveSeriesToFundingSummary({
+      isAggregateSelection: true,
+      symbolExclusionActive: false,
+    }),
+    false
+  );
+  assert.equal(
+    shouldApplyLiveSeriesToFundingSummary({
+      isAggregateSelection: true,
+      symbolExclusionActive: true,
+    }),
+    true
+  );
+  assert.equal(
+    shouldApplyLiveSeriesToFundingSummary({
+      isAggregateSelection: false,
+      symbolExclusionActive: false,
+    }),
+    true
+  );
+});
+
+test('does not re-anchor an authoritative aggregate series from delayed live P&L', () => {
+  assert.equal(
+    shouldApplyLivePortfolioSnapshotToSeries({
+      isAggregateSelection: true,
+      symbolExclusionActive: false,
+    }),
+    false
+  );
+  assert.equal(
+    shouldApplyLivePortfolioSnapshotToSeries({
+      isAggregateSelection: false,
+      symbolExclusionActive: false,
+    }),
+    true
+  );
+});
 
 test('uses the latest quote market date after midnight instead of the refresh date', () => {
   assert.equal(resolveLatestMarketDateKey(

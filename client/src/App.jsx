@@ -114,6 +114,8 @@ import {
   computeSeriesEquityBasisAdjustmentCad,
   computeSeriesDayPnlCad,
   resolveLatestMarketDateKey,
+  shouldApplyLivePortfolioSnapshotToSeries,
+  shouldApplyLiveSeriesToFundingSummary,
 } from './utils/liveSymbolPnlSeries';
 import { isCurrentProjectionAccount, isProjectableEquity } from './utils/projectionAccounts';
 import './App.css';
@@ -13977,7 +13979,13 @@ export default function App() {
   );
 
   const liveFilteredSelectedAccountTotalPnlSeries = useMemo(() => {
-    if (!selectedAccountKey || symbolExclusionActive) {
+    if (
+      !selectedAccountKey ||
+      !shouldApplyLivePortfolioSnapshotToSeries({
+        isAggregateSelection,
+        symbolExclusionActive,
+      })
+    ) {
       return filteredSelectedAccountTotalPnlSeries;
     }
     return applyLivePortfolioSnapshotToPnlSeries(filteredSelectedAccountTotalPnlSeries, {
@@ -13993,6 +14001,7 @@ export default function App() {
     });
   }, [
     selectedAccountKey,
+    isAggregateSelection,
     symbolExclusionActive,
     filteredSelectedAccountTotalPnlSeries,
     liveAggregateTotalEquityCad,
@@ -14104,7 +14113,14 @@ export default function App() {
   ]);
 
   const filteredFundingSummaryForDisplay = useMemo(() => {
-    if (!symbolExclusionActive && !hasLiveAggregateSeriesAdjustment) {
+    if (
+      !symbolExclusionActive &&
+      (!hasLiveAggregateSeriesAdjustment ||
+        !shouldApplyLiveSeriesToFundingSummary({
+          isAggregateSelection,
+          symbolExclusionActive,
+        }))
+    ) {
       return fundingSummaryForDisplay;
     }
     const baseSummary = fundingSummaryForDisplay && typeof fundingSummaryForDisplay === 'object'
@@ -14205,6 +14221,7 @@ export default function App() {
     fundingSummaryForDisplay,
     liveFilteredSelectedAccountTotalPnlSeries,
     selectedTotalPnlMode,
+    isAggregateSelection,
     excludedTotalPnlFallbackCad,
     excludedPositionTotalsCad.marketValue,
   ]);

@@ -423,3 +423,52 @@ test('aggregate preserves stitched current P&L and derives its matching net depo
   );
   assert.ok(aggregate.issues.includes('aggregate-summary-net-deposits-reconciled'));
 });
+
+// Current aggregate funding excludes closed accounts. Their historical series
+// must use the same population unless an explicit successor carries them, or
+// their terminal P&L disappears only at the current endpoint.
+test('aggregate excludes an unpaired closed account from both history and current totals', async () => {
+  const liveAccount = { id: 'live' };
+  const orphanedClosedAccount = { id: 'closed', closed: true };
+  const liveSeries = {
+    periodStartDate: '2026-09-01',
+    periodEndDate: '2026-09-02',
+    points: [
+      { date: '2026-09-01', equityCad: 1000, cumulativeNetDepositsCad: 900, totalPnlCad: 100 },
+      { date: '2026-09-02', equityCad: 1010, cumulativeNetDepositsCad: 900, totalPnlCad: 110 },
+    ],
+    summary: { totalEquityCad: 1010, netDepositsCad: 900, totalPnlCad: 110 },
+  };
+  const closedSeries = {
+    periodStartDate: '2026-09-01',
+    periodEndDate: '2026-09-02',
+    points: [
+      { date: '2026-09-01', equityCad: 0, cumulativeNetDepositsCad: -25, totalPnlCad: 25 },
+      { date: '2026-09-02', equityCad: 0, cumulativeNetDepositsCad: -25, totalPnlCad: 25 },
+    ],
+    summary: { totalEquityCad: 0, netDepositsCad: -25, totalPnlCad: 25 },
+  };
+
+  const aggregate = await __test__.computeAggregateTotalPnlSeriesForContexts(
+    [
+      { account: liveAccount },
+      { account: orphanedClosedAccount },
+    ],
+    {},
+    {
+      applyAccountCagrStartDate: false,
+      providedSeriesByAccountId: {
+        [liveAccount.id]: liveSeries,
+        [orphanedClosedAccount.id]: closedSeries,
+      },
+    }
+  );
+
+  assert.deepEqual(
+    aggregate.points.map((point) => point.totalPnlCad),
+    [100, 110]
+  );
+  assert.equal(aggregate.summary.totalEquityCad, 1010);
+  assert.equal(aggregate.summary.netDepositsCad, 900);
+  assert.equal(aggregate.summary.totalPnlCad, 110);
+});
