@@ -3,6 +3,31 @@ const assert = require('node:assert/strict');
 
 const { __test__ } = require('../src/index.js');
 
+// Selecting a successor narrows the response to that one account, but its
+// predecessor must still be read from the full cache used by All accounts.
+// Otherwise switching accounts can fall back to a different archived history.
+test('cached account selection uses the full superset predecessor history', () => {
+  const source = { id: 'q:cached-source', closed: true, migratedTo: 'ws:cached-successor' };
+  const successor = { id: 'ws:cached-successor', historyStartDate: '2026-07-01' };
+  const sourceSeries = { points: [
+    { date: '2026-06-30', equityCad: 1200, cumulativeNetDepositsCad: 1000, totalPnlCad: 200 },
+  ] };
+  const destinationSeries = { points: [
+    { date: '2026-07-01', equityCad: 1200, cumulativeNetDepositsCad: 1200, totalPnlCad: 0 },
+    { date: '2026-07-02', equityCad: 1250, cumulativeNetDepositsCad: 1200, totalPnlCad: 50 },
+  ], summary: { totalEquityCad: 1250, totalPnlCad: 50, netDepositsCad: 1200 } };
+  const superset = {
+    accounts: [source, successor], accountsById: new Map([[source.id, source], [successor.id, successor]]),
+    accountTotalPnlSeries: { [source.id]: { all: sourceSeries }, [successor.id]: { all: destinationSeries } },
+  };
+  const result = __test__.deriveSummaryFromSuperset(superset, { type: 'account', requestedId: successor.id });
+  const expected = __test__.stitchSuccessorSeriesResult(
+    { context: { account: successor }, series: destinationSeries },
+    [{ context: { account: source }, series: sourceSeries }]).series;
+  assert.deepEqual(result.accountTotalPnlSeries[successor.id].all.points, expected.points);
+  assert.equal(result.accountTotalPnlSeries[successor.id].all.points.at(-1).totalPnlCad, 250);
+});
+
 test('historical successor mapping follows explicit closed-account links only', () => {
   const source = { id: 'q:source', closed: true, migratedTo: 'ws:successor' };
   const secondSource = { id: 'q:source-2', closed: true, migratedTo: 'ws:successor' };
@@ -115,7 +140,9 @@ test('current snapshots are not applied to an older market-day point', () => {
   assert.equal(__test__.isWeekendDateKey('2026-08-21'), false);
 });
 
-test('successor points are rebased to the historical boundary when transfer snapshots differ', () => {
+// A handoff valuation mismatch must not fabricate wealth or a market return.
+// Carry the predecessor's P&L while recording the difference as inferred capital.
+test('successor preserves actual equity and P&L continuity when transfer snapshots differ', () => {
   const stitched = __test__.stitchSuccessorSeriesResult(
     {
       context: { account: { id: 'ws:successor', historyStartDate: '2026-07-13' } },
@@ -137,14 +164,14 @@ test('successor points are rebased to the historical boundary when transfer snap
     ]
   );
 
-  assert.equal(stitched.series.points[0].equityCad, 1200);
-  assert.equal(stitched.series.points[0].cumulativeNetDepositsCad, 900);
+  assert.equal(stitched.series.points[0].equityCad, 1000);
+  assert.equal(stitched.series.points[0].cumulativeNetDepositsCad, 700);
   assert.equal(stitched.series.points[0].totalPnlCad, 300);
-  assert.equal(stitched.series.points[1].equityCad, 1300);
-  assert.equal(stitched.series.points[1].cumulativeNetDepositsCad, 900);
+  assert.equal(stitched.series.points[1].equityCad, 1100);
+  assert.equal(stitched.series.points[1].cumulativeNetDepositsCad, 700);
   assert.equal(stitched.series.points[1].totalPnlCad, 400);
   assert.equal(stitched.series.summary.totalPnlCad, 400);
-  assert.equal(stitched.series.summary.netDepositsCad, 900);
+  assert.equal(stitched.series.summary.netDepositsCad, 700);
 });
 
 test('successor stitch ignores a predecessor transfer-out snapshot at the handoff', () => {
@@ -174,13 +201,15 @@ test('successor stitch ignores a predecessor transfer-out snapshot at the handof
 
   assert.equal(stitched.series.points[0].date, '2026-07-01');
   assert.equal(stitched.series.points[1].date, '2026-07-02');
-  assert.equal(stitched.series.points[1].equityCad, 18000);
-  assert.equal(stitched.series.points[1].cumulativeNetDepositsCad, 16000);
+  // Ignore the predecessor's transfer-out return, but keep the successor's
+  // actual observed equity rather than inventing $17,700 of missing securities.
+  assert.equal(stitched.series.points[1].equityCad, 300);
+  assert.equal(stitched.series.points[1].cumulativeNetDepositsCad, -1700);
   assert.equal(stitched.series.points[1].totalPnlCad, 2000);
-  assert.equal(stitched.series.points[2].equityCad, 18050);
-  assert.equal(stitched.series.points[2].cumulativeNetDepositsCad, 16000);
+  assert.equal(stitched.series.points[2].equityCad, 350);
+  assert.equal(stitched.series.points[2].cumulativeNetDepositsCad, -1700);
   assert.equal(stitched.series.points[2].totalPnlCad, 2050);
-  assert.equal(stitched.series.summary.netDepositsCad, 16000);
+  assert.equal(stitched.series.summary.netDepositsCad, -1700);
 });
 
 test('successor stitch clips a sustained predecessor collapse before the handoff', () => {
@@ -214,10 +243,12 @@ test('successor stitch clips a sustained predecessor collapse before the handoff
     stitched.series.points.map((point) => point.date),
     ['2026-06-20', '2026-06-21', '2026-07-10', '2026-07-11']
   );
-  assert.equal(stitched.series.points[2].equityCad, 4292);
-  assert.equal(stitched.series.points[2].cumulativeNetDepositsCad, 2793.51);
+  // Clipping the emptied predecessor must preserve P&L without overriding
+  // the successor's $4,100 valuation with the predecessor's $4,292 valuation.
+  assert.equal(stitched.series.points[2].equityCad, 4100);
+  assert.ok(Math.abs(stitched.series.points[2].cumulativeNetDepositsCad - 2601.51) < 1e-9);
   assert.ok(Math.abs(stitched.series.points[2].totalPnlCad - 1498.49) < 1e-9);
-  assert.ok(Math.abs(stitched.series.summary.netDepositsCad - 2793.51) < 1e-9);
+  assert.ok(Math.abs(stitched.series.summary.netDepositsCad - 2601.51) < 1e-9);
 });
 
 test('successor stitch leaves the destination unchanged when predecessor history has no usable handoff', () => {

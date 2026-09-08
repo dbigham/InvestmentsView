@@ -13,9 +13,9 @@ import {
 } from '../utils/formatters';
 import { buildTotalPnlDisplaySeries, parseDateOnly, subtractInterval } from '../../../shared/totalPnlDisplay.js';
 import {
-  CHART_HEIGHT,
-  CHART_WIDTH,
-  PADDING, clampChartX, buildChartMetrics, buildHoverLabel,
+  CHART_HEIGHT as DEFAULT_CHART_HEIGHT,
+  CHART_WIDTH as DEFAULT_CHART_WIDTH,
+  PADDING, clampChartX as clampChartCoordinate, buildChartMetrics, buildHoverLabel,
 } from './TotalPnlChartUtils';
 import { buildExponentialGrowthFit } from '../utils/growthFit';
 import canadianFiftyBillImage from '../assets/canadian-50-bill.jpg';
@@ -387,7 +387,7 @@ function computeElapsedYears(startDate, endDate) {
   return diffMs / MS_PER_DAY / DAYS_PER_YEAR;
 }
 
-function buildChartFloatingLabelStyle(point) {
+function buildChartFloatingLabelStyle(point, CHART_WIDTH, CHART_HEIGHT) {
   if (!point) {
     return null;
   }
@@ -3124,6 +3124,24 @@ export default function SummaryMetrics({
     chartTimeframe,
   ]);
 
+  const chartContainerRef = useRef(null);
+  const [chartSize, setChartSize] = useState({ width: DEFAULT_CHART_WIDTH, height: DEFAULT_CHART_HEIGHT });
+  const { width: CHART_WIDTH, height: CHART_HEIGHT } = chartSize;
+  const clampChartX = useCallback((value) => clampChartCoordinate(value, CHART_WIDTH), [CHART_WIDTH]);
+  useEffect(() => {
+    const container = chartContainerRef.current;
+    if (!container) return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      if (width > PADDING.right && height > PADDING.top + PADDING.bottom) {
+        setChartSize((previous) => previous.width === width && previous.height === height ? previous : { width, height });
+      }
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   const totalPnlChartMetrics = useMemo(() => {
     if (!chartSeries.length) {
       return null;
@@ -3135,20 +3153,15 @@ export default function SummaryMetrics({
     // When the series carries a displayStartDate, interpret values as deltas
     // from that baseline so the chart starts at 0 for CAGR views.
     return buildChartMetrics(chartSeries, {
+      width: CHART_WIDTH,
+      height: CHART_HEIGHT,
       useDisplayStartDelta: applyDisplayStartDelta,
       rangeStartDate: timeframeRangeStart,
       rangeEndDate: timeframeRangeEnd,
       extraDomainValues,
       minimumValuePadding: isTemperaturePriceChart ? 0.1 : 10,
     });
-  }, [
-    applyDisplayStartDelta,
-    chartSeries,
-    isTemperaturePriceChart,
-    timeframeRangeStart,
-    timeframeRangeEnd,
-    totalPnlGrowthFitDomainValues,
-  ]);
+  }, [chartSeries, isTemperaturePriceChart, totalPnlGrowthFitDomainValues, CHART_WIDTH, CHART_HEIGHT, applyDisplayStartDelta, timeframeRangeStart, timeframeRangeEnd]);
 
   const totalPnlChartHasSeries = Boolean(totalPnlChartMetrics?.points?.length);
   const totalPnlChartPath = useMemo(() => {
@@ -3261,14 +3274,7 @@ export default function SummaryMetrics({
         transform,
       },
     };
-  }, [
-    isPriceMetric,
-    isTemperaturePriceChart,
-    standardPriceGrowthFit,
-    symbolMode,
-    totalPnlChartHasSeries,
-    totalPnlChartMetrics,
-  ]);
+  }, [CHART_HEIGHT, CHART_WIDTH, isPriceMetric, isTemperaturePriceChart, standardPriceGrowthFit, symbolMode, totalPnlChartHasSeries, totalPnlChartMetrics]);
 
   const totalPnlGrowthCurve = useMemo(() => {
     if (!totalPnlGrowthFit || !totalPnlChartHasSeries || !totalPnlChartMetrics) {
@@ -3319,7 +3325,7 @@ export default function SummaryMetrics({
         transform,
       },
     };
-  }, [totalPnlChartHasSeries, totalPnlChartMetrics, totalPnlGrowthFit]);
+  }, [CHART_HEIGHT, CHART_WIDTH, totalPnlChartHasSeries, totalPnlChartMetrics, totalPnlGrowthFit]);
 
   const priceGrowthCurveLabel = priceGrowthCurve
     ? `${formatSignedPercent(priceGrowthCurve.annualGrowthRate * 100, {
@@ -3428,7 +3434,7 @@ export default function SummaryMetrics({
         y: (clientY - rect.top) * scaleY,
       };
     },
-    []
+    [CHART_HEIGHT, CHART_WIDTH]
   );
   const resolvePointAtX = useCallback(
     (x) => {
@@ -3517,7 +3523,7 @@ export default function SummaryMetrics({
         y: resolvedY,
       };
     },
-    [totalPnlChartMetrics]
+    [clampChartX, totalPnlChartMetrics]
   );
 
   const hoverPoint = useMemo(() => {
@@ -3560,12 +3566,13 @@ export default function SummaryMetrics({
     return () => {
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [selectionState.active]);
+  }, [clampChartX, selectionState.active]);
 
-  // Clear selection when series changes
+  // A drag selection uses pixel coordinates, so clear it when the plot resizes too.
   useEffect(() => {
     clearSelectionAndNotify();
-  }, [filteredTotalPnlSeries, priceChartSeries, symbolMode, isPriceMetric, clearSelectionAndNotify]);
+    setHoverX(null);
+  }, [filteredTotalPnlSeries, priceChartSeries, symbolMode, isPriceMetric, clearSelectionAndNotify, CHART_WIDTH, CHART_HEIGHT]);
 
   useEffect(() => {
     if (totalPnlSelectionResetKey === undefined || totalPnlSelectionResetKey === null) {
@@ -3604,7 +3611,7 @@ export default function SummaryMetrics({
       return { startX, endX, width, isActive: false };
     }
     return null;
-  }, [selectionState]);
+  }, [clampChartX, selectionState.active, selectionState.anchorX, selectionState.currentX, selectionState.endX, selectionState.startX]);
 
   const selectionSummary = useMemo(() => {
     if (!selectionRange) {
@@ -3714,7 +3721,7 @@ export default function SummaryMetrics({
     const leftPercent = (clampedCenter / CHART_WIDTH) * 100;
     // Position above the chart so it doesn't obscure the line
     return { left: `${leftPercent}%`, top: '0px', transform: 'translate(-50%, -100%)' };
-  }, [selectionSummary]);
+  }, [CHART_WIDTH, selectionSummary]);
   const selectionStartDateLabel = selectionSummary ? formatDate(selectionSummary.startPoint.date) : null;
   const selectionEndDateLabel = selectionSummary ? formatDate(selectionSummary.endPoint.date) : null;
   const selectionStartValueLabel =
@@ -4201,11 +4208,11 @@ export default function SummaryMetrics({
   }, [chartSupportsBreakdown, onShowPnlBreakdown, onShowTotalPnl]);
   const markerLabel = markerHoverLabel?.amount || null;
   const labelPosition = useMemo(() => {
-    return buildChartFloatingLabelStyle(hoverPoint || totalPnlChartMarker);
-  }, [hoverPoint, totalPnlChartMarker]);
+    return buildChartFloatingLabelStyle(hoverPoint || totalPnlChartMarker, CHART_WIDTH, CHART_HEIGHT);
+  }, [CHART_HEIGHT, CHART_WIDTH, hoverPoint, totalPnlChartMarker]);
   const markerLabelPosition = useMemo(
-    () => buildChartFloatingLabelStyle(totalPnlChartMarker),
-    [totalPnlChartMarker]
+    () => buildChartFloatingLabelStyle(totalPnlChartMarker, CHART_WIDTH, CHART_HEIGHT),
+    [CHART_HEIGHT, CHART_WIDTH, totalPnlChartMarker]
   );
   const growthCurveLabelStyle =
     isTemperaturePriceChart && hoverPoint && markerLabelPosition
@@ -4263,7 +4270,7 @@ export default function SummaryMetrics({
     }
     setHoverX(point.x);
     setSelectionState({ anchorX: point.x, currentX: point.x, startX: null, endX: null, active: true });
-  }, [totalPnlChartHasSeries, getRelativePoint, selectionRange, selectionActive]);
+  }, [totalPnlChartHasSeries, getRelativePoint, CHART_HEIGHT, selectionRange, selectionActive]);
 
   const triggerRangeBreakdown = useCallback(() => {
     if (
@@ -4334,15 +4341,7 @@ export default function SummaryMetrics({
       }
       handleActivateTotalPnl();
     },
-    [
-      selectionSupportsBreakdown,
-      selectionRange,
-      selectionSummary,
-      getRelativePoint,
-      handleActivateTotalPnl,
-      triggerRangeBreakdown,
-      clearSelectionAndNotify,
-    ]
+    [selectionRange, handleActivateTotalPnl, getRelativePoint, CHART_HEIGHT, selectionSupportsBreakdown, selectionSummary, clearSelectionAndNotify, triggerRangeBreakdown]
   );
 
   // Always allow the Total P&L chart to render; caller controls series and status.
@@ -5369,11 +5368,12 @@ export default function SummaryMetrics({
                 </select>
               </div>
             )}
+
         </div>
       )}
       {showTotalPnlChart && (
         <div className="equity-card__total-pnl-chart" aria-label={chartMetricAriaLabel}>
-          <div className="equity-card__total-pnl-chart-body qqq-section__chart-container">
+          <div ref={chartContainerRef} className="equity-card__total-pnl-chart-body qqq-section__chart-container">
             {effectiveChartSeriesStatus === 'loading' ? (
               <div className="equity-card__total-pnl-chart-loading" role="status" aria-live="polite">
                 {showChartSpinner ? <span className="initial-loading__spinner" aria-hidden="true" /> : null}

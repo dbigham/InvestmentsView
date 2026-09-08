@@ -1,16 +1,16 @@
 import { parseDateOnly } from '../../../shared/totalPnlDisplay.js';
-import { classifyPnL, formatDate, formatSignedMoney } from '../utils/formatters';
+import { classifyPnL, formatDate, formatSignedMoney } from '../utils/formatters.js';
 
 export const CHART_WIDTH = 782;
 export const CHART_HEIGHT = 260;
 export const PADDING = { top: 6, right: 48, bottom: 30, left: 0 };
 const AXIS_TARGET_INTERVALS = 4;
 
-export function clampChartX(value) {
+export function clampChartX(value, width = CHART_WIDTH) {
   if (!Number.isFinite(value)) {
     return null;
   }
-  return Math.max(PADDING.left, Math.min(CHART_WIDTH - PADDING.right, value));
+  return Math.max(PADDING.left, Math.min(width - PADDING.right, value));
 }
 
 function niceNumber(value, round) {
@@ -99,6 +99,8 @@ export function buildChartMetrics(
     rangeEndDate,
     extraDomainValues = [],
     minimumValuePadding = 10,
+    width = CHART_WIDTH,
+    height = CHART_HEIGHT,
   } = {}
 ) {
   if (!Array.isArray(series) || series.length === 0) {
@@ -216,8 +218,8 @@ export function buildChartMetrics(
     axisTicks = [minDomain, maxDomain];
   }
   const domainRange = maxDomain - minDomain || 1;
-  const innerWidth = CHART_WIDTH - PADDING.left - PADDING.right;
-  const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
+  const innerWidth = width - PADDING.left - PADDING.right;
+  const innerHeight = height - PADDING.top - PADDING.bottom;
 
   const points = series.map((entry, index) => {
     const totalValue = resolveValue(entry);

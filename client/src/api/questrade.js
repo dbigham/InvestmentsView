@@ -262,15 +262,6 @@ function buildGiftUrl(giftId, params = {}) {
   return url.toString();
 }
 
-function buildGiftReconciliationUrl(params = {}) {
-  const base = API_BASE_URL.replace(/\/$/, '');
-  const url = new URL('/api/gifts/reconcile', base);
-  if (params && params.year !== undefined && params.year !== null && params.year !== '') {
-    url.searchParams.set('year', String(params.year));
-  }
-  return url.toString();
-}
-
 function buildTotalPnlSeriesUrl(accountKey, params = {}) {
   const base = API_BASE_URL.replace(/\/$/, '');
   const trimmedKey = typeof accountKey === 'string' ? accountKey.trim() : '';
@@ -990,18 +981,6 @@ export async function addGift(payload = {}) {
   });
   if (!response.ok) {
     throw await buildApiError(response, 'Failed to save gift');
-  }
-  return response.json();
-}
-
-export async function reconcileGiftReceipts(payload = {}) {
-  const response = await fetchWithDemo(buildGiftReconciliationUrl({ year: payload.year }), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {}),
-  });
-  if (!response.ok) {
-    throw await buildApiError(response, 'Failed to reconcile gift receipts');
   }
   return response.json();
 }

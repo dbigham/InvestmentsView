@@ -438,9 +438,9 @@ function buildHeatmapNodes(positions, metricKey, styleMode = 'style1') {
   });
 }
 
-const NEUTRAL_COLOR = '#56615b';
-const POSITIVE_COLOR = '#24764e';
-const NEGATIVE_COLOR = '#bd454d';
+const NEUTRAL_COLOR = '#404656';
+const POSITIVE_COLOR = '#00ff00';
+const NEGATIVE_COLOR = '#ff0000';
 
 function parseHexColor(color) {
   const normalized = color.replace('#', '');
@@ -1616,8 +1616,8 @@ export default function PnlHeatmapDialog({
                 const resolvedIntensity = clamp(percentIntensity, 0, 1);
                 const backgroundColor = isStyleTwo
                   ? node.metricValue >= 0
-                    ? POSITIVE_COLOR
-                    : NEGATIVE_COLOR
+                    ? '#2f8f2f'
+                    : '#b23b3b'
                   : resolveTileColor(percentChangeValue, resolvedIntensity);
                 const textColor = 'rgba(255, 255, 255, 0.98)';
                 const pnlDisplay = formatSignedMoney(node.metricValue);

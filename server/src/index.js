@@ -14,6 +14,7 @@ const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
 const { resolveCachePath, resolveDataPath } = require('./dataPaths');
+const { normalizeSplitHistory, supplementMissingSplits, createCorporateActionLoader, getCorporateActionPrices } = require('./corporateActions');
 const { buildYahooFinanceFetchOptions } = require('./yahooFinanceFetchOptions');
 const {
   findArchivedAccountByKey,
@@ -88,7 +89,6 @@ const {
   createGift,
   deleteGift,
   listGifts,
-  reconcileGiftReceipts,
   updateGift,
 } = require('./gifts');
 const deploymentDisplay = require('../../shared/deploymentDisplay.cjs');
@@ -781,10 +781,14 @@ function stitchSuccessorSeriesResult(destinationResult, historicalResults, bound
       adjustedPoint.cumulativeNetDepositsCad = cumulativeNetDeposits + depositCarryForward;
     }
     if (canRebaseToHistoricalBoundary) {
-      const relativeEquity = Number(adjustedPoint.equityCad) - destinationEquity;
       const relativeDeposits = cumulativeNetDeposits - destinationDeposits;
-      const rebasedEquity = historicalEquityTotal + relativeEquity;
-      const rebasedDeposits = historicalDepositsTotal + relativeDeposits;
+      // Carry the historical return, but never replace actual successor equity
+      // with a hypothetical portfolio anchored to the predecessor's valuation.
+      // An unexplained handoff valuation difference belongs in the inferred
+      // opening capital, not in either market P&L or current account equity.
+      const rebasedEquity = Number(adjustedPoint.equityCad);
+      const migrationCapitalAdjustmentCad = destinationEquity - historicalEquityTotal;
+      const rebasedDeposits = historicalDepositsTotal + relativeDeposits + migrationCapitalAdjustmentCad;
       if (Number.isFinite(rebasedEquity) && Number.isFinite(rebasedDeposits)) {
         adjustedPoint.equityCad = rebasedEquity;
         adjustedPoint.cumulativeNetDepositsCad = rebasedDeposits;
@@ -3731,7 +3735,9 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
     const historicalResults = Array.isArray(historicalIds)
       ? historicalIds
           .map((historicalId) => {
-            const historicalContainer = accountTotalPnlSeries[String(historicalId).trim()];
+            // The response map is already scoped to the successor alone. Its
+            // predecessor still lives in the full All accounts cache.
+            const historicalContainer = superset.accountTotalPnlSeries?.[String(historicalId).trim()];
             const historicalAccount = accountById.get(String(historicalId).trim()) || {
               id: String(historicalId).trim(),
               closed: true,
@@ -4530,6 +4536,7 @@ async function fetchYahooHistoricalDirect(symbol, queryOptions = {}) {
     period2: String(Math.floor(period2.getTime() / 1000)),
     interval: String(queryOptions.interval || '1d'),
   });
+  if (queryOptions.includeSplitEvents) query.set('events', 'splits');
   const baseUrls = Array.from(new Set([
     YAHOO_CHART_BASE_URL,
     YAHOO_CHART_FALLBACK_BASE_URL,
@@ -4548,13 +4555,21 @@ async function fetchYahooHistoricalDirect(symbol, queryOptions = {}) {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw new Error(`Yahoo chart request failed with status ${response.statusCode}`);
       }
-      return normalizeYahooChartResponse(JSON.parse(body));
+      const payload = JSON.parse(body);
+      return queryOptions.includeSplitEvents ? normalizeSplitHistory(payload) : normalizeYahooChartResponse(payload);
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError || new Error('Yahoo chart request failed');
 }
+
+const loadCorporateActions = createCorporateActionLoader(async (symbol, startDate, endDate) =>
+  fetchYahooHistoricalDirect(symbol, {
+    period1: new Date(`${startDate}T00:00:00Z`),
+    period2: new Date(new Date(`${endDate}T00:00:00Z`).getTime() + DAY_IN_MS),
+    includeSplitEvents: true,
+  }), resolveCachePath('corporate-actions'));
 
 async function fetchYahooQuote(symbol) {
   const finance = ensureYahooFinanceClient();
@@ -15236,7 +15251,27 @@ async function buildAccountActivityContext(login, account, options = {}) {
         activityCacheAccountKey,
         activityCoverage ? { ...options, activityCoverage } : options
       );
-  const activities = dedupeActivities(activitiesRaw);
+  let activities = dedupeActivities(activitiesRaw);
+  const corporateActionPriceHistory = {};
+  if (isSnapTradeLogin(activityLogin) && options.offlineOnly !== true && activities.length) {
+    const positions = await fetchPositions(activityLogin, account).catch(() => []);
+    const startDate = [formatDateOnly(crawlStart), normalizeDateOnly(account.historyStartDate)].filter(Boolean).sort().at(-1);
+    const endDate = formatDateOnly(now);
+    const histories = {};
+    await mapWithConcurrency(positions, 4, async (position) => {
+      try {
+        const history = await loadCorporateActions(position.symbol, startDate, endDate);
+        const relevantSplits = history.splits.filter((event) => event.date >= startDate && event.date <= endDate);
+        if (relevantSplits.length) {
+          histories[position.symbol] = { ...history, splits: relevantSplits };
+          corporateActionPriceHistory[position.symbol] = history.prices;
+        }
+      } catch (error) {
+        console.warn('Corporate-action lookup failed for ' + position.symbol + ': ' + error.message);
+      }
+    });
+    activities = supplementMissingSplits(activities, positions, histories);
+  }
   const fetchBookValueTransferPrice = options.offlineOnly === true
     ? async function fetchOfflineBookValueTransferPrice(_activity, symbol, dateKey) {
         return fetchBookValueTransferClosePrice(symbol, dateKey, accountKey);
@@ -15253,6 +15288,7 @@ async function buildAccountActivityContext(login, account, options = {}) {
     earliestFunding,
     crawlStart,
     activities,
+    corporateActionPriceHistory,
     providerActivityCoverageComplete:
       activityCoverage &&
       activityCoverage.windows > 0 &&
@@ -17056,6 +17092,11 @@ async function fetchSymbolPriceHistory(symbol, startDateKey, endDateKey, options
     return null;
   }
 
+  const corporateActionHistory = getCorporateActionPrices(options.activityContext, symbol);
+  if (corporateActionHistory) {
+    return corporateActionHistory.filter((point) => formatDateOnly(point.date) >= startDateKey && formatDateOnly(point.date) <= endDateKey);
+  }
+
   const normalizedSymbolKey = normalizeSymbol(symbol) || symbol;
   const startDate = new Date(`${startDateKey}T00:00:00Z`);
   const endDate = new Date(`${endDateKey}T00:00:00Z`);
@@ -18321,6 +18362,11 @@ async function computeTotalPnlSeries(login, account, perAccountCombinedBalances,
           : null;
       if (providedPriceSeries instanceof Map) {
         priceSeriesMap.set(symbol, new Map(providedPriceSeries));
+        return;
+      }
+      const corporateActionHistory = getCorporateActionPrices(activityContext, symbol);
+      if (corporateActionHistory) {
+        priceSeriesMap.set(symbol, buildDailyPriceSeries(corporateActionHistory, dateKeys));
         return;
       }
       const cacheKey = getPriceHistoryCacheKey(symbol, priceSeriesStartKey, priceSeriesEndKey);
@@ -19842,6 +19888,7 @@ async function computeTotalPnlSeriesForSymbol(login, account, perAccountCombined
       const symbolId = Number.isFinite(rawId) && rawId > 0 ? rawId : null;
       const history = await fetchSymbolPriceHistory(symbol, priceSeriesStartKey, priceSeriesEndKey, {
         login,
+        activityContext,
         symbolId,
         accountKey,
         questradeSymbolDetail: symbolId && symbolDetails ? symbolDetails[symbolId] : null,
@@ -20485,6 +20532,11 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     await mapWithConcurrency(symbols, Math.min(4, symbols.length), async function (symbol) {
       if (overrideSeries && overrideSeries.has(symbol)) {
         priceSeriesMap.set(symbol, new Map(overrideSeries.get(symbol)));
+        return;
+      }
+      const corporateActionHistory = getCorporateActionPrices(activityContext, symbol);
+      if (corporateActionHistory) {
+        priceSeriesMap.set(symbol, buildDailyPriceSeries(corporateActionHistory, dateKeys));
         return;
       }
       const cacheKey = getPriceHistoryCacheKey(symbol, priceSeriesStartKey, priceSeriesEndKey);
@@ -23538,7 +23590,7 @@ app.post('/api/app-settings/other-assets', function (req, res) {
 });
 
 function handleGiftRouteError(res, error, fallbackMessage) {
-  if (error && ['INVALID_GIFT', 'INVALID_DATE', 'INVALID_ORGANIZATION', 'INVALID_AMOUNT', 'INVALID_YEAR', 'INVALID_ID', 'INVALID_RECEIPT_SOURCE', 'INVALID_RECEIPT_TEXT'].includes(error.code)) {
+  if (error && ['INVALID_GIFT', 'INVALID_DATE', 'INVALID_ORGANIZATION', 'INVALID_AMOUNT', 'INVALID_YEAR', 'INVALID_ID'].includes(error.code)) {
     return res.status(400).json({ message: error.message });
   }
   if (error && error.code === 'NOT_FOUND') {
@@ -23569,16 +23621,6 @@ app.post('/api/gifts', function (req, res) {
     return res.status(201).json({ gift: result.gift, ...current });
   } catch (error) {
     return handleGiftRouteError(res, error, 'Failed to save gift');
-  }
-});
-
-app.post('/api/gifts/reconcile', function (req, res) {
-  const payload = req.body && typeof req.body === 'object' ? req.body : {};
-  try {
-    const result = reconcileGiftReceipts(payload);
-    return res.json(result);
-  } catch (error) {
-    return handleGiftRouteError(res, error, 'Failed to reconcile gift receipts');
   }
 });
 

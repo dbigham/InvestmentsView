@@ -52,8 +52,8 @@ body :is(input:not([type='checkbox']):not([type='radio']):not([type='range']):no
 }
 .global-search__quote { font-variant-numeric: tabular-nums; }
 .account-selector__dropdown {
-  left: auto;
-  right: 0;
+  left: 0;
+  right: auto;
   width: min(420px, calc(100vw - 32px));
   box-shadow: 0 12px 32px rgba(28, 47, 36, 0.13);
 }

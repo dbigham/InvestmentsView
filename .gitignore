@@ -29,6 +29,8 @@ Plan.md
 
 # Local run artifacts
 output/design-review/
+output/eby-regression/
+output/eby-summary-diagnostic.json
 server-run-*.log
 .codex-logs/
 temp_block.txt

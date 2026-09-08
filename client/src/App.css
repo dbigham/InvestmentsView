@@ -2687,14 +2687,11 @@ textarea {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr);
-  grid-template-areas:
-    "form list"
-    "import list";
+  grid-template-areas: "form list";
   gap: 16px;
 }
 
 .giving-form,
-.giving-import-panel,
 .giving-list-panel {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
@@ -2705,13 +2702,6 @@ textarea {
 
 .giving-form {
   grid-area: form;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.giving-import-panel {
-  grid-area: import;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2807,13 +2797,6 @@ textarea {
   justify-content: flex-end;
 }
 
-.giving-import-panel__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .giving-form__submit,
 .giving-dialog__link-button,
 .giving-list__actions button {
@@ -2876,93 +2859,6 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.giving-import-results {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.giving-import-results__summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.giving-import-results__summary span {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
-  background: var(--color-surface-alt);
-  padding: 4px 8px;
-}
-
-.giving-import-results__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.giving-import-results__item {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  background: var(--color-surface-alt);
-  padding: 9px 10px;
-}
-
-.giving-import-results__item div {
-  min-width: 0;
-}
-
-.giving-import-results__item strong,
-.giving-import-results__item span {
-  display: block;
-}
-
-.giving-import-results__item strong {
-  color: var(--color-text-primary);
-}
-
-.giving-import-results__item span {
-  color: var(--color-text-secondary);
-  font-size: 12px;
-}
-
-.giving-import-results__side {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.giving-import-results__status {
-  border-radius: var(--radius-pill);
-  padding: 3px 7px;
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  text-transform: capitalize;
-}
-
-.giving-import-results__status--imported {
-  background: var(--color-positive-soft);
-  color: var(--color-positive);
-}
-
-.giving-import-results__status--matched {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
 }
 
 .giving-list {
@@ -3046,7 +2942,6 @@ textarea {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "form"
-      "import"
       "list";
   }
 }
