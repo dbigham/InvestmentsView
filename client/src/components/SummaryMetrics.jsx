@@ -3958,9 +3958,13 @@ export default function SummaryMetrics({
     ? `Observed return${providerPeriodSuffix}`
     : usesProviderPeriodReturn && !hasActiveRangeSummary
       ? `Annualized return${providerPeriodSuffix}`
-      : 'Annualized return';
+      : fundingSummary?.annualizedReturnEstimated === true && !hasActiveRangeSummary
+        ? 'Annualized return (est.)'
+        : 'Annualized return';
   let returnMetricExplanation = null;
-  if (usesProviderPeriodReturn && !hasActiveRangeSummary) {
+  if (fundingSummary?.annualizedReturnEstimated === true && !hasActiveRangeSummary && officialAnnualizedReturnRate !== null) {
+    returnMetricExplanation = 'Estimated from the reconciled portfolio history. Some opening funding or account history is incomplete, so this rate may change as that history is corrected.';
+  } else if (usesProviderPeriodReturn && !hasActiveRangeSummary) {
     if (estimatedHistoryReturnActive) {
       const reliablePeriodText = reliableProviderStartLabel
         ? ` The reliable provider-observed period begins ${reliableProviderStartLabel}.`
@@ -5892,6 +5896,7 @@ SummaryMetrics.propTypes = {
     totalPnlCad: PropTypes.number,
     totalEquityCad: PropTypes.number,
     annualizedReturnRate: PropTypes.number,
+    annualizedReturnEstimated: PropTypes.bool,
     annualizedReturnAsOf: PropTypes.string,
     annualizedReturnIncomplete: PropTypes.bool,
     cashFlowCoverageIncomplete: PropTypes.bool,

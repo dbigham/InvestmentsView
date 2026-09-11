@@ -3,7 +3,7 @@ function resolveApiBaseUrl() {
   if (typeof envBase === 'string' && envBase.trim()) {
     return envBase.trim();
   }
-  if (import.meta.env.PROD && typeof window !== 'undefined' && window.location && window.location.origin) {
+  if (typeof window !== 'undefined' && window.location && window.location.origin) {
     return window.location.origin;
   }
   return 'http://localhost:4000';

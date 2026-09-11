@@ -198,7 +198,6 @@ body [role='dialog'] {
 .pnl-heatmap-dialog__controls--select { background: transparent; }
 .pnl-heatmap-dialog__select { border-radius: var(--radius-input); border-color: var(--color-border); }
 .pnl-heatmap-board__tile { container-type: inline-size; }
-.pnl-heatmap-board__symbol, .pnl-heatmap-board__value { text-shadow: none; }
 body [role='dialog'] .pnl-heatmap-board__tile:focus-visible { outline: 2px solid white; outline-offset: -3px; }
 
 @media (max-width: 700px) {

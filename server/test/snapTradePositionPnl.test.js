@@ -3,6 +3,36 @@ const assert = require('node:assert/strict');
 
 const { __test__ } = require('../src/index.js');
 
+test('SnapTrade USD account total is converted to CAD without changing native cash', () => {
+  const result = __test__.normalizeSnapTradeBalancesPayload(
+    [{ currency: { code: 'USD' }, cash: 100, buying_power: 80 }],
+    { balance: { total: { amount: 124603.56, currency: 'USD' } } },
+    1.388
+  );
+  const usd = result.combinedBalances.find((entry) => entry.currency === 'USD');
+  const cad = result.combinedBalances.find((entry) => entry.currency === 'CAD');
+  assert.equal(usd.totalEquity, 124603.56);
+  assert.equal(cad.totalEquity, 124603.56 * 1.388);
+  assert.ok(Math.abs(cad.cash - 138.8) < 1e-9);
+  assert.equal(cad.marketValue, (124603.56 - 100) * 1.388);
+  assert.equal(result.perCurrencyBalances[0].cash, 100);
+});
+
+test('SnapTrade CAD totals remain unchanged and missing FX does not fabricate CAD', () => {
+  const detail = { balance: { total: { amount: 200, currency: 'CAD' } } };
+  assert.deepEqual(
+    __test__.normalizeSnapTradeBalancesPayload([], detail, 1.388),
+    __test__.normalizeSnapTradeBalancesPayload([], detail)
+  );
+  for (const rate of [null, 0, NaN]) {
+    const result = __test__.normalizeSnapTradeBalancesPayload(
+      [], { balance: { total: { amount: 200, currency: 'USD' } } }, rate
+    );
+    assert.equal(result.combinedBalances.length, 1);
+    assert.equal(result.combinedBalances[0].currency, 'USD');
+  }
+});
+
 test('SnapTrade position derives open P&L only when the provider value is missing', () => {
   const base = {
     instrument: { symbol: { symbol: 'MU', currency: { code: 'USD' } } },

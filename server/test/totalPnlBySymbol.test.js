@@ -25,6 +25,98 @@ function makeContext(accountId, start, end, activities) {
 
 function d(s) { return new Date(s).toISOString().slice(0,10); }
 
+test('range rejects a missing sale instead of clamping negative opening holdings', async () => {
+  const start = '2026-08-21';
+  const end = '2026-09-09';
+  const buy = { type: 'BUY', symbol: 'VBIL', currency: 'USD', quantity: 100, netAmount: -7500, tradeDate: '2026-08-31' };
+  const options = {
+    requireConsistentHoldings: true,
+    displayStartKey: start,
+    displayEndKey: end,
+    endHoldingsBySymbol: new Map([['VBIL', 10]]),
+    priceSeriesBySymbol: new Map([['VBIL', new Map([[start, 75], [end, 75]])]]),
+    usdRatesByDate: new Map([[start, 1.4], ['2026-08-31', 1.4], ['2026-09-01', 1.4], [end, 1.4]]),
+  };
+  const compute = activities => computeTotalPnlBySymbol({}, { id: 'missing-sale' }, {
+    ...options, activityContext: { ...makeContext('missing-sale', start, end, activities), offlineOnly: true },
+  });
+  const incomplete = await compute([buy]);
+  assert.deepEqual(incomplete.entries, []);
+  assert.deepEqual(incomplete.holdingsIssues, [{
+    symbol: 'VBIL', endQuantity: 10, quantityChange: 100, inferredStartQuantity: -90,
+  }]);
+  const recovered = await compute([buy, {
+    type: 'SELL', symbol: 'VBIL', currency: 'USD', quantity: -90, netAmount: 6750, tradeDate: '2026-09-01',
+  }]);
+  assert.equal(recovered.holdingsIssues, undefined);
+  assert.ok(Math.abs(recovered.entries[0].totalPnlCad) < 1e-6);
+  options.endHoldingsBySymbol = new Map([['VBIL', 99.9999]]);
+  assert.equal((await compute([buy])).holdingsIssues, undefined, 'tolerates provider share rounding');
+  options.endHoldingsBySymbol = new Map();
+  const missingClosedSale = await compute([buy]);
+  assert.equal(missingClosedSale.holdingsIssues[0].inferredStartQuantity, -100);
+});
+
+for (const reverse of [false, true]) {
+  for (const missingPrice of ['DLR.TO', 'DLR.U.TO', null]) {
+    test(`paired currency journal preserves trade P&L (${reverse ? 'USD to CAD' : 'CAD to USD'}, missing ${missingPrice})`, async () => {
+      const start = '2025-10-01';
+      const journalDate = '2025-10-02';
+      const end = '2025-10-03';
+      const source = reverse ? 'DLR.U.TO' : 'DLR.TO';
+      const destination = reverse ? 'DLR.TO' : 'DLR.U.TO';
+      const sourceCurrency = reverse ? 'USD' : 'CAD';
+      const destinationCurrency = reverse ? 'CAD' : 'USD';
+      const activities = [
+        { type: 'Trades', action: 'Buy', symbol: source, currency: sourceCurrency, quantity: 100, netAmount: reverse ? -1000 : -1400, tradeDate: start },
+        { type: 'Other', action: 'BRW', description: 'JOURNAL POSITION TO ' + destinationCurrency, symbol: source, currency: sourceCurrency, quantity: -100, netAmount: 0, tradeDate: journalDate },
+        { type: 'Other', action: 'BRW', description: 'JOURNAL POSITION FROM ' + sourceCurrency, symbol: destination, currency: destinationCurrency, quantity: 100, netAmount: 0, tradeDate: journalDate },
+        { type: 'Trades', action: 'Sell', symbol: destination, currency: destinationCurrency, quantity: -100, netAmount: reverse ? 1395 : 995, tradeDate: end },
+      ];
+      const ctx = { ...makeContext('journal', start, end, activities), offlineOnly: true };
+      // Different historical marks (or an unavailable share-class quote) must
+      // not turn this internal journal into an external cash flow.
+      const prices = new Map(['DLR.TO', 'DLR.U.TO'].map(symbol => [symbol,
+        new Map(symbol === missingPrice ? [] : [[journalDate, symbol === 'DLR.TO' ? 14.1 : 10]])
+      ]));
+      const result = await computeTotalPnlBySymbol({}, { id: 'journal' }, {
+        activityContext: ctx,
+        priceSeriesBySymbol: prices,
+        usdRatesByDate: new Map([[start, 1.4], [journalDate, 1.4], [end, 1.4]]),
+      });
+      const expected = reverse ? -5 : -7;
+      assert.ok(Math.abs(result.entries.reduce((sum, e) => sum + e.totalPnlCad, 0) - expected) < 1e-6);
+      assert.ok(Math.abs(result.entriesNoFx.reduce((sum, e) => sum + e.totalPnlCad, 0) - expected) < 1e-6);
+      assert.ok(Math.abs(result.fxEffectCad) < 1e-6);
+    });
+  }
+}
+
+test('currency journal keeps real FX movement and an unmatched transfer adjustment', async () => {
+  const start = '2025-10-01';
+  const end = '2025-10-03';
+  const activities = [
+    { type: 'Trades', action: 'Buy', symbol: 'DLR.U.TO', currency: 'USD', quantity: 100, netAmount: -1000, tradeDate: start },
+    { type: 'Other', action: 'BRW', description: 'JOURNAL POSITION TO CAD', symbol: 'DLR.U.TO', currency: 'USD', quantity: -100, netAmount: 0, tradeDate: '2025-10-02' },
+    { type: 'Other', action: 'BRW', description: 'JOURNAL POSITION FROM USD', symbol: 'DLR.TO', currency: 'CAD', quantity: 100, netAmount: 0, tradeDate: '2025-10-02' },
+    { type: 'Trades', action: 'Sell', symbol: 'DLR.TO', currency: 'CAD', quantity: -100, netAmount: 1495, tradeDate: end },
+    { type: 'Trades', action: 'Buy', symbol: 'ABC.TO', currency: 'CAD', quantity: 10, netAmount: -100, tradeDate: start },
+    { type: 'Transfers', action: 'Journal', description: 'Journal to another account', symbol: 'ABC.TO', currency: 'CAD', quantity: -10, netAmount: 0, tradeDate: '2025-10-02' },
+  ];
+  const result = await computeTotalPnlBySymbol({}, { id: 'journal-fx' }, {
+    activityContext: { ...makeContext('journal-fx', start, end, activities), offlineOnly: true },
+    priceSeriesBySymbol: new Map([
+      ['DLR.TO', new Map()], ['DLR.U.TO', new Map()],
+      ['ABC.TO', new Map([['2025-10-02', 10]])],
+    ]),
+    usdRatesByDate: new Map([[start, 1.4], ['2025-10-02', 1.5], [end, 1.5]]),
+  });
+  assert.ok(Math.abs(result.entries.find(e => e.symbol === 'DLR').totalPnlCad - 95) < 1e-6);
+  assert.ok(Math.abs(result.entriesNoFx.find(e => e.symbol === 'DLR').totalPnlCad + 5) < 1e-6);
+  assert.ok(Math.abs(result.fxEffectCad - 100) < 1e-6);
+  assert.ok(Math.abs(result.entries.find(e => e.symbol === 'ABC').totalPnlCad) < 1e-6);
+});
+
 test('journaling pair nets to ~0', async () => {
   const account = { id: 'test:1', number: 'test:1', cagrStartDate: '2025-10-01' };
   const login = { id: 'login' };

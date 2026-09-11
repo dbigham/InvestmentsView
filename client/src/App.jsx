@@ -4338,13 +4338,7 @@ function resolveDisplayTotalEquity(balances) {
   if (cadValue !== null) {
     return cadValue;
   }
-  const combinedEntries = Object.values(balances.combined);
-  for (const entry of combinedEntries) {
-    const totalEquity = coerceNumber(entry?.totalEquity);
-    if (totalEquity !== null) {
-      return totalEquity;
-    }
-  }
+  // A foreign-currency total is not a CAD fallback when conversion is unavailable.
   return null;
 }
 
@@ -9837,7 +9831,9 @@ export default function App() {
       return null;
     }
 
-    if (selectedAccount === 'all' && directEntry && typeof directEntry === 'object') {
+    // The server aggregate reconciles migrated accounts. Summing member
+    // summaries again counts closed predecessors alongside their successors.
+    if (directEntry && typeof directEntry === 'object') {
       return directEntry;
     }
 
@@ -12333,6 +12329,18 @@ export default function App() {
       return result;
     };
 
+    const resolveCurrentParentTotal = (accountIds) => {
+      let total = 0;
+      for (const accountId of accountIds) {
+        const metrics = resolveAccountMetrics(accountId, accountsById.get(accountId));
+        if (!Number.isFinite(metrics.totalEquityCad)) {
+          return null;
+        }
+        total += metrics.totalEquityCad;
+      }
+      return Number.isFinite(total) && total > 0 ? total : null;
+    };
+
     if (showingAllAccounts && hasGroupDefinitions) {
       const items = [];
       const seenAccountIds = new Set();
@@ -12498,20 +12506,14 @@ export default function App() {
         return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
       });
 
-      let parentTotal = null;
-      if (isFiniteNumber(selectedAccountFunding?.totalEquityCad)) {
-        parentTotal = selectedAccountFunding.totalEquityCad;
-      } else {
-        const sum = items.reduce((accumulator, item) => {
-          if (Number.isFinite(item.totalEquityCad)) {
-            return accumulator + item.totalEquityCad;
-          }
-          return accumulator;
-        }, 0);
-        if (Number.isFinite(sum) && sum > 0) {
-          parentTotal = sum;
-        }
-      }
+      // Use the same current balances and visible accounts as the child rows.
+      const currentAccountIds = new Set(
+        accounts
+          .filter((account) => account?.id != null && !shouldHideAccountSummaryEntry(account))
+          .map((account) => String(account.id).trim())
+          .filter(Boolean)
+      );
+      const parentTotal = resolveCurrentParentTotal(currentAccountIds);
 
       return { items, parentTotal, parents: [] };
     }
@@ -12725,20 +12727,13 @@ export default function App() {
       return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
     });
 
-    let parentTotal = null;
-    if (isFiniteNumber(selectedAccountFunding?.totalEquityCad)) {
-      parentTotal = selectedAccountFunding.totalEquityCad;
-    } else {
-      const sum = items.reduce((accumulator, item) => {
-        if (Number.isFinite(item.totalEquityCad)) {
-          return accumulator + item.totalEquityCad;
-        }
-        return accumulator;
-      }, 0);
-      if (Number.isFinite(sum) && sum > 0) {
-        parentTotal = sum;
-      }
-    }
+    // Historical funding summaries may contain stale equity from closed accounts.
+    // Share percentages must use current member balances, like the child rows.
+    const currentAccountIds = new Set();
+    parentKeys.forEach((groupKey) => {
+      collectGroupAccountIds(groupKey).forEach((accountId) => currentAccountIds.add(accountId));
+    });
+    const parentTotal = resolveCurrentParentTotal(currentAccountIds);
 
     return { items, parentTotal, parents: parentGroupItems };
   }, [
@@ -13367,6 +13362,7 @@ export default function App() {
       displayStartTotals,
       periodStartDate: effectivePeriodStart,
       annualizedReturnRate: effectiveAnnualized.rate,
+      annualizedReturnEstimated: selectedAccountFunding?.annualizedReturn?.estimated === true,
       annualizedReturnAsOf: effectiveAnnualized.asOf,
       annualizedReturnIncomplete: effectiveAnnualized.incomplete,
       annualizedReturnStartDate: effectiveAnnualized.startDate,
@@ -13419,6 +13415,7 @@ export default function App() {
       displayStartTotals,
       periodStartDate: allTimePeriodStart,
       annualizedReturnRate: allTimeAnnualized.rate,
+      annualizedReturnEstimated: (selectedAccountFunding?.annualizedReturnAllTime || selectedAccountFunding?.annualizedReturn)?.estimated === true,
       annualizedReturnAsOf: allTimeAnnualized.asOf,
       annualizedReturnIncomplete: allTimeAnnualized.incomplete,
       annualizedReturnStartDate: allTimeAnnualized.startDate,

@@ -437,7 +437,7 @@ const totalPnlSeriesCacheStore = new Map();
 const SUMMARY_CACHE_VERSION = 'funding-v12-migration-basis-qa';
 const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v8-migration-basis-qa';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
-const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v2-position-seeding';
+const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v3-holdings-validation';
 const rangeBreakdownCache = new Map();
 // Cache for Questrade candle lookups to avoid duplicate provider calls for identical ranges
 const questradeCandleCache = new Map();
@@ -3811,6 +3811,11 @@ function deriveSummaryFromSuperset(superset, normalizedSelection, debugDetails) 
           : null;
 
   if (aggregateKey) {
+    // The group key is not a member account ID, so the scoped copy above
+    // omits it. Retain its reconciled history for totals and annualization.
+    if (superset.accountTotalPnlSeries?.[aggregateKey]) {
+      accountTotalPnlSeries[aggregateKey] = superset.accountTotalPnlSeries[aggregateKey];
+    }
     // The full summary pipeline may reject a migration-spliced capital basis
     // when it would introduce a discontinuity. Preserve that vetted aggregate
     // in cache-derived responses instead of rebuilding it from account pieces
@@ -10971,7 +10976,7 @@ function normalizeSnapTradeBalanceEntry(balance) {
   return entry;
 }
 
-function normalizeSnapTradeBalancesPayload(balances, detail) {
+function normalizeSnapTradeBalancesPayload(balances, detail, usdToCadRate = null) {
   const perCurrencyBalances = Array.isArray(balances)
     ? balances.map(normalizeSnapTradeBalanceEntry).filter(Boolean)
     : [];
@@ -10993,6 +10998,17 @@ function normalizeSnapTradeBalancesPayload(balances, detail) {
       combined.marketValue = totalAmount - sameCurrencyCash;
     }
     combinedBalances.push(combined);
+    // SnapTrade totals are denominated in the account's currency. Combined
+    // buckets represent the whole account converted to each display currency.
+    if (totalCurrency === 'USD' && Number.isFinite(usdToCadRate) && usdToCadRate > 0) {
+      const cadCombined = { ...combined, currency: 'CAD' };
+      for (const field of ['totalEquity', 'cash', 'marketValue']) {
+        if (Number.isFinite(combined[field])) {
+          cadCombined[field] = combined[field] * usdToCadRate;
+        }
+      }
+      combinedBalances.push(cadCombined);
+    }
   }
   return { combinedBalances, perCurrencyBalances };
 }
@@ -11110,12 +11126,12 @@ async function fetchSnapTradeAccountDetail(login, accountRef) {
   return snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}`);
 }
 
-async function fetchSnapTradePositions(login, accountRef) {
+async function fetchSnapTradePositions(login, accountRef, options = {}) {
   const accountId = resolveAccountApiId(login, accountRef);
   if (!accountId) {
     return [];
   }
-  const data = await snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/positions/all`);
+  const data = await snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/positions/all`, options);
   const rawPositions = Array.isArray(data)
     ? data
     : Array.isArray(data && data.results)
@@ -11142,7 +11158,11 @@ async function fetchSnapTradeBalances(login, accountRef) {
       ? Promise.resolve(accountListDetail)
       : fetchSnapTradeAccountDetail(login, accountRef).catch(() => null),
   ]);
-  return normalizeSnapTradeBalancesPayload(balances, detail);
+  const totalCurrency = readCurrencyCode(detail?.balance?.total?.currency);
+  const usdToCadRate = totalCurrency === 'USD'
+    ? await fetchLatestUsdToCadRate().catch(() => null)
+    : null;
+  return normalizeSnapTradeBalancesPayload(balances, detail, usdToCadRate);
 }
 
 async function fetchSnapTradeOrders(login, accountRef, options = {}) {
@@ -11205,6 +11225,7 @@ async function fetchSnapTradeActivities(login, accountRef, startDate, endDate, o
     }
     const data = await snapTradeRequest(login, `/accounts/${encodeURIComponent(accountId)}/activities`, {
       params,
+      bypassCache: options.bypassCache === true,
     });
     const batch = Array.isArray(data && data.data) ? data.data : Array.isArray(data) ? data : [];
     activities.push(...batch.map(normalizeSnapTradeActivity).filter(Boolean));
@@ -12714,6 +12735,35 @@ function rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, totalPnlSeri
     return;
   }
 
+  // Annualized return and the all-time cards must describe the same capital
+  // basis. A later current-account funding pass can otherwise overwrite net
+  // deposits with successor-only cash flows while retaining historical P&L.
+  const summary = totalPnlSeries.summary;
+  if (summary) {
+    if (Number.isFinite(summary.netDepositsAllTimeCad)) {
+      fundingSummary.netDeposits = {
+        ...fundingSummary.netDeposits,
+        allTimeCad: summary.netDepositsAllTimeCad,
+      };
+    }
+    if (Number.isFinite(summary.totalPnlAllTimeCad)) {
+      fundingSummary.totalPnl = {
+        ...fundingSummary.totalPnl,
+        allTimeCad: summary.totalPnlAllTimeCad,
+      };
+    }
+    if (Number.isFinite(summary.totalEquityCad)) {
+      fundingSummary.totalEquityCad = summary.totalEquityCad;
+    }
+  }
+  if (totalPnlSeries.periodStartDate) {
+    fundingSummary.originalPeriodStartDate = totalPnlSeries.periodStartDate;
+  }
+
+  const incompleteIssues = (totalPnlSeries.issues || []).filter((issue) =>
+    ['opening-funding-reconciliation-incomplete', 'aggregate-partial-data'].includes(issue)
+  );
+
   // The aggregate series may carry historical P&L across an explicit
   // Questrade-to-Wealthsimple handoff even when the raw cumulative-deposit
   // line cannot establish a matching boundary equity. In that case, using the
@@ -12739,6 +12789,10 @@ function rebuildAggregateAnnualizedReturnFromSeries(fundingSummary, totalPnlSeri
 
   rebuildAnnualizedReturnFromSeries(fundingSummary, annualizationSeries, accountKey);
   if (fundingSummary.annualizedReturn && typeof fundingSummary.annualizedReturn === 'object') {
+    if (incompleteIssues.length && Number.isFinite(fundingSummary.annualizedReturn.rate)) {
+      fundingSummary.annualizedReturn.estimated = true;
+      fundingSummary.annualizedReturn.issues = incompleteIssues;
+    }
     fundingSummary.annualizedReturnAllTime = { ...fundingSummary.annualizedReturn };
   }
 }
@@ -20814,8 +20868,35 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       if (!entries || !entries.length || dateKey < effectiveStartKey || dateKey > effectiveEndKey) {
         continue;
       }
+      // A balanced journal moves the same holding between share classes in
+      // this account. Its legs are folded into one symbol below, so adding
+      // independently priced book cash would manufacture a gain/loss (or a
+      // whole principal-sized loss when only one class has a price).
+      const journalGroups = new Map();
       for (const entry of entries) {
-        if (!entry || !entry.symbol || !entry.activity) {
+        const activity = entry?.activity;
+        if (!activity || !entry.symbol || isOrderLikeActivity(activity) || isSplitLikeActivity(activity)) {
+          continue;
+        }
+        const description = [activity.type || '', activity.action || '', activity.description || ''].join(' ');
+        if (!JOURNAL_REGEX.test(description) || Math.abs(Number(activity.netAmount) || 0) >= CASH_FLOW_EPSILON / 10) {
+          continue;
+        }
+        const base = baseOf(entry.symbol);
+        if (!journalGroups.has(base)) {
+          journalGroups.set(base, []);
+        }
+        journalGroups.get(base).push(entry);
+      }
+      const internalJournalEntries = new Set();
+      for (const group of journalGroups.values()) {
+        const quantity = group.reduce((sum, entry) => sum + entry.qty, 0);
+        if (new Set(group.map(entry => entry.symbol)).size > 1 && Math.abs(quantity) < LEDGER_QUANTITY_EPSILON) {
+          group.forEach(entry => internalJournalEntries.add(entry));
+        }
+      }
+      for (const entry of entries) {
+        if (!entry || !entry.symbol || !entry.activity || internalJournalEntries.has(entry)) {
           continue;
         }
         const { activity, symbol } = entry;
@@ -20882,6 +20963,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
   let result = [];
   let resultNoFx = [];
   let fxEffectCadTotal = 0;
+  const holdingsIssues = [];
   const allSymbols = new Set([
     ...Array.from(symbolMeta.keys()),
     ...Array.from(cashCadBySymbol.keys()),
@@ -20894,7 +20976,7 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
     const normalizedKey = normalizeSymbol(symbol) || symbol;
     const finalQtyOverride = providedEndHoldings && providedEndHoldings.has(normalizedKey)
       ? Number(providedEndHoldings.get(normalizedKey))
-      : null;
+      : providedEndHoldings && options.requireConsistentHoldings === true ? 0 : null;
     let endQty = Number.isFinite(finalQtyOverride)
       ? finalQtyOverride
       : (qtyDeltaBeforeStart.get(symbol) || 0) + changeQty;
@@ -20905,6 +20987,14 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
       endQty = 0;
     }
     let startQty = Number.isFinite(endQty) ? endQty - changeQty : 0;
+    // Provider fills and positions can differ by one unit of four-decimal
+    // share precision; do not mistake that rounding for missing activity.
+    const holdingsQuantityTolerance = 0.0001 + LEDGER_QUANTITY_EPSILON;
+    if (options.requireConsistentHoldings === true && Number.isFinite(finalQtyOverride) &&
+        finalQtyOverride >= 0 && !allowNegativeEnd && startQty < -holdingsQuantityTolerance) {
+      holdingsIssues.push({ symbol, endQuantity: endQty, quantityChange: changeQty, inferredStartQuantity: startQty });
+      continue;
+    }
     if (Number.isFinite(startQty) && startQty < 0) {
       startQty = 0;
     }
@@ -21076,6 +21166,10 @@ async function computeTotalPnlBySymbol(login, account, options = {}) {
         fxEffectCadTotal += entry.totalPnlCad - entryNoFx.totalPnlCad;
       }
     }
+  }
+
+  if (holdingsIssues.length) {
+    return { entries: [], endDate: endKey, holdingsIssues };
   }
 
   // If we saw journaling for a base symbol, fold share-class variants into the base.
@@ -26001,6 +26095,7 @@ app.get('/api/summary', async function (req, res) {
                 merged.periodEndDate = series.periodEndDate;
               }
               accountFundingSummaries[group.id] = merged;
+              rebuildAggregateAnnualizedReturnFromSeries(merged, series, group.id);
               }
           } catch (groupSeriesError) {
             const message = groupSeriesError && groupSeriesError.message ? groupSeriesError.message : String(groupSeriesError);
@@ -26250,6 +26345,17 @@ app.get('/api/summary', async function (req, res) {
         }
       }
     }
+
+    // Finalize after all per-account and migration passes, including group
+    // preheating. This also covers the first response before cache derivation.
+    Object.entries(accountFundingSummaries).forEach(([key, funding]) => {
+      if (key === 'all' || key.startsWith('group:')) {
+        const series = resolveAccountTotalPnlSeries(accountTotalPnlSeries, key);
+        if (series) {
+          rebuildAggregateAnnualizedReturnFromSeries(funding, series, key);
+        }
+      }
+    });
 
     Object.values(accountFundingSummaries).forEach((entry) => {
       if (entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'cashFlowsCad')) {
@@ -27508,6 +27614,7 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       : (superset.activityContextsByAccountId = {}));
 
   const perAccountResults = [];
+  const inconsistentAccounts = [];
   let failureCount = 0;
   await mapWithConcurrency(
     contexts,
@@ -27527,7 +27634,7 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       if (!accountWindow) {
         return;
       }
-      const providedPositions = isArchivedAccount(context.account)
+      let providedPositions = isArchivedAccount(context.account)
         ? []
         : getPositionsForAccountFromSuperset(superset, accountId);
       let activityContext = activityContextStore[accountId];
@@ -27549,14 +27656,42 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
         return;
       }
       try {
-        const breakdown = await computeTotalPnlBySymbol(context.login, context.account, {
+        // Current positions only validate a range ending at the snapshot date.
+        // Older ranges need historical holdings, not today's position quantities.
+        const validateHoldings = !isArchivedAccount(context.account) &&
+          accountWindow.endDate === formatDateOnly(activityContext.now);
+        const computeBreakdown = () => computeTotalPnlBySymbol(context.login, context.account, {
           applyAccountCagrStartDate: false,
           displayStartKey: accountWindow.startDate,
           displayEndKey: accountWindow.endDate,
           activityContext,
           providedPositions,
           endHoldingsBySymbol: buildEndHoldingsBySymbol(providedPositions),
+          requireConsistentHoldings: validateHoldings,
         });
+        let breakdown = await computeBreakdown();
+        if (breakdown?.holdingsIssues?.length && isSnapTradeLogin(context.login)) {
+          // Bypass both the summary's activity context and the provider-response
+          // cache. Only actual provider records can repair the missing movement.
+          try {
+            const activities = await fetchSnapTradeActivities(context.login, context.account,
+              activityContext.crawlStart, activityContext.now, { bypassCache: true });
+            providedPositions = await fetchSnapTradePositions(context.login, context.account, { bypassCache: true });
+            // Prefer refreshed records by activity ID while retaining known
+            // history and inferred splits if the provider omits them on retry.
+            activityContext = { ...activityContext, activities: dedupeActivities([
+              ...activities, ...activityContext.activities,
+            ]) };
+            breakdown = await computeBreakdown();
+          } catch (recoveryError) {
+            // Keep the original inconsistency when the provider retry fails.
+          }
+        }
+        if (breakdown?.holdingsIssues?.length) {
+          inconsistentAccounts.push({ accountId, accountName: context.account.displayName || context.account.name || accountId,
+            symbols: breakdown.holdingsIssues.map(issue => issue.symbol) });
+          return;
+        }
         if (breakdown) {
           perAccountResults.push({ accountId, breakdown });
         }
@@ -27567,6 +27702,15 @@ app.get('/api/pnl-breakdown/range', async function (req, res) {
       }
     }
   );
+
+  if (inconsistentAccounts.length) {
+    const affected = inconsistentAccounts.map(account => `${account.symbols.join(', ')} in ${account.accountName}`).join('; ');
+    return res.status(409).json({
+      code: 'INCONSISTENT_POSITION_HISTORY',
+      message: `Range breakdown unavailable: transaction history does not match current holdings for ${affected}. The provider data could not be reconciled. Refresh account data and retry.`,
+      details: { accounts: inconsistentAccounts },
+    });
+  }
 
   if (!perAccountResults.length) {
     const statusCode = failureCount ? 503 : 404;
@@ -27887,6 +28031,7 @@ module.exports = {
     findProviderObservedStartDate,
     computeAggregateTotalPnlSeriesForContexts,
     normalizeSnapTradePosition,
+    normalizeSnapTradeBalancesPayload,
     decoratePositions,
     mergePnL,
     applyPositionPnlToSnapTradeBalances,

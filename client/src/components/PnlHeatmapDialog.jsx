@@ -1414,7 +1414,11 @@ export default function PnlHeatmapDialog({
           <div className="pnl-heatmap-dialog__heading">
             <h2 id="pnl-heatmap-title">{metricLabel} breakdown</h2>
             <p className="pnl-heatmap-dialog__subtitle">
-              {metricKey === 'totalPnl'
+              {rangeActive && rangeError
+                ? 'Range breakdown unavailable'
+                : rangeActive && rangeLoading
+                ? 'Loading range breakdown…'
+                : metricKey === 'totalPnl'
                 ? `${pnlLabel} total across traded symbols`
                 : `${pnlLabel} in ${marketValueLabel} total market value`}
             </p>

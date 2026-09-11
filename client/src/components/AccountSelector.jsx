@@ -535,7 +535,9 @@ export default function AccountSelector({ accounts, accountGroups, groupRelation
         node.hasActiveAccounts = node.option?.account?.closed !== true;
         return node.hasActiveAccounts;
       }
-      node.hasActiveAccounts = node.children.some(computeActiveAccountDescendants);
+      // Visit every child so later sibling groups also receive their visibility state.
+      const childActivity = node.children.map(computeActiveAccountDescendants);
+      node.hasActiveAccounts = childActivity.some(Boolean);
       return node.hasActiveAccounts;
     };
     topLevelNodes.forEach((node) => {
