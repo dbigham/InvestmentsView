@@ -103,6 +103,7 @@ import {
 } from './utils/annualizedReturn';
 import {
   computeCombinedCashAcrossCurrencies,
+  computePortfolioValue,
   computeReserveValueAcrossCurrencies,
   mergeAuthoritativeUsdToCadRate,
 } from './utils/currencyRates';
@@ -10978,13 +10979,18 @@ export default function App() {
     }, 0);
   }, [positions, currencyRates, baseCurrency]);
 
+  const portfolioValue = useMemo(
+    () => computePortfolioValue({ marketValue: totalMarketValue, balances, currencyRates, baseCurrency }),
+    [totalMarketValue, balances, currencyRates, baseCurrency]
+  );
+
   const positionsWithShare = useMemo(() => {
     if (!positions.length) {
       return [];
     }
     return positions.map((position) => {
       const normalizedValue = resolveNormalizedMarketValue(position, currencyRates, baseCurrency);
-      const share = totalMarketValue > 0 ? (normalizedValue / totalMarketValue) * 100 : 0;
+      const share = portfolioValue > 0 ? (normalizedValue / portfolioValue) * 100 : 0;
       const normalizedDayPnl = resolveNormalizedPnl(position, 'dayPnl', currencyRates, baseCurrency);
       const normalizedOpenPnl = resolveNormalizedPnl(position, 'openPnl', currencyRates, baseCurrency);
       const targetProportion = Number.isFinite(position.targetProportion)
@@ -10999,7 +11005,7 @@ export default function App() {
       targetProportion,
     };
   });
-  }, [positions, totalMarketValue, currencyRates, baseCurrency]);
+  }, [positions, portfolioValue, currencyRates, baseCurrency]);
 
   const excludedPositionSymbolKeys = useMemo(() => {
     const normalized = new Set();

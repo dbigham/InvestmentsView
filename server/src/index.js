@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { request: undiciRequest, Agent: UndiciAgent, ProxyAgent: UndiciProxyAgent } = require('undici');
 const util = require('util');
+const { supplementSnapTradeExecutions } = require('./snapTradeExecutions');
 const { getProxyForUrl } = require('proxy-from-env');
 const dotenv = require('dotenv');
 const { cacheYahooPriceSeries, getCachedYahooPriceSeries } = require('./yahooPriceCache');
@@ -434,8 +435,8 @@ const totalPnlSeriesCacheStore = new Map();
 // summary shape must not be served from an older pinned cache entry.
 // Bump when the concrete-account cache payload changes between successor-only
 // and stitched Questrade + Wealthsimple history.
-const SUMMARY_CACHE_VERSION = 'funding-v13-period-xirr';
-const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v8-migration-basis-qa';
+const SUMMARY_CACHE_VERSION = 'funding-v14-confirmed-executions';
+const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v9-confirmed-executions';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v3-holdings-validation';
 const rangeBreakdownCache = new Map();
@@ -11017,7 +11018,7 @@ function normalizeSnapTradeOrder(order) {
   if (!order || typeof order !== 'object') {
     return null;
   }
-  const symbolInfo = normalizeSnapTradeSymbol(order.symbol || order.universal_symbol || order.option_symbol);
+  const symbolInfo = normalizeSnapTradeSymbol(order.universal_symbol || order.option_symbol || order.symbol);
   return {
     id: order.id || order.brokerage_order_id || null,
     orderId: order.id || order.brokerage_order_id || null,
@@ -11035,12 +11036,13 @@ function normalizeSnapTradeOrder(order) {
     filledQuantity: readFiniteNumber(order.filled_quantity ?? order.filledQuantity ?? order.units),
     limitPrice: readFiniteNumber(order.limit_price),
     stopPrice: readFiniteNumber(order.stop_price),
-    avgExecPrice: readFiniteNumber(order.average_execution_price ?? order.avg_exec_price ?? order.price),
+    avgExecPrice: readFiniteNumber(order.execution_price ?? order.average_execution_price ?? order.avg_exec_price ?? order.price),
     lastExecPrice: readFiniteNumber(order.last_execution_price),
     commission: readFiniteNumber(order.commission ?? order.fee),
     commissionCharged: readFiniteNumber(order.commission ?? order.fee),
     creationTime: order.created_date || order.time_placed || order.trade_date || null,
     updateTime: order.updated_date || order.time_updated || null,
+    executionTime: order.time_executed || null,
     source: 'snaptrade',
   };
 }
@@ -15252,6 +15254,22 @@ async function buildAccountActivityContext(login, account, options = {}) {
         activityCoverage ? { ...options, activityCoverage } : options
       );
   let activities = dedupeActivities(activitiesRaw);
+  if (isSnapTradeLogin(activityLogin) && options.offlineOnly !== true && !skipProviderActivityHistory) {
+    // Positions can include trades that have not posted to activities. Reversing
+    // an incomplete ledger creates phantom shorts throughout the account's past.
+    const syncDate = normalizeDateOnly(account.syncStatus?.transactions?.last_successful_sync);
+    const recentStart = addDays(now, -7);
+    const executionStart = syncDate ? new Date(`${syncDate}T00:00:00Z`) : recentStart;
+    const oldestOrderDate = addDays(now, -90);
+    const boundedStart = executionStart < oldestOrderDate ? oldestOrderDate : executionStart;
+    try {
+      // Reuse the same 90-day order request as the Orders tab.
+      const orders = await fetchSnapTradeOrders(activityLogin, account, { startDate: oldestOrderDate, endDate: now });
+      activities = supplementSnapTradeExecutions(activities, orders, { startDate: boundedStart, endDate: now });
+    } catch (error) {
+      console.warn('Unable to reconcile recent executions for account ' + accountKey + ': ' + error.message);
+    }
+  }
   const corporateActionPriceHistory = {};
   if (isSnapTradeLogin(activityLogin) && options.offlineOnly !== true && activities.length) {
     const positions = await fetchPositions(activityLogin, account).catch(() => []);
@@ -27968,6 +27986,7 @@ module.exports = {
     findProviderObservedStartDate,
     computeAggregateTotalPnlSeriesForContexts,
     normalizeSnapTradePosition,
+    normalizeSnapTradeOrder,
     normalizeSnapTradeBalancesPayload,
     decoratePositions,
     mergePnL,

@@ -2,9 +2,36 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeCombinedCashAcrossCurrencies,
+  computePortfolioValue,
   computeReserveValueAcrossCurrencies,
   mergeAuthoritativeUsdToCadRate,
 } from './currencyRates.js';
+
+// Uninvested USD cash belongs to the portfolio even though it has no position row.
+test('portfolio weight includes converted cash once, not just securities', () => {
+  const value = computePortfolioValue({
+    marketValue: 10808 + 26495,
+    balances: {
+      perCurrency: { CAD: { cash: 0 }, USD: { cash: 22490.25 / 1.4 } },
+      combined: { CAD: { cash: 22490.25 } },
+    },
+    currencyRates: new Map([['CAD', 1], ['USD', 1.4]]),
+  });
+  assert.equal((10808 / value * 100).toFixed(2), '18.08');
+  assert.equal((26495 / value * 100).toFixed(2), '44.31');
+});
+
+// Some providers only supply combined balances; borrowing must reduce net value.
+test('portfolio value supports combined cash and negative cash', () => {
+  assert.equal(computePortfolioValue({ marketValue: 1000, balances: { combined: { CAD: { cash: 250 } } } }), 1250);
+  assert.equal(computePortfolioValue({ marketValue: 1000, balances: { perCurrency: { CAD: { cash: -200 } } } }), 800);
+});
+
+// Fully invested portfolios and missing balance data preserve the existing weights.
+test('portfolio value preserves securities-only value when cash is zero or unavailable', () => {
+  assert.equal(computePortfolioValue({ marketValue: 1000, balances: null }), 1000);
+  assert.equal(computePortfolioValue({ marketValue: 1000, balances: { perCurrency: { CAD: { cash: 0 } } } }), 1000);
+});
 
 test('authoritative USD/CAD rate fills a missing balance-derived USD rate', () => {
   const original = new Map([['CAD', 1]]);

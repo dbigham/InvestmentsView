@@ -89,3 +89,16 @@ export function computeCombinedCashAcrossCurrencies({
 
   return hasValue ? totalCash : null;
 }
+
+// Position weights include uninvested cash, using the same currency as the positions.
+export function computePortfolioValue({ marketValue, balances, currencyRates, baseCurrency = 'CAD' }) {
+  const cash = computeCombinedCashAcrossCurrencies({
+    balances,
+    currencyRates,
+    targetCurrency: baseCurrency,
+    baseCurrency,
+  });
+  const combinedCash = balances?.combined?.[baseCurrency]?.cash;
+  const resolvedCash = cash ?? (Number.isFinite(combinedCash) ? combinedCash : 0);
+  return marketValue + resolvedCash;
+}
