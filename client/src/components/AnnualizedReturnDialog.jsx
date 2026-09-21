@@ -138,11 +138,11 @@ export default function AnnualizedReturnDialog({
         <header className="return-breakdown-dialog__header">
           <div className="return-breakdown-dialog__heading">
             <h2 id="return-breakdown-title">Return breakdown</h2>
-            {asOf && <p className="return-breakdown-dialog__timestamp">As of {formatDateTime(asOf)}</p>}
+            {asOf && <p className="return-breakdown-dialog__timestamp">As of {/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(asOf) ? formatDate(asOf) : formatDateTime(asOf)}</p>}
             {sinceDisplay && <p className="return-breakdown-dialog__subtitle">{sinceDisplay}</p>}
             {incomplete && (
               <p className="return-breakdown-dialog__notice">
-                Cash flow history is incomplete. Rates may be understated.
+                Historical data is incomplete. Returns are estimates.
               </p>
             )}
           </div>
@@ -152,6 +152,9 @@ export default function AnnualizedReturnDialog({
         </header>
 
         <div className="return-breakdown-dialog__body">
+          <p className="return-breakdown-dialog__notice">
+            Percentages are money-weighted returns (XIRR), accounting for when deposits and withdrawals occurred.
+          </p>
           <dl className="return-breakdown-list">
             <div className="return-breakdown-list__row">
               <dt className="return-breakdown-list__label">Annualized return</dt>

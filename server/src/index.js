@@ -434,7 +434,7 @@ const totalPnlSeriesCacheStore = new Map();
 // summary shape must not be served from an older pinned cache entry.
 // Bump when the concrete-account cache payload changes between successor-only
 // and stitched Questrade + Wealthsimple history.
-const SUMMARY_CACHE_VERSION = 'funding-v12-migration-basis-qa';
+const SUMMARY_CACHE_VERSION = 'funding-v13-period-xirr';
 const TOTAL_PNL_SERIES_CACHE_VERSION = 'aggregate-funding-v8-migration-basis-qa';
 const RANGE_BREAKDOWN_CACHE_TTL_MS = 60 * 1000;
 const RANGE_BREAKDOWN_CACHE_VERSION = 'account-coverage-v3-holdings-validation';
@@ -12565,7 +12565,7 @@ function computeAccountAnnualizedReturn(cashFlows, accountKey) {
     return filtered;
   }
 
-function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey) {
+function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accountKey, totalPnlSeries) {
     if (!fundingSummary || typeof fundingSummary !== 'object' || !account) {
       return;
     }
@@ -12573,6 +12573,11 @@ function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accoun
     typeof account.cagrStartDate === 'string' && account.cagrStartDate.trim()
       ? account.cagrStartDate.trim()
       : null;
+  const breakdownPoints = (totalPnlSeries?.points || []).filter(
+    (point) => !rawCagrStart || point.date >= rawCagrStart.slice(0, 10)
+  );
+  const returnBreakdown = computeReturnBreakdownFromSeries(breakdownPoints, accountKey);
+  fundingSummary.returnBreakdown = returnBreakdown.length ? returnBreakdown : undefined;
   if (!rawCagrStart) {
     return;
   }
@@ -12609,10 +12614,7 @@ function rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, accoun
     existingAnnualized && typeof existingAnnualized.asOf === 'string'
       ? existingAnnualized.asOf
       : null;
-  const asOfDate = asOf ? new Date(asOf) : null;
-
   const rate = computeAccountAnnualizedReturn(adjustedFlows, accountKey);
-  const returnBreakdown = computeReturnBreakdownFromCashFlows(adjustedFlows, asOfDate, rate);
   const startIso = startDate.toISOString().slice(0, 10);
   const incompleteFlag = existingAnnualized && existingAnnualized.incomplete === true;
 
@@ -12726,7 +12728,7 @@ function rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, accou
         startDate: startIso,
         incomplete: true,
       };
-  const returnBreakdown = computeReturnBreakdownFromCashFlows(cashFlows, endDate, rate);
+  const returnBreakdown = computeReturnBreakdownFromSeries(points, accountKey);
   fundingSummary.returnBreakdown = returnBreakdown.length ? returnBreakdown : undefined;
 }
 
@@ -13088,7 +13090,7 @@ function applyTotalPnlSeriesSummaryToFundingSummary(fundingSummary, totalPnlSeri
   if (shouldUseReconstructedArchivedEquity) {
     rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, account.id);
   } else {
-    rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, account.id);
+    rebuildAnnualizedReturnFromDisplayStart(fundingSummary, account, account.id, totalPnlSeries);
   }
   applyOpeningFundingReconciliationToSummary(fundingSummary, summary);
 }
@@ -13327,120 +13329,64 @@ function addMonths(baseDate, months) {
   );
 }
 
-function computeReturnBreakdownFromCashFlows(cashFlows, asOfDate, annualizedRate) {
-  const normalized = normalizeCashFlowsForXirr(cashFlows);
-  if (!normalized.length) {
+// Cash flows alone cannot establish a historical portfolio value. Require the
+// actual boundary snapshot, then solve each period independently of all-time XIRR.
+function computeReturnBreakdownFromSeries(points, accountKey) {
+  if (!Array.isArray(points) || points.length < 2) {
     return [];
   }
-
-  const lastEntry = normalized[normalized.length - 1];
-  const resolvedAsOf =
-    asOfDate instanceof Date && !Number.isNaN(asOfDate.getTime())
-      ? asOfDate
-      : lastEntry?.date instanceof Date && !Number.isNaN(lastEntry.date.getTime())
-        ? lastEntry.date
-        : null;
-
-  if (!(resolvedAsOf instanceof Date) || Number.isNaN(resolvedAsOf.getTime())) {
+  const ordered = points.slice().sort((a, b) => String(a?.date).localeCompare(String(b?.date)));
+  const last = ordered[ordered.length - 1];
+  const endDate = parseDateOnlyString(last?.date);
+  if (!endDate || !Number.isFinite(last.equityCad)) {
     return [];
   }
-
-  const earliestEntry = normalized[0];
-  if (!(earliestEntry?.date instanceof Date) || Number.isNaN(earliestEntry.date.getTime())) {
-    return [];
-  }
-
   const breakdown = [];
-  const safeRate = Number.isFinite(annualizedRate) && annualizedRate > -0.999 ? annualizedRate : 0;
-  const compoundingBase = 1 + safeRate;
-
   for (const period of RETURN_BREAKDOWN_PERIODS) {
-    const startDate = addMonths(resolvedAsOf, -period.months);
-    if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
+    const startDate = addMonths(endDate, -period.months);
+    const startKey = startDate.toISOString().slice(0, 10);
+    const startIndex = ordered.findIndex((point) => point?.date === startKey);
+    if (startIndex < 0) {
       continue;
     }
-
-    if (!(earliestEntry.date < startDate)) {
+    const window = ordered.slice(startIndex);
+    if (window.length < 2 || window.some((point) =>
+      !parseDateOnlyString(point?.date) ||
+      !Number.isFinite(point.equityCad) ||
+      !Number.isFinite(point.cumulativeNetDepositsCad)
+    )) {
       continue;
     }
-
-    const flowsBefore = normalized.filter((entry) => entry.date < startDate);
-    if (!flowsBefore.length) {
+    const first = window[0];
+    if (first.equityCad < 0) {
       continue;
     }
-
-    const flowsAfter = normalized.filter((entry) => entry.date >= startDate);
-    if (!flowsAfter.length) {
-      continue;
-    }
-
-    let startValue = 0;
-    let validStartValue = true;
-    for (const entry of flowsBefore) {
-      const millisDelta = startDate.getTime() - entry.date.getTime();
-      const yearSpan = millisDelta / DAY_IN_MS / 365;
-      if (!Number.isFinite(yearSpan) || yearSpan < 0) {
-        validStartValue = false;
-        break;
-      }
-      const growthFactor = compoundingBase > 0 ? Math.pow(compoundingBase, yearSpan) : Number.NaN;
-      if (!Number.isFinite(growthFactor)) {
-        validStartValue = false;
-        break;
-      }
-      const futureValue = entry.amount * growthFactor;
-      if (!Number.isFinite(futureValue)) {
-        validStartValue = false;
-        break;
-      }
-      startValue -= futureValue;
-    }
-
-    if (!validStartValue || !Number.isFinite(startValue) || Math.abs(startValue) < CASH_FLOW_EPSILON || startValue <= 0) {
-      const fallbackStart = flowsBefore.reduce((sum, entry) => sum - entry.amount, 0);
-      if (Number.isFinite(fallbackStart) && fallbackStart > CASH_FLOW_EPSILON) {
-        startValue = fallbackStart;
-        validStartValue = true;
-      } else {
-        continue;
+    const cashFlows = [{ amount: -first.equityCad, date: startDate }];
+    for (let index = 1; index < window.length; index += 1) {
+      const depositDelta = window[index].cumulativeNetDepositsCad -
+        window[index - 1].cumulativeNetDepositsCad;
+      if (Math.abs(depositDelta) >= CASH_FLOW_EPSILON) {
+        cashFlows.push({ amount: -depositDelta, date: parseDateOnlyString(window[index].date) });
       }
     }
-
-    const flowsAfterSum = flowsAfter.reduce((sum, entry) => sum + entry.amount, 0);
-    const totalReturn = flowsAfterSum - startValue;
-
-    let periodReturnRate = null;
-    if (Number.isFinite(totalReturn)) {
-      const rawRate = totalReturn / startValue;
-      if (Number.isFinite(rawRate)) {
-        periodReturnRate = rawRate;
-      }
-    }
-
-    let annualizedPeriodRate = null;
-    if (Number.isFinite(periodReturnRate) && periodReturnRate >= -1 && period.months > 0) {
-      const years = period.months / 12;
-      const exponent = years > 0 ? 1 / years : null;
-      if (Number.isFinite(exponent) && exponent > 0) {
-        const growthBase = 1 + periodReturnRate;
-        const growth = Math.pow(growthBase, exponent) - 1;
-        if (Number.isFinite(growth)) {
-          annualizedPeriodRate = growth;
-        }
-      }
-    }
-
+    cashFlows.push({ amount: last.equityCad, date: endDate });
+    const annualizedRate = computeAccountAnnualizedReturn(cashFlows, accountKey);
+    const years = (endDate - startDate) / DAY_IN_MS / 365;
+    const periodReturnRate = Number.isFinite(annualizedRate)
+      ? Math.pow(1 + annualizedRate, years) - 1
+      : null;
     breakdown.push({
       period: period.key,
       months: period.months,
-      startDate: startDate.toISOString(),
-      startValueCad: Number.isFinite(startValue) ? startValue : null,
-      totalReturnCad: Number.isFinite(totalReturn) ? totalReturn : null,
+      startDate: startKey,
+      startValueCad: first.equityCad,
+      totalReturnCad: last.equityCad - first.equityCad -
+        (last.cumulativeNetDepositsCad - first.cumulativeNetDepositsCad),
       periodReturnRate: Number.isFinite(periodReturnRate) ? periodReturnRate : null,
-      annualizedRate: Number.isFinite(annualizedPeriodRate) ? annualizedPeriodRate : null,
+      annualizedRate: Number.isFinite(annualizedRate) ? annualizedRate : null,
+      method: 'xirr',
     });
   }
-
   return breakdown;
 }
 
@@ -16233,11 +16179,8 @@ async function computeNetDepositsCore(account, perAccountCombinedBalances, optio
     ? computeAccountAnnualizedReturn(effectiveCashFlows, accountKey)
     : null;
 
-  const returnBreakdown = computeReturnBreakdownFromCashFlows(
-    effectiveCashFlows,
-    now,
-    annualizedReturnRate
-  );
+  // Historical period returns are populated once valuation history is available.
+  const returnBreakdown = [];
 
   const incompleteReturnData = conversionIncomplete || missingCashFlowDates;
 
@@ -25296,7 +25239,7 @@ app.get('/api/summary', async function (req, res) {
             } else if (shouldUseReconstructedArchivedEquity) {
               rebuildAnnualizedReturnFromSeries(fundingSummary, totalPnlSeries, context.account.id);
             } else {
-              rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id);
+              rebuildAnnualizedReturnFromDisplayStart(fundingSummary, context.account, context.account.id, totalPnlSeries);
             }
             applyOpeningFundingReconciliationToSummary(fundingSummary, summary);
           }
@@ -25914,14 +25857,7 @@ app.get('/api/summary', async function (req, res) {
           aggregateEntry.annualizedReturn = incompleteAnnualized;
           aggregateEntry.annualizedReturnAllTime = Object.assign({}, incompleteAnnualized);
         }
-        const aggregateBreakdown = computeReturnBreakdownFromCashFlows(
-          aggregateTotals.cashFlowsCad,
-          new Date(aggregateAsOf),
-          aggregateRate
-        );
-        if (aggregateBreakdown.length) {
-          aggregateEntry.returnBreakdown = aggregateBreakdown;
-        }
+        // Period returns require the reconstructed valuation series below.
       }
 
       if (Object.keys(aggregateEntry).length > 0) {
@@ -28000,6 +27936,7 @@ module.exports = {
     filterCashFlowsAfterDisplayStart,
     applyPendingDepositToFundingSummary,
     resolveCashCurrencyTrade,
+    computeReturnBreakdownFromSeries,
     rebuildAnnualizedReturnFromSeries,
     applyOpeningFundingReconciliationToSummary,
     applyTotalPnlSeriesSummaryToFundingSummary,

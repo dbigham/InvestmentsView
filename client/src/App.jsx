@@ -19610,7 +19610,7 @@ export default function App() {
           annualizedRate={fundingSummaryForDisplay.annualizedReturnRate}
           asOf={fundingSummaryForDisplay.annualizedReturnAsOf}
           breakdown={fundingSummaryForDisplay.returnBreakdown}
-          incomplete={fundingSummaryForDisplay.annualizedReturnIncomplete}
+          incomplete={fundingSummaryForDisplay.annualizedReturnIncomplete || fundingSummaryForDisplay.annualizedReturnEstimated}
           startDate={fundingSummaryForDisplay.annualizedReturnStartDate}
         />
       )}
